@@ -2,8 +2,9 @@
 //
 // R* principle: Working code first
 // Layer 3: Create directory structure
-// Layer 4: Add serialization (bincode + LZ4)
+// Layer 4: Add serialization (bincode + LZ4) ✓
 
+use crate::storage;
 use crate::types::LegendState;
 use std::fs;
 use std::path::Path;
@@ -16,9 +17,10 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
     let legend_dir = Path::new(".legend");
 
     // Check if already initialized
-    if legend_dir.exists() {
+    if storage::is_initialized() {
         println!("Legend already initialized in this directory");
         println!("  .legend/ directory exists");
+        println!("  Use 'legend show' to view current state");
         return Ok(());
     }
 
@@ -32,13 +34,15 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
     // For now, we'll use a default project name
     // Later (Layer 6), we can accept --name flag or detect from git
     let project_name = "My Project".to_string();
-    let _state = LegendState::new(project_name);
+    let state = LegendState::new(project_name);
 
-    // TODO (Layer 4): Serialize and save state to .legend/state.lz4
-    // For now, just create the directory structure
+    // Save the initial state to disk (bincode + LZ4)
+    // This serializes and compresses the state
+    storage::save_state(&state)?;
 
     println!("✓ Initialized Legend");
     println!("  Created .legend/ directory");
+    println!("  Saved initial state to .legend/state.lz4");
     println!("  Ready to track features");
 
     Ok(())
