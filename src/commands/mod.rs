@@ -4,8 +4,8 @@
 // This mod.rs declares them and makes them available to main.rs
 
 pub mod init;
+pub mod get_state;
 
-// Future modules (Layer 5+):
-// pub mod get_state;
+// Future modules (Layer 6+):
 // pub mod update;
 // pub mod show;
