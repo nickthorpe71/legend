@@ -218,11 +218,11 @@ Each layer builds working functionality and teaches Rust concepts naturally.
 
 ## Progress Tracking
 
-### Completed Layers: 3/8
+### Completed Layers: 4/8
 - [x] Layer 1: Basic CLI
 - [x] Layer 2: Core Types
 - [x] Layer 3: Init Command
-- [ ] Layer 4: Serialization
+- [x] Layer 4: Serialization
 - [ ] Layer 5: Get State Command
 - [ ] Layer 6: Update + Merge
 - [ ] Layer 7: Show Command

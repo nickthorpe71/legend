@@ -1,8 +1,9 @@
 use std::env;
 
 // Declare our modules
-// This tells Rust to look for types.rs and commands/ in the same directory
+// This tells Rust to look for types.rs, storage.rs, and commands/ in the same directory
 mod types;
+mod storage;
 mod commands;
 
 // Import types we'll use (later layers will use these)
