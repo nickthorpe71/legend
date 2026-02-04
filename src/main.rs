@@ -91,8 +91,8 @@ fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn handle_get_state() -> Result<(), Box<dyn std::error::Error>> {
-    println!("get_state command - not implemented yet");
-    Ok(())
+    // Delegate to the real implementation in commands/get_state.rs
+    commands::get_state::handle_get_state()
 }
 
 fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
