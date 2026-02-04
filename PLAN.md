@@ -26,6 +26,47 @@ Build Legend in Rust to learn systems programming while creating a production-qu
 - **Target**: <5ms load/save, <30KB on disk (typical project)
 - **See PERFORMANCE.md** for detailed constraints and benchmarks
 
+### Performance Architecture: Read-Optimized, Write-Heavy
+
+**Key Insight:** AI writes are slow (Claude takes 5-30s to respond), reads must be instant.
+
+**Read Path (<5ms hard requirement):**
+- `legend get_state` - Called every session start
+- Pre-computed: embeddings, indices, recency scores all calculated on write
+- Just load + decompress + deserialize + return
+- Target: <5ms, typically ~2-3ms
+
+**Write Path (100-500ms acceptable):**
+- `legend update` - Called after Claude finishes responding
+- Expensive operations allowed: compute embeddings, rebuild indices, recalculate scores
+- Budget: 100-500ms is imperceptible (Claude just spent 10+ seconds responding)
+
+**This enables:**
+- Semantic search via pre-computed embeddings (200ms to generate, 0ms to read)
+- Complex indices built on write, instant lookup on read
+- Rich metadata processing without impacting read performance
+
+### Feature Metadata Strategy:
+
+**Structured filtering (fast, required):**
+- `domain` - Primary categorization ("auth", "storage", "api", "ui")
+- `tags` - Flexible labels (["backend", "security", "database"])
+- `status` - Current state (Pending, InProgress, Blocked, Complete)
+
+**Rich context (for AI understanding):**
+- `description` - What this feature does (required for embeddings)
+- `context` - Why we're building it, background info (optional)
+
+**Semantic search (future, Layer 9+):**
+- `embedding` - Pre-computed 384-dim vector for semantic similarity
+- Generated on write path (200ms), stored for instant read
+- Enables "find features related to user security" without exact keyword matches
+
+**Search flow:**
+1. Filter by domain/tags (instant, <1ms)
+2. Claude reads descriptions of filtered results (~10-50 features)
+3. (Optional future) Semantic search within filtered subset
+
 ---
 
 ## Rust-Focused Layer Plan (8 Layers)
@@ -51,7 +92,7 @@ Each layer builds working functionality and teaches Rust concepts naturally.
 
 ### Layer 2: Core Types (45-60 min)
 **What we're building:**
-- Feature struct with all fields
+- Feature struct with metadata fields (domain, tags, description, context)
 - FeatureStatus enum
 - LegendState struct
 - Constructor functions
@@ -61,6 +102,13 @@ Each layer builds working functionality and teaches Rust concepts naturally.
 - Enums (not just C-style!)
 - Option<T> for nullable fields
 - pub/private visibility
+- Vec<T> for dynamic arrays
+
+**Fields added:**
+- Required: `id`, `name`, `domain`, `description`, `status`
+- Optional: `context` (Option<String>)
+- Collections: `tags` (Vec<String>), `files_involved` (Vec<String>)
+- Metadata: `created_at`, `last_updated`, `recency_score`
 
 **Test:** Create Feature in code, verify it compiles
 
@@ -170,9 +218,9 @@ Each layer builds working functionality and teaches Rust concepts naturally.
 
 ## Progress Tracking
 
-### Completed Layers: 1/8
+### Completed Layers: 2/8
 - [x] Layer 1: Basic CLI
-- [ ] Layer 2: Core Types
+- [x] Layer 2: Core Types
 - [ ] Layer 3: Init Command
 - [ ] Layer 4: Serialization
 - [ ] Layer 5: Get State Command
