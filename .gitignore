@@ -1,0 +1,28 @@
+# Build artifacts
+bin/
+build/
+*.o
+
+# Test artifacts
+tests/tmp/
+.test_*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+
+# Added by cargo
+
+/target
+
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target
