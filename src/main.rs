@@ -1,5 +1,12 @@
 use std::env;
 
+// Declare our modules
+// This tells Rust to look for types.rs in the same directory
+mod types;
+
+// Import types we'll use
+use types::{Feature, FeatureStatus, LegendState};
+
 fn main() {
     // R* principle: Keep main thin, call into run() for error handling
     if let Err(e) = run() {
