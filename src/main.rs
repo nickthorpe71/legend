@@ -1,10 +1,11 @@
 use std::env;
 
 // Declare our modules
-// This tells Rust to look for types.rs in the same directory
+// This tells Rust to look for types.rs and commands/ in the same directory
 mod types;
+mod commands;
 
-// Import types we'll use
+// Import types we'll use (later layers will use these)
 use types::{Feature, FeatureStatus, LegendState};
 
 fn main() {
@@ -80,12 +81,12 @@ fn print_help() {
     println!("  show                Display human-readable state");
 }
 
-// Command handlers - placeholders for now
+// Command handlers
 // R* principle: Working code first, implement functionality layer by layer
 
 fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
-    println!("init command - not implemented yet");
-    Ok(())
+    // Delegate to the real implementation in commands/init.rs
+    commands::init::handle_init()
 }
 
 fn handle_get_state() -> Result<(), Box<dyn std::error::Error>> {
