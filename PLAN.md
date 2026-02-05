@@ -216,17 +216,53 @@ Each layer builds working functionality and teaches Rust concepts naturally.
 
 ---
 
+### Layer 9: Search Command (1-1.5 hr)
+**What we're building:**
+- `legend search <query>` - search features by keyword
+- Filter by domain, tags, status
+- Match against id, name, description, context fields
+- Return matching features as JSON (for Claude) or human-readable
+
+**Rust concepts taught:**
+- String matching and contains()
+- Combining filters with iterators
+- Command-line flags/arguments parsing
+- Collecting filtered results
+
+**Test:** `cargo run -- search auth` finds auth-related features
+
+---
+
+### Layer 10: Claude Code Hooks (1 hr)
+**What we're building:**
+- `.claude/settings.json` hooks configuration
+- Session start hook: prompt Claude to run `legend get_state`
+- Post-tool hook: prompt Claude to update Legend after feature work
+- CLAUDE.md instructions for Legend usage patterns
+
+**Integration behavior:**
+- On session start: Claude automatically loads project context from Legend
+- When user mentions a feature: Claude searches Legend for context
+- After completing work: Claude updates feature status and files_involved
+- Keeps Legend state current throughout development sessions
+
+**Test:** Start new Claude Code session, verify Legend context is loaded
+
+---
+
 ## Progress Tracking
 
-### Completed Layers: 5/8
+### Completed Layers: 6/10
 - [x] Layer 1: Basic CLI
 - [x] Layer 2: Core Types
 - [x] Layer 3: Init Command
 - [x] Layer 4: Serialization
 - [x] Layer 5: Get State Command
-- [ ] Layer 6: Update + Merge
+- [x] Layer 6: Update + Merge
 - [ ] Layer 7: Show Command
 - [ ] Layer 8: Bootstrap Discovery
+- [ ] Layer 9: Search Command
+- [ ] Layer 10: Claude Code Hooks
 
 ---
 
