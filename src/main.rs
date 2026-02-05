@@ -96,8 +96,8 @@ fn handle_get_state() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
-    println!("update command - not implemented yet");
-    Ok(())
+    // Delegate to the real implementation in commands/update.rs
+    commands::update::handle_update()
 }
 
 fn handle_show() -> Result<(), Box<dyn std::error::Error>> {

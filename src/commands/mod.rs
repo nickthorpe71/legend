@@ -5,7 +5,7 @@
 
 pub mod init;
 pub mod get_state;
+pub mod update;
 
-// Future modules (Layer 6+):
-// pub mod update;
+// Future modules (Layer 7+):
 // pub mod show;
