@@ -1,40 +1,94 @@
 # Legend
 
-**Lightweight context memory layer for AI-assisted development.**
+**Lightweight context memory for AI-assisted development.**
 
-Persists project state and feature progress across sessions so AI coding assistants don't lose context. Built in Rust following performance-first principles with <5ms operation targets.
+Legend persists project state and feature progress across sessions so AI coding assistants don't lose context. Run `legend init` in any project to get started.
 
-> **Note:** This repository contains AI-generated code developed collaboratively with Claude Code as a learning project.
-
-## Build
+## Installation
 
 ```bash
-cargo build
-cargo build --release  # Optimized binary
+cargo install legend
 ```
+
+## Quick Start
+
+```bash
+# Initialize Legend in your project
+cd ~/my-project
+legend init
+```
+
+This creates:
+- `.legend/` - Legend state storage
+- `.claude/settings.json` - Claude Code hooks (auto-loads context each session)
+
+Now when you start Claude Code in this project, Legend context loads automatically.
 
 ## Usage
 
 ```bash
-legend help           # Show available commands
-legend init           # Initialize .legend directory
-legend get_state      # Get current state as JSON
-legend update         # Update state from stdin
-legend show           # Human-readable display
+# View current state (human-readable)
+legend show
+
+# Get full state as JSON (for AI consumption)
+legend get_state
+
+# Search for features
+legend search auth
+legend search --status InProgress
+legend search --domain api
+legend search --tag backend
+
+# Update features (pipe JSON to stdin)
+echo '{"features": [{"id": "auth", "status": "Complete"}]}' | legend update
+
+# Scan for project files
+legend discover
 ```
 
-## Architecture
+## Tracking Features
 
-- **Storage Format**: Bincode (binary) + LZ4 compression for <5ms load times
-- **State Files**: `.legend/state.lz4`, `.legend/config.toml`
-- **Temporal Context**: Recency-weighted for intelligent retrieval
-- **Performance**: <5ms per operation (see `PERFORMANCE.md`)
+Add a new feature:
+```bash
+echo '{
+  "features": [{
+    "id": "user-auth",
+    "name": "User Authentication",
+    "domain": "backend",
+    "description": "Login/logout with JWT tokens",
+    "status": "InProgress",
+    "tags": ["security", "api"],
+    "files_involved": ["src/auth.rs", "src/middleware.rs"]
+  }]
+}' | legend update
+```
 
-## Philosophy
+Update an existing feature (only `id` + changed fields needed):
+```bash
+echo '{"features": [{"id": "user-auth", "status": "Complete"}]}' | legend update
+```
 
-- **Performance critical**: <5ms targets, continuous measurement
-- **Minimal dependencies**: Only serde, bincode, lz4, serde_json
-- **R* principles**: Clear, direct, adaptive (see `R*.md`)
-- **Learning through building**: Production-quality code with teaching comments
+Remove a feature:
+```bash
+echo '{"remove_features": ["old-feature-id"]}' | legend update
+```
 
-See `CLAUDE.md` for development guidelines and `PLAN.md` for implementation roadmap.
+## How It Works
+
+Legend stores project state in `.legend/state.lz4` using bincode + LZ4 compression for fast (<5ms) reads. When you run `legend init`, it also creates Claude Code hooks that:
+
+1. **SessionStart**: Automatically loads Legend context when you start Claude Code
+2. **UserPromptSubmit**: Reminds Claude that Legend commands are available
+
+This means Claude Code always knows about your project's features, their status, and which files are involved.
+
+## Status Values
+
+- `Pending` - Not started
+- `InProgress` - Currently being worked on
+- `Blocked` - Waiting on something
+- `Complete` - Done
+
+## License
+
+MIT

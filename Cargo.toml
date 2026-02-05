@@ -1,9 +1,18 @@
 [package]
 name = "legend"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Nick Thorpe"]
 description = "Lightweight context memory layer for AI-assisted development"
+license = "MIT"
+repository = "https://github.com/nickthorpe71/legend"
+keywords = ["ai", "development", "context", "claude"]
+categories = ["development-tools", "command-line-utilities"]
+readme = "README.md"
+
+[[bin]]
+name = "legend"
+path = "src/main.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
