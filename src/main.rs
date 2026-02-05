@@ -57,6 +57,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "search" => {
             handle_search(&args[2..])?;
         }
+        "discover" => {
+            handle_discover(&args[2..])?;
+        }
         // Unknown command - this is the catch-all
         unknown => {
             eprintln!("Unknown command: {}", unknown);
@@ -87,6 +90,7 @@ fn print_help() {
     println!("    --domain <d>      Filter by domain");
     println!("    --tag <t>         Filter by tag");
     println!("    --status <s>      Filter by status");
+    println!("  discover [path]     Scan project and suggest features");
 }
 
 fn handle_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -113,4 +117,8 @@ fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
 
 fn handle_show() -> Result<(), Box<dyn std::error::Error>> {
     commands::show::handle_show()
+}
+
+fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    commands::discover::handle_discover(args)
 }

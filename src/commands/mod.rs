@@ -9,3 +9,4 @@ pub mod update;
 
 pub mod show;
 pub mod search;
+pub mod discover;
