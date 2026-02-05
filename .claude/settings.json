@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '== Legend Project Context =='; cargo run --quiet -- get_state 2>/dev/null || echo 'Legend not initialized. Run: cargo run -- init'"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"additionalContext\": \"Legend is available in this project. Use `cargo run -- search <keyword>` to find features, `cargo run -- get_state` to load full state, and pipe JSON to `cargo run -- update` to update features after completing work. See CLAUDE.md for details.\"}'"
+          }
+        ]
+      }
+    ]
+  }
+}

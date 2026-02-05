@@ -54,6 +54,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "show" => {
             handle_show()?;
         }
+        "search" => {
+            handle_search(&args[2..])?;
+        }
         // Unknown command - this is the catch-all
         unknown => {
             eprintln!("Unknown command: {}", unknown);
@@ -80,6 +83,14 @@ fn print_help() {
     println!("  get_state           Print current state as JSON");
     println!("  update              Update feature state from stdin");
     println!("  show                Display human-readable state");
+    println!("  search <query>      Search features by keyword");
+    println!("    --domain <d>      Filter by domain");
+    println!("    --tag <t>         Filter by tag");
+    println!("    --status <s>      Filter by status");
+}
+
+fn handle_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    commands::search::handle_search(args)
 }
 
 // Command handlers
@@ -101,6 +112,5 @@ fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn handle_show() -> Result<(), Box<dyn std::error::Error>> {
-    println!("show command - not implemented yet");
-    Ok(())
+    commands::show::handle_show()
 }
