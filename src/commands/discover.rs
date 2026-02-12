@@ -18,20 +18,20 @@ use std::path::{Path, PathBuf};
 /// The full discovery report, output as JSON to stdout
 #[derive(Serialize)]
 pub struct DiscoveryReport {
-    root: String,
-    languages: HashMap<String, usize>,
-    directories: Vec<String>,
-    potential_features: Vec<SuggestedFeature>,
-    total_files: usize,
+    pub root: String,
+    pub languages: HashMap<String, usize>,
+    pub directories: Vec<String>,
+    pub potential_features: Vec<SuggestedFeature>,
+    pub total_files: usize,
 }
 
 /// A suggested feature inferred from directory structure
 #[derive(Serialize)]
 pub struct SuggestedFeature {
-    suggested_id: String,
-    suggested_name: String,
-    suggested_domain: String,
-    files: Vec<String>,
+    pub suggested_id: String,
+    pub suggested_name: String,
+    pub suggested_domain: String,
+    pub files: Vec<String>,
 }
 
 /// Directories to skip during traversal
@@ -49,29 +49,19 @@ const SKIP_DIRS: &[&str] = &[
 /// Common source root directories where we look for feature subdirectories
 const SOURCE_ROOTS: &[&str] = &["src", "lib", "app", "pkg"];
 
-/// Handle the discover command
+/// Run discovery on a directory and return the report
 ///
-/// Walks the given directory (or ".") and prints a JSON discovery report
-/// to stdout with a human-readable summary to stderr.
-pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    // Use first argument as path, default to "."
-    let root_path = if args.is_empty() {
-        PathBuf::from(".")
-    } else {
-        PathBuf::from(&args[0])
-    };
-
-    // Canonicalize so the report shows an absolute path
-    let root_path = fs::canonicalize(&root_path)?;
+/// This is the core scanning logic, separated from I/O so it can be
+/// called from both `handle_discover` and `handle_init`.
+pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error::Error>> {
+    let root_path = fs::canonicalize(root)?;
 
     let mut languages: HashMap<String, usize> = HashMap::new();
     let mut all_files: Vec<PathBuf> = Vec::new();
     let mut top_dirs: Vec<String> = Vec::new();
 
-    // Walk the directory tree recursively
     walk_directory(&root_path, &root_path, &mut languages, &mut all_files)?;
 
-    // Collect notable top-level directories (skip hidden/ignored ones)
     if let Ok(entries) = fs::read_dir(&root_path) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -85,16 +75,29 @@ pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>
     }
     top_dirs.sort();
 
-    // Detect potential features from source root subdirectories
     let potential_features = detect_features(&root_path, &all_files);
 
-    let report = DiscoveryReport {
+    Ok(DiscoveryReport {
         root: root_path.to_string_lossy().to_string(),
         languages,
         directories: top_dirs,
         potential_features,
         total_files: all_files.len(),
+    })
+}
+
+/// Handle the discover command
+///
+/// Walks the given directory (or ".") and prints a JSON discovery report
+/// to stdout with a human-readable summary to stderr.
+pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let root_path = if args.is_empty() {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(&args[0])
     };
+
+    let report = run_discovery(&root_path)?;
 
     // JSON to stdout (for Claude)
     let json = serde_json::to_string_pretty(&report)?;
