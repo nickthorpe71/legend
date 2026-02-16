@@ -1,0 +1,23 @@
+{
+  "baseURL": "http://localhost:5173",
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "timeouts": {
+    "pageLoad": 30000,
+    "action": 5000,
+    "maxRunDuration": 300000
+  },
+  "maxSteps": 50,
+  "actionDelay": {
+    "min": 50,
+    "max": 100
+  },
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-3-5-sonnet-20241022",
+    "maxTokens": 2000,
+    "temperature": 0.0
+  }
+}

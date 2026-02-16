@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "echo '== Legend Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "echo '{\"additionalContext\": \"Legend available. Use legend search <keyword>, legend get_state, or pipe JSON to legend update.\"}'",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}

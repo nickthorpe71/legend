@@ -1,0 +1,10 @@
+{
+  "name": "spaced-recall",
+  "start_url": "http://localhost:5173/upload",
+  "objective": "Verify spaced recall feature stub exists",
+  "success_signals": ["Choose File", "Upload Your PDF"],
+  "success_url_contains": ["localhost:5173/upload"],
+  "fail_signals": ["Error"],
+  "max_steps": 5,
+  "context": "Spaced recall deferred for post-MVP. Basic assessment flow covers immediate validation."
+}

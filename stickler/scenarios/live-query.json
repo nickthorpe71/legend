@@ -1,0 +1,29 @@
+{
+  "name": "live-query",
+  "start_url": "http://localhost:5173/",
+  "objective": "Execute a live product query and verify the AI returns reasonable matching results",
+  "success_signals": [
+    "Results",
+    "found",
+    "match"
+  ],
+  "success_url_contains": [
+    "/app/compare"
+  ],
+  "fail_signals": [
+    "Error",
+    "Failed to",
+    "Something went wrong",
+    "No results",
+    "Invalid"
+  ],
+  "max_steps": 25,
+  "context": "This scenario tests the live query feature end-to-end. The agent should: (1) Check if logged in by looking for authenticated UI elements like 'Sign Out' or navigation links. If not logged in, navigate to login and authenticate. (2) Navigate to the Live page if not already there. (3) Enter a product query with the test data parameters. (4) Wait for and verify the AI returns matching results that make sense - the response should include product details like name, specs, price, and indicate matches were found. The agent should verify the results are relevant to the query (e.g., if searching for a laptop, results should mention computers/laptops, not unrelated products).",
+  "test_data": {
+    "email": "mpenczak25@gmail.com",
+    "password": "TestTest321321",
+    "query_product": "Dell XPS 15 9500",
+    "query_description": "15.6 inch laptop with Intel i7 processor",
+    "expected_result_keywords": "laptop,Dell,XPS,processor,Intel"
+  }
+}

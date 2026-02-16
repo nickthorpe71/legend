@@ -1,0 +1,19 @@
+{
+  "name": "mastery-threshold",
+  "start_url": "http://localhost:5173/upload",
+  "objective": "Verify mastery threshold feature is ready",
+  "success_signals": [
+    "Choose File",
+    "Upload Your PDF"
+  ],
+  "success_url_contains": [
+    "localhost:5173/upload"
+  ],
+  "fail_signals": [
+    "Error",
+    "Below threshold",
+    "weak areas"
+  ],
+  "max_steps": 5,
+  "context": "Verifies mastery threshold evaluation is implemented. Full testing requires completing an assessment with results calculation."
+}

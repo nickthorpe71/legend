@@ -1,0 +1,18 @@
+{
+  "name": "example-logout",
+  "start_url": "http://localhost:5173/app/compare",
+  "objective": "Log out from the authenticated area and return to homepage",
+  "success_signals": [
+    "Login",
+    "Book a Demo"
+  ],
+  "success_url_contains": [
+    "localhost:5173/"
+  ],
+  "fail_signals": [],
+  "fail_url_contains": [
+    "/app/"
+  ],
+  "max_steps": 10,
+  "context": "This scenario demonstrates URL-based verification. Success means we're at the homepage (/) and NOT in the authenticated area (/app/). We should see the Login button again."
+}
