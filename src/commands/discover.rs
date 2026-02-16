@@ -1,21 +1,8 @@
-// Discover command - walk a project directory and produce a bootstrap report
-//
-// Scans the filesystem to detect languages, directory patterns, and suggest
-// features that Claude can use to help the user set up their Legend state.
-//
-// Rust concepts in this file:
-// - Recursive directory traversal with std::fs::read_dir
-// - HashMap for counting/aggregating
-// - Path, PathBuf, OsStr for path manipulation
-// - Pattern matching on file extensions
-// - Building nested data structures
-
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The full discovery report, output as JSON to stdout
 #[derive(Serialize)]
 pub struct DiscoveryReport {
     pub root: String,
@@ -25,7 +12,6 @@ pub struct DiscoveryReport {
     pub total_files: usize,
 }
 
-/// A suggested feature inferred from directory structure
 #[derive(Serialize)]
 pub struct SuggestedFeature {
     pub suggested_id: String,
@@ -34,34 +20,21 @@ pub struct SuggestedFeature {
     pub files: Vec<String>,
 }
 
-/// Directories to skip during traversal
 const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".legend",
-    "target",
-    "node_modules",
-    ".vscode",
-    ".idea",
-    "build",
-    "bin",
+    ".git", ".legend", "target", "node_modules", ".vscode", ".idea", "build", "bin",
 ];
 
-/// Common source root directories where we look for feature subdirectories
 const SOURCE_ROOTS: &[&str] = &["src", "lib", "app", "pkg"];
 
-/// Run discovery on a directory and return the report
-///
-/// This is the core scanning logic, separated from I/O so it can be
-/// called from both `handle_discover` and `handle_init`.
+/// Scan a directory tree and return a discovery report.
 pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error::Error>> {
     let root_path = fs::canonicalize(root)?;
-
     let mut languages: HashMap<String, usize> = HashMap::new();
     let mut all_files: Vec<PathBuf> = Vec::new();
-    let mut top_dirs: Vec<String> = Vec::new();
 
     walk_directory(&root_path, &root_path, &mut languages, &mut all_files)?;
 
+    let mut top_dirs: Vec<String> = Vec::new();
     if let Ok(entries) = fs::read_dir(&root_path) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -86,89 +59,49 @@ pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error:
     })
 }
 
-/// Handle the discover command
-///
-/// Walks the given directory (or ".") and prints a JSON discovery report
-/// to stdout with a human-readable summary to stderr.
+/// Handle the discover CLI command: JSON to stdout, summary to stderr.
 pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let root_path = if args.is_empty() {
-        PathBuf::from(".")
-    } else {
-        PathBuf::from(&args[0])
-    };
-
+    let root_path = if args.is_empty() { PathBuf::from(".") } else { PathBuf::from(&args[0]) };
     let report = run_discovery(&root_path)?;
 
-    // JSON to stdout (for Claude)
     let json = serde_json::to_string_pretty(&report)?;
     println!("{}", json);
 
-    // Summary to stderr (for the user)
     eprintln!("Discovered {} files in {}", report.total_files, report.root);
-    eprintln!(
-        "Languages: {}",
-        format_language_summary(&report.languages)
-    );
-    eprintln!(
-        "Suggested features: {}",
-        report.potential_features.len()
-    );
+    eprintln!("Languages: {}", format_language_summary(&report.languages));
+    eprintln!("Suggested features: {}", report.potential_features.len());
 
     Ok(())
 }
 
-/// Recursively walk a directory, collecting file extensions and paths
-///
-/// `root` is the original scan root (for computing relative paths)
-/// `dir` is the current directory being scanned
+/// Recursively walk a directory tree, collecting file paths and counting extensions.
 fn walk_directory(
     root: &Path,
     dir: &Path,
     languages: &mut HashMap<String, usize>,
     files: &mut Vec<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // read_dir returns an iterator of Result<DirEntry>
-    let entries = fs::read_dir(dir)?;
-
-    for entry in entries {
-        // Each entry is Result<DirEntry> - ? unwraps the Ok case
+    for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
-            // Check if we should skip this directory
-            // file_name() returns Option<&OsStr> - the last component of the path
-            let dir_name = entry.file_name();
-            let dir_name_str = dir_name.to_string_lossy();
-
-            if SKIP_DIRS.contains(&dir_name_str.as_ref()) {
-                continue;
+            let name = entry.file_name();
+            if !SKIP_DIRS.contains(&name.to_string_lossy().as_ref()) {
+                walk_directory(root, &path, languages, files)?;
             }
-
-            // Recurse into subdirectory
-            walk_directory(root, &path, languages, files)?;
         } else if path.is_file() {
-            // Count file extensions for language detection
-            // extension() returns Option<&OsStr>
             if let Some(ext) = path.extension() {
-                let ext_str = ext.to_string_lossy().to_lowercase();
-                // HashMap::entry gives us an Entry enum for in-place mutation
-                // or_insert(0) sets default to 0 if key doesn't exist
-                // then we dereference and increment
-                *languages.entry(ext_str).or_insert(0) += 1;
+                *languages.entry(ext.to_string_lossy().to_lowercase()).or_insert(0) += 1;
             }
-
             files.push(path);
         }
     }
-
     Ok(())
 }
 
-/// Detect potential features from subdirectories under source roots
-///
-/// Looks for directories like src/commands/, src/storage/, lib/auth/ etc.
-/// Each subdirectory with 2+ files becomes a suggested feature.
+/// Detect features from subdirectories under source roots.
+/// Detect potential features from subdirectories under known source roots (src/, lib/, etc.).
 fn detect_features(root: &Path, all_files: &[PathBuf]) -> Vec<SuggestedFeature> {
     let mut features: Vec<SuggestedFeature> = Vec::new();
 
@@ -178,7 +111,6 @@ fn detect_features(root: &Path, all_files: &[PathBuf]) -> Vec<SuggestedFeature> 
             continue;
         }
 
-        // Read first-level subdirectories under the source root
         let entries = match fs::read_dir(&source_dir) {
             Ok(e) => e,
             Err(_) => continue,
@@ -191,72 +123,52 @@ fn detect_features(root: &Path, all_files: &[PathBuf]) -> Vec<SuggestedFeature> 
             }
 
             let dir_name = entry.file_name().to_string_lossy().to_string();
-
-            // Skip hidden directories
             if dir_name.starts_with('.') {
                 continue;
             }
 
-            // Collect files that live under this subdirectory
             let dir_files: Vec<String> = all_files
                 .iter()
                 .filter(|f| f.starts_with(&path))
-                .filter_map(|f| {
-                    // Make paths relative to root for cleaner output
-                    f.strip_prefix(root).ok().map(|p| p.to_string_lossy().to_string())
-                })
+                .filter_map(|f| f.strip_prefix(root).ok().map(|p| p.to_string_lossy().to_string()))
                 .collect();
 
-            // Only suggest if there are 2+ files
             if dir_files.len() < 2 {
                 continue;
             }
 
-            let domain = infer_domain(&dir_name);
-            let suggested_name = title_case(&dir_name);
-
             features.push(SuggestedFeature {
                 suggested_id: dir_name.clone(),
-                suggested_name,
-                suggested_domain: domain,
+                suggested_name: title_case(&dir_name),
+                suggested_domain: infer_domain(&dir_name),
                 files: dir_files,
             });
         }
     }
 
-    // Sort by id for consistent output
     features.sort_by(|a, b| a.suggested_id.cmp(&b.suggested_id));
     features
 }
 
-/// Infer a domain from a directory name using keyword heuristics
+/// Map a directory name to a domain category (security, api, storage, ui, testing).
 fn infer_domain(dir_name: &str) -> String {
     let name = dir_name.to_lowercase();
-
-    // Check against known patterns
-    let security_keywords = ["auth", "login", "session"];
-    let api_keywords = ["api", "routes", "endpoints"];
-    let storage_keywords = ["db", "storage", "models", "schema"];
-    let ui_keywords = ["ui", "components", "views", "pages"];
-    let testing_keywords = ["test", "spec"];
-
-    if security_keywords.iter().any(|k| name.contains(k)) {
+    if ["auth", "login", "session"].iter().any(|k| name.contains(k)) {
         "security".to_string()
-    } else if api_keywords.iter().any(|k| name.contains(k)) {
+    } else if ["api", "routes", "endpoints"].iter().any(|k| name.contains(k)) {
         "api".to_string()
-    } else if storage_keywords.iter().any(|k| name.contains(k)) {
+    } else if ["db", "storage", "models", "schema"].iter().any(|k| name.contains(k)) {
         "storage".to_string()
-    } else if ui_keywords.iter().any(|k| name.contains(k)) {
+    } else if ["ui", "components", "views", "pages"].iter().any(|k| name.contains(k)) {
         "ui".to_string()
-    } else if testing_keywords.iter().any(|k| name.contains(k)) {
+    } else if ["test", "spec"].iter().any(|k| name.contains(k)) {
         "testing".to_string()
     } else {
-        // Fallback: use the directory name itself as the domain
         name
     }
 }
 
-/// Convert a snake_case or lowercase name to Title Case
+/// Convert a snake_case or kebab-case string to Title Case.
 fn title_case(s: &str) -> String {
     s.split(|c: char| c == '_' || c == '-')
         .filter(|part| !part.is_empty())
@@ -274,20 +186,58 @@ fn title_case(s: &str) -> String {
         .join(" ")
 }
 
-/// Format language counts into a compact summary string
 fn format_language_summary(languages: &HashMap<String, usize>) -> String {
     if languages.is_empty() {
         return "none detected".to_string();
     }
-
-    // Sort by count descending, then take top entries
     let mut sorted: Vec<_> = languages.iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(a.1));
+    sorted.iter().take(5).map(|(ext, count)| format!("{} ({})", ext, count)).collect::<Vec<_>>().join(", ")
+}
 
-    sorted
-        .iter()
-        .take(5)
-        .map(|(ext, count)| format!("{} ({})", ext, count))
-        .collect::<Vec<_>>()
-        .join(", ")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_infer_domain_security() {
+        assert_eq!(infer_domain("auth"), "security");
+        assert_eq!(infer_domain("login_handler"), "security");
+        assert_eq!(infer_domain("session"), "security");
+    }
+
+    #[test]
+    fn test_infer_domain_api() {
+        assert_eq!(infer_domain("api"), "api");
+        assert_eq!(infer_domain("routes"), "api");
+    }
+
+    #[test]
+    fn test_infer_domain_fallback() {
+        assert_eq!(infer_domain("commands"), "commands");
+        assert_eq!(infer_domain("utils"), "utils");
+    }
+
+    #[test]
+    fn test_title_case() {
+        assert_eq!(title_case("hello_world"), "Hello World");
+        assert_eq!(title_case("my-feature"), "My Feature");
+        assert_eq!(title_case("simple"), "Simple");
+    }
+
+    #[test]
+    fn test_format_language_summary_empty() {
+        let langs = HashMap::new();
+        assert_eq!(format_language_summary(&langs), "none detected");
+    }
+
+    #[test]
+    fn test_format_language_summary() {
+        let mut langs = HashMap::new();
+        langs.insert("rs".to_string(), 10);
+        langs.insert("toml".to_string(), 2);
+        let summary = format_language_summary(&langs);
+        assert!(summary.contains("rs"));
+        assert!(summary.contains("toml"));
+    }
 }

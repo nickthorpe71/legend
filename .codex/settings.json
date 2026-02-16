@@ -4,15 +4,6 @@
       {
         "hooks": [
           {
-            "command": "echo '== Legend Project Context =='; cargo run --quiet -- get_state 2>/dev/null || echo 'Legend not initialized. Run: cargo run -- init'",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      },
-      {
-        "hooks": [
-          {
             "command": "echo '== Legend Project Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'",
             "type": "command"
           }
@@ -32,15 +23,6 @@
       }
     ],
     "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "command": "echo '{\"additionalContext\": \"Legend is available in this project. Use `cargo run -- search <keyword>` to find features, `cargo run -- get_state` to load full state, and pipe JSON to `cargo run -- update` to update features after completing work. See CLAUDE.md for details.\"}'",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      },
       {
         "hooks": [
           {

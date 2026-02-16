@@ -1,11 +1,3 @@
-// Init command - creates .legend directory and initializes state
-//
-// R* principle: Working code first
-// Layer 3: Create directory structure
-// Layer 4: Add serialization (bincode + LZ4) ✓
-// Layer 11: Claude Code hooks setup ✓
-// Layer 12: Self-bootstrapping (CLAUDE.md, auto-discover, Stop hook) ✓
-
 use crate::commands::discover;
 use crate::storage;
 use crate::types::{Feature, LegendState};
@@ -24,24 +16,27 @@ const LEGEND_MARKER_END: &str = "<!-- legend-end -->";
 pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
     let legend_dir = Path::new(".legend");
 
-    // Check if already initialized
     if storage::is_initialized() {
         println!("Legend already initialized in this directory");
         println!("  .legend/ directory exists");
         println!("  Use 'legend show' to view current state");
+
+        setup_claude_hooks()?;
+        setup_claude_md()?;
+        setup_codex_hooks()?;
+        setup_codex_md()?;
+        setup_copilot_instructions()?;
+
         return Ok(());
     }
 
-    // Create .legend directory
     fs::create_dir_all(legend_dir).map_err(|e| {
         format!("Failed to create .legend directory: {}", e)
     })?;
 
-    // Create initial state
     let project_name = detect_project_name();
     let mut state = LegendState::new(project_name);
 
-    // Auto-discover features from the project directory
     match discover::run_discovery(Path::new(".")) {
         Ok(report) => {
             let count = report.potential_features.len();
@@ -59,23 +54,20 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Auto-discovered {} features from project structure", count);
             }
         }
-        Err(_) => {
-            // Discovery is best-effort; don't fail init if it errors
-        }
+        Err(_) => {}
     }
 
-    // Save the state to disk (bincode + LZ4)
     storage::save_state(&state)?;
 
     println!("✓ Initialized Legend");
     println!("  Created .legend/ directory");
     println!("  Saved initial state to .legend/state.lz4");
 
-    // Set up Claude Code hooks in this project
     setup_claude_hooks()?;
-
-    // Generate CLAUDE.md with Legend instructions
     setup_claude_md()?;
+    setup_codex_hooks()?;
+    setup_codex_md()?;
+    setup_copilot_instructions()?;
 
     Ok(())
 }
@@ -94,89 +86,144 @@ fn detect_project_name() -> String {
 /// If it exists, appends Legend section (unless already present).
 /// Uses marker comments for idempotent detection.
 fn setup_claude_md() -> Result<(), Box<dyn std::error::Error>> {
-    let claude_md_path = Path::new("CLAUDE.md");
+    write_legend_markdown(Path::new("CLAUDE.md"), "CLAUDE.md", None)
+}
 
-    let legend_section = format!(
+/// Generate or update CODEX.md with Legend usage instructions
+fn setup_codex_md() -> Result<(), Box<dyn std::error::Error>> {
+    write_legend_markdown(Path::new("CODEX.md"), "CODEX.md", None)
+}
+
+/// Generate or update .github/copilot-instructions.md
+///
+/// This file is automatically injected into VS Code Copilot Chat sessions,
+/// making Legend memory available without manual intervention.
+fn setup_copilot_instructions() -> Result<(), Box<dyn std::error::Error>> {
+    let github_dir = Path::new(".github");
+    let instructions_path = github_dir.join("copilot-instructions.md");
+    write_legend_markdown(&instructions_path, ".github/copilot-instructions.md", Some(github_dir))
+}
+
+// ---------------------------------------------------------------------------
+// Shared instruction content & file I/O helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the canonical Legend instructions that all agent instruction files share.
+fn generate_legend_instructions() -> String {
+    format!(
         r#"{LEGEND_MARKER_START}
-# Legend - Project Context Memory
+# Legend — Your Long-Term Memory
 
-This project uses **Legend** to track features, status, and file relationships across sessions. Legend is your memory — use it actively.
+You have access to a persistent hierarchical memory system called **Legend**. It stores context across sessions so you can pick up where you left off. **Use it actively and frequently.**
 
-## Commands
+## CRITICAL: Memory Workflow
+
+### On every session start
+Run this FIRST before doing anything else:
+```bash
+cargo run --quiet -- memory query "session start context"
+```
+This returns your stored memories — read them to understand prior work, decisions, and open issues.
+
+### During the session (frequently!)
+After every significant action (writing code, making a decision, discovering something, completing a task), record it:
+```bash
+cargo run --quiet -- memory tick "description of what just happened"
+```
+Do this **every few minutes** or after every meaningful change. More ticks = better memory.
+
+### On session end
+Summarize what was accomplished:
+```bash
+cargo run --quiet -- memory tick "Session summary: what was done, what's next, any blockers"
+```
+
+## Memory Commands
+
+| Command | When to Use |
+|---------|-------------|
+| `cargo run --quiet -- memory tick "<text>"` | Record something (decision, progress, discovery, blocker) |
+| `cargo run --quiet -- memory query "<text>"` | Recall related context before starting work |
+| `cargo run --quiet -- memory stats` | Check how much is stored |
+| `cargo run --quiet -- memory consolidate` | Merge similar memories into long-term graph |
+
+## Feature Tracking Commands
 
 | Command | Purpose |
 |---------|---------|
-| `legend get_state` | Load full project state as JSON |
-| `legend search <query>` | Search features by keyword |
-| `legend search --domain <d>` | Filter by domain |
-| `legend search --status <s>` | Filter by status (Pending, InProgress, Blocked, Complete) |
-| `legend search --tag <t>` | Filter by tag |
-| `legend show` | Human-readable summary table |
-| `legend update` | Update state (pipe JSON to stdin) |
-| `legend discover` | Re-scan project for new features |
+| `cargo run --quiet -- get_state` | Load full project state as JSON |
+| `cargo run --quiet -- search <query>` | Search features by keyword |
+| `cargo run --quiet -- show` | Human-readable feature summary |
+| `cargo run --quiet -- update` | Update feature state (pipe JSON to stdin) |
 
-## When to Use Legend
+## What to Tick
 
-- **Session start**: State is loaded automatically via hook. Read it to understand what exists.
-- **User mentions a feature/topic**: Run `legend search <keyword>` before starting work to get context.
-- **After making progress**: Update Legend immediately — don't wait for the user to ask. This includes status changes, new files, or new features.
-- **New feature emerges**: Add it to Legend so future sessions have context.
+- **Decisions**: "Chose X over Y because Z"
+- **Progress**: "Implemented feature X in file Y"
+- **Blockers**: "Can't do X until Y is resolved"
+- **Architecture**: "Module X talks to Y via Z"
+- **User preferences**: "User prefers approach X"
+- **Bugs found**: "Bug: X happens when Y"
+- **TODO items**: "TODO: still need to implement X"
 
-## Update Format
+## About This Project
 
-Pipe JSON to `legend update`. For existing features, only `id` plus changed fields are needed:
+Legend is a brain-inspired hierarchical memory system for LLMs built in Rust. It has:
+- **Immediate buffer**: recent text chunks
+- **Short-term memory**: vector store with cosine similarity, salience scoring, exponential decay
+- **Long-term memory**: knowledge graph with multi-hop traversal, Hebbian reinforcement
 
-```bash
-echo '{{"features": [{{"id": "feature-id", "status": "InProgress", "files_involved": ["src/new_file.rs"]}}]}}' | legend update
-```
-
-For new features, include all required fields:
-
-```bash
-echo '{{"features": [{{"id": "new-feature", "name": "Feature Name", "domain": "api", "description": "What it does", "status": "InProgress", "tags": ["relevant"], "files_involved": ["src/file.rs"]}}]}}' | legend update
-```
-
-To remove features:
-
-```bash
-echo '{{"remove_features": ["old-feature-id"]}}' | legend update
-```
-
-## Status Values
-
-- `Pending` — Not started
-- `InProgress` — Currently being worked on
-- `Blocked` — Waiting on something
-- `Complete` — Done
+Storage: bincode + LZ4 at `.legend/memory.lz4`. Key source files:
+- `src/memory/mod.rs` — core memory engine
+- `src/commands/memory.rs` — CLI handler
+- `src/main.rs` — command routing
+- `src/commands/init.rs` — hook setup
 {LEGEND_MARKER_END}"#,
         LEGEND_MARKER_START = LEGEND_MARKER_START,
         LEGEND_MARKER_END = LEGEND_MARKER_END,
-    );
+    )
+}
 
-    if claude_md_path.exists() {
-        let content = fs::read_to_string(claude_md_path).map_err(|e| {
-            format!("Failed to read CLAUDE.md: {}", e)
+/// Write Legend instructions to a markdown file (create, append, or skip).
+///
+/// - `path`: the file to write
+/// - `display_name`: human-readable name for log messages
+/// - `parent_dir`: if Some, will be created with `create_dir_all` before writing
+fn write_legend_markdown(
+    path: &Path,
+    display_name: &str,
+    parent_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let content = generate_legend_instructions();
+
+    if path.exists() {
+        let existing = fs::read_to_string(path).map_err(|e| {
+            format!("Failed to read {}: {}", display_name, e)
         })?;
 
-        // Check if Legend section already exists
-        if content.contains(LEGEND_MARKER_START) {
-            println!("  CLAUDE.md already has Legend instructions");
+        if existing.contains(LEGEND_MARKER_START) {
+            println!("  {} already has Legend instructions", display_name);
             return Ok(());
         }
 
-        // Append Legend section to existing CLAUDE.md
-        let updated = format!("{}\n\n{}\n", content.trim_end(), legend_section);
-        fs::write(claude_md_path, updated).map_err(|e| {
-            format!("Failed to update CLAUDE.md: {}", e)
+        let updated = format!("{}\n\n{}\n", existing.trim_end(), content);
+        fs::write(path, updated).map_err(|e| {
+            format!("Failed to update {}: {}", display_name, e)
         })?;
 
-        println!("✓ Appended Legend instructions to existing CLAUDE.md");
+        println!("✓ Appended Legend instructions to existing {}", display_name);
     } else {
-        fs::write(claude_md_path, format!("{}\n", legend_section)).map_err(|e| {
-            format!("Failed to create CLAUDE.md: {}", e)
+        if let Some(dir) = parent_dir {
+            fs::create_dir_all(dir).map_err(|e| {
+                format!("Failed to create {} directory: {}", dir.display(), e)
+            })?;
+        }
+
+        fs::write(path, format!("{}\n", content)).map_err(|e| {
+            format!("Failed to create {}: {}", display_name, e)
         })?;
 
-        println!("✓ Created CLAUDE.md with Legend instructions");
+        println!("✓ Created {} with Legend instructions", display_name);
     }
 
     Ok(())
@@ -190,8 +237,24 @@ echo '{{"remove_features": ["old-feature-id"]}}' | legend update
 /// - UserPromptSubmit: reminds Claude to search Legend for context
 /// - Stop: detects file changes and reminds Claude to update Legend
 fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    let claude_dir = Path::new(".claude");
-    let settings_path = claude_dir.join("settings.json");
+    setup_agent_hooks(".claude", "Claude Code")
+}
+
+/// Set up Codex hooks in .codex/settings.json
+fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
+    setup_agent_hooks(".codex", "Codex")
+}
+
+/// Set up agent hooks in a settings.json for the given tool directory.
+///
+/// Creates or merges Legend hooks into the project's agent configuration.
+/// Sets up three hooks:
+/// - SessionStart: loads Legend state automatically
+/// - UserPromptSubmit: reminds the agent to search Legend for context
+/// - Stop: detects file changes and reminds the agent to update Legend
+fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let agent_dir = Path::new(dir_name);
+    let settings_path = agent_dir.join("settings.json");
 
     let legend_session_hook = json!({
         "matcher": "",
@@ -219,15 +282,15 @@ fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
 
     if settings_path.exists() {
         let content = fs::read_to_string(&settings_path).map_err(|e| {
-            format!("Failed to read .claude/settings.json: {}", e)
+            format!("Failed to read {}/settings.json: {}", dir_name, e)
         })?;
 
         let mut settings: Value = serde_json::from_str(&content).map_err(|e| {
-            format!("Failed to parse .claude/settings.json: {}", e)
+            format!("Failed to parse {}/settings.json: {}", dir_name, e)
         })?;
 
         if has_legend_hooks(&settings) {
-            println!("  Claude Code hooks already configured");
+            println!("  {} hooks already configured", display_name);
             return Ok(());
         }
 
@@ -240,13 +303,13 @@ fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
 
         let output = serde_json::to_string_pretty(&settings)?;
         fs::write(&settings_path, output).map_err(|e| {
-            format!("Failed to write .claude/settings.json: {}", e)
+            format!("Failed to write {}/settings.json: {}", dir_name, e)
         })?;
 
-        println!("✓ Added Legend hooks to existing .claude/settings.json");
+        println!("✓ Added Legend hooks to existing {}/settings.json", dir_name);
     } else {
-        fs::create_dir_all(claude_dir).map_err(|e| {
-            format!("Failed to create .claude directory: {}", e)
+        fs::create_dir_all(agent_dir).map_err(|e| {
+            format!("Failed to create {} directory: {}", dir_name, e)
         })?;
 
         let settings = json!({
@@ -259,10 +322,10 @@ fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
 
         let output = serde_json::to_string_pretty(&settings)?;
         fs::write(&settings_path, output).map_err(|e| {
-            format!("Failed to write .claude/settings.json: {}", e)
+            format!("Failed to write {}/settings.json: {}", dir_name, e)
         })?;
 
-        println!("✓ Created .claude/settings.json with Legend hooks");
+        println!("✓ Created {}/settings.json with Legend hooks", dir_name);
     }
 
     Ok(())
