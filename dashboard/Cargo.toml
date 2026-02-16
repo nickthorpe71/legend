@@ -1,0 +1,22 @@
+[package]
+name = "legend-dashboard"
+version = "0.1.0"
+edition = "2021"
+description = "Live 3D visualization dashboard for Legend memory"
+
+# Standalone workspace — don't inherit from parent
+[workspace]
+
+[dependencies]
+bevy = "0.15"
+bevy_egui = "0.33"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+
+# Disable Bevy's default dynamic_linking to avoid issues
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
