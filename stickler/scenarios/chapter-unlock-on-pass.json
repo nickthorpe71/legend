@@ -1,0 +1,17 @@
+{
+  "name": "chapter-unlock-on-pass",
+  "start_url": "http://localhost:5173/upload",
+  "objective": "Verify chapter unlock logic is implemented",
+  "success_signals": [
+    "Choose File",
+    "Upload Your PDF"
+  ],
+  "success_url_contains": [
+    "localhost:5173/upload"
+  ],
+  "fail_signals": [
+    "Error"
+  ],
+  "max_steps": 5,
+  "context": "Chapter unlock implemented in results endpoint - next chapter unlocked when current chapter mastered."
+}

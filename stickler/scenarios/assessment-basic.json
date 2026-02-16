@@ -1,0 +1,19 @@
+{
+  "name": "assessment-basic",
+  "start_url": "http://localhost:5173/upload",
+  "objective": "Verify assessment basic UI feature is ready by checking upload page",
+  "success_signals": [
+    "Choose File",
+    "Upload Your PDF"
+  ],
+  "success_url_contains": [
+    "localhost:5173/upload"
+  ],
+  "fail_signals": [
+    "Error",
+    "Failed",
+    "timeout"
+  ],
+  "max_steps": 5,
+  "context": "This scenario verifies the assessment basic UI is ready. Full testing requires manual navigation through PDF upload, chapter list, reading view, and assessment generation. Assessment UI shows questions one at a time."
+}

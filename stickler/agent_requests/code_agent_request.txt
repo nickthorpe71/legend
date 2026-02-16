@@ -1,0 +1,66 @@
+# Task: Implement Feature from PRD
+
+You are a specialized agent that implements features based on Product Requirements Documents.
+
+## PRD Summary
+
+**Feature**: landing-page
+
+**Requirements**:
+- Display "Instill" branding/logo
+- Show tagline explaining mastery-based learning
+- Prominent "Upload PDF" call-to-action button
+- Clean, focused design with no distractions
+- Responsive layout (desktop and mobile)
+
+**User Flow**:
+- Step 1: User navigates to http://localhost:5173/
+- Step 2: User sees landing page with Instill branding
+- Step 3: User reads value proposition
+- Step 4: User sees "Upload PDF" button (ready to click)
+
+**Acceptance Criteria**:
+- Given a user visits the root URL, then they see the Instill landing page
+- The page displays "Instill" as the main heading
+- A tagline is visible explaining the learning mastery concept
+- An "Upload PDF" or "Get Started" button is prominently displayed
+- The page is responsive and works on mobile browsers
+
+**Technical Notes**:
+- Create landing page component in React
+- Use semantic HTML (h1, p, button elements)
+- Add basic CSS for centering and typography
+- No backend integration needed yet (button can be non-functional)
+- Consider using flexbox/grid for responsive layout
+
+## Test Scenario
+
+A Stickler scenario has been created at: /home/nickthorpe71/code/instill/stickler/scenarios/landing-page.json
+
+This scenario will be used to verify your implementation.
+
+## Your Task
+
+Implement this feature in the codebase at: /home/nickthorpe71/code/instill/
+
+### Implementation Steps:
+
+1. **Analyze the codebase** - Understand current structure
+2. **Implement backend** - API routes, handlers, auth logic
+3. **Implement frontend** - UI components, state management
+4. **Follow best practices** - See CLAUDE.md for code standards
+
+### Important:
+
+- Focus ONLY on code that satisfies the requirements
+- Do NOT run tests or Stickler - that will be done automatically
+- Do NOT create documentation files
+- Follow the project's code standards in CLAUDE.md
+- Ensure the implementation matches the user flow exactly
+
+## Output
+
+When complete, report:
+- Files created/modified
+- Brief description of implementation
+- Any edge cases or assumptions

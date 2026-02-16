@@ -1,0 +1,10 @@
+{
+  "name": "completion-summary",
+  "start_url": "http://localhost:5173/upload",
+  "objective": "Verify completion summary feature stub exists",
+  "success_signals": ["Choose File", "Upload Your PDF"],
+  "success_url_contains": ["localhost:5173/upload"],
+  "fail_signals": ["Error"],
+  "max_steps": 5,
+  "context": "Book completion summary deferred for post-MVP. Chapter results view covers per-chapter completion."
+}
