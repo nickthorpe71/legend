@@ -87,6 +87,21 @@ pub struct DumpShortTerm {
     pub reconsolidation_count: u32,
     #[serde(default)]
     pub labile: bool,
+    #[serde(default)]
+    pub refs: Vec<DumpMemoryRef>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Deserialize)]
+pub struct DumpMemoryRef {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub start_line: usize,
+    #[serde(default)]
+    pub end_line: usize,
+    #[serde(default)]
+    pub snippet: String,
 }
 
 #[allow(dead_code)]
@@ -220,7 +235,10 @@ fn legend_command(project_dir: &PathBuf, args: &[&str]) -> Option<Vec<u8>> {
             legend_args.join(" "),
             legend_args.join(" "),
         );
-        if let Ok(out) = Command::new("wsl.exe").args(["-e", "bash", "-c", &cmd_str]).output() {
+        if let Ok(out) = Command::new("wsl.exe")
+            .args(["-e", "bash", "-c", &cmd_str])
+            .output()
+        {
             if out.status.success() {
                 return Some(out.stdout);
             }
@@ -235,7 +253,11 @@ fn legend_command(project_dir: &PathBuf, args: &[&str]) -> Option<Vec<u8>> {
     ];
 
     for bin in &candidates {
-        if let Ok(out) = Command::new(bin).args(&legend_args).current_dir(project_dir).output() {
+        if let Ok(out) = Command::new(bin)
+            .args(&legend_args)
+            .current_dir(project_dir)
+            .output()
+        {
             if out.status.success() {
                 return Some(out.stdout);
             }

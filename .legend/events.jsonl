@@ -46,3 +46,13 @@
 {"cmd":"start","detail":"session cold-start","ts":1771293633}
 {"cmd":"query","detail":"drill down cli dashboard","ts":1771293689}
 {"cmd":"tick","detail":"Implemented TUI graph drill-down: Enter drills into neighbors list with stack-based back (b/backspace), detail view via 'd', graph list shows edge types and dynamic title.","ts":1771294029}
+{"cmd":"tick","detail":"Token-efficiency pass: memory outputs now compact JSON; start summary trimmed to context+categorized only, with lower caps (sessions 5, top nodes 8, per-category 5) and shorter text (120). Updated tests/help text accordingly.","ts":1771295227}
+{"cmd":"start","detail":"session cold-start","ts":1771295470}
+{"cmd":"query","detail":"dashboard drill-down","ts":1771295483}
+{"cmd":"tick","detail":"Smoke test: compact JSON outputs for start/query/context, and trimmed summary sizes look correct.","ts":1771295510}
+{"cmd":"start","detail":"session cold-start","ts":1771297169}
+{"cmd":"tick","detail":"Memory start showed failed deserialize; backup saved to .legend/memory.lz4.corrupt; session errors reported while implementing line reference feature","ts":1771297176}
+{"cmd":"tick","detail":"User clarified session errors were in LLM coding screen, not Legend; asked to continue implementing line reference feature","ts":1771297381}
+{"cmd":"tick","detail":"Implemented line reference capture in memory ticks/retrieval, added MemorySnippet refs, tests for refs, and surfaced refs in dashboard short-term entries","ts":1771297879}
+{"cmd":"query","detail":"tui","ts":1771297961}
+{"cmd":"tick","detail":"Added TUI line-reference output in short-term detail view and query results","ts":1771298067}
