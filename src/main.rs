@@ -1,6 +1,7 @@
 mod commands;
 mod memory;
 mod storage;
+mod tui;
 mod types;
 
 fn main() {
@@ -27,7 +28,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "search" => commands::search::handle_search(&args[2..])?,
         "discover" => commands::discover::handle_discover(&args[2..])?,
         "memory" => commands::memory::handle_memory(&args[2..])?,
-        "dashboard" => commands::dashboard::handle_dashboard()?,
+        "dashboard" => {
+            // Check for --3d flag to launch Bevy dashboard
+            if args.iter().any(|a| a == "--3d") {
+                commands::dashboard::handle_dashboard()?
+            } else {
+                tui::run_tui()?
+            }
+        }
         unknown => {
             eprintln!("Unknown command: {}", unknown);
             print_help();
@@ -51,6 +59,6 @@ fn print_help() {
     println!("  search <query>      Search features (--domain, --tag, --status)");
     println!("  discover [path]     Scan project and suggest features");
     println!("  memory <sub>        Hierarchical memory (tick, query, stats, context, sessions, reset, consolidate)");
-    println!("  dashboard           Launch the live 3D memory dashboard");
+    println!("  dashboard [--3d]    Launch the TUI dashboard (--3d for Bevy 3D view)");
     println!("  help                Show this help message");
 }

@@ -18,6 +18,7 @@ pub fn handle_memory(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         "sessions" => handle_sessions(&args[1..]),
         "reinforce" => handle_reinforce(&args[1..]),
         "dump" => handle_dump(),
+        "task" => handle_task(&args[1..]),
         _ => {
             print_memory_help();
             Ok(())
@@ -27,7 +28,7 @@ pub fn handle_memory(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
 
 fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let text = if args.is_empty() {
-        read_stdin()? 
+        read_stdin()?
     } else {
         args.join(" ")
     };
@@ -38,10 +39,17 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut memory = MemoryState::load_or_default()?;
     let context = memory.tick(text.trim());
+    let should_consolidate = memory.should_suggest_consolidation();
     memory.save()?;
 
     log_event("tick", text.trim());
     print_context(context);
+
+    if should_consolidate {
+        eprintln!();
+        eprintln!("Tip: {} ticks since last consolidation. Consider running:", memory.ticks_since_consolidation);
+        eprintln!("  legend memory consolidate");
+    }
     Ok(())
 }
 
@@ -77,6 +85,10 @@ fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Short-term entries: {}", memory.short_term.len());
     println!("  Long-term nodes: {}", memory.long_term.nodes.len());
     println!("  Long-term edges: {}", memory.long_term.edges.len());
+    println!("  Ticks since consolidation: {}", memory.ticks_since_consolidation);
+    if let Some(task) = memory.get_task() {
+        println!("  Current task: {}", task);
+    }
     Ok(())
 }
 
@@ -143,6 +155,49 @@ fn handle_reinforce(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn handle_task(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let subcommand = args.first().map(|s| s.as_str()).unwrap_or("show");
+
+    match subcommand {
+        "show" | "" => {
+            let memory = MemoryState::load_or_default()?;
+            match memory.get_task() {
+                Some(task) => println!("Current task: {}", task),
+                None => println!("No current task set"),
+            }
+        }
+        "set" => {
+            if args.len() < 2 {
+                return Err("Usage: legend memory task set <task description>".into());
+            }
+            let task = args[1..].join(" ");
+            let mut memory = MemoryState::load_or_default()?;
+            memory.set_task(&task);
+            memory.save()?;
+            log_event("task_set", &task);
+            println!("✓ Current task set: {}", task);
+        }
+        "clear" => {
+            let mut memory = MemoryState::load_or_default()?;
+            memory.clear_task();
+            memory.save()?;
+            log_event("task_clear", "task cleared");
+            println!("✓ Current task cleared");
+        }
+        _ => {
+            // Treat unknown subcommand as "set" with the full args
+            let task = args.join(" ");
+            let mut memory = MemoryState::load_or_default()?;
+            memory.set_task(&task);
+            memory.save()?;
+            log_event("task_set", &task);
+            println!("✓ Current task set: {}", task);
+        }
+    }
+
+    Ok(())
+}
+
 fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
@@ -190,6 +245,9 @@ fn print_memory_help() {
     println!("  legend memory tick <text>       Record a memory (decision, progress, discovery)");
     println!("  legend memory tick              Record a memory (reads stdin)");
     println!("  legend memory query <text>      Query memory (auto-reinforces top result)");
+    println!("  legend memory task              Show current task");
+    println!("  legend memory task set <text>   Set current task");
+    println!("  legend memory task clear        Clear current task");
     println!("  legend memory reinforce <sig> <id...>  Explicit feedback on retrieved entries");
     println!("  legend memory dump              Export full memory state as JSON");
     println!("  legend memory stats             Show memory stats");

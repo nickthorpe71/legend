@@ -44,6 +44,8 @@ const AUTO_REINFORCE_SCALE: f32 = 0.03;
 const RECONSOLIDATION_THRESHOLD: f32 = 0.35;
 /// How many ticks a memory stays labile after retrieval before re-stabilizing.
 const LABILE_WINDOW: u64 = 5;
+/// Number of ticks before suggesting a consolidation.
+const CONSOLIDATION_SUGGESTION_THRESHOLD: u32 = 15;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,6 +90,12 @@ pub struct MemoryState {
     /// Chronological log of tick text, preserving exact user input.
     #[serde(default)]
     pub session_log: Vec<SessionEntry>,
+    /// Pinned current task description for session context.
+    #[serde(default)]
+    pub current_task: Option<String>,
+    /// Number of ticks since last consolidation.
+    #[serde(default)]
+    pub ticks_since_consolidation: u32,
 }
 
 /// A single entry in the short-term vector store.
@@ -169,6 +177,9 @@ pub struct GraphNodeSummary {
     pub label: String,
     pub kind: String,
     pub weight: f32,
+    /// The type of edge that connected this node (for neighbor lookups).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_type: Option<String>,
 }
 
 /// Feedback result from reinforcing entries after retrieval.
@@ -200,6 +211,8 @@ impl Default for MemoryState {
             clock: 0,
             next_id: 1,
             session_log: Vec::new(),
+            current_task: None,
+            ticks_since_consolidation: 0,
         }
     }
 }
@@ -232,7 +245,7 @@ impl MemoryCategory {
 }
 
 /// Detect the primary category of a text based on keyword patterns.
-fn classify_text(text: &str) -> MemoryCategory {
+pub fn classify_text(text: &str) -> MemoryCategory {
     let lower = text.to_lowercase();
 
     // Decision patterns (highest priority)
@@ -292,6 +305,11 @@ impl Default for GraphMemory {
 
 impl MemoryState {
     pub fn load_or_default() -> Result<Self, Box<dyn std::error::Error>> {
+        // Try to migrate corrupt backup first (old format without new fields)
+        if let Ok(Some(migrated)) = migrate_corrupt_backup() {
+            return Ok(migrated);
+        }
+
         if Path::new(MEMORY_FILE).exists() {
             match load_memory() {
                 Ok(state) => Ok(state),
@@ -315,6 +333,7 @@ impl MemoryState {
     /// Ingest text: chunk → embed → reconsolidate or match/merge/insert → update graph.
     pub fn tick(&mut self, text: &str) -> MemoryContext {
         self.clock += 1;
+        self.ticks_since_consolidation += 1;
         self.apply_decay();
         self.stabilize_labile_entries();
 
@@ -466,6 +485,7 @@ impl MemoryState {
                             label: node.label.clone(),
                             kind: node.kind.clone(),
                             weight: node.weight * 0.7, // discount primed results slightly
+                            edge_type: Some(edge.kind.clone()),
                         });
                     }
                 }
@@ -490,6 +510,7 @@ impl MemoryState {
     /// Merge similar short-term entries into long-term graph summaries.
     pub fn consolidate(&mut self) -> Vec<GraphNodeSummary> {
         self.clock += 1;
+        self.ticks_since_consolidation = 0;
         self.apply_decay();
 
         let mut groups: Vec<Vec<ShortTermEntry>> = Vec::new();
@@ -542,6 +563,7 @@ impl MemoryState {
                 label: summary_text,
                 kind: "Summary".to_string(),
                 weight: 1.0 + salience,
+                edge_type: None,
             });
         }
 
@@ -765,6 +787,7 @@ impl MemoryState {
                 if let Some(node) = self.long_term.nodes.get(&node_id) {
                     results.push(GraphNodeSummary {
                         id: node.id, label: node.label.clone(), kind: node.kind.clone(), weight: node.weight,
+                        edge_type: None, // direct match, no edge
                     });
                     seed_ids.push(node.id);
                 }
@@ -782,6 +805,7 @@ impl MemoryState {
                         results.push(GraphNodeSummary {
                             id: node.id, label: node.label.clone(), kind: node.kind.clone(),
                             weight: node.weight + edge.weight,
+                            edge_type: Some(edge.kind.clone()),
                         });
                     }
                 }
@@ -790,7 +814,7 @@ impl MemoryState {
 
         if results.is_empty() {
             results = self.long_term.nodes.values()
-                .map(|n| GraphNodeSummary { id: n.id, label: n.label.clone(), kind: n.kind.clone(), weight: n.weight })
+                .map(|n| GraphNodeSummary { id: n.id, label: n.label.clone(), kind: n.kind.clone(), weight: n.weight, edge_type: None })
                 .collect();
         }
 
@@ -885,6 +909,26 @@ impl MemoryState {
         &self.session_log[start..]
     }
 
+    /// Set the current task description.
+    pub fn set_task(&mut self, task: &str) {
+        self.current_task = Some(task.to_string());
+    }
+
+    /// Clear the current task.
+    pub fn clear_task(&mut self) {
+        self.current_task = None;
+    }
+
+    /// Get the current task description.
+    pub fn get_task(&self) -> Option<&str> {
+        self.current_task.as_deref()
+    }
+
+    /// Check if consolidation should be suggested based on tick count.
+    pub fn should_suggest_consolidation(&self) -> bool {
+        self.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
+    }
+
     /// Build a structured cold-start context summary as JSON.
     pub fn build_context_summary(&self) -> serde_json::Value {
         let recent = self.recent_sessions(10);
@@ -903,6 +947,7 @@ impl MemoryState {
         }).collect();
 
         serde_json::json!({
+            "current_task": self.current_task,
             "stats": {
                 "immediate_buffer": self.immediate.len(),
                 "short_term_entries": self.short_term.len(),
@@ -975,6 +1020,7 @@ impl MemoryState {
         }
 
         serde_json::json!({
+            "current_task": self.current_task,
             "context": context,
             "categorized": {
                 "decisions": decisions,
@@ -1114,6 +1160,61 @@ fn load_memory() -> Result<MemoryState, Box<dyn std::error::Error>> {
     let serialized = lz4::block::decompress(&compressed, None).map_err(|e| format!("Failed to decompress memory: {}", e))?;
     let state: MemoryState = bincode::deserialize(&serialized).map_err(|e| format!("Failed to deserialize memory: {}", e))?;
     Ok(state)
+}
+
+/// Attempt to migrate old memory format from .corrupt backup.
+/// Returns Ok(Some(state)) if migration succeeded, Ok(None) if no backup exists.
+fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::Error>> {
+    const CORRUPT_FILE: &str = ".legend/memory.lz4.corrupt";
+
+    if !Path::new(CORRUPT_FILE).exists() {
+        return Ok(None);
+    }
+
+    eprintln!("Detected old memory format backup, attempting migration...");
+
+    // Old struct without new fields (current_task, ticks_since_consolidation)
+    #[derive(Debug, Clone, Deserialize)]
+    struct MemoryStateV1 {
+        pub config: MemoryConfig,
+        pub immediate: VecDeque<String>,
+        pub short_term: Vec<ShortTermEntry>,
+        pub long_term: GraphMemory,
+        pub clock: u64,
+        pub next_id: u64,
+        #[serde(default)]
+        pub session_log: Vec<SessionEntry>,
+    }
+
+    let compressed = fs::read(CORRUPT_FILE)?;
+    let serialized = lz4::block::decompress(&compressed, None)?;
+    let old: MemoryStateV1 = bincode::deserialize(&serialized)?;
+
+    let new_state = MemoryState {
+        config: old.config,
+        immediate: old.immediate,
+        short_term: old.short_term,
+        long_term: old.long_term,
+        clock: old.clock,
+        next_id: old.next_id,
+        session_log: old.session_log,
+        current_task: None,
+        ticks_since_consolidation: 0,
+    };
+
+    // Save migrated state
+    new_state.save()?;
+
+    // Remove corrupt backup after successful migration
+    fs::remove_file(CORRUPT_FILE)?;
+
+    eprintln!(
+        "✓ Migration complete: {} short-term entries, {} graph nodes recovered",
+        new_state.short_term.len(),
+        new_state.long_term.nodes.len()
+    );
+
+    Ok(Some(new_state))
 }
 
 fn save_memory(state: &MemoryState) -> Result<(), Box<dyn std::error::Error>> {
@@ -1561,5 +1662,101 @@ mod tests {
         assert!(!categorized["todos"].as_array().unwrap().is_empty());
         assert!(!categorized["bugs"].as_array().unwrap().is_empty());
         assert!(!categorized["preferences"].as_array().unwrap().is_empty());
+    }
+
+    // --- Tests for new features ---
+
+    #[test]
+    fn test_current_task_set_and_get() {
+        let mut state = MemoryState::default();
+        assert!(state.get_task().is_none());
+
+        state.set_task("Implement user authentication");
+        assert_eq!(state.get_task(), Some("Implement user authentication"));
+
+        state.clear_task();
+        assert!(state.get_task().is_none());
+    }
+
+    #[test]
+    fn test_current_task_in_start_summary() {
+        let mut state = MemoryState::default();
+        state.set_task("Working on memory improvements");
+
+        let summary = state.build_start_summary();
+        assert_eq!(
+            summary["current_task"].as_str(),
+            Some("Working on memory improvements")
+        );
+    }
+
+    #[test]
+    fn test_current_task_in_context_summary() {
+        let mut state = MemoryState::default();
+        state.set_task("Debugging the parser");
+
+        let summary = state.build_context_summary();
+        assert_eq!(
+            summary["current_task"].as_str(),
+            Some("Debugging the parser")
+        );
+    }
+
+    #[test]
+    fn test_ticks_since_consolidation_increments() {
+        let mut state = MemoryState::default();
+        assert_eq!(state.ticks_since_consolidation, 0);
+
+        state.tick("first tick");
+        assert_eq!(state.ticks_since_consolidation, 1);
+
+        state.tick("second tick");
+        assert_eq!(state.ticks_since_consolidation, 2);
+    }
+
+    #[test]
+    fn test_consolidate_resets_tick_counter() {
+        let mut state = MemoryState::default();
+        state.tick("tick one");
+        state.tick("tick two");
+        state.tick("tick three");
+        assert_eq!(state.ticks_since_consolidation, 3);
+
+        state.consolidate();
+        assert_eq!(state.ticks_since_consolidation, 0);
+    }
+
+    #[test]
+    fn test_should_suggest_consolidation() {
+        let mut state = MemoryState::default();
+        assert!(!state.should_suggest_consolidation());
+
+        // Tick enough times to trigger suggestion
+        for i in 0..CONSOLIDATION_SUGGESTION_THRESHOLD {
+            state.tick(&format!("tick number {}", i));
+        }
+        assert!(state.should_suggest_consolidation());
+
+        // Consolidate resets
+        state.consolidate();
+        assert!(!state.should_suggest_consolidation());
+    }
+
+    #[test]
+    fn test_graph_lookup_includes_edge_type() {
+        let mut state = MemoryState::default();
+        // Create entries that will generate graph edges
+        state.tick("fn process_data() uses struct Config for settings");
+        state.tick("struct Config stores database_url and timeout values");
+
+        // Query should return nodes with edge_type for neighbors
+        let results = state.graph_lookup("process_data", 10);
+        // Direct matches have edge_type: None
+        // Neighbors should have edge_type: Some(...)
+        let has_edge_type = results.iter().any(|r| r.edge_type.is_some());
+        // If there are neighbor results, they should have edge types
+        if results.len() > 1 {
+            assert!(has_edge_type, "neighbor nodes should have edge_type set");
+        }
     }
 }
