@@ -260,7 +260,7 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": "echo '== Legend Project Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'"
+            "command": "echo '== Legend Project Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; legend memory start 2>/dev/null | head -50"
         }]
     });
 
@@ -276,7 +276,7 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": "changed=$(git diff --name-only 2>/dev/null); if [ -n \"$changed\" ]; then echo \"Legend: Files changed since last commit:\n$changed\nUpdate Legend if you made progress: echo '{\\\"features\\\": [{\\\"id\\\": \\\"...\\\", \\\"status\\\": \\\"...\\\", \\\"files_involved\\\": [...]}]}' | legend update\"; fi"
+            "command": r#"changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n "$changed" ]; then count=$(echo "$changed" | wc -l); echo "Legend: $count file(s) changed."; echo "Remember to tick: legend memory tick 'summary of work'"; fi"#
         }]
     });
 
@@ -342,7 +342,8 @@ fn has_legend_hooks(settings: &Value) -> bool {
             if let Some(hooks) = hook_entry.get("hooks").and_then(|h| h.as_array()) {
                 for hook in hooks {
                     if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
-                        if cmd.contains("legend get_state") {
+                        // Check for both old and new hook formats
+                        if cmd.contains("legend get_state") || cmd.contains("legend memory start") {
                             return true;
                         }
                     }
