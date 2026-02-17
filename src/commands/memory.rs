@@ -47,7 +47,10 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     if should_consolidate {
         eprintln!();
-        eprintln!("Tip: {} ticks since last consolidation. Consider running:", memory.ticks_since_consolidation);
+        eprintln!(
+            "Tip: {} ticks since last consolidation. Consider running:",
+            memory.ticks_since_consolidation
+        );
         eprintln!("  legend memory consolidate");
     }
     Ok(())
@@ -73,7 +76,7 @@ fn handle_start() -> Result<(), Box<dyn std::error::Error>> {
     let summary = memory.build_start_summary();
     memory.save()?;
     log_event("start", "session cold-start");
-    let json = serde_json::to_string_pretty(&summary).unwrap_or_else(|_| "{}".to_string());
+    let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
     Ok(())
 }
@@ -85,7 +88,10 @@ fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Short-term entries: {}", memory.short_term.len());
     println!("  Long-term nodes: {}", memory.long_term.nodes.len());
     println!("  Long-term edges: {}", memory.long_term.edges.len());
-    println!("  Ticks since consolidation: {}", memory.ticks_since_consolidation);
+    println!(
+        "  Ticks since consolidation: {}",
+        memory.ticks_since_consolidation
+    );
     if let Some(task) = memory.get_task() {
         println!("  Current task: {}", task);
     }
@@ -104,7 +110,7 @@ fn handle_consolidate() -> Result<(), Box<dyn std::error::Error>> {
     let summaries = memory.consolidate();
     memory.save()?;
     log_event("consolidate", &format!("{} groups merged", summaries.len()));
-    let json = serde_json::to_string_pretty(&summaries).unwrap_or_else(|_| "[]".to_string());
+    let json = serde_json::to_string(&summaries).unwrap_or_else(|_| "[]".to_string());
     println!("{}", json);
     Ok(())
 }
@@ -112,15 +118,13 @@ fn handle_consolidate() -> Result<(), Box<dyn std::error::Error>> {
 fn handle_context() -> Result<(), Box<dyn std::error::Error>> {
     let memory = MemoryState::load_or_default()?;
     let summary = memory.build_context_summary();
-    let json = serde_json::to_string_pretty(&summary).unwrap_or_else(|_| "{}".to_string());
+    let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
     Ok(())
 }
 
 fn handle_sessions(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let n: usize = args.first()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    let n: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(10);
 
     let memory = MemoryState::load_or_default()?;
     let recent = memory.recent_sessions(n);
@@ -140,8 +144,12 @@ fn handle_reinforce(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         return Err("Usage: legend memory reinforce <signal> <id1> [id2 ...]\n  signal: float from -1.0 (irrelevant) to 1.0 (very useful)".into());
     }
 
-    let signal: f32 = args[0].parse()
-        .map_err(|_| format!("Invalid signal '{}': expected a float like 1.0 or -0.5", args[0]))?;
+    let signal: f32 = args[0].parse().map_err(|_| {
+        format!(
+            "Invalid signal '{}': expected a float like 1.0 or -0.5",
+            args[0]
+        )
+    })?;
 
     let ids: Result<Vec<u64>, _> = args[1..].iter().map(|s| s.parse()).collect();
     let ids = ids.map_err(|_| "Invalid entry ID: expected integer(s)")?;
@@ -205,19 +213,19 @@ fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn print_context(context: MemoryContext) {
-    let json = serde_json::to_string_pretty(&context).unwrap_or_else(|_| "{}".to_string());
+    let json = serde_json::to_string(&context).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
 }
 
 fn print_reinforce_result(result: &ReinforceResult) {
-    let json = serde_json::to_string_pretty(result).unwrap_or_else(|_| "{}".to_string());
+    let json = serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
 }
 
 fn handle_dump() -> Result<(), Box<dyn std::error::Error>> {
     let memory = MemoryState::load_or_default()?;
     let dump = memory.build_dump();
-    let json = serde_json::to_string_pretty(&dump).unwrap_or_else(|_| "{}".to_string());
+    let json = serde_json::to_string(&dump).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
     Ok(())
 }
@@ -233,7 +241,10 @@ fn log_event(cmd: &str, detail: &str) {
     let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(".legend/events.jsonl") else { return };
+        .open(".legend/events.jsonl")
+    else {
+        return;
+    };
     let _ = writeln!(f, "{}", entry);
 }
 
@@ -241,7 +252,7 @@ fn print_memory_help() {
     println!("Legend Memory - hierarchical memory subsystem");
     println!();
     println!("Usage:");
-    println!("  legend memory start            Session start: context + retrieval in one call");
+    println!("  legend memory start            Session start: context + categorized in one call");
     println!("  legend memory tick <text>       Record a memory (decision, progress, discovery)");
     println!("  legend memory tick              Record a memory (reads stdin)");
     println!("  legend memory query <text>      Query memory (auto-reinforces top result)");

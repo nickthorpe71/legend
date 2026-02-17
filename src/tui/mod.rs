@@ -267,6 +267,15 @@ impl App {
                 snippet.similarity,
                 truncate(&snippet.text, 60)
             ));
+            if !snippet.refs.is_empty() {
+                result.push_str("    refs:\n");
+                for reference in snippet.refs.iter().take(3) {
+                    result.push_str(&format!(
+                        "      {}#L{}-{}\n",
+                        reference.path, reference.start_line, reference.end_line
+                    ));
+                }
+            }
         }
         result.push_str("\nGraph nodes:\n");
         for node in &ctx.long_term {

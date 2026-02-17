@@ -8,11 +8,7 @@ use crate::graph::SelectedNode;
 // egui overlay panels — event log, stats, short-term, sessions, inspection
 // ---------------------------------------------------------------------------
 
-pub fn ui_panels(
-    mut ctx: EguiContexts,
-    data: Res<LegendData>,
-    mut selected: ResMut<SelectedNode>,
-) {
+pub fn ui_panels(mut ctx: EguiContexts, data: Res<LegendData>, mut selected: ResMut<SelectedNode>) {
     let c = ctx.ctx_mut();
 
     // ---- left panel: live event log ----
@@ -34,9 +30,7 @@ pub fn ui_panels(
                             let badge =
                                 egui::RichText::new(&ev.command).color(badge_color).strong();
                             ui.label(badge);
-                            ui.label(
-                                egui::RichText::new(truncate(&ev.detail, 65)).weak(),
-                            );
+                            ui.label(egui::RichText::new(truncate(&ev.detail, 65)).weak());
                         });
                     }
                 });
@@ -102,6 +96,25 @@ pub fn ui_panels(
                                     .text(format!("sal {:.2}  use {}", entry.salience, entry.usage))
                                     .fill(salience_bar_color(entry.salience)),
                             );
+                            if !entry.refs.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "refs: {}",
+                                        entry
+                                            .refs
+                                            .iter()
+                                            .take(3)
+                                            .map(|r| format!(
+                                                "{}#L{}-{}",
+                                                r.path, r.start_line, r.end_line
+                                            ))
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    ))
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(170, 190, 220)),
+                                );
+                            }
                         });
                     }
                 });
@@ -157,14 +170,11 @@ pub fn ui_panels(
                                 .strong()
                                 .size(14.0),
                         );
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.button("✕ Close").clicked() {
-                                    selected.id = None;
-                                }
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("✕ Close").clicked() {
+                                selected.id = None;
+                            }
+                        });
                     });
                     ui.separator();
 
@@ -187,7 +197,8 @@ pub fn ui_panels(
                         }
                     }
                     // Sort neighbors by edge weight descending
-                    neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    neighbors
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
                     // Find short-term entries that mention this node's label
                     let label_lower = node.label.to_lowercase();
@@ -212,24 +223,18 @@ pub fn ui_panels(
                     };
 
                     // Strongest neighbor
-                    let strongest_neighbor = neighbors
-                        .first()
-                        .and_then(|(nid, w, _, _)| {
-                            data.graph_nodes
-                                .iter()
-                                .find(|n| n.id == *nid)
-                                .map(|n| (n.label.clone(), *w))
-                        });
+                    let strongest_neighbor = neighbors.first().and_then(|(nid, w, _, _)| {
+                        data.graph_nodes
+                            .iter()
+                            .find(|n| n.id == *nid)
+                            .map(|n| (n.label.clone(), *w))
+                    });
 
                     // ---- Three-column layout ----
                     ui.columns(3, |cols| {
                         // === Column 1: Node Properties ===
                         cols[0].vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new("📊 Properties")
-                                    .strong()
-                                    .size(14.0),
-                            );
+                            ui.label(egui::RichText::new("📊 Properties").strong().size(14.0));
                             ui.add_space(4.0);
 
                             detail_row(ui, "ID", &node.id.to_string());
@@ -237,11 +242,7 @@ pub fn ui_panels(
 
                             // Salience with visual bar
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Salience:")
-                                        .strong()
-                                        .size(13.0),
-                                );
+                                ui.label(egui::RichText::new("Salience:").strong().size(13.0));
                                 ui.add(
                                     egui::ProgressBar::new(node.salience)
                                         .text(format!("{:.3}", node.salience))
@@ -262,11 +263,7 @@ pub fn ui_panels(
                             );
 
                             ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new("🔗 Connectivity")
-                                    .strong()
-                                    .size(14.0),
-                            );
+                            ui.label(egui::RichText::new("🔗 Connectivity").strong().size(14.0));
                             ui.add_space(4.0);
                             detail_row(
                                 ui,
@@ -284,18 +281,11 @@ pub fn ui_panels(
                                 &if neighbors.is_empty() {
                                     "—".to_string()
                                 } else {
-                                    format!(
-                                        "{:.3}",
-                                        total_edge_weight / neighbors.len() as f32
-                                    )
+                                    format!("{:.3}", total_edge_weight / neighbors.len() as f32)
                                 },
                             );
                             if let Some((lbl, w)) = &strongest_neighbor {
-                                detail_row(
-                                    ui,
-                                    "Strongest",
-                                    &format!("{} ({:.2})", lbl, w),
-                                );
+                                detail_row(ui, "Strongest", &format!("{} ({:.2})", lbl, w));
                             }
                             detail_row(
                                 ui,
@@ -336,29 +326,21 @@ pub fn ui_panels(
                                     for entry in &related_memories {
                                         ui.group(|ui| {
                                             ui.label(
-                                                egui::RichText::new(truncate(
-                                                    &entry.text, 100,
-                                                ))
-                                                .size(12.0)
-                                                .color(egui::Color32::LIGHT_GRAY),
+                                                egui::RichText::new(truncate(&entry.text, 100))
+                                                    .size(12.0)
+                                                    .color(egui::Color32::LIGHT_GRAY),
                                             );
                                             ui.horizontal(|ui| {
                                                 ui.add(
                                                     egui::ProgressBar::new(entry.salience)
-                                                        .text(format!(
-                                                            "sal {:.2}",
-                                                            entry.salience
-                                                        ))
-                                                        .fill(salience_bar_color(
-                                                            entry.salience,
-                                                        ))
+                                                        .text(format!("sal {:.2}", entry.salience))
+                                                        .fill(salience_bar_color(entry.salience))
                                                         .desired_width(80.0),
                                                 );
                                                 ui.label(
                                                     egui::RichText::new(format!(
                                                         "use {} · t={}",
-                                                        entry.usage,
-                                                        entry.last_access
+                                                        entry.usage, entry.last_access
                                                     ))
                                                     .weak()
                                                     .size(11.0),
@@ -379,8 +361,7 @@ pub fn ui_panels(
                                             .size(13.0),
                                         );
                                         ui.add_space(2.0);
-                                        for sess in related_sessions.iter().rev().take(10)
-                                        {
+                                        for sess in related_sessions.iter().rev().take(10) {
                                             ui.label(
                                                 egui::RichText::new(format!(
                                                     "[t={}] {}",
@@ -388,9 +369,7 @@ pub fn ui_panels(
                                                     truncate(&sess.text, 90)
                                                 ))
                                                 .size(11.0)
-                                                .color(
-                                                    egui::Color32::from_rgb(180, 180, 200),
-                                                ),
+                                                .color(egui::Color32::from_rgb(180, 180, 200)),
                                             );
                                         }
                                     }
@@ -415,43 +394,34 @@ pub fn ui_panels(
                                 .show(ui, |ui| {
                                     if neighbors.is_empty() {
                                         ui.label(
-                                            egui::RichText::new("No connections")
-                                                .weak()
-                                                .italics(),
+                                            egui::RichText::new("No connections").weak().italics(),
                                         );
                                     }
                                     for (neighbor_id, edge_weight, edge_kind, direction) in
                                         &neighbors
                                     {
-                                        let neighbor_node = data
-                                            .graph_nodes
-                                            .iter()
-                                            .find(|n| n.id == *neighbor_id);
+                                        let neighbor_node =
+                                            data.graph_nodes.iter().find(|n| n.id == *neighbor_id);
                                         let neighbor_label = neighbor_node
                                             .map(|n| n.label.as_str())
                                             .unwrap_or("???");
-                                        let neighbor_kind = neighbor_node
-                                            .map(|n| n.kind.as_str())
-                                            .unwrap_or("");
+                                        let neighbor_kind =
+                                            neighbor_node.map(|n| n.kind.as_str()).unwrap_or("");
                                         let neighbor_weight =
                                             neighbor_node.map(|n| n.weight).unwrap_or(0.0);
 
                                         ui.horizontal(|ui| {
                                             // Direction + button
-                                            let btn_text = format!(
-                                                "{} {}",
-                                                direction, neighbor_label
-                                            );
+                                            let btn_text =
+                                                format!("{} {}", direction, neighbor_label);
                                             if ui
                                                 .add(
                                                     egui::Button::new(
                                                         egui::RichText::new(&btn_text)
                                                             .size(13.0)
-                                                            .color(
-                                                                egui::Color32::from_rgb(
-                                                                    130, 200, 255,
-                                                                ),
-                                                            ),
+                                                            .color(egui::Color32::from_rgb(
+                                                                130, 200, 255,
+                                                            )),
                                                     )
                                                     .frame(false),
                                                 )
@@ -461,12 +431,9 @@ pub fn ui_panels(
                                             }
                                             // Kind badge
                                             ui.label(
-                                                egui::RichText::new(format!(
-                                                    "[{}]",
-                                                    neighbor_kind
-                                                ))
-                                                .color(kind_badge_color(neighbor_kind))
-                                                .size(11.0),
+                                                egui::RichText::new(format!("[{}]", neighbor_kind))
+                                                    .color(kind_badge_color(neighbor_kind))
+                                                    .size(11.0),
                                             );
                                             // Edge info
                                             ui.label(
@@ -507,7 +474,11 @@ fn stat_row(ui: &mut egui::Ui, label: &str, value: &str) {
 
 fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("{}:", label)).strong().size(13.0));
+        ui.label(
+            egui::RichText::new(format!("{}:", label))
+                .strong()
+                .size(13.0),
+        );
         ui.label(egui::RichText::new(value).monospace().size(13.0));
     });
 }

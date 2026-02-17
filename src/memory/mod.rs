@@ -7,7 +7,7 @@ use extract::extract_entities;
 use summarize::{chunk_text, summarize_group, summarize_single, summarize_text};
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
@@ -117,6 +117,121 @@ pub struct ShortTermEntry {
     /// Zero means stable.
     #[serde(default)]
     pub labile_until: u64,
+    /// Source references (file + line range) associated with this memory.
+    #[serde(default)]
+    pub refs: Vec<MemoryRef>,
+}
+
+/// A source reference to a file region for this memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRef {
+    pub path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    /// Short snippet for re-anchoring when lines drift.
+    #[serde(default)]
+    pub snippet: String,
+}
+
+const MAX_REFS_PER_ENTRY: usize = 8;
+
+fn merge_memory_refs(existing: &mut Vec<MemoryRef>, incoming: Vec<MemoryRef>) {
+    if incoming.is_empty() {
+        return;
+    }
+
+    let mut seen: HashSet<(String, usize, usize)> = existing
+        .iter()
+        .map(|r| (r.path.clone(), r.start_line, r.end_line))
+        .collect();
+
+    for reference in incoming {
+        let key = (
+            reference.path.clone(),
+            reference.start_line,
+            reference.end_line,
+        );
+        if seen.insert(key) {
+            existing.push(reference);
+        }
+        if existing.len() >= MAX_REFS_PER_ENTRY {
+            break;
+        }
+    }
+
+    if existing.len() > MAX_REFS_PER_ENTRY {
+        existing.truncate(MAX_REFS_PER_ENTRY);
+    }
+}
+
+fn extract_memory_refs_from_text(text: &str) -> Vec<MemoryRef> {
+    let mut refs = Vec::new();
+    let mut seen: HashSet<(String, usize, usize)> = HashSet::new();
+
+    for line in text.lines() {
+        let snippet = build_ref_snippet(line);
+        for token in line.split_whitespace() {
+            if let Some(reference) = parse_memory_ref_token(token, &snippet) {
+                let key = (
+                    reference.path.clone(),
+                    reference.start_line,
+                    reference.end_line,
+                );
+                if seen.insert(key) {
+                    refs.push(reference);
+                }
+                if refs.len() >= MAX_REFS_PER_ENTRY {
+                    return refs;
+                }
+            }
+        }
+    }
+
+    refs
+}
+
+fn parse_memory_ref_token(token: &str, snippet: &str) -> Option<MemoryRef> {
+    let trimmed =
+        token.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | '.' | ')' | ']' | ';'));
+    let (path_part, line_part) = trimmed.split_once("#L")?;
+    let path = path_part.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '(' | '['));
+    if path.is_empty() {
+        return None;
+    }
+
+    let cleaned = line_part.trim_matches(|c: char| matches!(c, ',' | '.' | ')' | ']' | ';'));
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let (start_line, end_line) = if let Some((start_s, end_s)) = cleaned.split_once('-') {
+        let start_line: usize = start_s.parse().ok()?;
+        let end_line: usize = end_s.parse().ok()?;
+        if end_line >= start_line {
+            (start_line, end_line)
+        } else {
+            (end_line, start_line)
+        }
+    } else {
+        let line: usize = cleaned.parse().ok()?;
+        (line, line)
+    };
+
+    Some(MemoryRef {
+        path: path.to_string(),
+        start_line,
+        end_line,
+        snippet: snippet.to_string(),
+    })
+}
+
+fn build_ref_snippet(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.len() <= 120 {
+        trimmed.to_string()
+    } else {
+        trimmed.chars().take(120).collect()
+    }
 }
 
 /// Long-term knowledge graph: labeled nodes connected by typed edges.
@@ -148,7 +263,9 @@ pub struct GraphEdge {
     pub kind: String,
 }
 
-fn default_edge_kind() -> String { "related".to_string() }
+fn default_edge_kind() -> String {
+    "related".to_string()
+}
 
 /// A timestamped session log entry preserving full tick text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +286,8 @@ pub struct MemorySnippet {
     pub id: u64,
     pub text: String,
     pub similarity: f32,
+    #[serde(default)]
+    pub refs: Vec<MemoryRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,52 +369,138 @@ pub fn classify_text(text: &str) -> MemoryCategory {
 
     // Decision patterns (highest priority)
     let decision_score = [
-        "chose", "decided", "decision", "instead of", "rather than",
-        "over", "picked", "opted", "went with", "trade-off", "tradeoff",
-        "because", "rationale", "rejected", "approach",
-    ].iter().filter(|kw| lower.contains(*kw)).count();
-    if decision_score >= 2 { return MemoryCategory::Decision; }
+        "chose",
+        "decided",
+        "decision",
+        "instead of",
+        "rather than",
+        "over",
+        "picked",
+        "opted",
+        "went with",
+        "trade-off",
+        "tradeoff",
+        "because",
+        "rationale",
+        "rejected",
+        "approach",
+    ]
+    .iter()
+    .filter(|kw| lower.contains(*kw))
+    .count();
+    if decision_score >= 2 {
+        return MemoryCategory::Decision;
+    }
 
     // Bug patterns
-    if ["bug", "broke", "broken", "revert", "reverted", "crash", "panic",
-        "regression", "fix", "hotfix", "incident"].iter().any(|kw| lower.contains(kw)) {
+    if [
+        "bug",
+        "broke",
+        "broken",
+        "revert",
+        "reverted",
+        "crash",
+        "panic",
+        "regression",
+        "fix",
+        "hotfix",
+        "incident",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+    {
         return MemoryCategory::Bug;
     }
 
     // TODO patterns
-    if ["todo", "fixme", "hack", "still need", "not yet", "remaining",
-        "blocker", "blocked"].iter().any(|kw| lower.contains(kw)) {
+    if [
+        "todo",
+        "fixme",
+        "hack",
+        "still need",
+        "not yet",
+        "remaining",
+        "blocker",
+        "blocked",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+    {
         return MemoryCategory::Todo;
     }
 
     // Architecture patterns
-    if ["architecture", "module", "component", "layer", "system",
-        "interface", "api", "schema", "pipeline", "pattern",
-        "struct ", "trait ", "impl "].iter().any(|kw| lower.contains(kw)) {
+    if [
+        "architecture",
+        "module",
+        "component",
+        "layer",
+        "system",
+        "interface",
+        "api",
+        "schema",
+        "pipeline",
+        "pattern",
+        "struct ",
+        "trait ",
+        "impl ",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+    {
         return MemoryCategory::Architecture;
     }
 
     // Preference patterns
-    if ["prefer", "preference", "user wants", "user prefers", "style",
-        "convention", "always use", "never use"].iter().any(|kw| lower.contains(kw)) {
+    if [
+        "prefer",
+        "preference",
+        "user wants",
+        "user prefers",
+        "style",
+        "convention",
+        "always use",
+        "never use",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+    {
         return MemoryCategory::Preference;
     }
 
     // Progress patterns
-    if ["implemented", "completed", "finished", "added", "created",
-        "built", "shipped", "merged", "deployed"].iter().any(|kw| lower.contains(kw)) {
+    if [
+        "implemented",
+        "completed",
+        "finished",
+        "added",
+        "created",
+        "built",
+        "shipped",
+        "merged",
+        "deployed",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+    {
         return MemoryCategory::Progress;
     }
 
     // Single decision keyword is enough if it looks intentional
-    if decision_score >= 1 { return MemoryCategory::Decision; }
+    if decision_score >= 1 {
+        return MemoryCategory::Decision;
+    }
 
     MemoryCategory::General
 }
 
 impl Default for GraphMemory {
     fn default() -> Self {
-        Self { nodes: HashMap::new(), edges: Vec::new(), index: HashMap::new() }
+        Self {
+            nodes: HashMap::new(),
+            edges: Vec::new(),
+            index: HashMap::new(),
+        }
     }
 }
 
@@ -346,18 +551,24 @@ impl MemoryState {
             self.session_log.remove(0);
         }
 
-        let mut last_context = MemoryContext { short_term: Vec::new(), long_term: Vec::new() };
+        let mut last_context = MemoryContext {
+            short_term: Vec::new(),
+            long_term: Vec::new(),
+        };
 
         for chunk in chunk_text(text) {
             self.push_immediate(&chunk);
 
             let embedding = embed_text(&chunk, self.config.embedding_dim);
             let salience = compute_salience(&chunk);
+            let refs = extract_memory_refs_from_text(&chunk);
 
             // --- Reconsolidation: check labile entries first ---
             // If a recently-retrieved memory is labile and the new text is related,
             // update that memory in-place instead of creating a duplicate.
-            if let Some(reconsolidated_id) = self.try_reconsolidate(&chunk, &embedding, salience) {
+            if let Some(reconsolidated_id) =
+                self.try_reconsolidate(&chunk, &embedding, salience, refs.clone())
+            {
                 // Update graph with the new text context
                 self.update_graph(&chunk, salience);
                 last_context = self.retrieve_context(&chunk);
@@ -374,7 +585,8 @@ impl MemoryState {
             // Diversity gate: even at high similarity, if word overlap is low the
             // texts are semantically distinct and should not be merged.
             let diversity_pass = if best_sim >= self.config.theta_low {
-                self.short_term.iter()
+                self.short_term
+                    .iter()
                     .find(|e| e.id == best_id)
                     .map(|e| word_overlap(&e.text, &chunk) >= MERGE_WORD_OVERLAP_THRESHOLD)
                     .unwrap_or(false)
@@ -388,6 +600,7 @@ impl MemoryState {
                         entry.usage = entry.usage.saturating_add(2);
                         entry.salience = (entry.salience + salience).min(1.0);
                         entry.last_access = self.clock;
+                        merge_memory_refs(&mut entry.refs, refs.clone());
                     }
                 }
                 s if s >= self.config.theta_low && diversity_pass => {
@@ -397,11 +610,12 @@ impl MemoryState {
                         entry.salience = (entry.salience + salience * 0.5).min(1.0);
                         entry.summary = summarize_text(&entry.text, &chunk);
                         entry.last_access = self.clock;
+                        merge_memory_refs(&mut entry.refs, refs.clone());
                     }
                     self.update_graph(&chunk, salience);
                 }
                 _ => {
-                    self.insert_short_term(&chunk, embedding, salience);
+                    self.insert_short_term(&chunk, embedding, salience, refs);
                     self.update_graph(&chunk, salience);
                 }
             }
@@ -439,7 +653,8 @@ impl MemoryState {
         if let Some(top) = snippets.first() {
             if top.similarity > 0.2 {
                 if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == top.id) {
-                    entry.salience = (entry.salience + top.similarity * AUTO_REINFORCE_SCALE).min(1.0);
+                    entry.salience =
+                        (entry.salience + top.similarity * AUTO_REINFORCE_SCALE).min(1.0);
                 }
             }
         }
@@ -469,7 +684,9 @@ impl MemoryState {
         let existing_ids: std::collections::HashSet<u64> = long_term.iter().map(|n| n.id).collect();
         let mut primed_nodes: Vec<GraphNodeSummary> = Vec::new();
         for edge in &self.long_term.edges {
-            let neighbor_id = if priming_seed_ids.contains(&edge.from) && !existing_ids.contains(&edge.to) {
+            let neighbor_id = if priming_seed_ids.contains(&edge.from)
+                && !existing_ids.contains(&edge.to)
+            {
                 Some(edge.to)
             } else if priming_seed_ids.contains(&edge.to) && !existing_ids.contains(&edge.from) {
                 Some(edge.from)
@@ -504,7 +721,10 @@ impl MemoryState {
         let retrieved_ids: Vec<u64> = long_term.iter().map(|n| n.id).collect();
         self.hebbian_reinforce(&retrieved_ids);
 
-        MemoryContext { short_term: snippets, long_term }
+        MemoryContext {
+            short_term: snippets,
+            long_term,
+        }
     }
 
     /// Merge similar short-term entries into long-term graph summaries.
@@ -517,14 +737,20 @@ impl MemoryState {
         let mut used = vec![false; self.short_term.len()];
 
         for i in 0..self.short_term.len() {
-            if used[i] { continue; }
+            if used[i] {
+                continue;
+            }
             let seed = self.short_term[i].clone();
             let mut group = vec![seed.clone()];
             used[i] = true;
 
             for j in (i + 1)..self.short_term.len() {
-                if used[j] { continue; }
-                if cosine_similarity(&seed.embedding, &self.short_term[j].embedding) >= self.config.theta_low {
+                if used[j] {
+                    continue;
+                }
+                if cosine_similarity(&seed.embedding, &self.short_term[j].embedding)
+                    >= self.config.theta_low
+                {
                     group.push(self.short_term[j].clone());
                     used[j] = true;
                 }
@@ -535,19 +761,26 @@ impl MemoryState {
         let mut summaries = Vec::new();
         for group in groups.into_iter().filter(|g| g.len() > 1) {
             let summary_text = summarize_group(&group);
-            let salience = group.iter().map(|e| e.salience).fold(0.0, f32::max).max(0.4);
+            let salience = group
+                .iter()
+                .map(|e| e.salience)
+                .fold(0.0, f32::max)
+                .max(0.4);
 
             let node_id = self.next_id;
             self.next_id += 1;
 
-            self.long_term.nodes.insert(node_id, GraphNode {
-                id: node_id,
-                label: summary_text.clone(),
-                kind: "Summary".to_string(),
-                weight: 1.0 + salience,
-                last_seen: self.clock,
-                salience,
-            });
+            self.long_term.nodes.insert(
+                node_id,
+                GraphNode {
+                    id: node_id,
+                    label: summary_text.clone(),
+                    kind: "Summary".to_string(),
+                    weight: 1.0 + salience,
+                    last_seen: self.clock,
+                    salience,
+                },
+            );
             self.long_term.index.insert(summary_text.clone(), node_id);
 
             for entry in group {
@@ -579,7 +812,13 @@ impl MemoryState {
     /// Try to reconsolidate: if any labile entry is related to the new text,
     /// update it in-place (merge text, re-embed, boost salience) instead of
     /// creating a new entry. Returns the id of the reconsolidated entry if successful.
-    fn try_reconsolidate(&mut self, text: &str, embedding: &[f32], salience: f32) -> Option<u64> {
+    fn try_reconsolidate(
+        &mut self,
+        text: &str,
+        embedding: &[f32],
+        salience: f32,
+        refs: Vec<MemoryRef>,
+    ) -> Option<u64> {
         let now = self.clock;
 
         // Find the best labile match
@@ -621,6 +860,7 @@ impl MemoryState {
             entry.reconsolidation_count += 1;
             // Re-stabilize: no longer labile
             entry.labile_until = 0;
+            merge_memory_refs(&mut entry.refs, refs);
 
             return Some(target_id);
         }
@@ -640,7 +880,9 @@ impl MemoryState {
 
     /// Hebbian reinforcement: co-retrieved nodes strengthen shared edges.
     fn hebbian_reinforce(&mut self, co_retrieved_ids: &[u64]) {
-        if co_retrieved_ids.len() < 2 { return; }
+        if co_retrieved_ids.len() < 2 {
+            return;
+        }
 
         for edge in &mut self.long_term.edges {
             if co_retrieved_ids.contains(&edge.from) && co_retrieved_ids.contains(&edge.to) {
@@ -665,15 +907,33 @@ impl MemoryState {
     }
 
     /// Insert a new short-term entry, evicting the lowest-scoring entry if at capacity.
-    fn insert_short_term(&mut self, text: &str, embedding: Vec<f32>, salience: f32) {
+    fn insert_short_term(
+        &mut self,
+        text: &str,
+        embedding: Vec<f32>,
+        salience: f32,
+        refs: Vec<MemoryRef>,
+    ) {
         if self.short_term.len() >= self.config.short_term_capacity {
             let now = self.clock;
-            if let Some(idx) = self.short_term.iter().enumerate()
-                .min_by(|(_, a), (_, b)| eviction_score(a, now).partial_cmp(&eviction_score(b, now)).unwrap())
+            if let Some(idx) = self
+                .short_term
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    eviction_score(a, now)
+                        .partial_cmp(&eviction_score(b, now))
+                        .unwrap()
+                })
                 .map(|(i, _)| i)
             {
                 self.short_term.remove(idx);
             }
+        }
+
+        let mut refs = refs;
+        if refs.len() > MAX_REFS_PER_ENTRY {
+            refs.truncate(MAX_REFS_PER_ENTRY);
         }
 
         self.short_term.push(ShortTermEntry {
@@ -686,6 +946,7 @@ impl MemoryState {
             salience: salience.clamp(0.0, 1.0),
             reconsolidation_count: 0,
             labile_until: 0,
+            refs,
         });
         self.next_id += 1;
     }
@@ -693,19 +954,28 @@ impl MemoryState {
     /// Find the short-term entry most similar to the given embedding.
     /// Returns (entry_id, similarity). Returns (0, -1.0) if store is empty.
     fn find_best_match(&self, embedding: &[f32]) -> (u64, f32) {
-        self.short_term.iter().fold((0, -1.0_f32), |(best_id, best_sim), entry| {
-            let sim = cosine_similarity(&entry.embedding, embedding);
-            if sim > best_sim { (entry.id, sim) } else { (best_id, best_sim) }
-        })
+        self.short_term
+            .iter()
+            .fold((0, -1.0_f32), |(best_id, best_sim), entry| {
+                let sim = cosine_similarity(&entry.embedding, embedding);
+                if sim > best_sim {
+                    (entry.id, sim)
+                } else {
+                    (best_id, best_sim)
+                }
+            })
     }
 
     /// Return the top-k most similar short-term entries to the given embedding.
     fn top_k_similar(&self, embedding: &[f32], k: usize) -> Vec<MemorySnippet> {
-        let mut scored: Vec<MemorySnippet> = self.short_term.iter()
+        let mut scored: Vec<MemorySnippet> = self
+            .short_term
+            .iter()
             .map(|e| MemorySnippet {
                 id: e.id,
                 text: e.text.clone(),
                 similarity: cosine_similarity(&e.embedding, embedding),
+                refs: e.refs.clone(),
             })
             .collect();
         scored.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
@@ -716,7 +986,9 @@ impl MemoryState {
     /// Extract entities from text and insert/update nodes and edges in the knowledge graph.
     fn update_graph(&mut self, text: &str, salience: f32) {
         let entities = extract_entities(text);
-        if entities.is_empty() { return; }
+        if entities.is_empty() {
+            return;
+        }
 
         let mut node_ids = Vec::new();
         let mut edge_contexts = Vec::new();
@@ -727,10 +999,17 @@ impl MemoryState {
             } else {
                 let id = self.next_id;
                 self.next_id += 1;
-                self.long_term.nodes.insert(id, GraphNode {
-                    id, label: entity.label.clone(), kind: entity.kind.clone(),
-                    weight: 1.0, last_seen: self.clock, salience,
-                });
+                self.long_term.nodes.insert(
+                    id,
+                    GraphNode {
+                        id,
+                        label: entity.label.clone(),
+                        kind: entity.kind.clone(),
+                        weight: 1.0,
+                        last_seen: self.clock,
+                        salience,
+                    },
+                );
                 self.long_term.index.insert(entity.label.clone(), id);
                 id
             };
@@ -764,7 +1043,10 @@ impl MemoryState {
 
     /// Insert a new edge or reinforce an existing one between two nodes.
     fn upsert_edge(&mut self, from: u64, to: u64, kind: &str) {
-        if let Some(edge) = self.long_term.edges.iter_mut()
+        if let Some(edge) = self
+            .long_term
+            .edges
+            .iter_mut()
             .find(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
         {
             edge.weight += EDGE_REINFORCE_DELTA;
@@ -772,7 +1054,12 @@ impl MemoryState {
                 edge.kind = kind.to_string();
             }
         } else {
-            self.long_term.edges.push(GraphEdge { from, to, weight: EDGE_REINFORCE_DELTA, kind: kind.to_string() });
+            self.long_term.edges.push(GraphEdge {
+                from,
+                to,
+                weight: EDGE_REINFORCE_DELTA,
+                kind: kind.to_string(),
+            });
         }
     }
 
@@ -786,7 +1073,10 @@ impl MemoryState {
             if let Some(&node_id) = self.long_term.index.get(&entity.label) {
                 if let Some(node) = self.long_term.nodes.get(&node_id) {
                     results.push(GraphNodeSummary {
-                        id: node.id, label: node.label.clone(), kind: node.kind.clone(), weight: node.weight,
+                        id: node.id,
+                        label: node.label.clone(),
+                        kind: node.kind.clone(),
+                        weight: node.weight,
                         edge_type: None, // direct match, no edge
                     });
                     seed_ids.push(node.id);
@@ -796,14 +1086,20 @@ impl MemoryState {
 
         if !seed_ids.is_empty() {
             for edge in &self.long_term.edges {
-                let neighbor_id = if seed_ids.contains(&edge.from) { Some(edge.to) }
-                    else if seed_ids.contains(&edge.to) { Some(edge.from) }
-                    else { None };
+                let neighbor_id = if seed_ids.contains(&edge.from) {
+                    Some(edge.to)
+                } else if seed_ids.contains(&edge.to) {
+                    Some(edge.from)
+                } else {
+                    None
+                };
 
                 if let Some(nid) = neighbor_id {
                     if let Some(node) = self.long_term.nodes.get(&nid) {
                         results.push(GraphNodeSummary {
-                            id: node.id, label: node.label.clone(), kind: node.kind.clone(),
+                            id: node.id,
+                            label: node.label.clone(),
+                            kind: node.kind.clone(),
                             weight: node.weight + edge.weight,
                             edge_type: Some(edge.kind.clone()),
                         });
@@ -813,16 +1109,30 @@ impl MemoryState {
         }
 
         if results.is_empty() {
-            results = self.long_term.nodes.values()
-                .map(|n| GraphNodeSummary { id: n.id, label: n.label.clone(), kind: n.kind.clone(), weight: n.weight, edge_type: None })
+            results = self
+                .long_term
+                .nodes
+                .values()
+                .map(|n| GraphNodeSummary {
+                    id: n.id,
+                    label: n.label.clone(),
+                    kind: n.kind.clone(),
+                    weight: n.weight,
+                    edge_type: None,
+                })
                 .collect();
         }
 
         // Deduplicate by id, keeping highest weight
         let mut deduped: HashMap<u64, GraphNodeSummary> = HashMap::new();
         for item in results {
-            deduped.entry(item.id)
-                .and_modify(|existing| { if item.weight > existing.weight { *existing = item.clone(); } })
+            deduped
+                .entry(item.id)
+                .and_modify(|existing| {
+                    if item.weight > existing.weight {
+                        *existing = item.clone();
+                    }
+                })
                 .or_insert(item);
         }
 
@@ -837,7 +1147,8 @@ impl MemoryState {
         let now = self.clock;
         self.short_term.retain(|entry| {
             let age = now.saturating_sub(entry.last_access) as f32;
-            entry.salience + (entry.usage as f32 * PRUNE_USAGE_WEIGHT) - (age * PRUNE_AGE_WEIGHT) > PRUNE_THRESHOLD
+            entry.salience + (entry.usage as f32 * PRUNE_USAGE_WEIGHT) - (age * PRUNE_AGE_WEIGHT)
+                > PRUNE_THRESHOLD
         });
     }
 
@@ -846,7 +1157,10 @@ impl MemoryState {
         let now = self.clock;
 
         // 1. Remove nodes whose decayed weight has fallen below threshold
-        let remove_ids: Vec<u64> = self.long_term.nodes.iter()
+        let remove_ids: Vec<u64> = self
+            .long_term
+            .nodes
+            .iter()
             .filter(|(_, node)| {
                 let age = now.saturating_sub(node.last_seen) as f32;
                 let effective = node.weight - age * PRUNE_AGE_WEIGHT;
@@ -863,7 +1177,10 @@ impl MemoryState {
 
         // 2. Hard cap: if still over capacity, evict lowest-weight nodes
         if self.long_term.nodes.len() > GRAPH_NODE_CAPACITY {
-            let mut sorted: Vec<(u64, f32)> = self.long_term.nodes.iter()
+            let mut sorted: Vec<(u64, f32)> = self
+                .long_term
+                .nodes
+                .iter()
                 .map(|(&id, n)| (id, n.weight))
                 .collect();
             sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
@@ -878,13 +1195,15 @@ impl MemoryState {
 
         // 3. Remove edges referencing deleted nodes
         let node_ids = &self.long_term.nodes;
-        self.long_term.edges.retain(|e| {
-            node_ids.contains_key(&e.from) && node_ids.contains_key(&e.to)
-        });
+        self.long_term
+            .edges
+            .retain(|e| node_ids.contains_key(&e.from) && node_ids.contains_key(&e.to));
 
         // 4. Hard cap on edges: keep highest-weight
         if self.long_term.edges.len() > GRAPH_EDGE_CAPACITY {
-            self.long_term.edges.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+            self.long_term
+                .edges
+                .sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
             self.long_term.edges.truncate(GRAPH_EDGE_CAPACITY);
         }
     }
@@ -893,7 +1212,8 @@ impl MemoryState {
     fn apply_decay(&mut self) {
         let now = self.clock;
         for entry in &mut self.short_term {
-            let decay = (-(now.saturating_sub(entry.last_access) as f32) * SHORT_TERM_DECAY_RATE).exp();
+            let decay =
+                (-(now.saturating_sub(entry.last_access) as f32) * SHORT_TERM_DECAY_RATE).exp();
             entry.salience *= decay;
         }
         for node in self.long_term.nodes.values_mut() {
@@ -931,20 +1251,23 @@ impl MemoryState {
 
     /// Build a structured cold-start context summary as JSON.
     pub fn build_context_summary(&self) -> serde_json::Value {
-        let recent = self.recent_sessions(10);
+        let recent = self.recent_sessions(5);
         let session_texts: Vec<&str> = recent.iter().map(|s| s.text.as_str()).collect();
 
         let mut top_nodes: Vec<&GraphNode> = self.long_term.nodes.values().collect();
         top_nodes.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
-        top_nodes.truncate(15);
+        top_nodes.truncate(8);
 
-        let node_summaries: Vec<serde_json::Value> = top_nodes.iter().map(|n| {
-            serde_json::json!({
-                "label": n.label,
-                "kind": n.kind,
-                "weight": (n.weight * 100.0).round() / 100.0,
+        let node_summaries: Vec<serde_json::Value> = top_nodes
+            .iter()
+            .map(|n| {
+                serde_json::json!({
+                    "label": n.label,
+                    "kind": n.kind,
+                    "weight": (n.weight * 100.0).round() / 100.0,
+                })
             })
-        }).collect();
+            .collect();
 
         serde_json::json!({
             "current_task": self.current_task,
@@ -961,28 +1284,10 @@ impl MemoryState {
         })
     }
 
-    /// Build a comprehensive session-start summary: context + categorized memories + retrieval.
+    /// Build a comprehensive session-start summary: context + categorized memories.
     /// Designed as a single cold-start call that gives the LLM everything it needs.
     pub fn build_start_summary(&mut self) -> serde_json::Value {
         let context = self.build_context_summary();
-
-        // Run a broad query to surface the most relevant memories
-        let retrieval = self.retrieve_context("recent work decisions architecture");
-        let short_term_results: Vec<serde_json::Value> = retrieval.short_term.iter().map(|s| {
-            serde_json::json!({
-                "id": s.id,
-                "text": s.text,
-                "similarity": (s.similarity * 1000.0).round() / 1000.0,
-            })
-        }).collect();
-
-        let graph_results: Vec<serde_json::Value> = retrieval.long_term.iter().take(10).map(|n| {
-            serde_json::json!({
-                "label": n.label,
-                "kind": n.kind,
-                "weight": (n.weight * 100.0).round() / 100.0,
-            })
-        }).collect();
 
         // --- Categorized short-term memories ---
         let mut decisions: Vec<serde_json::Value> = Vec::new();
@@ -995,7 +1300,7 @@ impl MemoryState {
             let category = classify_text(&entry.text);
             let item = serde_json::json!({
                 "id": entry.id,
-                "text": if entry.text.len() > 200 { format!("{}…", &entry.text[..200]) } else { entry.text.clone() },
+                "text": if entry.text.len() > 120 { format!("{}…", &entry.text[..120]) } else { entry.text.clone() },
                 "salience": (entry.salience * 100.0).round() / 100.0,
                 "reconsolidations": entry.reconsolidation_count,
             });
@@ -1010,13 +1315,19 @@ impl MemoryState {
         }
 
         // Sort each category by salience descending, cap at 10
-        for list in [&mut decisions, &mut architecture, &mut todos, &mut bugs, &mut preferences] {
+        for list in [
+            &mut decisions,
+            &mut architecture,
+            &mut todos,
+            &mut bugs,
+            &mut preferences,
+        ] {
             list.sort_by(|a, b| {
                 let sa = a["salience"].as_f64().unwrap_or(0.0);
                 let sb = b["salience"].as_f64().unwrap_or(0.0);
                 sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
             });
-            list.truncate(10);
+            list.truncate(5);
         }
 
         serde_json::json!({
@@ -1028,47 +1339,60 @@ impl MemoryState {
                 "todos": todos,
                 "bugs": bugs,
                 "preferences": preferences,
-            },
-            "retrieval": {
-                "short_term": short_term_results,
-                "graph": graph_results,
             }
         })
     }
 
     /// Export the full memory state as JSON for external tools (e.g. dashboard).
     pub fn build_dump(&self) -> serde_json::Value {
-        let nodes: Vec<serde_json::Value> = self.long_term.nodes.values().map(|n| {
-            serde_json::json!({
-                "id": n.id, "label": n.label, "kind": n.kind,
-                "weight": (n.weight * 1000.0).round() / 1000.0,
-                "salience": (n.salience * 1000.0).round() / 1000.0,
-                "last_seen": n.last_seen,
+        let nodes: Vec<serde_json::Value> = self
+            .long_term
+            .nodes
+            .values()
+            .map(|n| {
+                serde_json::json!({
+                    "id": n.id, "label": n.label, "kind": n.kind,
+                    "weight": (n.weight * 1000.0).round() / 1000.0,
+                    "salience": (n.salience * 1000.0).round() / 1000.0,
+                    "last_seen": n.last_seen,
+                })
             })
-        }).collect();
+            .collect();
 
-        let edges: Vec<serde_json::Value> = self.long_term.edges.iter().map(|e| {
-            serde_json::json!({
-                "from": e.from, "to": e.to,
-                "weight": (e.weight * 1000.0).round() / 1000.0,
-                "kind": e.kind,
+        let edges: Vec<serde_json::Value> = self
+            .long_term
+            .edges
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "from": e.from, "to": e.to,
+                    "weight": (e.weight * 1000.0).round() / 1000.0,
+                    "kind": e.kind,
+                })
             })
-        }).collect();
+            .collect();
 
-        let short_term: Vec<serde_json::Value> = self.short_term.iter().map(|e| {
-            serde_json::json!({
-                "id": e.id, "text": e.text, "summary": e.summary,
-                "salience": (e.salience * 1000.0).round() / 1000.0,
-                "usage": e.usage, "last_access": e.last_access,
-                "reconsolidation_count": e.reconsolidation_count,
-                "labile": e.labile_until >= self.clock,
+        let short_term: Vec<serde_json::Value> = self
+            .short_term
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id, "text": e.text, "summary": e.summary,
+                    "salience": (e.salience * 1000.0).round() / 1000.0,
+                    "usage": e.usage, "last_access": e.last_access,
+                    "reconsolidation_count": e.reconsolidation_count,
+                    "labile": e.labile_until >= self.clock,
+                    "refs": e.refs,
+                })
             })
-        }).collect();
+            .collect();
 
         let immediate: Vec<&str> = self.immediate.iter().map(|s| s.as_str()).collect();
-        let sessions: Vec<serde_json::Value> = self.session_log.iter().map(|s| {
-            serde_json::json!({"timestamp": s.timestamp, "text": s.text})
-        }).collect();
+        let sessions: Vec<serde_json::Value> = self
+            .session_log
+            .iter()
+            .map(|s| serde_json::json!({"timestamp": s.timestamp, "text": s.text}))
+            .collect();
 
         serde_json::json!({
             "clock": self.clock,
@@ -1098,7 +1422,8 @@ impl MemoryState {
                 let before = entry.salience;
 
                 // Adjust salience
-                entry.salience = (entry.salience + signal * REINFORCE_SALIENCE_SCALE).clamp(0.0, 1.0);
+                entry.salience =
+                    (entry.salience + signal * REINFORCE_SALIENCE_SCALE).clamp(0.0, 1.0);
 
                 // Adjust usage: positive signal bumps usage, negative doesn't
                 // reduce below 1 (entry still exists, just less important)
@@ -1128,7 +1453,10 @@ impl MemoryState {
             }
         }
 
-        ReinforceResult { reinforced, graph_nodes_affected }
+        ReinforceResult {
+            reinforced,
+            graph_nodes_affected,
+        }
     }
 }
 
@@ -1136,9 +1464,19 @@ impl MemoryState {
 /// Returns the Jaccard coefficient of their lowercased word sets.
 fn word_overlap(a: &str, b: &str) -> f32 {
     use std::collections::HashSet;
-    let set_a: HashSet<&str> = a.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric())).filter(|w| w.len() > 1).collect();
-    let set_b: HashSet<&str> = b.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric())).filter(|w| w.len() > 1).collect();
-    if set_a.is_empty() || set_b.is_empty() { return 0.0; }
+    let set_a: HashSet<&str> = a
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.len() > 1)
+        .collect();
+    let set_b: HashSet<&str> = b
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.len() > 1)
+        .collect();
+    if set_a.is_empty() || set_b.is_empty() {
+        return 0.0;
+    }
     let intersection = set_a.intersection(&set_b).count() as f32;
     let union = set_a.union(&set_b).count() as f32;
     intersection / union
@@ -1156,9 +1494,12 @@ pub fn reset_memory() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn load_memory() -> Result<MemoryState, Box<dyn std::error::Error>> {
-    let compressed = fs::read(MEMORY_FILE).map_err(|e| format!("Failed to read memory file: {}", e))?;
-    let serialized = lz4::block::decompress(&compressed, None).map_err(|e| format!("Failed to decompress memory: {}", e))?;
-    let state: MemoryState = bincode::deserialize(&serialized).map_err(|e| format!("Failed to deserialize memory: {}", e))?;
+    let compressed =
+        fs::read(MEMORY_FILE).map_err(|e| format!("Failed to read memory file: {}", e))?;
+    let serialized = lz4::block::decompress(&compressed, None)
+        .map_err(|e| format!("Failed to decompress memory: {}", e))?;
+    let state: MemoryState = bincode::deserialize(&serialized)
+        .map_err(|e| format!("Failed to deserialize memory: {}", e))?;
     Ok(state)
 }
 
@@ -1218,12 +1559,16 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
 }
 
 fn save_memory(state: &MemoryState) -> Result<(), Box<dyn std::error::Error>> {
-    let serialized = bincode::serialize(state).map_err(|e| format!("Failed to serialize memory: {}", e))?;
-    let compressed = lz4::block::compress(&serialized, None, true).map_err(|e| format!("Failed to compress memory: {}", e))?;
+    let serialized =
+        bincode::serialize(state).map_err(|e| format!("Failed to serialize memory: {}", e))?;
+    let compressed = lz4::block::compress(&serialized, None, true)
+        .map_err(|e| format!("Failed to compress memory: {}", e))?;
 
     let temp_file = format!("{}.tmp", MEMORY_FILE);
-    fs::write(&temp_file, &compressed).map_err(|e| format!("Failed to write temp memory file: {}", e))?;
-    fs::rename(&temp_file, MEMORY_FILE).map_err(|e| format!("Failed to write memory file: {}", e))?;
+    fs::write(&temp_file, &compressed)
+        .map_err(|e| format!("Failed to write temp memory file: {}", e))?;
+    fs::rename(&temp_file, MEMORY_FILE)
+        .map_err(|e| format!("Failed to write memory file: {}", e))?;
     Ok(())
 }
 
@@ -1246,14 +1591,28 @@ mod tests {
     #[test]
     fn test_eviction_score_recent_high() {
         let recent = ShortTermEntry {
-            id: 1, text: "test".into(), summary: "test".into(), embedding: vec![],
-            last_access: 100, usage: 5, salience: 0.8,
-            reconsolidation_count: 0, labile_until: 0,
+            id: 1,
+            text: "test".into(),
+            summary: "test".into(),
+            embedding: vec![],
+            last_access: 100,
+            usage: 5,
+            salience: 0.8,
+            reconsolidation_count: 0,
+            labile_until: 0,
+            refs: vec![],
         };
         let old = ShortTermEntry {
-            id: 2, text: "test".into(), summary: "test".into(), embedding: vec![],
-            last_access: 1, usage: 1, salience: 0.1,
-            reconsolidation_count: 0, labile_until: 0,
+            id: 2,
+            text: "test".into(),
+            summary: "test".into(),
+            embedding: vec![],
+            last_access: 1,
+            usage: 1,
+            salience: 0.1,
+            reconsolidation_count: 0,
+            labile_until: 0,
+            refs: vec![],
         };
         assert!(eviction_score(&recent, 100) > eviction_score(&old, 100));
     }
@@ -1272,7 +1631,11 @@ mod tests {
         state.tick("the embedding system uses vector similarity");
         let usage_before = state.short_term[0].usage;
         state.tick("the embedding system uses vector similarity");
-        assert_eq!(state.short_term.len(), 1, "identical tick should reinforce, not add");
+        assert_eq!(
+            state.short_term.len(),
+            1,
+            "identical tick should reinforce, not add"
+        );
         assert!(state.short_term[0].usage > usage_before);
     }
 
@@ -1311,9 +1674,16 @@ mod tests {
         let initial_weights: Vec<f32> = state.long_term.edges.iter().map(|e| e.weight).collect();
         state.retrieve_context("process_data Config");
         state.retrieve_context("process_data Config");
-        let has_increased = state.long_term.edges.iter().zip(initial_weights.iter())
+        let has_increased = state
+            .long_term
+            .edges
+            .iter()
+            .zip(initial_weights.iter())
             .any(|(edge, &initial)| edge.weight > initial);
-        assert!(has_increased, "Hebbian reinforcement should strengthen co-retrieved edges");
+        assert!(
+            has_increased,
+            "Hebbian reinforcement should strengthen co-retrieved edges"
+        );
     }
 
     #[test]
@@ -1354,8 +1724,11 @@ mod tests {
         let mut state = MemoryState::default();
         state.tick("the embedding system uses vector similarity for matching");
         state.tick("cooking recipes require fresh ingredients and seasoning");
-        assert!(state.short_term.len() >= 2,
-            "unrelated ticks should create separate entries, got {}", state.short_term.len());
+        assert!(
+            state.short_term.len() >= 2,
+            "unrelated ticks should create separate entries, got {}",
+            state.short_term.len()
+        );
     }
 
     #[test]
@@ -1387,9 +1760,12 @@ mod tests {
 
         let result = state.reinforce(&[id], 1.0);
         assert_eq!(result.reinforced.len(), 1);
-        assert!(result.reinforced[0].salience_after > salience_before,
+        assert!(
+            result.reinforced[0].salience_after > salience_before,
             "positive signal should boost salience: {} -> {}",
-            salience_before, result.reinforced[0].salience_after);
+            salience_before,
+            result.reinforced[0].salience_after
+        );
     }
 
     #[test]
@@ -1401,9 +1777,12 @@ mod tests {
 
         let result = state.reinforce(&[id], -1.0);
         assert_eq!(result.reinforced.len(), 1);
-        assert!(result.reinforced[0].salience_after < salience_before,
+        assert!(
+            result.reinforced[0].salience_after < salience_before,
             "negative signal should reduce salience: {} -> {}",
-            salience_before, result.reinforced[0].salience_after);
+            salience_before,
+            result.reinforced[0].salience_after
+        );
     }
 
     #[test]
@@ -1413,17 +1792,18 @@ mod tests {
         let id = state.short_term[0].id;
 
         // Capture graph weights before reinforcement
-        let weight_before: f32 = state.long_term.nodes.values()
-            .map(|n| n.weight).sum();
+        let weight_before: f32 = state.long_term.nodes.values().map(|n| n.weight).sum();
 
         state.reinforce(&[id], 1.0);
 
-        let weight_after: f32 = state.long_term.nodes.values()
-            .map(|n| n.weight).sum();
+        let weight_after: f32 = state.long_term.nodes.values().map(|n| n.weight).sum();
 
-        assert!(weight_after > weight_before,
+        assert!(
+            weight_after > weight_before,
             "positive reinforce should cascade to graph: {} -> {}",
-            weight_before, weight_after);
+            weight_before,
+            weight_after
+        );
     }
 
     #[test]
@@ -1431,7 +1811,10 @@ mod tests {
         let mut state = MemoryState::default();
         state.tick("some entry");
         let result = state.reinforce(&[9999], 1.0);
-        assert!(result.reinforced.is_empty(), "unknown ID should be silently ignored");
+        assert!(
+            result.reinforced.is_empty(),
+            "unknown ID should be silently ignored"
+        );
     }
 
     #[test]
@@ -1440,31 +1823,60 @@ mod tests {
         // Insert a node with weight below GRAPH_PRUNE_WEIGHT
         let id = state.next_id;
         state.next_id += 1;
-        state.long_term.nodes.insert(id, GraphNode {
-            id, label: "weak_node".to_string(), kind: "Term".to_string(),
-            weight: 0.01, last_seen: 0, salience: 0.0,
-        });
+        state.long_term.nodes.insert(
+            id,
+            GraphNode {
+                id,
+                label: "weak_node".to_string(),
+                kind: "Term".to_string(),
+                weight: 0.01,
+                last_seen: 0,
+                salience: 0.0,
+            },
+        );
         state.long_term.index.insert("weak_node".to_string(), id);
         // Also insert a healthy node
         let id2 = state.next_id;
         state.next_id += 1;
-        state.long_term.nodes.insert(id2, GraphNode {
-            id: id2, label: "strong_node".to_string(), kind: "Term".to_string(),
-            weight: 2.0, last_seen: state.clock, salience: 0.5,
-        });
+        state.long_term.nodes.insert(
+            id2,
+            GraphNode {
+                id: id2,
+                label: "strong_node".to_string(),
+                kind: "Term".to_string(),
+                weight: 2.0,
+                last_seen: state.clock,
+                salience: 0.5,
+            },
+        );
         state.long_term.index.insert("strong_node".to_string(), id2);
         // Add edge between them
         state.long_term.edges.push(GraphEdge {
-            from: id, to: id2, weight: 0.1, kind: "related".to_string(),
+            from: id,
+            to: id2,
+            weight: 0.1,
+            kind: "related".to_string(),
         });
 
         state.clock = 100;
         state.prune_graph();
 
-        assert!(!state.long_term.nodes.contains_key(&id), "low-weight node should be pruned");
-        assert!(state.long_term.nodes.contains_key(&id2), "healthy node should survive");
-        assert!(state.long_term.edges.is_empty(), "orphaned edge should be removed");
-        assert!(!state.long_term.index.contains_key("weak_node"), "index entry should be cleaned");
+        assert!(
+            !state.long_term.nodes.contains_key(&id),
+            "low-weight node should be pruned"
+        );
+        assert!(
+            state.long_term.nodes.contains_key(&id2),
+            "healthy node should survive"
+        );
+        assert!(
+            state.long_term.edges.is_empty(),
+            "orphaned edge should be removed"
+        );
+        assert!(
+            !state.long_term.index.contains_key("weak_node"),
+            "index entry should be cleaned"
+        );
     }
 
     #[test]
@@ -1474,19 +1886,29 @@ mod tests {
         for i in 0..(GRAPH_NODE_CAPACITY + 50) {
             let id = state.next_id;
             state.next_id += 1;
-            state.long_term.nodes.insert(id, GraphNode {
-                id, label: format!("node_{}", i), kind: "Term".to_string(),
-                weight: i as f32 * 0.01, last_seen: state.clock, salience: 0.1,
-            });
+            state.long_term.nodes.insert(
+                id,
+                GraphNode {
+                    id,
+                    label: format!("node_{}", i),
+                    kind: "Term".to_string(),
+                    weight: i as f32 * 0.01,
+                    last_seen: state.clock,
+                    salience: 0.1,
+                },
+            );
             state.long_term.index.insert(format!("node_{}", i), id);
         }
         assert!(state.long_term.nodes.len() > GRAPH_NODE_CAPACITY);
 
         state.prune_graph();
 
-        assert!(state.long_term.nodes.len() <= GRAPH_NODE_CAPACITY,
+        assert!(
+            state.long_term.nodes.len() <= GRAPH_NODE_CAPACITY,
             "node count should be capped at {}, got {}",
-            GRAPH_NODE_CAPACITY, state.long_term.nodes.len());
+            GRAPH_NODE_CAPACITY,
+            state.long_term.nodes.len()
+        );
     }
 
     #[test]
@@ -1494,15 +1916,24 @@ mod tests {
         let mut state = MemoryState::default();
         // Manually inject a stale short-term entry
         state.short_term.push(ShortTermEntry {
-            id: 999, text: "stale".into(), summary: "stale".into(),
-            embedding: vec![0.0; 256], last_access: 0, usage: 0, salience: 0.0,
-            reconsolidation_count: 0, labile_until: 0,
+            id: 999,
+            text: "stale".into(),
+            summary: "stale".into(),
+            embedding: vec![0.0; 256],
+            last_access: 0,
+            usage: 0,
+            salience: 0.0,
+            reconsolidation_count: 0,
+            labile_until: 0,
+            refs: vec![],
         });
         // Advance clock far enough for pruning to kick in
         state.clock = 500;
         state.tick("fresh content about something new");
-        assert!(!state.short_term.iter().any(|e| e.id == 999),
-            "stale entry should be pruned during tick");
+        assert!(
+            !state.short_term.iter().any(|e| e.id == 999),
+            "stale entry should be pruned during tick"
+        );
     }
 
     #[test]
@@ -1515,9 +1946,48 @@ mod tests {
         state.retrieve_context("cosine similarity vector");
         let salience_after = state.short_term[0].salience;
 
-        assert!(salience_after > salience_before,
+        assert!(
+            salience_after > salience_before,
             "top retrieval result should be auto-reinforced: {} -> {}",
-            salience_before, salience_after);
+            salience_before,
+            salience_after
+        );
+    }
+
+    #[test]
+    fn test_tick_captures_line_references() {
+        let mut state = MemoryState::default();
+        state.tick("See legend/src/memory/mod.rs#L120-145 for the new refs logic.");
+        assert!(!state.short_term.is_empty());
+
+        let entry = &state.short_term[0];
+        assert!(!entry.refs.is_empty(), "expected refs to be captured");
+
+        let reference = &entry.refs[0];
+        assert_eq!(reference.path, "legend/src/memory/mod.rs");
+        assert_eq!(reference.start_line, 120);
+        assert_eq!(reference.end_line, 145);
+        assert!(reference
+            .snippet
+            .contains("legend/src/memory/mod.rs#L120-145"));
+    }
+
+    #[test]
+    fn test_retrieve_context_returns_refs() {
+        let mut state = MemoryState::default();
+        state.tick("Ref: legend/src/memory/mod.rs#L200-210 tracks MemorySnippet changes.");
+        let ctx = state.retrieve_context("MemorySnippet refs");
+        assert!(!ctx.short_term.is_empty());
+
+        let snippet = &ctx.short_term[0];
+        assert!(
+            !snippet.refs.is_empty(),
+            "expected snippet refs to be returned"
+        );
+        let reference = &snippet.refs[0];
+        assert_eq!(reference.path, "legend/src/memory/mod.rs");
+        assert_eq!(reference.start_line, 200);
+        assert_eq!(reference.end_line, 210);
     }
 
     #[test]
@@ -1528,18 +1998,31 @@ mod tests {
         state.tick("TODO: still need to implement the caching layer");
         let summary = state.build_start_summary();
 
-        // Should have context, categorized, and retrieval sections
-        assert!(summary.get("context").is_some(), "start summary should have context");
-        assert!(summary.get("retrieval").is_some(), "start summary should have retrieval");
-        assert!(summary.get("categorized").is_some(), "start summary should have categorized");
-        assert!(!summary["retrieval"]["short_term"].as_array().unwrap().is_empty(),
-            "retrieval should contain short-term results");
+        // Should have context and categorized sections
+        assert!(
+            summary.get("context").is_some(),
+            "start summary should have context"
+        );
+        assert!(
+            summary.get("categorized").is_some(),
+            "start summary should have categorized"
+        );
         // Decision should be categorized
-        assert!(!summary["categorized"]["decisions"].as_array().unwrap().is_empty(),
-            "should have categorized the decision");
+        assert!(
+            !summary["categorized"]["decisions"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "should have categorized the decision"
+        );
         // TODO should be categorized
-        assert!(!summary["categorized"]["todos"].as_array().unwrap().is_empty(),
-            "should have categorized the TODO");
+        assert!(
+            !summary["categorized"]["todos"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "should have categorized the TODO"
+        );
     }
 
     #[test]
@@ -1552,18 +2035,24 @@ mod tests {
 
         // Query to make it labile
         state.retrieve_context("database PostgreSQL");
-        assert!(state.short_term[0].labile_until > 0,
-            "retrieved entry should be labile");
+        assert!(
+            state.short_term[0].labile_until > 0,
+            "retrieved entry should be labile"
+        );
 
         // Tick with related but new information — should reconsolidate
         state.tick("the database PostgreSQL schema has users and sessions tables");
         // Should still have the original entry (reconsolidated, not duplicated)
         let reconsolidated = state.short_term.iter().find(|e| e.id == original_id);
         if let Some(entry) = reconsolidated {
-            assert!(entry.reconsolidation_count > 0,
-                "entry should have been reconsolidated");
-            assert!(entry.text.contains("tables") || entry.summary.contains("tables"),
-                "reconsolidated entry should contain new info");
+            assert!(
+                entry.reconsolidation_count > 0,
+                "entry should have been reconsolidated"
+            );
+            assert!(
+                entry.text.contains("tables") || entry.summary.contains("tables"),
+                "reconsolidated entry should contain new info"
+            );
         }
         // Either way, verify the system didn't crash and state is consistent
         assert!(!state.short_term.is_empty());
@@ -1584,51 +2073,88 @@ mod tests {
         state.stabilize_labile_entries();
 
         let entry = state.short_term.iter().find(|e| e.id == id).unwrap();
-        assert_eq!(entry.labile_until, 0, "labile state should expire after window");
+        assert_eq!(
+            entry.labile_until, 0,
+            "labile state should expire after window"
+        );
     }
 
     #[test]
     fn test_classify_text_decision() {
-        assert_eq!(classify_text("Chose PostgreSQL over MongoDB because it has better JOIN support"), MemoryCategory::Decision);
-        assert_eq!(classify_text("We decided to use Rust instead of Go"), MemoryCategory::Decision);
+        assert_eq!(
+            classify_text("Chose PostgreSQL over MongoDB because it has better JOIN support"),
+            MemoryCategory::Decision
+        );
+        assert_eq!(
+            classify_text("We decided to use Rust instead of Go"),
+            MemoryCategory::Decision
+        );
     }
 
     #[test]
     fn test_classify_text_bug() {
-        assert_eq!(classify_text("Bug: the parser crashes on empty input"), MemoryCategory::Bug);
-        assert_eq!(classify_text("Had to revert the migration due to data loss"), MemoryCategory::Bug);
+        assert_eq!(
+            classify_text("Bug: the parser crashes on empty input"),
+            MemoryCategory::Bug
+        );
+        assert_eq!(
+            classify_text("Had to revert the migration due to data loss"),
+            MemoryCategory::Bug
+        );
     }
 
     #[test]
     fn test_classify_text_todo() {
-        assert_eq!(classify_text("TODO: implement proper error handling"), MemoryCategory::Todo);
-        assert_eq!(classify_text("Blocked on the API team providing the endpoint"), MemoryCategory::Todo);
+        assert_eq!(
+            classify_text("TODO: implement proper error handling"),
+            MemoryCategory::Todo
+        );
+        assert_eq!(
+            classify_text("Blocked on the API team providing the endpoint"),
+            MemoryCategory::Todo
+        );
     }
 
     #[test]
     fn test_classify_text_architecture() {
-        assert_eq!(classify_text("The authentication module uses JWT tokens via middleware"), MemoryCategory::Architecture);
+        assert_eq!(
+            classify_text("The authentication module uses JWT tokens via middleware"),
+            MemoryCategory::Architecture
+        );
     }
 
     #[test]
     fn test_classify_text_preference() {
-        assert_eq!(classify_text("User prefers snake_case for all variable names"), MemoryCategory::Preference);
+        assert_eq!(
+            classify_text("User prefers snake_case for all variable names"),
+            MemoryCategory::Preference
+        );
     }
 
     #[test]
     fn test_importance_scoring_decisions_higher() {
-        let decision_salience = compute_salience("Chose bincode over JSON because it is faster for serialization");
+        let decision_salience =
+            compute_salience("Chose bincode over JSON because it is faster for serialization");
         let generic_salience = compute_salience("updated some files in the project");
-        assert!(decision_salience > generic_salience,
-            "decisions should score higher: {} vs {}", decision_salience, generic_salience);
+        assert!(
+            decision_salience > generic_salience,
+            "decisions should score higher: {} vs {}",
+            decision_salience,
+            generic_salience
+        );
     }
 
     #[test]
     fn test_importance_scoring_bugs_higher() {
-        let bug_salience = compute_salience("Bug: the parser crashes on empty input and causes a panic");
+        let bug_salience =
+            compute_salience("Bug: the parser crashes on empty input and causes a panic");
         let generic_salience = compute_salience("updated some files in the project");
-        assert!(bug_salience > generic_salience,
-            "bugs should score higher: {} vs {}", bug_salience, generic_salience);
+        assert!(
+            bug_salience > generic_salience,
+            "bugs should score higher: {} vs {}",
+            bug_salience,
+            generic_salience
+        );
     }
 
     #[test]
@@ -1643,8 +2169,10 @@ mod tests {
         // graph neighbors from the other entry
         let ctx = state.retrieve_context("handle_request API");
         // Should have long-term results that include primed neighbors
-        assert!(!ctx.long_term.is_empty(),
-            "priming should surface related graph nodes");
+        assert!(
+            !ctx.long_term.is_empty(),
+            "priming should surface related graph nodes"
+        );
     }
 
     #[test]
