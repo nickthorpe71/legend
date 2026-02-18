@@ -46,12 +46,18 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     print_context(context);
 
     if should_consolidate {
-        eprintln!();
-        eprintln!(
-            "Tip: {} ticks since last consolidation. Consider running:",
-            memory.ticks_since_consolidation
-        );
-        eprintln!("  legend memory consolidate");
+        let summaries = memory.consolidate();
+        memory.save()?; // save again after consolidation
+        if !summaries.is_empty() {
+            log_event(
+                "auto_consolidate",
+                &format!("{} groups merged", summaries.len()),
+            );
+            eprintln!(
+                "[auto-consolidated {} group(s) into long-term memory]",
+                summaries.len()
+            );
+        }
     }
     Ok(())
 }
