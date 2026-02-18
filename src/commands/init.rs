@@ -26,13 +26,14 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
         setup_codex_hooks()?;
         setup_codex_md()?;
         setup_copilot_instructions()?;
+        setup_zed_rules()?;
+        setup_gemini_styleguide()?;
 
         return Ok(());
     }
 
-    fs::create_dir_all(legend_dir).map_err(|e| {
-        format!("Failed to create .legend directory: {}", e)
-    })?;
+    fs::create_dir_all(legend_dir)
+        .map_err(|e| format!("Failed to create .legend directory: {}", e))?;
 
     let project_name = detect_project_name();
     let mut state = LegendState::new(project_name);
@@ -45,13 +46,19 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
                     suggested.suggested_id,
                     suggested.suggested_name,
                     suggested.suggested_domain,
-                    format!("Auto-discovered from project structure ({} files)", suggested.files.len()),
+                    format!(
+                        "Auto-discovered from project structure ({} files)",
+                        suggested.files.len()
+                    ),
                 );
                 feature.files_involved = suggested.files;
                 state.add_feature(feature);
             }
             if count > 0 {
-                println!("  Auto-discovered {} features from project structure", count);
+                println!(
+                    "  Auto-discovered {} features from project structure",
+                    count
+                );
             }
         }
         Err(_) => {}
@@ -68,6 +75,8 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
     setup_codex_hooks()?;
     setup_codex_md()?;
     setup_copilot_instructions()?;
+    setup_zed_rules()?;
+    setup_gemini_styleguide()?;
 
     Ok(())
 }
@@ -101,7 +110,28 @@ fn setup_codex_md() -> Result<(), Box<dyn std::error::Error>> {
 fn setup_copilot_instructions() -> Result<(), Box<dyn std::error::Error>> {
     let github_dir = Path::new(".github");
     let instructions_path = github_dir.join("copilot-instructions.md");
-    write_legend_markdown(&instructions_path, ".github/copilot-instructions.md", Some(github_dir))
+    write_legend_markdown(
+        &instructions_path,
+        ".github/copilot-instructions.md",
+        Some(github_dir),
+    )
+}
+
+/// Generate or update .rules with Legend usage instructions
+///
+/// Zed editor reads .rules files for AI agent instructions.
+/// Also supports CLAUDE.md and GEMINI.md which we create separately.
+fn setup_zed_rules() -> Result<(), Box<dyn std::error::Error>> {
+    write_legend_markdown(Path::new(".rules"), ".rules", None)
+}
+
+/// Generate or update .gemini/styleguide.md with Legend usage instructions
+///
+/// Gemini Code Assist reads styleguide.md from .gemini/ directory.
+fn setup_gemini_styleguide() -> Result<(), Box<dyn std::error::Error>> {
+    let gemini_dir = Path::new(".gemini");
+    let styleguide_path = gemini_dir.join("styleguide.md");
+    write_legend_markdown(&styleguide_path, ".gemini/styleguide.md", Some(gemini_dir))
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +140,7 @@ fn setup_copilot_instructions() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Returns the canonical Legend instructions that all agent instruction files share.
 fn generate_legend_instructions() -> String {
+    let cmd = get_legend_command();
     format!(
         r#"{LEGEND_MARKER_START}
 # Legend — Your Long-Term Memory
@@ -121,40 +152,63 @@ You have access to a persistent hierarchical memory system called **Legend**. It
 ### On every session start
 Run this FIRST before doing anything else:
 ```bash
-cargo run --quiet -- memory query "session start context"
+{cmd} memory start
 ```
-This returns your stored memories — read them to understand prior work, decisions, and open issues.
+This returns everything in one call: stats, recent session log, top graph nodes, and relevant short-term memories. Read this to understand prior work, decisions, and open issues.
 
 ### During the session (frequently!)
 After every significant action (writing code, making a decision, discovering something, completing a task), record it:
 ```bash
-cargo run --quiet -- memory tick "description of what just happened"
+{cmd} memory tick "description of what just happened"
 ```
-Do this **every few minutes** or after every meaningful change. More ticks = better memory.
+Tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
+
+### Before starting unfamiliar work
+Query for relevant context before diving in:
+```bash
+{cmd} memory query "topic you're about to work on"
+```
+The top result is automatically reinforced — frequently useful memories rise naturally.
 
 ### On session end
 Summarize what was accomplished:
 ```bash
-cargo run --quiet -- memory tick "Session summary: what was done, what's next, any blockers"
+{cmd} memory tick "Session summary: what was done, what's next, any blockers"
 ```
 
 ## Memory Commands
 
 | Command | When to Use |
 |---------|-------------|
-| `cargo run --quiet -- memory tick "<text>"` | Record something (decision, progress, discovery, blocker) |
-| `cargo run --quiet -- memory query "<text>"` | Recall related context before starting work |
-| `cargo run --quiet -- memory stats` | Check how much is stored |
-| `cargo run --quiet -- memory consolidate` | Merge similar memories into long-term graph |
+| `{cmd} memory start` | **Session start** — one call for full context |
+| `{cmd} memory tick "<text>"` | Record decision, progress, discovery, blocker |
+| `{cmd} memory query "<text>"` | Recall related context (auto-reinforces top result) |
+| `{cmd} memory reinforce <signal> <id...>` | Explicit feedback: 1.0 = useful, -1.0 = irrelevant |
+| `{cmd} memory stats` | Check storage usage |
+| `{cmd} memory sessions [n]` | View chronological session log |
+| `{cmd} memory consolidate` | Merge similar memories into long-term graph |
+
+## Dashboard
+
+Launch the live 3D memory visualization dashboard:
+```bash
+{cmd} dashboard
+```
+This opens a native Windows app (cross-compiled from WSL) showing:
+- 3D force-directed graph of knowledge nodes (right-drag to orbit, scroll to zoom)
+- Live event log of all memory operations
+- Memory stats, short-term entries with salience bars, session log
+
+Launch it at session start so the user can watch memory activity in real-time.
 
 ## Feature Tracking Commands
 
 | Command | Purpose |
 |---------|---------|
-| `cargo run --quiet -- get_state` | Load full project state as JSON |
-| `cargo run --quiet -- search <query>` | Search features by keyword |
-| `cargo run --quiet -- show` | Human-readable feature summary |
-| `cargo run --quiet -- update` | Update feature state (pipe JSON to stdin) |
+| `{cmd} get_state` | Load full project state as JSON |
+| `{cmd} search <query>` | Search features by keyword |
+| `{cmd} show` | Human-readable feature summary |
+| `{cmd} update` | Update feature state (pipe JSON to stdin) |
 
 ## What to Tick
 
@@ -184,6 +238,20 @@ Storage: bincode + LZ4 at `.legend/memory.lz4`. Key source files:
     )
 }
 
+/// Detect whether to use 'legend' CLI or 'cargo run --quiet --' based on project context.
+///
+/// Returns "legend" if we're in a regular project, or "cargo run --quiet --" if we're
+/// in the Legend source directory itself (detected by presence of Cargo.toml with name="legend").
+fn get_legend_command() -> &'static str {
+    // Check if we're in the Legend source directory
+    if let Ok(cargo_toml) = fs::read_to_string("Cargo.toml") {
+        if cargo_toml.contains("name = \"legend\"") {
+            return "cargo run --quiet --";
+        }
+    }
+    "legend"
+}
+
 /// Write Legend instructions to a markdown file (create, append, or skip).
 ///
 /// - `path`: the file to write
@@ -197,31 +265,47 @@ fn write_legend_markdown(
     let content = generate_legend_instructions();
 
     if path.exists() {
-        let existing = fs::read_to_string(path).map_err(|e| {
-            format!("Failed to read {}: {}", display_name, e)
-        })?;
+        let existing = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", display_name, e))?;
 
         if existing.contains(LEGEND_MARKER_START) {
-            println!("  {} already has Legend instructions", display_name);
+            // Replace existing Legend section with updated content
+            if let (Some(start_idx), Some(end_idx)) = (
+                existing.find(LEGEND_MARKER_START),
+                existing.find(LEGEND_MARKER_END),
+            ) {
+                let end_idx = end_idx + LEGEND_MARKER_END.len();
+                let before = &existing[..start_idx];
+                let after = &existing[end_idx..];
+                let updated = format!("{}{}{}", before.trim_end(), content, after);
+                let updated = if before.is_empty() {
+                    format!("{}\n", updated.trim())
+                } else {
+                    format!("{}\n\n{}\n", before.trim_end(), content.trim())
+                };
+                fs::write(path, updated)
+                    .map_err(|e| format!("Failed to update {}: {}", display_name, e))?;
+                println!("✓ Updated Legend instructions in {}", display_name);
+            }
             return Ok(());
         }
 
         let updated = format!("{}\n\n{}\n", existing.trim_end(), content);
-        fs::write(path, updated).map_err(|e| {
-            format!("Failed to update {}: {}", display_name, e)
-        })?;
+        fs::write(path, updated)
+            .map_err(|e| format!("Failed to update {}: {}", display_name, e))?;
 
-        println!("✓ Appended Legend instructions to existing {}", display_name);
+        println!(
+            "✓ Appended Legend instructions to existing {}",
+            display_name
+        );
     } else {
         if let Some(dir) = parent_dir {
-            fs::create_dir_all(dir).map_err(|e| {
-                format!("Failed to create {} directory: {}", dir.display(), e)
-            })?;
+            fs::create_dir_all(dir)
+                .map_err(|e| format!("Failed to create {} directory: {}", dir.display(), e))?;
         }
 
-        fs::write(path, format!("{}\n", content)).map_err(|e| {
-            format!("Failed to create {}: {}", display_name, e)
-        })?;
+        fs::write(path, format!("{}\n", content))
+            .map_err(|e| format!("Failed to create {}: {}", display_name, e))?;
 
         println!("✓ Created {} with Legend instructions", display_name);
     }
@@ -281,13 +365,11 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
     });
 
     if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path).map_err(|e| {
-            format!("Failed to read {}/settings.json: {}", dir_name, e)
-        })?;
+        let content = fs::read_to_string(&settings_path)
+            .map_err(|e| format!("Failed to read {}/settings.json: {}", dir_name, e))?;
 
-        let mut settings: Value = serde_json::from_str(&content).map_err(|e| {
-            format!("Failed to parse {}/settings.json: {}", dir_name, e)
-        })?;
+        let mut settings: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse {}/settings.json: {}", dir_name, e))?;
 
         if has_legend_hooks(&settings) {
             println!("  {} hooks already configured", display_name);
@@ -302,15 +384,16 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
         );
 
         let output = serde_json::to_string_pretty(&settings)?;
-        fs::write(&settings_path, output).map_err(|e| {
-            format!("Failed to write {}/settings.json: {}", dir_name, e)
-        })?;
+        fs::write(&settings_path, output)
+            .map_err(|e| format!("Failed to write {}/settings.json: {}", dir_name, e))?;
 
-        println!("✓ Added Legend hooks to existing {}/settings.json", dir_name);
+        println!(
+            "✓ Added Legend hooks to existing {}/settings.json",
+            dir_name
+        );
     } else {
-        fs::create_dir_all(agent_dir).map_err(|e| {
-            format!("Failed to create {} directory: {}", dir_name, e)
-        })?;
+        fs::create_dir_all(agent_dir)
+            .map_err(|e| format!("Failed to create {} directory: {}", dir_name, e))?;
 
         let settings = json!({
             "hooks": {
@@ -321,9 +404,8 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
         });
 
         let output = serde_json::to_string_pretty(&settings)?;
-        fs::write(&settings_path, output).map_err(|e| {
-            format!("Failed to write {}/settings.json: {}", dir_name, e)
-        })?;
+        fs::write(&settings_path, output)
+            .map_err(|e| format!("Failed to write {}/settings.json: {}", dir_name, e))?;
 
         println!("✓ Created {}/settings.json with Legend hooks", dir_name);
     }
@@ -379,7 +461,10 @@ fn merge_legend_hooks(
     if hooks.get("UserPromptSubmit").is_none() {
         hooks["UserPromptSubmit"] = json!([]);
     }
-    if let Some(arr) = hooks.get_mut("UserPromptSubmit").and_then(|s| s.as_array_mut()) {
+    if let Some(arr) = hooks
+        .get_mut("UserPromptSubmit")
+        .and_then(|s| s.as_array_mut())
+    {
         arr.push(prompt_hook.clone());
     }
 
