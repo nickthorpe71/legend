@@ -1,7 +1,7 @@
 <!-- legend-start -->
 # Legend — Your Long-Term Memory
 
-You have access to a persistent hierarchical memory system called **Legend**. It stores context across sessions so you can recall past decisions, architecture, and progress. **Use it actively.**
+You have access to a persistent hierarchical memory system called **Legend**. It stores context across sessions so you can pick up where you left off. **Use it actively and frequently.**
 
 ## CRITICAL: Memory Workflow
 
@@ -12,8 +12,8 @@ cargo run --quiet -- memory start
 ```
 This returns everything in one call: stats, recent session log, top graph nodes, and relevant short-term memories. Read this to understand prior work, decisions, and open issues.
 
-### During the session
-After every significant action (writing code, making a decision, discovering something), record it:
+### During the session (frequently!)
+After every significant action (writing code, making a decision, discovering something, completing a task), record it:
 ```bash
 cargo run --quiet -- memory tick "description of what just happened"
 ```
@@ -36,13 +36,13 @@ cargo run --quiet -- memory tick "Session summary: what was done, what's next, a
 
 | Command | When to Use |
 |---------|-------------|
-| `memory start` | **Session start** — one call for full context |
-| `memory tick "<text>"` | Record decision, progress, discovery, blocker |
-| `memory query "<text>"` | Recall related context (auto-reinforces top result) |
-| `memory reinforce <signal> <id...>` | Explicit feedback: 1.0 = useful, -1.0 = irrelevant |
-| `memory stats` | Check storage usage |
-| `memory sessions [n]` | View chronological session log |
-| `memory consolidate` | Merge similar memories into long-term graph |
+| `cargo run --quiet -- memory start` | **Session start** — one call for full context |
+| `cargo run --quiet -- memory tick "<text>"` | Record decision, progress, discovery, blocker |
+| `cargo run --quiet -- memory query "<text>"` | Recall related context (auto-reinforces top result) |
+| `cargo run --quiet -- memory reinforce <signal> <id...>` | Explicit feedback: 1.0 = useful, -1.0 = irrelevant |
+| `cargo run --quiet -- memory stats` | Check storage usage |
+| `cargo run --quiet -- memory sessions [n]` | View chronological session log |
+| `cargo run --quiet -- memory consolidate` | Merge similar memories into long-term graph |
 
 ## Dashboard
 
@@ -79,19 +79,13 @@ Launch it at session start so the user can watch memory activity in real-time.
 ## About This Project
 
 Legend is a brain-inspired hierarchical memory system for LLMs built in Rust. It has:
-- **Immediate buffer**: recent text chunks (FIFO, cap 256)
-- **Short-term memory**: vector store with cosine similarity, salience scoring, exponential decay (cap 1024)
-- **Long-term memory**: knowledge graph with multi-hop traversal, Hebbian reinforcement (cap 2048 nodes, 8192 edges)
-- **Garbage collection**: automatic pruning on every tick — low-weight nodes/entries evicted, orphaned edges cleaned
+- **Immediate buffer**: recent text chunks
+- **Short-term memory**: vector store with cosine similarity, salience scoring, exponential decay
+- **Long-term memory**: knowledge graph with multi-hop traversal, Hebbian reinforcement
 
 Storage: bincode + LZ4 at `.legend/memory.lz4`. Key source files:
 - `src/memory/mod.rs` — core memory engine
-- `src/memory/embed.rs` — n-gram embeddings + cosine similarity
-- `src/memory/extract.rs` — code-aware entity extraction
-- `src/memory/summarize.rs` — extractive summarization
 - `src/commands/memory.rs` — CLI handler
-- `src/commands/dashboard.rs` — dashboard launcher (WSL → Windows exe)
 - `src/main.rs` — command routing
 - `src/commands/init.rs` — hook setup
-- `dashboard/` — Bevy 0.15 native 3D visualization app (cross-compiled to Windows)
 <!-- legend-end -->

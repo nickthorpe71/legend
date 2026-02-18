@@ -8,16 +8,23 @@ You have access to a persistent hierarchical memory system called **Legend**. It
 ### On every session start
 Run this FIRST before doing anything else:
 ```bash
-cargo run --quiet -- memory query "session start context"
+cargo run --quiet -- memory start
 ```
-This returns your stored memories — read them to understand prior work, decisions, and open issues.
+This returns everything in one call: stats, recent session log, top graph nodes, and relevant short-term memories. Read this to understand prior work, decisions, and open issues.
 
 ### During the session (frequently!)
 After every significant action (writing code, making a decision, discovering something, completing a task), record it:
 ```bash
 cargo run --quiet -- memory tick "description of what just happened"
 ```
-Do this **every few minutes** or after every meaningful change. More ticks = better memory.
+Tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
+
+### Before starting unfamiliar work
+Query for relevant context before diving in:
+```bash
+cargo run --quiet -- memory query "topic you're about to work on"
+```
+The top result is automatically reinforced — frequently useful memories rise naturally.
 
 ### On session end
 Summarize what was accomplished:
@@ -29,10 +36,26 @@ cargo run --quiet -- memory tick "Session summary: what was done, what's next, a
 
 | Command | When to Use |
 |---------|-------------|
-| `cargo run --quiet -- memory tick "<text>"` | Record something (decision, progress, discovery, blocker) |
-| `cargo run --quiet -- memory query "<text>"` | Recall related context before starting work |
-| `cargo run --quiet -- memory stats` | Check how much is stored |
+| `cargo run --quiet -- memory start` | **Session start** — one call for full context |
+| `cargo run --quiet -- memory tick "<text>"` | Record decision, progress, discovery, blocker |
+| `cargo run --quiet -- memory query "<text>"` | Recall related context (auto-reinforces top result) |
+| `cargo run --quiet -- memory reinforce <signal> <id...>` | Explicit feedback: 1.0 = useful, -1.0 = irrelevant |
+| `cargo run --quiet -- memory stats` | Check storage usage |
+| `cargo run --quiet -- memory sessions [n]` | View chronological session log |
 | `cargo run --quiet -- memory consolidate` | Merge similar memories into long-term graph |
+
+## Dashboard
+
+Launch the live 3D memory visualization dashboard:
+```bash
+cargo run --quiet -- dashboard
+```
+This opens a native Windows app (cross-compiled from WSL) showing:
+- 3D force-directed graph of knowledge nodes (right-drag to orbit, scroll to zoom)
+- Live event log of all memory operations
+- Memory stats, short-term entries with salience bars, session log
+
+Launch it at session start so the user can watch memory activity in real-time.
 
 ## Feature Tracking Commands
 
