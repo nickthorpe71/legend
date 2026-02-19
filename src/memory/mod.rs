@@ -1287,6 +1287,17 @@ impl MemoryState {
     /// Build a comprehensive session-start summary: context + categorized memories.
     /// Designed as a single cold-start call that gives the LLM everything it needs.
     pub fn build_start_summary(&mut self) -> serde_json::Value {
+        self.build_start_summary_with_options(false, None)
+    }
+
+    /// Build session-start summary with options for compact output and category filtering.
+    /// - compact: If true, only show short text summaries (no id, reduced text length)
+    /// - category_filter: If Some, only return that specific category
+    pub fn build_start_summary_with_options(
+        &mut self,
+        compact: bool,
+        category_filter: Option<&str>,
+    ) -> serde_json::Value {
         let context = self.build_context_summary();
 
         // --- Categorized short-term memories ---
@@ -1298,12 +1309,24 @@ impl MemoryState {
 
         for entry in &self.short_term {
             let category = classify_text(&entry.text);
-            let item = serde_json::json!({
-                "id": entry.id,
-                "text": if entry.text.len() > 120 { format!("{}…", &entry.text[..120]) } else { entry.text.clone() },
-                "salience": (entry.salience * 100.0).round() / 100.0,
-                "reconsolidations": entry.reconsolidation_count,
-            });
+
+            // Build item based on compact mode
+            let item = if compact {
+                // Compact: just the text, truncated shorter
+                let text = if entry.text.len() > 80 {
+                    format!("{}…", &entry.text[..80])
+                } else {
+                    entry.text.clone()
+                };
+                serde_json::json!(text)
+            } else {
+                // Default: id and text only (removed salience/reconsolidations)
+                serde_json::json!({
+                    "id": entry.id,
+                    "text": if entry.text.len() > 120 { format!("{}…", &entry.text[..120]) } else { entry.text.clone() },
+                })
+            };
+
             match category {
                 MemoryCategory::Decision => decisions.push(item),
                 MemoryCategory::Architecture => architecture.push(item),
@@ -1314,20 +1337,57 @@ impl MemoryState {
             }
         }
 
-        // Sort each category by salience descending, cap at 10
-        for list in [
-            &mut decisions,
-            &mut architecture,
-            &mut todos,
-            &mut bugs,
-            &mut preferences,
-        ] {
-            list.sort_by(|a, b| {
-                let sa = a["salience"].as_f64().unwrap_or(0.0);
-                let sb = b["salience"].as_f64().unwrap_or(0.0);
-                sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-            });
+        // Sort each category by salience descending (using internal salience, not exposed)
+        // We need to re-sort since we removed salience from output
+        let sort_by_salience = |list: &mut Vec<serde_json::Value>, entries: &[ShortTermEntry]| {
+            // Create index mapping for sorting
+            let mut indexed: Vec<(usize, f32)> = list
+                .iter()
+                .enumerate()
+                .filter_map(|(i, item)| {
+                    if compact {
+                        // In compact mode, match by text
+                        let text = item.as_str()?;
+                        entries
+                            .iter()
+                            .find(|e| e.text.starts_with(text.trim_end_matches('…')))
+                            .map(|e| (i, e.salience))
+                    } else {
+                        // In default mode, match by id
+                        let id = item["id"].as_u64()?;
+                        entries.iter().find(|e| e.id == id).map(|e| (i, e.salience))
+                    }
+                })
+                .collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            let sorted: Vec<serde_json::Value> =
+                indexed.into_iter().map(|(i, _)| list[i].clone()).collect();
+            *list = sorted;
             list.truncate(5);
+        };
+
+        sort_by_salience(&mut decisions, &self.short_term);
+        sort_by_salience(&mut architecture, &self.short_term);
+        sort_by_salience(&mut todos, &self.short_term);
+        sort_by_salience(&mut bugs, &self.short_term);
+        sort_by_salience(&mut preferences, &self.short_term);
+
+        // If category filter is specified, only return that category
+        if let Some(filter) = category_filter {
+            let filtered = match filter.to_lowercase().as_str() {
+                "decisions" | "decision" => &decisions,
+                "architecture" | "arch" => &architecture,
+                "todos" | "todo" => &todos,
+                "bugs" | "bug" => &bugs,
+                "preferences" | "preference" | "prefs" | "pref" => &preferences,
+                _ => return serde_json::json!({"error": format!("Unknown category: {}", filter)}),
+            };
+            return serde_json::json!({
+                "current_task": self.current_task,
+                "category": filter,
+                "items": filtered,
+            });
         }
 
         serde_json::json!({
