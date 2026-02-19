@@ -1,5 +1,91 @@
 use crate::memory::{reset_memory, MemoryContext, MemoryState, ReinforceResult};
+use serde::Serialize;
 use std::io::{self, Read};
+
+// ---------------------------------------------------------------------------
+// Rich Event Data Types for Dashboard Observability
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum EventData {
+    Tick(TickEventData),
+    Query(QueryEventData),
+    Reinforce(ReinforceEventData),
+    Consolidate(ConsolidateEventData),
+    Start(StartEventData),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TickEventData {
+    pub entry_id: Option<u64>,
+    pub matches: Vec<MatchedEntry>,
+    pub graph_nodes: Vec<GraphHit>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QueryEventData {
+    pub matches: Vec<MatchedEntry>,
+    pub graph_nodes: Vec<GraphHit>,
+    pub primed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MatchedEntry {
+    pub id: u64,
+    pub similarity: f32,
+    pub text_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphHit {
+    pub id: u64,
+    pub label: String,
+    pub kind: String,
+    pub weight: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReinforceEventData {
+    pub signal: f32,
+    pub entries: Vec<ReinforceEntry>,
+    pub graph_nodes_affected: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReinforceEntry {
+    pub id: u64,
+    pub before: f32,
+    pub after: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConsolidateEventData {
+    pub groups_merged: usize,
+    pub summaries: Vec<ConsolidatedGroup>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConsolidatedGroup {
+    pub node_id: u64,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StartEventData {
+    pub clock: u64,
+    pub short_term_count: usize,
+    pub long_term_nodes: usize,
+    pub session_log_entries: usize,
+}
+
+fn truncate_text(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
+}
 
 pub fn handle_memory(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
@@ -40,18 +126,58 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut memory = MemoryState::load_or_default()?;
     let context = memory.tick(text.trim());
     let should_consolidate = memory.should_suggest_consolidation();
+
+    // Get the entry ID of the newly created/updated entry
+    let entry_id = memory.short_term.last().map(|e| e.id);
+
     memory.save()?;
 
-    log_event("tick", text.trim());
+    // Log rich event data
+    let event_data = EventData::Tick(TickEventData {
+        entry_id,
+        matches: context
+            .short_term
+            .iter()
+            .take(5)
+            .map(|m| MatchedEntry {
+                id: m.id,
+                similarity: m.similarity,
+                text_preview: truncate_text(&m.text, 80),
+            })
+            .collect(),
+        graph_nodes: context
+            .long_term
+            .iter()
+            .take(5)
+            .map(|n| GraphHit {
+                id: n.id,
+                label: n.label.clone(),
+                kind: n.kind.clone(),
+                weight: n.weight,
+            })
+            .collect(),
+    });
+    log_event_rich("tick", text.trim(), Some(event_data));
     print_context(context);
 
     if should_consolidate {
         let summaries = memory.consolidate();
         memory.save()?; // save again after consolidation
         if !summaries.is_empty() {
-            log_event(
+            let consolidate_data = EventData::Consolidate(ConsolidateEventData {
+                groups_merged: summaries.len(),
+                summaries: summaries
+                    .iter()
+                    .map(|s| ConsolidatedGroup {
+                        node_id: s.id,
+                        label: truncate_text(&s.label, 60),
+                    })
+                    .collect(),
+            });
+            log_event_rich(
                 "auto_consolidate",
                 &format!("{} groups merged", summaries.len()),
+                Some(consolidate_data),
             );
             eprintln!(
                 "[auto-consolidated {} group(s) into long-term memory]",
@@ -72,7 +198,39 @@ fn handle_query(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let context = memory.retrieve_context(query.trim());
     memory.save()?;
 
-    log_event("query", query.trim());
+    // Count primed nodes (those reached via edge traversal)
+    let primed_count = context
+        .long_term
+        .iter()
+        .filter(|n| n.edge_type.is_some())
+        .count();
+
+    // Log rich event data
+    let event_data = EventData::Query(QueryEventData {
+        matches: context
+            .short_term
+            .iter()
+            .take(5)
+            .map(|m| MatchedEntry {
+                id: m.id,
+                similarity: m.similarity,
+                text_preview: truncate_text(&m.text, 80),
+            })
+            .collect(),
+        graph_nodes: context
+            .long_term
+            .iter()
+            .take(8)
+            .map(|n| GraphHit {
+                id: n.id,
+                label: n.label.clone(),
+                kind: n.kind.clone(),
+                weight: n.weight,
+            })
+            .collect(),
+        primed_count,
+    });
+    log_event_rich("query", query.trim(), Some(event_data));
     print_context(context);
     Ok(())
 }
@@ -80,8 +238,17 @@ fn handle_query(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn handle_start() -> Result<(), Box<dyn std::error::Error>> {
     let mut memory = MemoryState::load_or_default()?;
     let summary = memory.build_start_summary();
+
+    // Log rich event data with memory stats
+    let event_data = EventData::Start(StartEventData {
+        clock: memory.clock,
+        short_term_count: memory.short_term.len(),
+        long_term_nodes: memory.long_term.nodes.len(),
+        session_log_entries: memory.session_log.len(),
+    });
+
     memory.save()?;
-    log_event("start", "session cold-start");
+    log_event_rich("start", "session cold-start", Some(event_data));
     let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
     Ok(())
@@ -115,7 +282,23 @@ fn handle_consolidate() -> Result<(), Box<dyn std::error::Error>> {
     let mut memory = MemoryState::load_or_default()?;
     let summaries = memory.consolidate();
     memory.save()?;
-    log_event("consolidate", &format!("{} groups merged", summaries.len()));
+
+    // Log rich event data
+    let event_data = EventData::Consolidate(ConsolidateEventData {
+        groups_merged: summaries.len(),
+        summaries: summaries
+            .iter()
+            .map(|s| ConsolidatedGroup {
+                node_id: s.id,
+                label: truncate_text(&s.label, 60),
+            })
+            .collect(),
+    });
+    log_event_rich(
+        "consolidate",
+        &format!("{} groups merged", summaries.len()),
+        Some(event_data),
+    );
     let json = serde_json::to_string(&summaries).unwrap_or_else(|_| "[]".to_string());
     println!("{}", json);
     Ok(())
@@ -164,7 +347,25 @@ fn handle_reinforce(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let result = memory.reinforce(&ids, signal);
     memory.save()?;
 
-    log_event("reinforce", &format!("signal={} ids={:?}", signal, ids));
+    // Log rich event data with before/after salience
+    let event_data = EventData::Reinforce(ReinforceEventData {
+        signal,
+        entries: result
+            .reinforced
+            .iter()
+            .map(|r| ReinforceEntry {
+                id: r.id,
+                before: r.salience_before,
+                after: r.salience_after,
+            })
+            .collect(),
+        graph_nodes_affected: result.graph_nodes_affected,
+    });
+    log_event_rich(
+        "reinforce",
+        &format!("signal={} ids={:?}", signal, ids),
+        Some(event_data),
+    );
     print_reinforce_result(&result);
     Ok(())
 }
@@ -237,13 +438,18 @@ fn handle_dump() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Append a structured event to `.legend/events.jsonl` for dashboard streaming.
-fn log_event(cmd: &str, detail: &str) {
+/// Includes optional rich data payload for detailed observability.
+fn log_event_rich(cmd: &str, detail: &str, data: Option<EventData>) {
     use std::io::Write;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let entry = serde_json::json!({"ts": ts, "cmd": cmd, "detail": detail});
+    let entry = if let Some(data) = data {
+        serde_json::json!({"ts": ts, "cmd": cmd, "detail": detail, "data": data})
+    } else {
+        serde_json::json!({"ts": ts, "cmd": cmd, "detail": detail})
+    };
     let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -252,6 +458,11 @@ fn log_event(cmd: &str, detail: &str) {
         return;
     };
     let _ = writeln!(f, "{}", entry);
+}
+
+/// Simple event logging without rich data (backwards compatible).
+fn log_event(cmd: &str, detail: &str) {
+    log_event_rich(cmd, detail, None);
 }
 
 fn print_memory_help() {

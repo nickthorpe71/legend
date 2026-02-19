@@ -12,9 +12,120 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, BufRead};
 use std::time::{Duration, Instant};
+
+// ---------------------------------------------------------------------------
+// Rich Event Data Types (parsed from .legend/events.jsonl)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum EventData {
+    Tick(TickEventData),
+    Query(QueryEventData),
+    Reinforce(ReinforceEventData),
+    Consolidate(ConsolidateEventData),
+    Start(StartEventData),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TickEventData {
+    pub entry_id: Option<u64>,
+    pub matches: Vec<MatchedEntry>,
+    pub graph_nodes: Vec<GraphHit>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QueryEventData {
+    pub matches: Vec<MatchedEntry>,
+    pub graph_nodes: Vec<GraphHit>,
+    pub primed_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct MatchedEntry {
+    pub id: u64,
+    pub similarity: f32,
+    pub text_preview: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GraphHit {
+    pub id: u64,
+    pub label: String,
+    pub kind: String,
+    pub weight: f32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReinforceEventData {
+    pub signal: f32,
+    pub entries: Vec<ReinforceEntryData>,
+    pub graph_nodes_affected: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReinforceEntryData {
+    pub id: u64,
+    pub before: f32,
+    pub after: f32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConsolidateEventData {
+    pub groups_merged: usize,
+    pub summaries: Vec<ConsolidatedGroup>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConsolidatedGroup {
+    pub node_id: u64,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct StartEventData {
+    pub clock: u64,
+    pub short_term_count: usize,
+    pub long_term_nodes: usize,
+    pub session_log_entries: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct EventEntry {
+    pub timestamp: u64,
+    pub command: String,
+    pub detail: String,
+    pub data: Option<EventData>,
+}
+
+fn load_events() -> Vec<EventEntry> {
+    let events_path = std::path::Path::new(".legend/events.jsonl");
+    let Ok(file) = std::fs::File::open(events_path) else {
+        return Vec::new();
+    };
+    let reader = io::BufReader::new(file);
+
+    reader
+        .lines()
+        .filter_map(|line| {
+            let line = line.ok()?;
+            let json: serde_json::Value = serde_json::from_str(&line).ok()?;
+            let event_data: Option<EventData> = json
+                .get("data")
+                .and_then(|d| serde_json::from_value(d.clone()).ok());
+            Some(EventEntry {
+                timestamp: json["ts"].as_u64().unwrap_or(0),
+                command: json["cmd"].as_str().unwrap_or("").to_string(),
+                detail: json["detail"].as_str().unwrap_or("").to_string(),
+                data: event_data,
+            })
+        })
+        .collect()
+}
 
 /// Active view in the main panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +156,7 @@ impl View {
         match self {
             View::ShortTerm => "Short-Term Memory",
             View::Graph => "Knowledge Graph",
-            View::Events => "Session Events",
+            View::Events => "Command Events",
         }
     }
 }
@@ -62,6 +173,7 @@ pub enum InputMode {
 /// TUI Application state
 pub struct App {
     pub memory: MemoryState,
+    pub events: Vec<EventEntry>, // Loaded from .legend/events.jsonl
     pub view: View,
     pub input_mode: InputMode,
     pub input_buffer: String,
@@ -86,8 +198,10 @@ impl App {
     pub fn new(memory: MemoryState) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        let events = load_events();
         Self {
             memory,
+            events,
             view: View::ShortTerm,
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
@@ -102,6 +216,7 @@ impl App {
 
     pub fn reload_memory(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.memory = MemoryState::load_or_default()?;
+        self.events = load_events();
         Ok(())
     }
 
@@ -198,7 +313,7 @@ impl App {
         match self.view {
             View::ShortTerm => self.memory.short_term.len(),
             View::Graph => self.graph_items().len(),
-            View::Events => self.memory.session_log.len(),
+            View::Events => self.events.len(),
         }
     }
 
@@ -426,19 +541,136 @@ impl App {
 
     fn format_event_detail(&self, idx: usize) -> Option<String> {
         // Events are displayed in reverse order
-        let events: Vec<_> = self.memory.session_log.iter().rev().collect();
-        let entry = events.get(idx)?;
+        let events: Vec<_> = self.events.iter().rev().collect();
+        let event = events.get(idx)?;
 
-        // Use classify_text from memory module
-        let category = classify_text(&entry.text);
+        let mut output = format!(
+            "COMMAND EVENT: {}\n\n\
+             Timestamp: {}\n\
+             Detail: {}\n",
+            event.command.to_uppercase(),
+            event.timestamp,
+            event.detail
+        );
 
-        Some(format!(
-            "SESSION EVENT\n\n\
-             Timestamp: Clock {}\n\
-             Category: {:?}\n\n\
-             --- FULL TEXT ---\n{}",
-            entry.timestamp, category, entry.text
-        ))
+        // Add rich data details based on event type
+        match &event.data {
+            Some(EventData::Tick(t)) => {
+                output.push_str(&format!(
+                    "\n--- TICK DETAILS ---\n\
+                     Entry ID: {}\n",
+                    t.entry_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "N/A".to_string())
+                ));
+
+                if !t.matches.is_empty() {
+                    output.push_str("\nMatched Entries:\n");
+                    for m in &t.matches {
+                        output.push_str(&format!(
+                            "  #{} [{:.0}%] {}\n",
+                            m.id,
+                            m.similarity * 100.0,
+                            m.text_preview
+                        ));
+                    }
+                }
+
+                if !t.graph_nodes.is_empty() {
+                    output.push_str("\nGraph Nodes Surfaced:\n");
+                    for n in &t.graph_nodes {
+                        output.push_str(&format!(
+                            "  {} [{}] weight={:.2}\n",
+                            n.label, n.kind, n.weight
+                        ));
+                    }
+                }
+            }
+            Some(EventData::Query(q)) => {
+                output.push_str(&format!(
+                    "\n--- QUERY RESULTS ---\n\
+                     Total Matches: {}\n\
+                     Primed Nodes: {}\n",
+                    q.matches.len(),
+                    q.primed_count
+                ));
+
+                if !q.matches.is_empty() {
+                    output.push_str("\nMatched Entries:\n");
+                    for m in &q.matches {
+                        output.push_str(&format!(
+                            "  #{} [{:.0}%] {}\n",
+                            m.id,
+                            m.similarity * 100.0,
+                            m.text_preview
+                        ));
+                    }
+                }
+
+                if !q.graph_nodes.is_empty() {
+                    output.push_str("\nGraph Nodes Retrieved:\n");
+                    for n in &q.graph_nodes {
+                        output.push_str(&format!(
+                            "  {} [{}] weight={:.2}\n",
+                            n.label, n.kind, n.weight
+                        ));
+                    }
+                }
+            }
+            Some(EventData::Reinforce(r)) => {
+                output.push_str(&format!(
+                    "\n--- REINFORCEMENT ---\n\
+                     Signal: {:.2}\n\
+                     Graph Nodes Affected: {}\n",
+                    r.signal, r.graph_nodes_affected
+                ));
+
+                if !r.entries.is_empty() {
+                    output.push_str("\nSalience Changes:\n");
+                    for e in &r.entries {
+                        let delta = e.after - e.before;
+                        let arrow = if delta > 0.0 { "↑" } else { "↓" };
+                        output.push_str(&format!(
+                            "  #{}: {:.3} → {:.3} ({}{:.3})\n",
+                            e.id,
+                            e.before,
+                            e.after,
+                            arrow,
+                            delta.abs()
+                        ));
+                    }
+                }
+            }
+            Some(EventData::Consolidate(c)) => {
+                output.push_str(&format!(
+                    "\n--- CONSOLIDATION ---\n\
+                     Groups Merged: {}\n",
+                    c.groups_merged
+                ));
+
+                if !c.summaries.is_empty() {
+                    output.push_str("\nCreated Nodes:\n");
+                    for g in &c.summaries {
+                        output.push_str(&format!("  #{}: {}\n", g.node_id, g.label));
+                    }
+                }
+            }
+            Some(EventData::Start(s)) => {
+                output.push_str(&format!(
+                    "\n--- SESSION START ---\n\
+                     Clock: {}\n\
+                     Short-term Entries: {}\n\
+                     Long-term Nodes: {}\n\
+                     Session Log Entries: {}\n",
+                    s.clock, s.short_term_count, s.long_term_nodes, s.session_log_entries
+                ));
+            }
+            None => {
+                output.push_str("\n(No rich data available for this event)\n");
+            }
+        }
+
+        Some(output)
     }
 }
 
@@ -882,29 +1114,76 @@ fn render_graph(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_events(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
-        .memory
-        .session_log
+        .events
         .iter()
         .rev()
-        .map(|entry| {
-            let category = classify_text(&entry.text);
-            let cat_color = match category {
-                MemoryCategory::Decision => Color::Blue,
-                MemoryCategory::Bug => Color::Red,
-                MemoryCategory::Todo => Color::Yellow,
-                MemoryCategory::Architecture => Color::Green,
-                MemoryCategory::Preference => Color::Magenta,
-                MemoryCategory::Progress => Color::Cyan,
-                MemoryCategory::General => Color::DarkGray,
+        .map(|event| {
+            // Color-code by command type
+            let cmd_color = match event.command.as_str() {
+                "tick" => Color::Green,
+                "query" => Color::Blue,
+                "start" => Color::Magenta,
+                "reinforce" => Color::Yellow,
+                "consolidate" | "auto_consolidate" => Color::Rgb(255, 130, 80),
+                "reset" => Color::Red,
+                "task_set" | "task_clear" => Color::Cyan,
+                _ => Color::Gray,
+            };
+
+            // Build summary based on rich data if available
+            let summary = match &event.data {
+                Some(EventData::Tick(t)) => {
+                    let id_str = t.entry_id.map(|id| format!("#{}", id)).unwrap_or_default();
+                    let match_count = t.matches.len();
+                    let graph_count = t.graph_nodes.len();
+                    format!(
+                        "{} {} matches, {} graph nodes",
+                        id_str, match_count, graph_count
+                    )
+                }
+                Some(EventData::Query(q)) => {
+                    let top_sim = q
+                        .matches
+                        .first()
+                        .map(|m| format!("{:.0}%", m.similarity * 100.0))
+                        .unwrap_or_else(|| "0%".to_string());
+                    format!(
+                        "{} matches (top: {}), {} primed",
+                        q.matches.len(),
+                        top_sim,
+                        q.primed_count
+                    )
+                }
+                Some(EventData::Reinforce(r)) => {
+                    format!(
+                        "sig={:.1} {} entries, {} graph",
+                        r.signal,
+                        r.entries.len(),
+                        r.graph_nodes_affected
+                    )
+                }
+                Some(EventData::Consolidate(c)) => {
+                    format!("{} groups merged", c.groups_merged)
+                }
+                Some(EventData::Start(s)) => {
+                    format!(
+                        "clock={} st={} lt={}",
+                        s.clock, s.short_term_count, s.long_term_nodes
+                    )
+                }
+                None => truncate(&event.detail, 40),
             };
 
             let line = Line::from(vec![
                 Span::styled(
-                    format!("[{}] ", entry.timestamp),
+                    format!("[{}] ", event.timestamp),
                     Style::default().fg(Color::DarkGray),
                 ),
-                Span::styled(format!("[{:?}] ", category), Style::default().fg(cat_color)),
-                Span::raw(truncate(&entry.text, 50)),
+                Span::styled(
+                    format!("[{}] ", event.command),
+                    Style::default().fg(cmd_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(summary),
             ]);
             ListItem::new(line)
         })
@@ -914,7 +1193,7 @@ fn render_events(f: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Session Events (newest first) "),
+                .title(" Command Events (newest first) - Press Enter for details "),
         )
         .highlight_style(
             Style::default()
