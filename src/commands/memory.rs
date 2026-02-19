@@ -96,7 +96,7 @@ pub fn handle_memory(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
     match args[0].as_str() {
         "tick" => handle_tick(&args[1..]),
         "query" => handle_query(&args[1..]),
-        "start" => handle_start(),
+        "start" => handle_start(&args[1..]),
         "stats" => handle_stats(),
         "reset" => handle_reset(),
         "consolidate" => handle_consolidate(),
@@ -235,9 +235,39 @@ fn handle_query(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_start() -> Result<(), Box<dyn std::error::Error>> {
+/// Options for memory start command
+#[derive(Default)]
+struct StartOptions {
+    compact: bool,
+    category: Option<String>,
+}
+
+fn parse_start_args(args: &[String]) -> StartOptions {
+    let mut opts = StartOptions::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--compact" | "-c" => opts.compact = true,
+            "--category" => {
+                if i + 1 < args.len() {
+                    opts.category = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            arg if arg.starts_with("--category=") => {
+                opts.category = Some(arg.trim_start_matches("--category=").to_string());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    opts
+}
+
+fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = parse_start_args(args);
     let mut memory = MemoryState::load_or_default()?;
-    let summary = memory.build_start_summary();
+    let summary = memory.build_start_summary_with_options(opts.compact, opts.category.as_deref());
 
     // Log rich event data with memory stats
     let event_data = EventData::Start(StartEventData {
@@ -469,7 +499,9 @@ fn print_memory_help() {
     println!("Legend Memory - hierarchical memory subsystem");
     println!();
     println!("Usage:");
-    println!("  legend memory start            Session start: context + categorized in one call");
+    println!("  legend memory start [options]   Session start: context + categorized in one call");
+    println!("    --compact, -c                   Compact output (text only, no ids)");
+    println!("    --category <name>               Filter to one category (bugs, todos, decisions, architecture, preferences)");
     println!("  legend memory tick <text>       Record a memory (decision, progress, discovery)");
     println!("  legend memory tick              Record a memory (reads stdin)");
     println!("  legend memory query <text>      Query memory (auto-reinforces top result)");
