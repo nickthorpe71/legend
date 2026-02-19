@@ -117,12 +117,86 @@ pub struct DumpSession {
 // Live event from `.legend/events.jsonl`
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum EventData {
+    Tick(TickEventData),
+    Query(QueryEventData),
+    Reinforce(ReinforceEventData),
+    Consolidate(ConsolidateEventData),
+    Start(StartEventData),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TickEventData {
+    pub entry_id: Option<u64>,
+    pub matches: Vec<MatchedEntry>,
+    pub graph_nodes: Vec<GraphHit>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QueryEventData {
+    pub matches: Vec<MatchedEntry>,
+    pub graph_nodes: Vec<GraphHit>,
+    pub primed_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct MatchedEntry {
+    pub id: u64,
+    pub similarity: f32,
+    pub text_preview: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct GraphHit {
+    pub id: u64,
+    pub label: String,
+    pub kind: String,
+    pub weight: f32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReinforceEventData {
+    pub signal: f32,
+    pub entries: Vec<ReinforceEntryData>,
+    pub graph_nodes_affected: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReinforceEntryData {
+    pub id: u64,
+    pub before: f32,
+    pub after: f32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConsolidateEventData {
+    pub groups_merged: usize,
+    pub summaries: Vec<ConsolidatedGroup>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConsolidatedGroup {
+    pub node_id: u64,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct StartEventData {
+    pub clock: u64,
+    pub short_term_count: usize,
+    pub long_term_nodes: usize,
+    pub session_log_entries: usize,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct EventEntry {
     pub timestamp: u64,
     pub command: String,
     pub detail: String,
+    pub data: Option<EventData>,
 }
 
 // ---------------------------------------------------------------------------
@@ -318,10 +392,15 @@ fn poll_events(data: &mut LegendData, project_dir: &PathBuf) {
         .filter_map(|line| {
             let line = line.ok()?;
             let json: serde_json::Value = serde_json::from_str(&line).ok()?;
+            // Parse rich event data if present
+            let event_data: Option<EventData> = json
+                .get("data")
+                .and_then(|d| serde_json::from_value(d.clone()).ok());
             Some(EventEntry {
                 timestamp: json["ts"].as_u64().unwrap_or(0),
                 command: json["cmd"].as_str().unwrap_or("").to_string(),
                 detail: json["detail"].as_str().unwrap_or("").to_string(),
+                data: event_data,
             })
         })
         .collect();
