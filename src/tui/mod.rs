@@ -1,4 +1,4 @@
-use crate::memory::{classify_text, GraphEdge, GraphNode, MemoryCategory, MemoryState};
+use crate::memory::{GraphEdge, GraphNode, MemoryState};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
@@ -54,6 +54,7 @@ pub struct MatchedEntry {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphHit {
+    #[allow(dead_code)]
     pub id: u64,
     pub label: String,
     pub kind: String,

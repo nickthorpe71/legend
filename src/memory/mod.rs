@@ -1286,6 +1286,7 @@ impl MemoryState {
 
     /// Build a comprehensive session-start summary: context + categorized memories.
     /// Designed as a single cold-start call that gives the LLM everything it needs.
+    #[allow(dead_code)]
     pub fn build_start_summary(&mut self) -> serde_json::Value {
         self.build_start_summary_with_options(false, None)
     }
