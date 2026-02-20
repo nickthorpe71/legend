@@ -19,6 +19,8 @@ const LONG_TERM_DECAY_RATE: f32 = 0.0005;
 const EVICTION_DECAY_RATE: f32 = 0.002;
 const HEBBIAN_EDGE_BOOST: f32 = 0.05;
 const HEBBIAN_NODE_BOOST: f32 = 0.02;
+/// Maximum edge weight to prevent Hebbian reinforcement explosion.
+const HEBBIAN_EDGE_CEILING: f32 = 10.0;
 const EDGE_REINFORCE_DELTA: f32 = 0.1;
 const NODE_WEIGHT_BASE: f32 = 0.2;
 const PRUNE_THRESHOLD: f32 = 0.1;
@@ -261,6 +263,9 @@ pub struct GraphEdge {
     pub weight: f32,
     #[serde(default = "default_edge_kind")]
     pub kind: String,
+    /// Clock tick when this edge was last reinforced.
+    #[serde(default)]
+    pub last_seen: u64,
 }
 
 fn default_edge_kind() -> String {
@@ -279,6 +284,23 @@ pub struct SessionEntry {
 pub struct MemoryContext {
     pub short_term: Vec<MemorySnippet>,
     pub long_term: Vec<GraphNodeSummary>,
+}
+
+/// Result of a tick operation, providing feedback on what action was taken.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TickResult {
+    /// What action was taken: "created", "merged", or "reconsolidated"
+    pub action: String,
+    /// The ID of the entry that was created or modified
+    pub entry_id: u64,
+    /// If merged or reconsolidated, the ID of the existing entry that was matched
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_existing: Option<u64>,
+    /// The similarity score if merged (0.0-1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<f32>,
+    /// Related context from the tick
+    pub context: MemoryContext,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -536,7 +558,8 @@ impl MemoryState {
     }
 
     /// Ingest text: chunk → embed → reconsolidate or match/merge/insert → update graph.
-    pub fn tick(&mut self, text: &str) -> MemoryContext {
+    /// Returns a TickResult describing what action was taken.
+    pub fn tick(&mut self, text: &str) -> TickResult {
         self.clock += 1;
         self.ticks_since_consolidation += 1;
         self.apply_decay();
@@ -556,6 +579,12 @@ impl MemoryState {
             long_term: Vec::new(),
         };
 
+        // Track the action taken (priority: created > reconsolidated > merged)
+        let mut result_action = "created".to_string();
+        let mut result_entry_id: u64 = 0;
+        let mut result_matched: Option<u64> = None;
+        let mut result_similarity: Option<f32> = None;
+
         for chunk in chunk_text(text) {
             self.push_immediate(&chunk);
 
@@ -572,10 +601,10 @@ impl MemoryState {
                 // Update graph with the new text context
                 self.update_graph(&chunk, salience);
                 last_context = self.retrieve_context(&chunk);
-                // Log reconsolidation in session
-                if let Some(entry) = self.short_term.iter().find(|e| e.id == reconsolidated_id) {
-                    let _ = entry; // reconsolidation happened
-                }
+                // Track reconsolidation
+                result_action = "reconsolidated".to_string();
+                result_entry_id = reconsolidated_id;
+                result_matched = Some(reconsolidated_id);
                 continue;
             }
 
@@ -602,6 +631,11 @@ impl MemoryState {
                         entry.last_access = self.clock;
                         merge_memory_refs(&mut entry.refs, refs.clone());
                     }
+                    // Track merge (high similarity)
+                    result_action = "merged".to_string();
+                    result_entry_id = best_id;
+                    result_matched = Some(best_id);
+                    result_similarity = Some(best_sim);
                 }
                 s if s >= self.config.theta_low && diversity_pass => {
                     if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == best_id) {
@@ -613,10 +647,22 @@ impl MemoryState {
                         merge_memory_refs(&mut entry.refs, refs.clone());
                     }
                     self.update_graph(&chunk, salience);
+                    // Track merge (low similarity)
+                    result_action = "merged".to_string();
+                    result_entry_id = best_id;
+                    result_matched = Some(best_id);
+                    result_similarity = Some(best_sim);
                 }
                 _ => {
                     self.insert_short_term(&chunk, embedding, salience, refs);
                     self.update_graph(&chunk, salience);
+                    // Track creation - get the ID of the newly inserted entry
+                    if let Some(entry) = self.short_term.last() {
+                        result_action = "created".to_string();
+                        result_entry_id = entry.id;
+                        result_matched = None;
+                        result_similarity = None;
+                    }
                 }
             }
 
@@ -626,7 +672,13 @@ impl MemoryState {
         self.prune_short_term();
         self.prune_graph();
 
-        last_context
+        TickResult {
+            action: result_action,
+            entry_id: result_entry_id,
+            matched_existing: result_matched,
+            similarity: result_similarity,
+            context: last_context,
+        }
     }
 
     /// Query memory without inserting new data.
@@ -884,16 +936,18 @@ impl MemoryState {
             return;
         }
 
+        let now = self.clock;
         for edge in &mut self.long_term.edges {
             if co_retrieved_ids.contains(&edge.from) && co_retrieved_ids.contains(&edge.to) {
-                edge.weight += HEBBIAN_EDGE_BOOST;
+                edge.weight = (edge.weight + HEBBIAN_EDGE_BOOST).min(HEBBIAN_EDGE_CEILING);
+                edge.last_seen = now;
             }
         }
 
         for &id in co_retrieved_ids {
             if let Some(node) = self.long_term.nodes.get_mut(&id) {
                 node.weight += HEBBIAN_NODE_BOOST;
-                node.last_seen = self.clock;
+                node.last_seen = now;
             }
         }
     }
@@ -1043,6 +1097,7 @@ impl MemoryState {
 
     /// Insert a new edge or reinforce an existing one between two nodes.
     fn upsert_edge(&mut self, from: u64, to: u64, kind: &str) {
+        let now = self.clock;
         if let Some(edge) = self
             .long_term
             .edges
@@ -1050,6 +1105,7 @@ impl MemoryState {
             .find(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
         {
             edge.weight += EDGE_REINFORCE_DELTA;
+            edge.last_seen = now;
             if edge.kind == "related" && kind != "related" {
                 edge.kind = kind.to_string();
             }
@@ -1059,6 +1115,7 @@ impl MemoryState {
                 to,
                 weight: EDGE_REINFORCE_DELTA,
                 kind: kind.to_string(),
+                last_seen: now,
             });
         }
     }
@@ -1221,6 +1278,11 @@ impl MemoryState {
             node.weight *= decay;
             node.salience *= decay;
         }
+        // Edge decay: edges that haven't been reinforced recently lose weight
+        for edge in &mut self.long_term.edges {
+            let decay = (-(now.saturating_sub(edge.last_seen) as f32) * LONG_TERM_DECAY_RATE).exp();
+            edge.weight *= decay;
+        }
     }
 
     /// Return the most recent `n` session log entries.
@@ -1338,6 +1400,13 @@ impl MemoryState {
             }
         }
 
+        // Track total counts before truncation
+        let decisions_total = decisions.len();
+        let architecture_total = architecture.len();
+        let todos_total = todos.len();
+        let bugs_total = bugs.len();
+        let preferences_total = preferences.len();
+
         // Sort each category by salience descending (using internal salience, not exposed)
         // We need to re-sort since we removed salience from output
         let sort_by_salience = |list: &mut Vec<serde_json::Value>, entries: &[ShortTermEntry]| {
@@ -1374,20 +1443,34 @@ impl MemoryState {
         sort_by_salience(&mut bugs, &self.short_term);
         sort_by_salience(&mut preferences, &self.short_term);
 
+        // Helper to build category object with optional truncation indicator
+        let build_category = |items: &[serde_json::Value], total: usize| -> serde_json::Value {
+            if total > 5 {
+                serde_json::json!({
+                    "items": items,
+                    "showing": items.len(),
+                    "total": total
+                })
+            } else {
+                serde_json::json!(items)
+            }
+        };
+
         // If category filter is specified, only return that category
         if let Some(filter) = category_filter {
-            let filtered = match filter.to_lowercase().as_str() {
-                "decisions" | "decision" => &decisions,
-                "architecture" | "arch" => &architecture,
-                "todos" | "todo" => &todos,
-                "bugs" | "bug" => &bugs,
-                "preferences" | "preference" | "prefs" | "pref" => &preferences,
+            let (filtered, total) = match filter.to_lowercase().as_str() {
+                "decisions" | "decision" => (&decisions, decisions_total),
+                "architecture" | "arch" => (&architecture, architecture_total),
+                "todos" | "todo" => (&todos, todos_total),
+                "bugs" | "bug" => (&bugs, bugs_total),
+                "preferences" | "preference" | "prefs" | "pref" => (&preferences, preferences_total),
                 _ => return serde_json::json!({"error": format!("Unknown category: {}", filter)}),
             };
             return serde_json::json!({
                 "current_task": self.current_task,
                 "category": filter,
                 "items": filtered,
+                "total": total,
             });
         }
 
@@ -1395,11 +1478,11 @@ impl MemoryState {
             "current_task": self.current_task,
             "context": context,
             "categorized": {
-                "decisions": decisions,
-                "architecture": architecture,
-                "todos": todos,
-                "bugs": bugs,
-                "preferences": preferences,
+                "decisions": build_category(&decisions, decisions_total),
+                "architecture": build_category(&architecture, architecture_total),
+                "todos": build_category(&todos, todos_total),
+                "bugs": build_category(&bugs, bugs_total),
+                "preferences": build_category(&preferences, preferences_total),
             }
         })
     }
@@ -1917,6 +2000,7 @@ mod tests {
             to: id2,
             weight: 0.1,
             kind: "related".to_string(),
+            last_seen: 0,
         });
 
         state.clock = 100;
@@ -2347,5 +2431,63 @@ mod tests {
         if results.len() > 1 {
             assert!(has_edge_type, "neighbor nodes should have edge_type set");
         }
+    }
+
+    #[test]
+    fn test_hebbian_edge_ceiling() {
+        let mut state = MemoryState::default();
+        state.tick("fn process_data() uses struct Config");
+        // Hammer the edges with many queries to test ceiling
+        for _ in 0..500 {
+            state.retrieve_context("process_data Config");
+        }
+        // All edge weights should be capped at HEBBIAN_EDGE_CEILING (10.0)
+        for edge in &state.long_term.edges {
+            assert!(
+                edge.weight <= HEBBIAN_EDGE_CEILING,
+                "edge weight {} exceeds ceiling {}",
+                edge.weight,
+                HEBBIAN_EDGE_CEILING
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_decay_reduces_weights() {
+        let mut state = MemoryState::default();
+        state.tick("fn handle_data() uses struct Request");
+        // Store initial edge weights
+        let initial_weights: Vec<f32> = state.long_term.edges.iter().map(|e| e.weight).collect();
+        assert!(!initial_weights.is_empty(), "should have edges");
+        // Advance clock and apply decay
+        state.clock += 100;
+        state.apply_decay();
+        // Verify edge weights have decayed
+        for (edge, &initial) in state.long_term.edges.iter().zip(initial_weights.iter()) {
+            assert!(
+                edge.weight < initial,
+                "edge weight should decay: {} -> {}",
+                initial,
+                edge.weight
+            );
+        }
+    }
+
+    #[test]
+    fn test_edge_last_seen_updated() {
+        let mut state = MemoryState::default();
+        state.tick("fn process() uses struct Data");
+        let initial_last_seen: Vec<u64> = state.long_term.edges.iter().map(|e| e.last_seen).collect();
+        assert!(!initial_last_seen.is_empty(), "should have edges");
+        // Query to trigger Hebbian reinforcement
+        state.retrieve_context("process Data");
+        // Check that last_seen was updated for co-retrieved edges
+        let any_updated = state
+            .long_term
+            .edges
+            .iter()
+            .zip(initial_last_seen.iter())
+            .any(|(edge, &initial)| edge.last_seen > initial);
+        assert!(any_updated, "edge last_seen should be updated after query");
     }
 }

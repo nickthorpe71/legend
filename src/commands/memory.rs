@@ -1,4 +1,4 @@
-use crate::memory::{reset_memory, MemoryContext, MemoryState, ReinforceResult};
+use crate::memory::{reset_memory, MemoryContext, MemoryState, ReinforceResult, TickResult};
 use serde::Serialize;
 use std::io::{self, Read};
 
@@ -112,30 +112,63 @@ pub fn handle_memory(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
     }
 }
 
-fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let text = if args.is_empty() {
+/// Options for tick command
+struct TickOptions {
+    text: String,
+    is_blocker: bool,
+}
+
+fn parse_tick_args(args: &[String]) -> Result<TickOptions, Box<dyn std::error::Error>> {
+    let mut is_blocker = false;
+    let mut text_parts: Vec<&str> = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--blocker" | "-b" => is_blocker = true,
+            _ => text_parts.push(arg),
+        }
+    }
+
+    let text = if text_parts.is_empty() {
         read_stdin()?
     } else {
-        args.join(" ")
+        text_parts.join(" ")
     };
 
-    if text.trim().is_empty() {
+    Ok(TickOptions { text, is_blocker })
+}
+
+fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = parse_tick_args(args)?;
+
+    if opts.text.trim().is_empty() {
         return Err("No input provided for tick".into());
     }
 
+    // Prepend BLOCKER prefix if flag is set
+    let text = if opts.is_blocker {
+        format!("BLOCKER: {}", opts.text.trim())
+    } else {
+        opts.text.trim().to_string()
+    };
+
     let mut memory = MemoryState::load_or_default()?;
-    let context = memory.tick(text.trim());
+    let tick_result = memory.tick(&text);
     let should_consolidate = memory.should_suggest_consolidation();
 
-    // Get the entry ID of the newly created/updated entry
-    let entry_id = memory.short_term.last().map(|e| e.id);
+    // Boost salience for blocker entries
+    if opts.is_blocker {
+        if let Some(entry) = memory.short_term.iter_mut().find(|e| e.id == tick_result.entry_id) {
+            entry.salience = (entry.salience + 0.4).min(1.0);
+        }
+    }
 
     memory.save()?;
 
     // Log rich event data
     let event_data = EventData::Tick(TickEventData {
-        entry_id,
-        matches: context
+        entry_id: Some(tick_result.entry_id),
+        matches: tick_result.context
             .short_term
             .iter()
             .take(5)
@@ -145,7 +178,7 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 text_preview: truncate_text(&m.text, 80),
             })
             .collect(),
-        graph_nodes: context
+        graph_nodes: tick_result.context
             .long_term
             .iter()
             .take(5)
@@ -158,7 +191,7 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             .collect(),
     });
     log_event_rich("tick", text.trim(), Some(event_data));
-    print_context(context);
+    print_tick_result(&tick_result);
 
     if should_consolidate {
         let summaries = memory.consolidate();
@@ -188,14 +221,39 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_query(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.is_empty() {
+/// Options for query command
+#[derive(Default)]
+struct QueryOptions {
+    query: String,
+    show_reasons: bool,
+}
+
+fn parse_query_args(args: &[String]) -> Result<QueryOptions, Box<dyn std::error::Error>> {
+    let mut show_reasons = false;
+    let mut query_parts: Vec<&str> = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--reasons" | "-r" => show_reasons = true,
+            _ => query_parts.push(arg),
+        }
+    }
+
+    if query_parts.is_empty() {
         return Err("Provide a query string".into());
     }
 
-    let query = args.join(" ");
+    Ok(QueryOptions {
+        query: query_parts.join(" "),
+        show_reasons,
+    })
+}
+
+fn handle_query(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = parse_query_args(args)?;
+
     let mut memory = MemoryState::load_or_default()?;
-    let context = memory.retrieve_context(query.trim());
+    let context = memory.retrieve_context(opts.query.trim());
     memory.save()?;
 
     // Count primed nodes (those reached via edge traversal)
@@ -230,9 +288,71 @@ fn handle_query(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             .collect(),
         primed_count,
     });
-    log_event_rich("query", query.trim(), Some(event_data));
-    print_context(context);
+    log_event_rich("query", opts.query.trim(), Some(event_data));
+
+    if opts.show_reasons {
+        print_query_with_reasons(&context, primed_count);
+    } else {
+        print_context(context);
+    }
     Ok(())
+}
+
+/// Print query results with reasoning for why each result was returned
+fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
+    let short_term_with_reasons: Vec<serde_json::Value> = context
+        .short_term
+        .iter()
+        .map(|m| {
+            let reason = if m.similarity >= 0.8 {
+                "high semantic similarity to query"
+            } else if m.similarity >= 0.5 {
+                "moderate semantic similarity to query"
+            } else if m.similarity >= 0.2 {
+                "weak semantic similarity, may share related terms"
+            } else {
+                "low similarity, included for coverage"
+            };
+            serde_json::json!({
+                "id": m.id,
+                "text": m.text,
+                "similarity": (m.similarity * 1000.0).round() / 1000.0,
+                "reason": reason,
+            })
+        })
+        .collect();
+
+    let long_term_with_reasons: Vec<serde_json::Value> = context
+        .long_term
+        .iter()
+        .map(|n| {
+            let reason = if n.edge_type.is_some() {
+                format!(
+                    "reached via {} edge from related entity",
+                    n.edge_type.as_ref().unwrap()
+                )
+            } else {
+                "direct entity match from query".to_string()
+            };
+            serde_json::json!({
+                "id": n.id,
+                "label": n.label,
+                "kind": n.kind,
+                "weight": (n.weight * 1000.0).round() / 1000.0,
+                "reason": reason,
+            })
+        })
+        .collect();
+
+    let result = serde_json::json!({
+        "short_term": short_term_with_reasons,
+        "long_term": long_term_with_reasons,
+        "primed_via_edges": primed_count,
+        "note": "Top result auto-reinforced (+3% salience boost)"
+    });
+
+    let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
+    println!("{}", json);
 }
 
 /// Options for memory start command
@@ -264,10 +384,28 @@ fn parse_start_args(args: &[String]) -> StartOptions {
     opts
 }
 
+/// Session log capacity warning threshold (90% of SESSION_LOG_CAPACITY=100)
+const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
+
 fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_start_args(args);
     let mut memory = MemoryState::load_or_default()?;
-    let summary = memory.build_start_summary_with_options(opts.compact, opts.category.as_deref());
+    let mut summary =
+        memory.build_start_summary_with_options(opts.compact, opts.category.as_deref());
+
+    // Add warning if session log is approaching capacity
+    if memory.session_log.len() >= SESSION_LOG_WARNING_THRESHOLD {
+        if let Some(obj) = summary.as_object_mut() {
+            obj.insert(
+                "warning".to_string(),
+                serde_json::json!(format!(
+                    "Session log at {}% capacity ({}/100). Oldest entries will be dropped.",
+                    memory.session_log.len(),
+                    memory.session_log.len()
+                )),
+            );
+        }
+    }
 
     // Log rich event data with memory stats
     let event_data = EventData::Start(StartEventData {
@@ -342,16 +480,43 @@ fn handle_context() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Options for sessions command
+struct SessionsOptions {
+    count: usize,
+    show_all: bool,
+}
+
+fn parse_sessions_args(args: &[String]) -> SessionsOptions {
+    let mut opts = SessionsOptions {
+        count: 10,
+        show_all: false,
+    };
+    for arg in args {
+        match arg.as_str() {
+            "--all" | "-a" => opts.show_all = true,
+            s if s.parse::<usize>().is_ok() => {
+                opts.count = s.parse().unwrap();
+            }
+            _ => {}
+        }
+    }
+    opts
+}
+
 fn handle_sessions(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let n: usize = args.first().and_then(|s| s.parse().ok()).unwrap_or(10);
+    let opts = parse_sessions_args(args);
 
     let memory = MemoryState::load_or_default()?;
-    let recent = memory.recent_sessions(n);
+    let recent = memory.recent_sessions(opts.count);
 
     if recent.is_empty() {
         println!("No session log entries yet.");
     } else {
         for entry in recent {
+            // Filter out empty/whitespace-only entries unless --all is specified
+            if !opts.show_all && entry.text.trim().is_empty() {
+                continue;
+            }
             println!("[t={}] {}", entry.timestamp, entry.text);
         }
     }
@@ -454,6 +619,11 @@ fn print_context(context: MemoryContext) {
     println!("{}", json);
 }
 
+fn print_tick_result(result: &TickResult) {
+    let json = serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string());
+    println!("{}", json);
+}
+
 fn print_reinforce_result(result: &ReinforceResult) {
     let json = serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
@@ -467,10 +637,33 @@ fn handle_dump() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Maximum lines in events.jsonl before rotation.
+const EVENT_LOG_MAX_LINES: usize = 10_000;
+const EVENT_LOG_PATH: &str = ".legend/events.jsonl";
+const EVENT_LOG_ARCHIVE: &str = ".legend/events.jsonl.1";
+
+/// Rotate event log if it exceeds the max line count.
+fn maybe_rotate_event_log() {
+    use std::io::BufRead;
+    let Ok(file) = std::fs::File::open(EVENT_LOG_PATH) else {
+        return;
+    };
+    let line_count = std::io::BufReader::new(file).lines().count();
+    if line_count >= EVENT_LOG_MAX_LINES {
+        // Rotate: rename current to archive (overwrites old archive)
+        let _ = std::fs::rename(EVENT_LOG_PATH, EVENT_LOG_ARCHIVE);
+    }
+}
+
 /// Append a structured event to `.legend/events.jsonl` for dashboard streaming.
 /// Includes optional rich data payload for detailed observability.
+/// Automatically rotates the log when it exceeds EVENT_LOG_MAX_LINES.
 fn log_event_rich(cmd: &str, detail: &str, data: Option<EventData>) {
     use std::io::Write;
+
+    // Check for rotation before appending
+    maybe_rotate_event_log();
+
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -483,7 +676,7 @@ fn log_event_rich(cmd: &str, detail: &str, data: Option<EventData>) {
     let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(".legend/events.jsonl")
+        .open(EVENT_LOG_PATH)
     else {
         return;
     };
@@ -502,9 +695,11 @@ fn print_memory_help() {
     println!("  legend memory start [options]   Session start: context + categorized in one call");
     println!("    --compact, -c                   Compact output (text only, no ids)");
     println!("    --category <name>               Filter to one category (bugs, todos, decisions, architecture, preferences)");
-    println!("  legend memory tick <text>       Record a memory (decision, progress, discovery)");
+    println!("  legend memory tick [options] <text>  Record a memory (decision, progress, discovery)");
+    println!("    --blocker, -b                   Mark as blocker (boosts salience, prefixes with BLOCKER:)");
     println!("  legend memory tick              Record a memory (reads stdin)");
-    println!("  legend memory query <text>      Query memory (auto-reinforces top result)");
+    println!("  legend memory query [options] <text>  Query memory (auto-reinforces top result)");
+    println!("    --reasons, -r                   Include similarity scores and retrieval reasoning");
     println!("  legend memory task              Show current task");
     println!("  legend memory task set <text>   Set current task");
     println!("  legend memory task clear        Clear current task");
@@ -512,7 +707,8 @@ fn print_memory_help() {
     println!("  legend memory dump              Export full memory state as JSON");
     println!("  legend memory stats             Show memory stats");
     println!("  legend memory context           Structured context summary (JSON)");
-    println!("  legend memory sessions [n]      Show last n session log entries (default 10)");
+    println!("  legend memory sessions [n] [--all]  Show last n session log entries (default 10)");
+    println!("    --all, -a                       Include empty entries");
     println!("  legend memory consolidate       Merge similar memories into long-term graph");
     println!("  legend memory reset             Reset memory store");
 }

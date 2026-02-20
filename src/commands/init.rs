@@ -210,15 +210,67 @@ Launch it at session start so the user can watch memory activity in real-time.
 | `{cmd} show` | Human-readable feature summary |
 | `{cmd} update` | Update feature state (pipe JSON to stdin) |
 
-## What to Tick
+## When to Tick
 
-- **Decisions**: "Chose X over Y because Z"
-- **Progress**: "Implemented feature X in file Y"
-- **Blockers**: "Can't do X until Y is resolved"
-- **Architecture**: "Module X talks to Y via Z"
-- **User preferences**: "User prefers approach X"
-- **Bugs found**: "Bug: X happens when Y"
-- **TODO items**: "TODO: still need to implement X"
+**Tick these (important context worth preserving):**
+- Decisions with rationale: "DECISION: Chose X over Y because Z"
+- Bug discoveries: "BUG: X fails when Y happens"
+- Architecture insights: "Module X communicates with Y via Z"
+- Blockers: "BLOCKER: Can't proceed until X is resolved"
+- User preferences: "User prefers X approach"
+- Completed features: "Implemented X in file Y"
+
+**Don't tick these (noise that clutters memory):**
+- Minor refactors or formatting changes
+- Obvious changes that are self-documenting in code
+- Routine operations like "reading file X"
+- Redundant info already captured in recent ticks
+
+**Tick frequency:** Aim for 3-8 ticks per session. After major decisions, discoveries, or completing substantial work.
+
+## Understanding Tick Output
+
+When you run `tick`, you get JSON feedback:
+```json
+{{
+  "action": "created",       // "created", "merged", or "reconsolidated"
+  "entry_id": 42,            // ID of the affected entry
+  "matched_existing": null,  // ID if merged/reconsolidated, null if new
+  "similarity": null,        // Match score if merged (0.0-1.0)
+  "context": {{...}}         // Related memories
+}}
+```
+
+- **created**: New memory entry added
+- **merged**: Combined with similar existing entry (high similarity)
+- **reconsolidated**: Updated a recently-accessed "labile" entry
+
+## Hidden Behaviors
+
+Legend does several things automatically:
+
+1. **Auto-reinforce on query**: When you query, the top result gets a small salience boost (+3%). Frequently useful memories rise naturally.
+
+2. **Exponential decay**: Unused memories decay over time. High-salience entries decay slower. Use `reinforce` to preserve important memories.
+
+3. **Reconsolidation window**: After querying a memory, it enters a "labile" state for ~5 ticks. If you tick related content, it updates the existing memory instead of creating a duplicate.
+
+4. **Auto-consolidation**: After ~20 ticks, similar short-term memories are merged into long-term graph nodes.
+
+5. **Hebbian reinforcement**: When entities appear together, the graph edges between them strengthen.
+
+## Understanding Start Output
+
+The `memory start` command returns categorized memories. If a category has >5 items, it shows truncation info:
+```json
+"decisions": {{
+  "items": [...],   // Top 5 by salience
+  "showing": 5,
+  "total": 12       // 12 total - use --category to see all
+}}
+```
+
+Use `--category decisions` to fetch the full list for a specific category.
 
 ## About This Project
 
@@ -344,7 +396,7 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": "echo '== Legend Project Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; legend memory start 2>/dev/null | head -50"
+            "command": "echo '== Legend Project Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; legend memory start --compact 2>/dev/null"
         }]
     });
 

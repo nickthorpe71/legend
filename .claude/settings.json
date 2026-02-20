@@ -13,7 +13,7 @@
       {
         "hooks": [
           {
-            "command": "echo '== Legend Project Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'",
+            "command": "echo '== Legend Memory =='; cargo run --quiet -- memory start --compact 2>/dev/null",
             "type": "command"
           }
         ],
@@ -24,7 +24,7 @@
       {
         "hooks": [
           {
-            "command": "changed=$(git diff --name-only 2>/dev/null); if [ -n \"$changed\" ]; then echo \"Legend: Files changed since last commit:\n$changed\nUpdate Legend if you made progress: echo '{\\\"features\\\": [{\\\"id\\\": \\\"...\\\", \\\"status\\\": \\\"...\\\", \\\"files_involved\\\": [...]}]}' | legend update\"; fi",
+            "command": "changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$changed\" ]; then count=$(echo \"$changed\" | wc -l); echo \"Legend: $count file(s) changed.\"; echo \"Remember to tick: cargo run --quiet -- memory tick 'summary of work'\"; fi",
             "type": "command"
           }
         ],
@@ -32,15 +32,6 @@
       }
     ],
     "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "command": "echo '{\"additionalContext\": \"Legend is available in this project. Use `cargo run -- search <keyword>` to find features, `cargo run -- get_state` to load full state, and pipe JSON to `cargo run -- update` to update features after completing work. See CLAUDE.md for details.\"}'",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
-      },
       {
         "hooks": [
           {
