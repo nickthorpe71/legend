@@ -615,12 +615,29 @@ fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn print_context(context: MemoryContext) {
-    let json = serde_json::to_string(&context).unwrap_or_else(|_| "{}".to_string());
+    // Simplified output: just text and topic labels (no IDs, weights, refs)
+    let memories: Vec<&str> = context.short_term.iter().map(|m| m.text.as_str()).collect();
+    let related_topics: Vec<&str> = context
+        .long_term
+        .iter()
+        .map(|n| n.label.as_str())
+        .collect();
+
+    let result = serde_json::json!({
+        "memories": memories,
+        "related_topics": related_topics,
+    });
+    let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
 }
 
 fn print_tick_result(result: &TickResult) {
-    let json = serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string());
+    // Simplified output: just action and entry_id (no context dump)
+    let output = serde_json::json!({
+        "action": result.action,
+        "entry_id": result.entry_id,
+    });
+    let json = serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
 }
 

@@ -35,7 +35,7 @@
       {
         "hooks": [
           {
-            "command": "echo 'Reminder: If the user mentions a feature or topic, run legend search <keyword> first for context.'",
+            "command": "echo 'Reminder: Query memory for context on unfamiliar topics: legend memory query \"topic\"'",
             "type": "command"
           }
         ],

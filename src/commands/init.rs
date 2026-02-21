@@ -404,7 +404,7 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
         "matcher": "",
         "hooks": [{
             "type": "command",
-            "command": "echo 'Reminder: If the user mentions a feature or topic, run legend search <keyword> first for context.'"
+            "command": "echo 'Reminder: Query memory for context on unfamiliar topics: legend memory query \"topic\"'"
         }]
     });
 
