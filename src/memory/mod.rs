@@ -21,6 +21,8 @@ const HEBBIAN_EDGE_BOOST: f32 = 0.05;
 const HEBBIAN_NODE_BOOST: f32 = 0.02;
 /// Maximum edge weight to prevent Hebbian reinforcement explosion.
 const HEBBIAN_EDGE_CEILING: f32 = 10.0;
+/// Maximum node weight to prevent Hebbian node boost explosion.
+const HEBBIAN_NODE_CEILING: f32 = 5.0;
 const EDGE_REINFORCE_DELTA: f32 = 0.1;
 const NODE_WEIGHT_BASE: f32 = 0.2;
 const PRUNE_THRESHOLD: f32 = 0.1;
@@ -30,8 +32,6 @@ const PRUNE_AGE_WEIGHT: f32 = 0.001;
 const MERGE_WORD_OVERLAP_THRESHOLD: f32 = 0.3;
 /// Maximum number of session log entries to keep.
 const SESSION_LOG_CAPACITY: usize = 100;
-/// How much a reinforcement signal scales salience adjustment.
-const REINFORCE_SALIENCE_SCALE: f32 = 0.15;
 /// How much a reinforcement signal scales graph node weight adjustment.
 const REINFORCE_GRAPH_SCALE: f32 = 0.1;
 /// Hard cap on long-term graph nodes. Lowest-weight nodes evicted when exceeded.
@@ -48,6 +48,24 @@ const RECONSOLIDATION_THRESHOLD: f32 = 0.35;
 const LABILE_WINDOW: u64 = 5;
 /// Number of ticks before suggesting a consolidation.
 const CONSOLIDATION_SUGGESTION_THRESHOLD: u32 = 15;
+
+// Gradient-descent-inspired salience & weight normalization constants
+/// Epsilon for AdaGrad denominator stability.
+const ADAGRAD_EPSILON: f32 = 1e-6;
+/// Base learning rate for AdaGrad salience updates (replaces REINFORCE_SALIENCE_SCALE in reinforce()).
+const ADAGRAD_BASE_LR: f32 = 0.15;
+/// Cap on accumulated squared gradients to prevent LR collapse on very active entries.
+const ADAGRAD_SQ_SUM_CAP: f32 = 1000.0;
+/// Ticks between salience EMA renormalization passes.
+const RENORM_INTERVAL: u64 = 10;
+/// EMA blend weight toward normalized values (gentle).
+const RENORM_BLEND: f32 = 0.1;
+/// Salience penalty applied to retrieved-but-unreinforced entries.
+const CONTRASTIVE_PENALTY: f32 = 0.02;
+/// Graph weight ceiling before periodic normalization fires.
+const GRAPH_WEIGHT_TARGET_MAX: f32 = 2.0;
+/// Ticks between graph weight normalization passes.
+const GRAPH_NORM_INTERVAL: u64 = 5;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -98,6 +116,9 @@ pub struct MemoryState {
     /// Number of ticks since last consolidation.
     #[serde(default)]
     pub ticks_since_consolidation: u32,
+    /// IDs returned by the most recent retrieve_context() call, for contrastive descent.
+    #[serde(default)]
+    pub last_retrieved_ids: Vec<u64>,
 }
 
 /// A single entry in the short-term vector store.
@@ -122,6 +143,9 @@ pub struct ShortTermEntry {
     /// Source references (file + line range) associated with this memory.
     #[serde(default)]
     pub refs: Vec<MemoryRef>,
+    /// Accumulated squared gradient for AdaGrad adaptive learning rate.
+    #[serde(default)]
+    pub gradient_sq_sum: f32,
 }
 
 /// A source reference to a file region for this memory.
@@ -354,6 +378,7 @@ impl Default for MemoryState {
             session_log: Vec::new(),
             current_task: None,
             ticks_since_consolidation: 0,
+            last_retrieved_ids: Vec::new(),
         }
     }
 }
@@ -564,6 +589,12 @@ impl MemoryState {
         self.ticks_since_consolidation += 1;
         self.apply_decay();
         self.stabilize_labile_entries();
+        if self.clock % RENORM_INTERVAL == 0 {
+            self.renormalize_salience();
+        }
+        if self.clock % GRAPH_NORM_INTERVAL == 0 {
+            self.normalize_graph_weights();
+        }
 
         // Append to chronological session log (preserves exact input)
         self.session_log.push(SessionEntry {
@@ -699,6 +730,9 @@ impl MemoryState {
                 entry.labile_until = self.clock + LABILE_WINDOW;
             }
         }
+
+        // Record for contrastive descent in the next reinforce() call.
+        self.last_retrieved_ids = snippets.iter().map(|s| s.id).collect();
 
         // Passive auto-reinforce: the top result gets a small salience bump
         // proportional to its similarity, so useful memories naturally rise.
@@ -946,7 +980,7 @@ impl MemoryState {
 
         for &id in co_retrieved_ids {
             if let Some(node) = self.long_term.nodes.get_mut(&id) {
-                node.weight += HEBBIAN_NODE_BOOST;
+                node.weight = (node.weight + HEBBIAN_NODE_BOOST).min(HEBBIAN_NODE_CEILING);
                 node.last_seen = now;
             }
         }
@@ -1009,6 +1043,7 @@ impl MemoryState {
             reconsolidation_count: 0,
             labile_until: 0,
             refs,
+            gradient_sq_sum: 0.0,
         });
         self.next_id += 1;
     }
@@ -1293,6 +1328,51 @@ impl MemoryState {
         }
     }
 
+    /// EMA-blend all salience scores toward their max-normalized values every RENORM_INTERVAL
+    /// ticks. Keeps scores spread relative to each other without a hard reset.
+    fn renormalize_salience(&mut self) {
+        let max_sal = self
+            .short_term
+            .iter()
+            .map(|e| e.salience)
+            .fold(0.0_f32, f32::max);
+        if max_sal < 0.05 {
+            return;
+        }
+        for entry in &mut self.short_term {
+            let normalized = entry.salience / max_sal;
+            entry.salience = entry.salience * (1.0 - RENORM_BLEND) + normalized * RENORM_BLEND;
+        }
+    }
+
+    /// Proportionally scale all graph node and edge weights so the maximum node weight
+    /// never exceeds GRAPH_WEIGHT_TARGET_MAX. Preserves relative rankings.
+    fn normalize_graph_weights(&mut self) {
+        let max_weight = self
+            .long_term
+            .nodes
+            .values()
+            .map(|n| n.weight)
+            .fold(0.0_f32, f32::max);
+        if max_weight <= GRAPH_WEIGHT_TARGET_MAX || max_weight < 0.01 {
+            return;
+        }
+        let scale = GRAPH_WEIGHT_TARGET_MAX / max_weight;
+        for node in self.long_term.nodes.values_mut() {
+            node.weight *= scale;
+        }
+        for edge in &mut self.long_term.edges {
+            edge.weight *= scale;
+        }
+    }
+
+    /// Force an immediate normalization pass on graph weights and salience scores.
+    /// Call after loading an old store to bring blown-up values back within current bounds.
+    pub fn rebalance_weights(&mut self) {
+        self.renormalize_salience();
+        self.normalize_graph_weights();
+    }
+
     /// Return the most recent `n` session log entries.
     pub fn recent_sessions(&self, n: usize) -> &[SessionEntry] {
         let start = self.session_log.len().saturating_sub(n);
@@ -1574,13 +1654,35 @@ impl MemoryState {
         let mut reinforced = Vec::new();
         let mut graph_nodes_affected = 0usize;
 
+        // Contrastive descent: entries retrieved in the prior retrieve_context() call
+        // but not in the current reinforced set receive a small salience penalty.
+        if signal > 0.0 {
+            let reinforced_set: std::collections::HashSet<u64> = ids.iter().copied().collect();
+            let penalized: Vec<u64> = self
+                .last_retrieved_ids
+                .iter()
+                .copied()
+                .filter(|id| !reinforced_set.contains(id))
+                .collect();
+            for &pid in &penalized {
+                if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == pid) {
+                    entry.salience = (entry.salience - CONTRASTIVE_PENALTY).max(0.0);
+                }
+            }
+        }
+
         for &id in ids {
             if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == id) {
                 let before = entry.salience;
 
-                // Adjust salience
-                entry.salience =
-                    (entry.salience + signal * REINFORCE_SALIENCE_SCALE).clamp(0.0, 1.0);
+                // AdaGrad-style adaptive salience update: frequently-reinforced entries
+                // get smaller future updates, preventing saturation.
+                let adaptive_lr =
+                    ADAGRAD_BASE_LR / (entry.gradient_sq_sum + ADAGRAD_EPSILON).sqrt();
+                let delta = signal * adaptive_lr;
+                entry.gradient_sq_sum =
+                    (entry.gradient_sq_sum + signal * signal).min(ADAGRAD_SQ_SUM_CAP);
+                entry.salience = (entry.salience + delta).clamp(0.0, 1.0);
 
                 // Adjust usage: positive signal bumps usage, negative doesn't
                 // reduce below 1 (entry still exists, just less important)
@@ -1609,6 +1711,9 @@ impl MemoryState {
                 }
             }
         }
+
+        // Clear stale retrieved IDs after processing.
+        self.last_retrieved_ids.clear();
 
         ReinforceResult {
             reinforced,
@@ -1698,6 +1803,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
         session_log: old.session_log,
         current_task: None,
         ticks_since_consolidation: 0,
+        last_retrieved_ids: Vec::new(),
     };
 
     // Save migrated state
@@ -1758,6 +1864,7 @@ mod tests {
             reconsolidation_count: 0,
             labile_until: 0,
             refs: vec![],
+            gradient_sq_sum: 0.0,
         };
         let old = ShortTermEntry {
             id: 2,
@@ -1770,6 +1877,7 @@ mod tests {
             reconsolidation_count: 0,
             labile_until: 0,
             refs: vec![],
+            gradient_sq_sum: 0.0,
         };
         assert!(eviction_score(&recent, 100) > eviction_score(&old, 100));
     }
@@ -2084,6 +2192,7 @@ mod tests {
             reconsolidation_count: 0,
             labile_until: 0,
             refs: vec![],
+            gradient_sq_sum: 0.0,
         });
         // Advance clock far enough for pruning to kick in
         state.clock = 500;
@@ -2156,9 +2265,9 @@ mod tests {
         state.tick("TODO: still need to implement the caching layer");
         let summary = state.build_start_summary();
 
-        // Should have context and categorized sections
+        // Should have recent_sessions and categorized sections
         assert!(
-            summary.get("context").is_some(),
+            summary.get("recent_sessions").is_some(),
             "start summary should have context"
         );
         assert!(
