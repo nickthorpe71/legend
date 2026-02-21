@@ -1356,12 +1356,17 @@ impl MemoryState {
     /// Build session-start summary with options for compact output and category filtering.
     /// - compact: If true, only show short text summaries (no id, reduced text length)
     /// - category_filter: If Some, only return that specific category
+    ///
+    /// Output is simplified for LLM usability: no stats, no graph weights.
+    /// Use `memory dump` for full internal state.
     pub fn build_start_summary_with_options(
         &mut self,
         compact: bool,
         category_filter: Option<&str>,
     ) -> serde_json::Value {
-        let context = self.build_context_summary();
+        // Get recent sessions (just text, no timestamps)
+        let recent = self.recent_sessions(5);
+        let recent_sessions: Vec<&str> = recent.iter().map(|s| s.text.as_str()).collect();
 
         // --- Categorized short-term memories ---
         let mut decisions: Vec<serde_json::Value> = Vec::new();
@@ -1476,7 +1481,7 @@ impl MemoryState {
 
         serde_json::json!({
             "current_task": self.current_task,
-            "context": context,
+            "recent_sessions": recent_sessions,
             "categorized": {
                 "decisions": build_category(&decisions, decisions_total),
                 "architecture": build_category(&architecture, architecture_total),
