@@ -32,6 +32,8 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
         setup_copilot_instructions()?;
         setup_zed_rules()?;
         setup_gemini_styleguide()?;
+        setup_gemini_md()?;
+        setup_gemini_hooks()?;
 
         return Ok(());
     }
@@ -81,6 +83,8 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
     setup_copilot_instructions()?;
     setup_zed_rules()?;
     setup_gemini_styleguide()?;
+    setup_gemini_md()?;
+    setup_gemini_hooks()?;
 
     Ok(())
 }
@@ -158,6 +162,16 @@ fn setup_gemini_styleguide() -> Result<(), Box<dyn std::error::Error>> {
     let gemini_dir = Path::new(".gemini");
     let styleguide_path = gemini_dir.join("styleguide.md");
     write_legend_markdown(&styleguide_path, ".gemini/styleguide.md", Some(gemini_dir))
+}
+
+/// Generate or update GEMINI.md with Legend usage instructions
+fn setup_gemini_md() -> Result<(), Box<dyn std::error::Error>> {
+    write_legend_markdown(Path::new("GEMINI.md"), "GEMINI.md", None)
+}
+
+/// Set up Gemini CLI hooks in .gemini/settings.json
+fn setup_gemini_hooks() -> Result<(), Box<dyn std::error::Error>> {
+    setup_agent_hooks(".gemini", "Gemini CLI", "BeforeAgent", "SessionEnd")
 }
 
 // ---------------------------------------------------------------------------
@@ -399,12 +413,12 @@ fn write_legend_markdown(
 /// - UserPromptSubmit: reminds Claude to search Legend for context
 /// - Stop: detects file changes and reminds Claude to update Legend
 fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    setup_agent_hooks(".claude", "Claude Code")
+    setup_agent_hooks(".claude", "Claude Code", "UserPromptSubmit", "Stop")
 }
 
 /// Set up Codex hooks in .codex/settings.json
 fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    setup_agent_hooks(".codex", "Codex")
+    setup_agent_hooks(".codex", "Codex", "UserPromptSubmit", "Stop")
 }
 
 /// Set up agent hooks in a settings.json for the given tool directory.
@@ -414,31 +428,37 @@ fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
 /// - SessionStart: loads Legend state automatically
 /// - UserPromptSubmit: reminds the agent to search Legend for context
 /// - Stop: detects file changes and reminds the agent to update Legend
-fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn setup_agent_hooks(
+    dir_name: &str,
+    display_name: &str,
+    prompt_event: &str,
+    stop_event: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = Path::new(dir_name);
     let settings_path = agent_dir.join("settings.json");
+    let cmd = get_legend_command();
 
     let legend_session_hook = json!({
-        "matcher": "",
+        "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": "echo '== Legend Project Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; legend memory start --compact 2>/dev/null"
+            "command": format!("echo '== Legend Project Context =='; {cmd} get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; {cmd} memory start --compact 2>/dev/null")
         }]
     });
 
     let legend_prompt_hook = json!({
-        "matcher": "",
+        "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": "echo 'Reminder: Query memory for context on unfamiliar topics: legend memory query \"topic\"'"
+            "command": format!("echo 'Reminder: Query memory for context on unfamiliar topics: {cmd} memory query \"topic\"'")
         }]
     });
 
     let legend_stop_hook = json!({
-        "matcher": "",
+        "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": r#"changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n "$changed" ]; then count=$(echo "$changed" | wc -l); echo "Legend: $count file(s) changed."; echo "Remember to tick: legend memory tick 'summary of work'"; fi"#
+            "command": format!(r#"changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n "$changed" ]; then count=$(echo "$changed" | wc -l); echo "Legend: $count file(s) changed."; echo "Remember to tick: {cmd} memory tick 'summary of work'"; fi"#)
         }]
     });
 
@@ -449,16 +469,13 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
         let mut settings: Value = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse {}/settings.json: {}", dir_name, e))?;
 
-        if has_legend_hooks(&settings) {
-            // Check if hooks need updating (old text)
-            if update_old_hook_text(&mut settings) {
-                let output = serde_json::to_string_pretty(&settings)?;
-                fs::write(&settings_path, output)
-                    .map_err(|e| format!("Failed to write {}/settings.json: {}", dir_name, e))?;
-                println!("✓ Updated {} hook text", display_name);
-            } else {
-                println!("  {} hooks already configured", display_name);
-            }
+        // Clean up any old/outdated Legend hooks before adding new ones
+        if remove_any_legend_hooks(&mut settings) {
+            println!("✓ Updating existing {} hooks", display_name);
+        }
+
+        if has_legend_hooks(&settings, prompt_event, stop_event) {
+            println!("  {} hooks already configured", display_name);
             return Ok(());
         }
 
@@ -467,6 +484,8 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
             &legend_session_hook,
             &legend_prompt_hook,
             &legend_stop_hook,
+            prompt_event,
+            stop_event,
         );
 
         let output = serde_json::to_string_pretty(&settings)?;
@@ -484,8 +503,8 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
         let settings = json!({
             "hooks": {
                 "SessionStart": [legend_session_hook],
-                "UserPromptSubmit": [legend_prompt_hook],
-                "Stop": [legend_stop_hook]
+                prompt_event: [legend_prompt_hook],
+                stop_event: [legend_stop_hook]
             }
         });
 
@@ -499,56 +518,88 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// Check if Legend hooks are already configured
-fn has_legend_hooks(settings: &Value) -> bool {
-    if let Some(session_hooks) = settings
-        .get("hooks")
-        .and_then(|h| h.get("SessionStart"))
-        .and_then(|s| s.as_array())
-    {
-        for hook_entry in session_hooks {
-            if let Some(hooks) = hook_entry.get("hooks").and_then(|h| h.as_array()) {
-                for hook in hooks {
-                    if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
-                        // Check for both old and new hook formats
-                        if cmd.contains("legend get_state") || cmd.contains("legend memory start") {
-                            return true;
+/// Check if Legend hooks are already configured correctly for this agent
+fn has_legend_hooks(settings: &Value, prompt_event: &str, stop_event: &str) -> bool {
+    let cmd = get_legend_command();
+
+    // Check all three required hook points
+    for hook_type in &["SessionStart", prompt_event, stop_event] {
+        let mut found = false;
+        if let Some(hook_entries) = settings
+            .get("hooks")
+            .and_then(|h| h.get(*hook_type))
+            .and_then(|s| s.as_array())
+        {
+            for hook_entry in hook_entries {
+                if let Some(hooks) = hook_entry.get("hooks").and_then(|h| h.as_array()) {
+                    for hook in hooks {
+                        if let Some(hook_cmd) = hook.get("command").and_then(|c| c.as_str()) {
+                            if (hook_cmd.contains("legend get_state")
+                                || hook_cmd.contains("legend memory start")
+                                || hook_cmd.contains("legend memory query")
+                                || hook_cmd.contains("legend memory tick"))
+                                && hook_cmd.contains(cmd)
+                            {
+                                found = true;
+                                break;
+                            }
                         }
                     }
                 }
+                if found {
+                    break;
+                }
             }
         }
+        if !found {
+            return false;
+        }
     }
-    false
+    true
 }
 
-/// Update old hook text to new format. Returns true if any changes were made.
-fn update_old_hook_text(settings: &mut Value) -> bool {
-    let old_text = "legend search";
-    let new_command = "echo 'Reminder: Query memory for context on unfamiliar topics: legend memory query \"topic\"'";
+/// Remove any existing Legend hooks from settings for any agent event names.
+/// Returns true if any hooks were removed.
+fn remove_any_legend_hooks(settings: &mut Value) -> bool {
+    let mut removed = false;
+    // All possible hook event names across different tools
+    let hook_types = [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "BeforeAgent",
+        "SessionEnd",
+    ];
 
-    let mut updated = false;
-
-    if let Some(prompt_hooks) = settings
-        .get_mut("hooks")
-        .and_then(|h| h.get_mut("UserPromptSubmit"))
-        .and_then(|s| s.as_array_mut())
-    {
-        for hook_entry in prompt_hooks.iter_mut() {
-            if let Some(hooks) = hook_entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
-                for hook in hooks.iter_mut() {
-                    if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
-                        if cmd.contains(old_text) {
-                            hook["command"] = json!(new_command);
-                            updated = true;
-                        }
-                    }
+    if let Some(hooks_obj) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        for hook_type in hook_types {
+            let mut should_remove_key = false;
+            if let Some(hook_entries) = hooks_obj.get_mut(hook_type).and_then(|s| s.as_array_mut()) {
+                let initial_len = hook_entries.len();
+                // Filter out entries that contain any Legend commands
+                hook_entries.retain(|entry| {
+                    let entry_str = serde_json::to_string(entry).unwrap_or_default();
+                    // If it contains these core strings, it's likely a Legend hook
+                    !(entry_str.contains("get_state")
+                        || entry_str.contains("memory start")
+                        || entry_str.contains("memory query")
+                        || entry_str.contains("memory tick"))
+                });
+                if hook_entries.len() < initial_len {
+                    removed = true;
                 }
+                if hook_entries.is_empty() {
+                    should_remove_key = true;
+                }
+            }
+
+            if should_remove_key {
+                hooks_obj.remove(hook_type);
+                removed = true;
             }
         }
     }
-
-    updated
+    removed
 }
 
 /// Merge Legend hooks into existing settings
@@ -557,6 +608,8 @@ fn merge_legend_hooks(
     session_hook: &Value,
     prompt_hook: &Value,
     stop_hook: &Value,
+    prompt_event: &str,
+    stop_event: &str,
 ) {
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
@@ -572,22 +625,19 @@ fn merge_legend_hooks(
         arr.push(session_hook.clone());
     }
 
-    // Add UserPromptSubmit hook
-    if hooks.get("UserPromptSubmit").is_none() {
-        hooks["UserPromptSubmit"] = json!([]);
+    // Add prompt hook (e.g. UserPromptSubmit or BeforeAgent)
+    if hooks.get(prompt_event).is_none() {
+        hooks[prompt_event] = json!([]);
     }
-    if let Some(arr) = hooks
-        .get_mut("UserPromptSubmit")
-        .and_then(|s| s.as_array_mut())
-    {
+    if let Some(arr) = hooks.get_mut(prompt_event).and_then(|s| s.as_array_mut()) {
         arr.push(prompt_hook.clone());
     }
 
-    // Add Stop hook
-    if hooks.get("Stop").is_none() {
-        hooks["Stop"] = json!([]);
+    // Add stop hook (e.g. Stop or SessionEnd)
+    if hooks.get(stop_event).is_none() {
+        hooks[stop_event] = json!([]);
     }
-    if let Some(arr) = hooks.get_mut("Stop").and_then(|s| s.as_array_mut()) {
+    if let Some(arr) = hooks.get_mut(stop_event).and_then(|s| s.as_array_mut()) {
         arr.push(stop_hook.clone());
     }
 }

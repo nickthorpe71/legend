@@ -4,42 +4,33 @@
       {
         "hooks": [
           {
-            "command": "echo '== Legend Project Context =='; legend get_state 2>/dev/null || echo 'Legend state not found'",
+            "command": "echo '== Legend Project Context =='; cargo run --quiet -- get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; cargo run --quiet -- memory start --compact 2>/dev/null",
             "type": "command"
           }
         ],
-        "matcher": ""
-      },
-      {
-        "hooks": [
-          {
-            "command": "echo '== Legend Memory =='; legend memory start --compact 2>/dev/null",
-            "type": "command"
-          }
-        ],
-        "matcher": ""
+        "matcher": "*"
       }
     ],
     "Stop": [
       {
         "hooks": [
           {
-            "command": "changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$changed\" ]; then count=$(echo \"$changed\" | wc -l); echo \"Legend: $count file(s) changed.\"; echo \"Remember to tick: legend memory tick 'summary of work'\"; fi",
+            "command": "changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$changed\" ]; then count=$(echo \"$changed\" | wc -l); echo \"Legend: $count file(s) changed.\"; echo \"Remember to tick: cargo run --quiet -- memory tick 'summary of work'\"; fi",
             "type": "command"
           }
         ],
-        "matcher": ""
+        "matcher": "*"
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
           {
-            "command": "echo 'Reminder: Query memory for context on unfamiliar topics: legend memory query \"topic\"'",
+            "command": "echo 'Reminder: Query memory for context on unfamiliar topics: cargo run --quiet -- memory query \"topic\"'",
             "type": "command"
           }
         ],
-        "matcher": ""
+        "matcher": "*"
       }
     ]
   }

@@ -1,17 +1,17 @@
 {
   "hooks": {
-    "SessionStart": [
+    "BeforeAgent": [
       {
         "hooks": [
           {
-            "command": "echo '== Legend Project Context =='; cargo run --quiet -- get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; cargo run --quiet -- memory start --compact 2>/dev/null",
+            "command": "echo 'Reminder: Query memory for context on unfamiliar topics: cargo run --quiet -- memory query \"topic\"'",
             "type": "command"
           }
         ],
         "matcher": "*"
       }
     ],
-    "Stop": [
+    "SessionEnd": [
       {
         "hooks": [
           {
@@ -22,11 +22,11 @@
         "matcher": "*"
       }
     ],
-    "UserPromptSubmit": [
+    "SessionStart": [
       {
         "hooks": [
           {
-            "command": "echo 'Reminder: Query memory for context on unfamiliar topics: cargo run --quiet -- memory query \"topic\"'",
+            "command": "echo '== Legend Project Context =='; cargo run --quiet -- get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; cargo run --quiet -- memory start --compact 2>/dev/null",
             "type": "command"
           }
         ],
