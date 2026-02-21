@@ -1,4 +1,5 @@
 use crate::commands::discover;
+use crate::memory::MemoryState;
 use crate::storage;
 use crate::types::{Feature, LegendState};
 use serde_json::{json, Value};
@@ -20,6 +21,9 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
         println!("Legend already initialized in this directory");
         println!("  .legend/ directory exists");
         println!("  Use 'legend show' to view current state");
+
+        // Migrate/refresh memory store to latest format
+        migrate_memory_store();
 
         setup_claude_hooks()?;
         setup_claude_md()?;
@@ -79,6 +83,28 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
     setup_gemini_styleguide()?;
 
     Ok(())
+}
+
+/// Migrate memory store to latest format.
+///
+/// Loads memory (triggering any pending migrations), then re-saves it
+/// in the current format. This ensures old memory files are upgraded.
+fn migrate_memory_store() {
+    match MemoryState::load_or_default() {
+        Ok(state) => {
+            let entries = state.short_term.len();
+            let nodes = state.long_term.nodes.len();
+
+            if let Err(e) = state.save() {
+                eprintln!("  Warning: failed to save memory store: {}", e);
+            } else if entries > 0 || nodes > 0 {
+                println!("  Memory store OK ({} entries, {} graph nodes)", entries, nodes);
+            }
+        }
+        Err(e) => {
+            eprintln!("  Warning: failed to load memory store: {}", e);
+        }
+    }
 }
 
 /// Detect project name from the current directory name
