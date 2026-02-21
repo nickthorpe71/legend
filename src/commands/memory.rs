@@ -116,15 +116,18 @@ pub fn handle_memory(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
 struct TickOptions {
     text: String,
     is_blocker: bool,
+    is_passive: bool,
 }
 
 fn parse_tick_args(args: &[String]) -> Result<TickOptions, Box<dyn std::error::Error>> {
     let mut is_blocker = false;
+    let mut is_passive = false;
     let mut text_parts: Vec<&str> = Vec::new();
 
     for arg in args {
         match arg.as_str() {
             "--blocker" | "-b" => is_blocker = true,
+            "--passive" | "-p" => is_passive = true,
             _ => text_parts.push(arg),
         }
     }
@@ -135,7 +138,7 @@ fn parse_tick_args(args: &[String]) -> Result<TickOptions, Box<dyn std::error::E
         text_parts.join(" ")
     };
 
-    Ok(TickOptions { text, is_blocker })
+    Ok(TickOptions { text, is_blocker, is_passive })
 }
 
 fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -145,9 +148,11 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         return Err("No input provided for tick".into());
     }
 
-    // Prepend BLOCKER prefix if flag is set
+    // Prepend prefixes if flags are set
     let text = if opts.is_blocker {
         format!("BLOCKER: {}", opts.text.trim())
+    } else if opts.is_passive {
+        format!("EXPERIENCE: {}", opts.text.trim())
     } else {
         opts.text.trim().to_string()
     };
@@ -156,10 +161,12 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let tick_result = memory.tick(&text);
     let should_consolidate = memory.should_suggest_consolidation();
 
-    // Boost salience for blocker entries
-    if opts.is_blocker {
-        if let Some(entry) = memory.short_term.iter_mut().find(|e| e.id == tick_result.entry_id) {
+    // Adjust salience based on flags
+    if let Some(entry) = memory.short_term.iter_mut().find(|e| e.id == tick_result.entry_id) {
+        if opts.is_blocker {
             entry.salience = (entry.salience + 0.4).min(1.0);
+        } else if opts.is_passive {
+            entry.salience *= 0.5; // Passive experiences decay faster
         }
     }
 

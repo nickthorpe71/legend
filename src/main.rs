@@ -28,6 +28,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "search" => commands::search::handle_search(&args[2..])?,
         "discover" => commands::discover::handle_discover(&args[2..])?,
         "memory" => commands::memory::handle_memory(&args[2..])?,
+        "project" => commands::project::handle_project(&args[2..])?,
         "dashboard" => {
             // Check for --3d flag to launch Bevy dashboard
             if args.iter().any(|a| a == "--3d") {
@@ -52,13 +53,10 @@ fn print_help() {
     println!("Usage: legend <command> [options]");
     println!();
     println!("Commands:");
-    println!("  init                Initialize .legend directory");
-    println!("  get_state           Print current state as JSON");
-    println!("  update              Update feature state from stdin");
-    println!("  show                Display human-readable state");
-    println!("  search <query>      Search features (--domain, --tag, --status)");
-    println!("  discover [path]     Scan project and suggest features");
-    println!("  memory <sub>        Hierarchical memory (tick, query, stats, context, sessions, reset, consolidate)");
-    println!("  dashboard [--3d]    Launch the TUI dashboard (--3d for Bevy 3D view)");
-    println!("  help                Show this help message");
+    println!("  memory [start|tick|query|...]  Hierarchical memory (context, decisions, history)");
+    println!("  project [ls|set|schema]         Project feature roadmap & status management");
+    println!("  discover [path]                 Scan project to suggest features and context");
+    println!("  dashboard [--3d]               Launch TUI dashboard (--3d for Bevy 3D view)");
+    println!("  init                            Initialize Legend in new project");
+    println!("  help                            Show this help message");
 }

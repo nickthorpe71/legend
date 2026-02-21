@@ -171,7 +171,14 @@ fn setup_gemini_md() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Set up Gemini CLI hooks in .gemini/settings.json
 fn setup_gemini_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    setup_agent_hooks(".gemini", "Gemini CLI", "BeforeAgent", "SessionEnd")
+    setup_agent_hooks(
+        ".gemini",
+        "Gemini CLI",
+        "BeforeAgent",
+        "SessionEnd",
+        Some("AfterTool"),
+        Some("AfterAgent"),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -413,12 +420,26 @@ fn write_legend_markdown(
 /// - UserPromptSubmit: reminds Claude to search Legend for context
 /// - Stop: detects file changes and reminds Claude to update Legend
 fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    setup_agent_hooks(".claude", "Claude Code", "UserPromptSubmit", "Stop")
+    setup_agent_hooks(
+        ".claude",
+        "Claude Code",
+        "UserPromptSubmit",
+        "Stop",
+        Some("PostToolUse"),
+        Some("SubagentStop"),
+    )
 }
 
 /// Set up Codex hooks in .codex/settings.json
 fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    setup_agent_hooks(".codex", "Codex", "UserPromptSubmit", "Stop")
+    setup_agent_hooks(
+        ".codex",
+        "Codex",
+        "UserPromptSubmit",
+        "Stop",
+        Some("PostToolUse"),
+        Some("SubagentStop"),
+    )
 }
 
 /// Set up agent hooks in a settings.json for the given tool directory.
@@ -433,6 +454,8 @@ fn setup_agent_hooks(
     display_name: &str,
     prompt_event: &str,
     stop_event: &str,
+    after_tool_event: Option<&str>,
+    after_agent_event: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = Path::new(dir_name);
     let settings_path = agent_dir.join("settings.json");
@@ -442,7 +465,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("echo '== Legend Project Context =='; {cmd} get_state 2>/dev/null || echo 'Legend state not found'; echo '== Legend Memory =='; {cmd} memory start --compact 2>/dev/null")
+            "command": format!("echo '== Legend Project Context =='; {cmd} project ls 2>/dev/null || echo 'Project state not found'; echo '== Legend Memory =='; {cmd} memory start --compact 2>/dev/null")
         }]
     });
 
@@ -450,7 +473,23 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("echo 'Reminder: Query memory for context on unfamiliar topics: {cmd} memory query \"topic\"'")
+            "command": format!("{cmd} memory query \"$PROMPT\" 2>/dev/null")
+        }]
+    });
+
+    let legend_after_tool_hook = json!({
+        "matcher": "*",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{cmd} memory tick --passive \"Experience: Executed tool '$TOOL' with status '$STATUS'\" 2>/dev/null")
+        }]
+    });
+
+    let legend_after_agent_hook = json!({
+        "matcher": "*",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{cmd} memory tick --passive \"Experience: Completed an agent turn. Current goal state updated.\" 2>/dev/null")
         }]
     });
 
@@ -474,7 +513,7 @@ fn setup_agent_hooks(
             println!("✓ Updating existing {} hooks", display_name);
         }
 
-        if has_legend_hooks(&settings, prompt_event, stop_event) {
+        if has_legend_hooks(&settings, prompt_event, stop_event, after_tool_event, after_agent_event) {
             println!("  {} hooks already configured", display_name);
             return Ok(());
         }
@@ -484,8 +523,12 @@ fn setup_agent_hooks(
             &legend_session_hook,
             &legend_prompt_hook,
             &legend_stop_hook,
+            &legend_after_tool_hook,
+            &legend_after_agent_hook,
             prompt_event,
             stop_event,
+            after_tool_event,
+            after_agent_event,
         );
 
         let output = serde_json::to_string_pretty(&settings)?;
@@ -500,13 +543,17 @@ fn setup_agent_hooks(
         fs::create_dir_all(agent_dir)
             .map_err(|e| format!("Failed to create {} directory: {}", dir_name, e))?;
 
-        let settings = json!({
-            "hooks": {
-                "SessionStart": [legend_session_hook],
-                prompt_event: [legend_prompt_hook],
-                stop_event: [legend_stop_hook]
-            }
-        });
+        let mut hooks_map = serde_json::Map::new();
+        hooks_map.insert("SessionStart".to_string(), json!([legend_session_hook]));
+        if let Some(evt) = after_tool_event {
+            hooks_map.insert(evt.to_string(), json!([legend_after_tool_hook]));
+        }
+        if let Some(evt) = after_agent_event {
+            hooks_map.insert(evt.to_string(), json!([legend_after_agent_hook]));
+        }
+        hooks_map.insert(prompt_event.to_string(), json!([legend_prompt_hook]));
+        hooks_map.insert(stop_event.to_string(), json!([legend_stop_hook]));
+        let settings = json!({ "hooks": hooks_map });
 
         let output = serde_json::to_string_pretty(&settings)?;
         fs::write(&settings_path, output)
@@ -519,11 +566,25 @@ fn setup_agent_hooks(
 }
 
 /// Check if Legend hooks are already configured correctly for this agent
-fn has_legend_hooks(settings: &Value, prompt_event: &str, stop_event: &str) -> bool {
+fn has_legend_hooks(
+    settings: &Value,
+    prompt_event: &str,
+    stop_event: &str,
+    after_tool_event: Option<&str>,
+    after_agent_event: Option<&str>,
+) -> bool {
     let cmd = get_legend_command();
 
-    // Check all three required hook points
-    for hook_type in &["SessionStart", prompt_event, stop_event] {
+    let mut required: Vec<&str> = vec!["SessionStart", prompt_event, stop_event];
+    if let Some(evt) = after_tool_event {
+        required.push(evt);
+    }
+    if let Some(evt) = after_agent_event {
+        required.push(evt);
+    }
+
+    // Check all required hook points
+    for hook_type in &required {
         let mut found = false;
         if let Some(hook_entries) = settings
             .get("hooks")
@@ -569,6 +630,10 @@ fn remove_any_legend_hooks(settings: &mut Value) -> bool {
         "Stop",
         "BeforeAgent",
         "SessionEnd",
+        "AfterTool",
+        "AfterAgent",
+        "PostToolUse",
+        "SubagentStop",
     ];
 
     if let Some(hooks_obj) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
@@ -608,8 +673,12 @@ fn merge_legend_hooks(
     session_hook: &Value,
     prompt_hook: &Value,
     stop_hook: &Value,
+    after_tool_hook: &Value,
+    after_agent_hook: &Value,
     prompt_event: &str,
     stop_event: &str,
+    after_tool_event: Option<&str>,
+    after_agent_event: Option<&str>,
 ) {
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
@@ -623,6 +692,26 @@ fn merge_legend_hooks(
     }
     if let Some(arr) = hooks.get_mut("SessionStart").and_then(|s| s.as_array_mut()) {
         arr.push(session_hook.clone());
+    }
+
+    // Add after-tool hook if the agent supports it
+    if let Some(evt) = after_tool_event {
+        if hooks.get(evt).is_none() {
+            hooks[evt] = json!([]);
+        }
+        if let Some(arr) = hooks.get_mut(evt).and_then(|s| s.as_array_mut()) {
+            arr.push(after_tool_hook.clone());
+        }
+    }
+
+    // Add after-agent hook if the agent supports it
+    if let Some(evt) = after_agent_event {
+        if hooks.get(evt).is_none() {
+            hooks[evt] = json!([]);
+        }
+        if let Some(arr) = hooks.get_mut(evt).and_then(|s| s.as_array_mut()) {
+            arr.push(after_agent_hook.clone());
+        }
     }
 
     // Add prompt hook (e.g. UserPromptSubmit or BeforeAgent)

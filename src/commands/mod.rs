@@ -3,6 +3,7 @@ pub mod discover;
 pub mod get_state;
 pub mod init;
 pub mod memory;
+pub mod project;
 pub mod search;
 pub mod show;
 pub mod update;

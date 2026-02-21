@@ -952,11 +952,19 @@ impl MemoryState {
         }
     }
 
-    /// Append text to the FIFO immediate buffer, evicting oldest if at capacity.
+    /// Append text to the FIFO immediate buffer.
+    /// When the buffer overflows, the oldest entry is automatically "digested"
+    /// (summarized, embedded, and moved) into short-term memory.
     fn push_immediate(&mut self, text: &str) {
         self.immediate.push_back(text.to_string());
-        while self.immediate.len() > self.config.immediate_capacity {
-            self.immediate.pop_front();
+        if self.immediate.len() > self.config.immediate_capacity {
+            if let Some(oldest) = self.immediate.pop_front() {
+                // Background "digestion" of old working memory into STM
+                let embedding = embed_text(&oldest, self.config.embedding_dim);
+                let salience = compute_salience(&oldest) * 0.7; // Passive memories start with lower salience
+                let refs = extract_memory_refs_from_text(&oldest);
+                self.insert_short_term(&oldest, embedding, salience, refs);
+            }
         }
     }
 
