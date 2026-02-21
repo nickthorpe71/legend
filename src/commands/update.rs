@@ -12,7 +12,7 @@ pub struct Update {
     pub remove_features: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct FeatureUpdate {
     pub id: String,
     pub name: Option<String>,
