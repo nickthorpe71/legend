@@ -450,7 +450,15 @@ fn setup_agent_hooks(dir_name: &str, display_name: &str) -> Result<(), Box<dyn s
             .map_err(|e| format!("Failed to parse {}/settings.json: {}", dir_name, e))?;
 
         if has_legend_hooks(&settings) {
-            println!("  {} hooks already configured", display_name);
+            // Check if hooks need updating (old text)
+            if update_old_hook_text(&mut settings) {
+                let output = serde_json::to_string_pretty(&settings)?;
+                fs::write(&settings_path, output)
+                    .map_err(|e| format!("Failed to write {}/settings.json: {}", dir_name, e))?;
+                println!("✓ Updated {} hook text", display_name);
+            } else {
+                println!("  {} hooks already configured", display_name);
+            }
             return Ok(());
         }
 
@@ -512,6 +520,35 @@ fn has_legend_hooks(settings: &Value) -> bool {
         }
     }
     false
+}
+
+/// Update old hook text to new format. Returns true if any changes were made.
+fn update_old_hook_text(settings: &mut Value) -> bool {
+    let old_text = "legend search";
+    let new_command = "echo 'Reminder: Query memory for context on unfamiliar topics: legend memory query \"topic\"'";
+
+    let mut updated = false;
+
+    if let Some(prompt_hooks) = settings
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut("UserPromptSubmit"))
+        .and_then(|s| s.as_array_mut())
+    {
+        for hook_entry in prompt_hooks.iter_mut() {
+            if let Some(hooks) = hook_entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                for hook in hooks.iter_mut() {
+                    if let Some(cmd) = hook.get("command").and_then(|c| c.as_str()) {
+                        if cmd.contains(old_text) {
+                            hook["command"] = json!(new_command);
+                            updated = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    updated
 }
 
 /// Merge Legend hooks into existing settings
