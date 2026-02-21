@@ -95,9 +95,11 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
 /// in the current format. This ensures old memory files are upgraded.
 fn migrate_memory_store() {
     match MemoryState::load_or_default() {
-        Ok(state) => {
+        Ok(mut state) => {
             let entries = state.short_term.len();
             let nodes = state.long_term.nodes.len();
+
+            state.rebalance_weights();
 
             if let Err(e) = state.save() {
                 eprintln!("  Warning: failed to save memory store: {}", e);
@@ -473,7 +475,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("{cmd} memory query \"$PROMPT\" 2>/dev/null")
+            "command": format!("now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; {cmd} memory start --compact 2>/dev/null; else [ -n \"$PROMPT\" ] && {cmd} memory query \"$PROMPT\" 2>/dev/null || true; fi")
         }]
     });
 
@@ -481,7 +483,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("{cmd} memory tick --passive \"Experience: Executed tool '$TOOL' with status '$STATUS'\" 2>/dev/null")
+            "command": format!("input=$(cat); tool=$(echo \"$input\" | jq -r '.tool_name // \"\"' 2>/dev/null); status=$(echo \"$input\" | jq -r 'if .tool_response.is_error then \"error\" else \"success\" end' 2>/dev/null); [ -n \"$tool\" ] && {cmd} memory tick --passive \"Experience: Executed tool '$tool' with status '$status'\" 2>/dev/null || true")
         }]
     });
 
@@ -497,7 +499,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!(r#"changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n "$changed" ]; then count=$(echo "$changed" | wc -l); echo "Legend: $count file(s) changed."; echo "Remember to tick: {cmd} memory tick 'summary of work'"; fi"#)
+            "command": format!(r##"changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n "$changed" ]; then count=$(echo "$changed" | wc -l); echo "Legend: $count file(s) changed."; fi; echo "Legend: tick if significant work was done: {cmd} memory tick ...""##)
         }]
     });
 
