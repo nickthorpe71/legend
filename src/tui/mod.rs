@@ -1,6 +1,6 @@
 use crate::memory::{GraphEdge, GraphNode, MemoryState};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -431,6 +431,22 @@ impl App {
         }
     }
 
+    fn selected_text(&self) -> Option<String> {
+        let idx = self.list_state.selected().unwrap_or(0);
+        match self.view {
+            View::ShortTerm => self.memory.short_term.get(idx).map(|e| e.text.clone()),
+            View::Graph => self
+                .graph_selected_id()
+                .and_then(|id| self.memory.long_term.nodes.get(&id).map(|n| n.label.clone())),
+            View::Events => {
+                let events: Vec<_> = self.events.iter().rev().collect();
+                events
+                    .get(idx)
+                    .map(|e| format!("[{}] {}: {}", e.timestamp, e.command, e.detail))
+            }
+        }
+    }
+
     fn format_short_term_detail(&self, idx: usize) -> Option<String> {
         let entry = self.memory.short_term.get(idx)?;
         let age = self.memory.clock.saturating_sub(entry.last_access);
@@ -675,12 +691,43 @@ impl App {
     }
 }
 
+/// Copy text to the system clipboard via OSC 52 escape sequence.
+/// Works in most modern terminals (kitty, alacritty, iTerm2, xterm, etc.)
+/// and over SSH without any external dependencies.
+fn copy_to_clipboard(text: &str) {
+    use std::io::Write;
+    let encoded = base64_encode(text.as_bytes());
+    // Write to /dev/tty to bypass the alternate screen buffer
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        let _ = write!(tty, "\x1b]52;c;{}\x07", encoded);
+    }
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut i = 0;
+    while i < data.len() {
+        let b0 = data[i] as u32;
+        let b1 = if i + 1 < data.len() { data[i + 1] as u32 } else { 0 };
+        let b2 = if i + 2 < data.len() { data[i + 2] as u32 } else { 0 };
+        out.push(CHARS[((b0 >> 2) & 0x3F) as usize] as char);
+        out.push(CHARS[((b0 << 4 | b1 >> 4) & 0x3F) as usize] as char);
+        out.push(if i + 1 < data.len() { CHARS[((b1 << 2 | b2 >> 6) & 0x3F) as usize] as char } else { '=' });
+        out.push(if i + 2 < data.len() { CHARS[(b2 & 0x3F) as usize] as char } else { '=' });
+        i += 3;
+    }
+    out
+}
+
 /// Run the TUI application
 pub fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Note: we intentionally do NOT enable mouse capture so the terminal
+    // can handle native text selection for copy-paste.
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -758,6 +805,12 @@ pub fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
                                 app.show_detail();
                             }
                         }
+                        KeyCode::Char('y') => {
+                            if let Some(text) = app.selected_text() {
+                                copy_to_clipboard(&text);
+                                app.status_message = Some("Copied to clipboard".to_string());
+                            }
+                        }
                         _ => {}
                     },
                     InputMode::Search => match key.code {
@@ -793,6 +846,12 @@ pub fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
                             app.input_mode = InputMode::Normal;
                             app.detail_content = None;
                         }
+                        KeyCode::Char('y') => {
+                            if let Some(ref content) = app.detail_content.clone() {
+                                copy_to_clipboard(content);
+                                app.status_message = Some("Copied to clipboard".to_string());
+                            }
+                        }
                         _ => {}
                     },
                 }
@@ -806,11 +865,7 @@ pub fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result
@@ -928,6 +983,10 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(" details"),
+        ]),
+        Line::from(vec![
+            Span::styled("y", Style::default().fg(Color::Cyan)),
+            Span::raw(" copy"),
         ]),
         Line::from(vec![
             Span::styled("b", Style::default().fg(Color::Cyan)),
@@ -1245,7 +1304,7 @@ fn render_input_bar(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Cyan),
         ),
         InputMode::Detail => (
-            "Press Esc or Enter to close".to_string(),
+            "Press Esc/Enter to close  y to copy".to_string(),
             Style::default().fg(Color::Green),
         ),
     };

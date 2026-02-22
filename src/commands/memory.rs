@@ -366,6 +366,7 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
 #[derive(Default)]
 struct StartOptions {
     compact: bool,
+    json: bool,
     category: Option<String>,
 }
 
@@ -375,6 +376,7 @@ fn parse_start_args(args: &[String]) -> StartOptions {
     while i < args.len() {
         match args[i].as_str() {
             "--compact" | "-c" => opts.compact = true,
+            "--json" | "-j" => opts.json = true,
             "--category" => {
                 if i + 1 < args.len() {
                     opts.category = Some(args[i + 1].clone());
@@ -424,9 +426,81 @@ fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     memory.save()?;
     log_event_rich("start", "session cold-start", Some(event_data));
-    let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
-    println!("{}", json);
+
+    if opts.json {
+        let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
+        println!("{}", json);
+    } else {
+        print_start_summary_markdown(&summary);
+    }
     Ok(())
+}
+
+fn print_start_summary_markdown(summary: &serde_json::Value) {
+    println!("# Legend Session Start Context");
+    println!();
+
+    println!("## LEGEND PROTOCOL (MANDATORY)");
+    println!("- **TICK DECISIONS**: After every file change or major decision, run `legend memory tick 'rationale...'`.");
+    println!("- **RESEARCH FIRST**: Run `legend memory start` or `query` before starting new tasks.");
+    println!("- **ARCHITECT**: Update ARCHITECTURE.md or TICK architecture insights when structure changes.");
+    println!("- **BRIDGE SESSIONS**: Record final decisions and next steps via `legend memory tick` before exiting.");
+    println!();
+
+    if let Some(task) = summary.get("current_task").and_then(|t| t.as_str()) {
+        println!("## Current Task");
+        println!("> {}", task);
+        println!();
+    }
+
+    if let Some(sessions) = summary.get("recent_sessions").and_then(|s| s.as_array()) {
+        if !sessions.is_empty() {
+            println!("## Recent Activity");
+            for session in sessions {
+                if let Some(text) = session.as_str() {
+                    println!("- {}", text);
+                }
+            }
+            println!();
+        }
+    }
+
+    if let Some(categorized) = summary.get("categorized").and_then(|c| c.as_object()) {
+        println!("## Categorized Memories");
+        for (name, data) in categorized {
+            let (items, total) = if let Some(obj) = data.as_object() {
+                let items = obj.get("items").and_then(|i| i.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
+                let total = obj.get("total").and_then(|t| t.as_u64()).unwrap_or(items.len() as u64);
+                (items, total)
+            } else if let Some(arr) = data.as_array() {
+                (arr.as_slice(), arr.len() as u64)
+            } else {
+                (&[][..], 0)
+            };
+
+            if total > 0 {
+                println!("\n### {}", name.to_uppercase());
+                for item in items {
+                    if let Some(text) = item.as_str() {
+                        println!("- {}", text);
+                    } else if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                        println!("- {}", text);
+                    }
+                }
+                if total > items.len() as u64 {
+                    println!("- *...and {} more. Use `legend memory start --category {}` to see all.*", total - items.len() as u64, name);
+                }
+            }
+        }
+    }
+
+    if let Some(warning) = summary.get("warning").and_then(|w| w.as_str()) {
+        println!("\n> [!WARNING]");
+        println!("> {}", warning);
+    }
+
+    println!("\n---");
+    println!("*Use `legend memory tick \"...\"` to record your progress and decisions.*");
 }
 
 fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {

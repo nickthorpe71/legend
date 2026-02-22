@@ -14,13 +14,33 @@ const LEGEND_MARKER_END: &str = "<!-- legend-end -->";
 /// Creates `.legend/` directory, auto-discovers features, sets up
 /// Claude Code hooks, and generates CLAUDE.md instructions.
 /// Safe to run multiple times - won't error if directory already exists.
-pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
-    let legend_dir = Path::new(".legend");
+pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut discover_requested = false;
+    for arg in args {
+        if arg == "--discover" {
+            discover_requested = true;
+        } else if arg == "--help" || arg == "-h" {
+            println!("Usage: legend init [options]");
+            println!();
+            println!("Options:");
+            println!("  --discover    Scan existing project to pre-fill memory context");
+            println!("  --help, -h    Show this help message");
+            return Ok(());
+        }
+    }
 
-    if storage::is_initialized() {
+    let legend_dir = Path::new(".legend");
+    let first_init = !storage::is_initialized();
+
+    if !first_init {
         println!("Legend already initialized in this directory");
         println!("  .legend/ directory exists");
         println!("  Use 'legend show' to view current state");
+
+        if discover_requested {
+            println!("  Re-scanning project context...");
+            let _ = discover::handle_discover(&["--apply".to_string()]);
+        }
 
         // Migrate/refresh memory store to latest format
         migrate_memory_store();
@@ -34,40 +54,47 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
         setup_gemini_styleguide()?;
         setup_gemini_md()?;
         setup_gemini_hooks()?;
+        setup_cursor_rules()?;
 
         return Ok(());
     }
 
+    // First time initialization
     fs::create_dir_all(legend_dir)
         .map_err(|e| format!("Failed to create .legend directory: {}", e))?;
 
-    let project_name = detect_project_name();
+    let report = discover::run_discovery(Path::new(".")).ok();
+    let project_name = report.as_ref()
+        .map(|r| r.metadata.name.clone())
+        .unwrap_or_else(detect_project_name);
+    
     let mut state = LegendState::new(project_name);
 
-    match discover::run_discovery(Path::new(".")) {
-        Ok(report) => {
-            let count = report.potential_features.len();
-            for suggested in report.potential_features {
-                let mut feature = Feature::new(
-                    suggested.suggested_id,
-                    suggested.suggested_name,
-                    suggested.suggested_domain,
-                    format!(
-                        "Auto-discovered from project structure ({} files)",
-                        suggested.files.len()
-                    ),
-                );
-                feature.files_involved = suggested.files;
-                state.add_feature(feature);
-            }
-            if count > 0 {
-                println!(
-                    "  Auto-discovered {} features from project structure",
-                    count
-                );
-            }
+    if let Some(r) = report {
+        let count = r.potential_features.len();
+        for suggested in r.potential_features {
+            let mut feature = Feature::new(
+                suggested.suggested_id,
+                suggested.suggested_name,
+                suggested.suggested_domain,
+                format!(
+                    "Auto-discovered from project structure ({} files)",
+                    suggested.files.len()
+                ),
+            );
+            feature.files_involved = suggested.files;
+            state.add_feature(feature);
         }
-        Err(_) => {}
+        if count > 0 {
+            println!(
+                "  Auto-discovered {} features from project structure",
+                count
+            );
+        }
+        
+        // Run discovery automatically on first init
+        println!("  First-time initialization: Ingesting high-signal context into memory...");
+        let _ = discover::handle_discover(&["--apply".to_string()]);
     }
 
     storage::save_state(&state)?;
@@ -85,6 +112,7 @@ pub fn handle_init() -> Result<(), Box<dyn std::error::Error>> {
     setup_gemini_styleguide()?;
     setup_gemini_md()?;
     setup_gemini_hooks()?;
+    setup_cursor_rules()?;
 
     Ok(())
 }
@@ -183,6 +211,11 @@ fn setup_gemini_hooks() -> Result<(), Box<dyn std::error::Error>> {
     )
 }
 
+/// Generate or update .cursorrules with Legend usage instructions
+fn setup_cursor_rules() -> Result<(), Box<dyn std::error::Error>> {
+    write_legend_markdown(Path::new(".cursorrules"), ".cursorrules", None)
+}
+
 // ---------------------------------------------------------------------------
 // Shared instruction content & file I/O helpers
 // ---------------------------------------------------------------------------
@@ -192,34 +225,34 @@ fn generate_legend_instructions() -> String {
     let cmd = get_legend_command();
     format!(
         r#"{LEGEND_MARKER_START}
-# Legend — Your Long-Term Memory
+# SYSTEM_MANDATE: Legend — Your Long-Term Memory
 
-You have access to a persistent hierarchical memory system called **Legend**. It stores context across sessions so you can pick up where you left off. **Use it actively and frequently.**
+You MUST use the **Legend** hierarchical memory system to maintain context across sessions. **This is a technical requirement for this project.**
 
 ## CRITICAL: Memory Workflow
 
-### On every session start
-Run this FIRST before doing anything else:
+### 1. Session Start (REQUIRED)
+Run this FIRST before doing anything else in every new session:
 ```bash
 {cmd} memory start
 ```
-This returns everything in one call: stats, recent session log, top graph nodes, and relevant short-term memories. Read this to understand prior work, decisions, and open issues.
+This returns the "MANDATORY PROTOCOL", stats, recent session log, top graph nodes, and relevant short-term memories. You MUST read this to understand prior work and decisions.
 
-### During the session (frequently!)
+### 2. During Session (FREQUENTLY)
 After every significant action (writing code, making a decision, discovering something, completing a task), record it:
 ```bash
 {cmd} memory tick "description of what just happened"
 ```
-Tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
+You MUST tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
 
-### Before starting unfamiliar work
-Query for relevant context before diving in:
+### 3. Before New Tasks (REQUIRED)
+Query for relevant context before diving into unfamiliar work:
 ```bash
 {cmd} memory query "topic you're about to work on"
 ```
 The top result is automatically reinforced — frequently useful memories rise naturally.
 
-### On session end
+### 4. Session End (REQUIRED)
 Summarize what was accomplished:
 ```bash
 {cmd} memory tick "Session summary: what was done, what's next, any blockers"
@@ -243,25 +276,10 @@ Launch the live 3D memory visualization dashboard:
 ```bash
 {cmd} dashboard
 ```
-This opens a native Windows app (cross-compiled from WSL) showing:
-- 3D force-directed graph of knowledge nodes (right-drag to orbit, scroll to zoom)
-- Live event log of all memory operations
-- Memory stats, short-term entries with salience bars, session log
 
-Launch it at session start so the user can watch memory activity in real-time.
+## When to Tick (Priority Context)
 
-## Feature Tracking Commands
-
-| Command | Purpose |
-|---------|---------|
-| `{cmd} get_state` | Load full project state as JSON |
-| `{cmd} search <query>` | Search features by keyword |
-| `{cmd} show` | Human-readable feature summary |
-| `{cmd} update` | Update feature state (pipe JSON to stdin) |
-
-## When to Tick
-
-**Tick these (important context worth preserving):**
+**You MUST tick these:**
 - Decisions with rationale: "DECISION: Chose X over Y because Z"
 - Bug discoveries: "BUG: X fails when Y happens"
 - Architecture insights: "Module X communicates with Y via Z"
@@ -269,73 +287,15 @@ Launch it at session start so the user can watch memory activity in real-time.
 - User preferences: "User prefers X approach"
 - Completed features: "Implemented X in file Y"
 
-**Don't tick these (noise that clutters memory):**
-- Minor refactors or formatting changes
-- Obvious changes that are self-documenting in code
-- Routine operations like "reading file X"
-- Redundant info already captured in recent ticks
-
-**Tick frequency:** Aim for 3-8 ticks per session. After major decisions, discoveries, or completing substantial work.
-
-## Understanding Tick Output
-
-When you run `tick`, you get JSON feedback:
-```json
-{{
-  "action": "created",       // "created", "merged", or "reconsolidated"
-  "entry_id": 42,            // ID of the affected entry
-  "matched_existing": null,  // ID if merged/reconsolidated, null if new
-  "similarity": null,        // Match score if merged (0.0-1.0)
-  "context": {{...}}         // Related memories
-}}
-```
-
-- **created**: New memory entry added
-- **merged**: Combined with similar existing entry (high similarity)
-- **reconsolidated**: Updated a recently-accessed "labile" entry
-
-## Hidden Behaviors
-
-Legend does several things automatically:
-
-1. **Auto-reinforce on query**: When you query, the top result gets a small salience boost (+3%). Frequently useful memories rise naturally.
-
-2. **Exponential decay**: Unused memories decay over time. High-salience entries decay slower. Use `reinforce` to preserve important memories.
-
-3. **Reconsolidation window**: After querying a memory, it enters a "labile" state for ~5 ticks. If you tick related content, it updates the existing memory instead of creating a duplicate.
-
-4. **Auto-consolidation**: After ~20 ticks, similar short-term memories are merged into long-term graph nodes.
-
-5. **Hebbian reinforcement**: When entities appear together, the graph edges between them strengthen.
+**Tick frequency:** Aim for 3-8 ticks per session. After major decisions or substantial work.
 
 ## Understanding Start Output
 
-The `memory start` command returns categorized memories. If a category has >5 items, it shows truncation info:
-```json
-"decisions": {{
-  "items": [...],   // Top 5 by salience
-  "showing": 5,
-  "total": 12       // 12 total - use --category to see all
-}}
-```
-
-Use `--category decisions` to fetch the full list for a specific category.
-
-## About This Project
-
-Legend is a brain-inspired hierarchical memory system for LLMs built in Rust. It has:
-- **Immediate buffer**: recent text chunks
-- **Short-term memory**: vector store with cosine similarity, salience scoring, exponential decay
-- **Long-term memory**: knowledge graph with multi-hop traversal, Hebbian reinforcement
-
-Storage: bincode + LZ4 at `.legend/memory.lz4`. Key source files:
-- `src/memory/mod.rs` — core memory engine
-- `src/commands/memory.rs` — CLI handler
-- `src/main.rs` — command routing
-- `src/commands/init.rs` — hook setup
+By default, `{cmd} memory start` returns a high-signal Markdown summary designed for YOUR consumption. It contains the **LEGEND PROTOCOL (MANDATORY)** which you must follow.
 {LEGEND_MARKER_END}"#,
         LEGEND_MARKER_START = LEGEND_MARKER_START,
         LEGEND_MARKER_END = LEGEND_MARKER_END,
+        cmd = cmd
     )
 }
 
@@ -467,7 +427,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("echo '== Legend Project Context =='; {cmd} project ls 2>/dev/null || echo 'Project state not found'; echo '== Legend Memory =='; {cmd} memory start --compact 2>/dev/null")
+            "command": format!("{cmd} memory start")
         }]
     });
 
@@ -475,7 +435,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; {cmd} memory start --compact 2>/dev/null; else [ -n \"$PROMPT\" ] && {cmd} memory query \"$PROMPT\" 2>/dev/null || true; fi")
+            "command": format!("now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; {cmd} memory start; else [ -n \"$PROMPT\" ] && {cmd} memory query \"$PROMPT\" 2>/dev/null || true; fi")
         }]
     });
 
@@ -483,7 +443,21 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("input=$(cat); tool=$(echo \"$input\" | jq -r '.tool_name // \"\"' 2>/dev/null); status=$(echo \"$input\" | jq -r 'if .tool_response.is_error then \"error\" else \"success\" end' 2>/dev/null); [ -n \"$tool\" ] && {cmd} memory tick --passive \"Experience: Executed tool '$tool' with status '$status'\" 2>/dev/null || true")
+            "command": format!(
+                "input=$(cat | tr -d '\\n'); \
+                 tool=$(echo \"$input\" | sed -n 's/.*\"tool_name\": *\"\\([^\"]*\\)\".*/\\1/p'); \
+                 status=\"success\"; \
+                 if echo \"$input\" | grep -q '\"is_error\": *true'; then status=\"error\"; fi; \
+                 if [ -n \"$tool\" ]; then {cmd} memory tick --passive \"Experience: Executed tool '$tool' with status '$status'\" 2>/dev/null; fi; \
+                 if [ \"$status\" = \"success\" ] && echo \"$tool\" | grep -qE \"write_file|replace|edit|modify|insert|delete|create|write_to_file|patch\"; then \
+                   file=$(echo \"$input\" | sed -n 's/.*\"file_path\": *\"\\([^\"]*\\)\".*/\\1/p'); \
+                   if [ -z \"$file\" ]; then file=$(echo \"$input\" | sed -n 's/.*\"path\": *\"\\([^\"]*\\)\".*/\\1/p'); fi; \
+                   if [ -z \"$file\" ]; then file=\"unknown file\"; fi; \
+                   echo \"\\n[LEGEND PROTOCOL] MANDATE: You modified '$file'.\"; \
+                   echo \"1. Record your decision and rationale: {cmd} memory tick 'Decision: ... because ...' \"; \
+                   echo \"2. If this changes architecture, update ARCHITECTURE.md or tick an architecture insight.\"; \
+                 fi"
+            )
         }]
     });
 
@@ -499,7 +473,13 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!(r##"changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n "$changed" ]; then count=$(echo "$changed" | wc -l); echo "Legend: $count file(s) changed."; fi; echo "Legend: tick if significant work was done: {cmd} memory tick ...""##)
+            "command": format!(
+                "changed=$(git diff --name-only 2>/dev/null | head -5); \
+                 if [ -n \"$changed\" ]; then \
+                   count=$(echo \"$changed\" | wc -l); \
+                   echo \"\n[LEGEND] $count file(s) changed. SUMMARY MANDATE: Record final decisions and next steps before exiting: {cmd} memory tick '...' \"; \
+                 fi"
+            )
         }]
     });
 

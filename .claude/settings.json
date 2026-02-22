@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "cargo run --quiet -- memory tick --passive \"Experience: Executed tool '$TOOL' with status '$STATUS'\" 2>/dev/null",
+            "command": "input=$(cat | tr -d '\\n'); tool=$(echo \"$input\" | sed -n 's/.*\"tool_name\": *\"\\([^\"]*\\)\".*/\\1/p'); status=\"success\"; if echo \"$input\" | grep -q '\"is_error\": *true'; then status=\"error\"; fi; if [ -n \"$tool\" ]; then cargo run --quiet -- memory tick --passive \"Experience: Executed tool '$tool' with status '$status'\" 2>/dev/null; fi; if [ \"$status\" = \"success\" ] && echo \"$tool\" | grep -qE \"write_file|replace|edit|modify|insert|delete|create|write_to_file|patch\"; then file=$(echo \"$input\" | sed -n 's/.*\"file_path\": *\"\\([^\"]*\\)\".*/\\1/p'); if [ -z \"$file\" ]; then file=$(echo \"$input\" | sed -n 's/.*\"path\": *\"\\([^\"]*\\)\".*/\\1/p'); fi; if [ -z \"$file\" ]; then file=\"unknown file\"; fi; echo \"\\n[LEGEND PROTOCOL] MANDATE: You modified '$file'.\"; echo \"1. Record your decision and rationale: cargo run --quiet -- memory tick 'Decision: ... because ...' \"; echo \"2. If this changes architecture, update ARCHITECTURE.md or tick an architecture insight.\"; fi",
             "type": "command"
           }
         ],
@@ -15,7 +15,7 @@
       {
         "hooks": [
           {
-            "command": "echo '== Legend Project Context =='; cargo run --quiet -- project ls 2>/dev/null || echo 'Project state not found'; echo '== Legend Memory =='; cargo run --quiet -- memory start --compact 2>/dev/null",
+            "command": "cargo run --quiet -- memory start",
             "type": "command"
           }
         ],
@@ -26,7 +26,7 @@
       {
         "hooks": [
           {
-            "command": "changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$changed\" ]; then count=$(echo \"$changed\" | wc -l); echo \"Legend: $count file(s) changed.\"; echo \"Remember to tick: cargo run --quiet -- memory tick 'summary of work'\"; fi",
+            "command": "changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$changed\" ]; then count=$(echo \"$changed\" | wc -l); echo \"\n[LEGEND] $count file(s) changed. SUMMARY MANDATE: Record final decisions and next steps before exiting: cargo run --quiet -- memory tick '...' \"; fi",
             "type": "command"
           }
         ],
@@ -48,7 +48,7 @@
       {
         "hooks": [
           {
-            "command": "cargo run --quiet -- memory query \"$PROMPT\" 2>/dev/null",
+            "command": "now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; cargo run --quiet -- memory start; else [ -n \"$PROMPT\" ] && cargo run --quiet -- memory query \"$PROMPT\" 2>/dev/null || true; fi",
             "type": "command"
           }
         ],

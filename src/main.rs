@@ -21,7 +21,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     match args[1].as_str() {
         "help" | "--help" | "-h" => print_help(),
-        "init" => commands::init::handle_init()?,
+        "init" => commands::init::handle_init(&args[2..])?,
         "get_state" => commands::get_state::handle_get_state()?,
         "update" => commands::update::handle_update()?,
         "show" => commands::show::handle_show()?,
