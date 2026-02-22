@@ -1469,17 +1469,12 @@ impl MemoryState {
             // Build item based on compact mode
             let item = if compact {
                 // Compact: just the text, truncated shorter
-                let text = if entry.text.len() > 80 {
-                    format!("{}…", &entry.text[..80])
-                } else {
-                    entry.text.clone()
-                };
-                serde_json::json!(text)
+                serde_json::json!(safe_truncate(&entry.text, 80))
             } else {
                 // Default: id and text only (removed salience/reconsolidations)
                 serde_json::json!({
                     "id": entry.id,
-                    "text": if entry.text.len() > 120 { format!("{}…", &entry.text[..120]) } else { entry.text.clone() },
+                    "text": safe_truncate(&entry.text, 120),
                 })
             };
 
@@ -1776,12 +1771,50 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
 
     eprintln!("Detected old memory format backup, attempting migration...");
 
-    // Old struct without new fields (current_task, ticks_since_consolidation)
+    // ShortTermEntry before gradient_sq_sum was added (commit a0a40a7).
+    #[derive(Debug, Clone, Deserialize)]
+    struct ShortTermEntryV1 {
+        pub id: u64,
+        pub text: String,
+        #[serde(default)]
+        pub summary: String,
+        pub embedding: Vec<f32>,
+        pub last_access: u64,
+        pub usage: u32,
+        #[serde(default)]
+        pub salience: f32,
+        #[serde(default)]
+        pub reconsolidation_count: u32,
+        #[serde(default)]
+        pub labile_until: u64,
+        #[serde(default)]
+        pub refs: Vec<MemoryRef>,
+        // gradient_sq_sum intentionally absent
+    }
+
+    // MemoryState with current_task/ticks_since_consolidation but before last_retrieved_ids.
+    #[derive(Debug, Clone, Deserialize)]
+    struct MemoryStateV2 {
+        pub config: MemoryConfig,
+        pub immediate: VecDeque<String>,
+        pub short_term: Vec<ShortTermEntryV1>,
+        pub long_term: GraphMemory,
+        pub clock: u64,
+        pub next_id: u64,
+        #[serde(default)]
+        pub session_log: Vec<SessionEntry>,
+        #[serde(default)]
+        pub current_task: Option<String>,
+        #[serde(default)]
+        pub ticks_since_consolidation: u32,
+    }
+
+    // MemoryState before current_task/ticks_since_consolidation were added.
     #[derive(Debug, Clone, Deserialize)]
     struct MemoryStateV1 {
         pub config: MemoryConfig,
         pub immediate: VecDeque<String>,
-        pub short_term: Vec<ShortTermEntry>,
+        pub short_term: Vec<ShortTermEntryV1>,
         pub long_term: GraphMemory,
         pub clock: u64,
         pub next_id: u64,
@@ -1791,19 +1824,59 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
 
     let compressed = fs::read(CORRUPT_FILE)?;
     let serialized = lz4::block::decompress(&compressed, None)?;
-    let old: MemoryStateV1 = bincode::deserialize(&serialized)?;
 
-    let new_state = MemoryState {
-        config: old.config,
-        immediate: old.immediate,
-        short_term: old.short_term,
-        long_term: old.long_term,
-        clock: old.clock,
-        next_id: old.next_id,
-        session_log: old.session_log,
-        current_task: None,
-        ticks_since_consolidation: 0,
-        last_retrieved_ids: Vec::new(),
+    // Try V2 first (has current_task/ticks_since_consolidation), then fall back to V1.
+    let new_state = if let Ok(v2) = bincode::deserialize::<MemoryStateV2>(&serialized) {
+        MemoryState {
+            config: v2.config,
+            immediate: v2.immediate,
+            short_term: v2.short_term.into_iter().map(|e| ShortTermEntry {
+                id: e.id,
+                text: e.text,
+                summary: e.summary,
+                embedding: e.embedding,
+                last_access: e.last_access,
+                usage: e.usage,
+                salience: e.salience,
+                reconsolidation_count: e.reconsolidation_count,
+                labile_until: e.labile_until,
+                refs: e.refs,
+                gradient_sq_sum: 0.0,
+            }).collect(),
+            long_term: v2.long_term,
+            clock: v2.clock,
+            next_id: v2.next_id,
+            session_log: v2.session_log,
+            current_task: v2.current_task,
+            ticks_since_consolidation: v2.ticks_since_consolidation,
+            last_retrieved_ids: Vec::new(),
+        }
+    } else {
+        let old = bincode::deserialize::<MemoryStateV1>(&serialized)?;
+        MemoryState {
+            config: old.config,
+            immediate: old.immediate,
+            short_term: old.short_term.into_iter().map(|e| ShortTermEntry {
+                id: e.id,
+                text: e.text,
+                summary: e.summary,
+                embedding: e.embedding,
+                last_access: e.last_access,
+                usage: e.usage,
+                salience: e.salience,
+                reconsolidation_count: e.reconsolidation_count,
+                labile_until: e.labile_until,
+                refs: e.refs,
+                gradient_sq_sum: 0.0,
+            }).collect(),
+            long_term: old.long_term,
+            clock: old.clock,
+            next_id: old.next_id,
+            session_log: old.session_log,
+            current_task: None,
+            ticks_since_consolidation: 0,
+            last_retrieved_ids: Vec::new(),
+        }
     };
 
     // Save migrated state
@@ -1846,6 +1919,17 @@ fn eviction_score(entry: &ShortTermEntry, now: u64) -> f32 {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+fn safe_truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let mut end = max_len;
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
 
 #[cfg(test)]
 mod tests {

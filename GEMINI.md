@@ -1,32 +1,32 @@
 <!-- legend-start -->
-# Legend — Your Long-Term Memory
+# SYSTEM_MANDATE: Legend — Your Long-Term Memory
 
-You have access to a persistent hierarchical memory system called **Legend**. It stores context across sessions so you can pick up where you left off. **Use it actively and frequently.**
+You MUST use the **Legend** hierarchical memory system to maintain context across sessions. **This is a technical requirement for this project.**
 
 ## CRITICAL: Memory Workflow
 
-### On every session start
-Run this FIRST before doing anything else:
+### 1. Session Start (REQUIRED)
+Run this FIRST before doing anything else in every new session:
 ```bash
 cargo run --quiet -- memory start
 ```
-This returns everything in one call: stats, recent session log, top graph nodes, and relevant short-term memories. Read this to understand prior work, decisions, and open issues.
+This returns the "MANDATORY PROTOCOL", stats, recent session log, top graph nodes, and relevant short-term memories. You MUST read this to understand prior work and decisions.
 
-### During the session (frequently!)
+### 2. During Session (FREQUENTLY)
 After every significant action (writing code, making a decision, discovering something, completing a task), record it:
 ```bash
 cargo run --quiet -- memory tick "description of what just happened"
 ```
-Tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
+You MUST tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
 
-### Before starting unfamiliar work
-Query for relevant context before diving in:
+### 3. Before New Tasks (REQUIRED)
+Query for relevant context before diving into unfamiliar work:
 ```bash
 cargo run --quiet -- memory query "topic you're about to work on"
 ```
 The top result is automatically reinforced — frequently useful memories rise naturally.
 
-### On session end
+### 4. Session End (REQUIRED)
 Summarize what was accomplished:
 ```bash
 cargo run --quiet -- memory tick "Session summary: what was done, what's next, any blockers"
@@ -50,25 +50,10 @@ Launch the live 3D memory visualization dashboard:
 ```bash
 cargo run --quiet -- dashboard
 ```
-This opens a native Windows app (cross-compiled from WSL) showing:
-- 3D force-directed graph of knowledge nodes (right-drag to orbit, scroll to zoom)
-- Live event log of all memory operations
-- Memory stats, short-term entries with salience bars, session log
 
-Launch it at session start so the user can watch memory activity in real-time.
+## When to Tick (Priority Context)
 
-## Feature Tracking Commands
-
-| Command | Purpose |
-|---------|---------|
-| `cargo run --quiet -- get_state` | Load full project state as JSON |
-| `cargo run --quiet -- search <query>` | Search features by keyword |
-| `cargo run --quiet -- show` | Human-readable feature summary |
-| `cargo run --quiet -- update` | Update feature state (pipe JSON to stdin) |
-
-## When to Tick
-
-**Tick these (important context worth preserving):**
+**You MUST tick these:**
 - Decisions with rationale: "DECISION: Chose X over Y because Z"
 - Bug discoveries: "BUG: X fails when Y happens"
 - Architecture insights: "Module X communicates with Y via Z"
@@ -76,68 +61,9 @@ Launch it at session start so the user can watch memory activity in real-time.
 - User preferences: "User prefers X approach"
 - Completed features: "Implemented X in file Y"
 
-**Don't tick these (noise that clutters memory):**
-- Minor refactors or formatting changes
-- Obvious changes that are self-documenting in code
-- Routine operations like "reading file X"
-- Redundant info already captured in recent ticks
-
-**Tick frequency:** Aim for 3-8 ticks per session. After major decisions, discoveries, or completing substantial work.
-
-## Understanding Tick Output
-
-When you run `tick`, you get JSON feedback:
-```json
-{
-  "action": "created",       // "created", "merged", or "reconsolidated"
-  "entry_id": 42,            // ID of the affected entry
-  "matched_existing": null,  // ID if merged/reconsolidated, null if new
-  "similarity": null,        // Match score if merged (0.0-1.0)
-  "context": {...}         // Related memories
-}
-```
-
-- **created**: New memory entry added
-- **merged**: Combined with similar existing entry (high similarity)
-- **reconsolidated**: Updated a recently-accessed "labile" entry
-
-## Hidden Behaviors
-
-Legend does several things automatically:
-
-1. **Auto-reinforce on query**: When you query, the top result gets a small salience boost (+3%). Frequently useful memories rise naturally.
-
-2. **Exponential decay**: Unused memories decay over time. High-salience entries decay slower. Use `reinforce` to preserve important memories.
-
-3. **Reconsolidation window**: After querying a memory, it enters a "labile" state for ~5 ticks. If you tick related content, it updates the existing memory instead of creating a duplicate.
-
-4. **Auto-consolidation**: After ~20 ticks, similar short-term memories are merged into long-term graph nodes.
-
-5. **Hebbian reinforcement**: When entities appear together, the graph edges between them strengthen.
+**Tick frequency:** Aim for 3-8 ticks per session. After major decisions or substantial work.
 
 ## Understanding Start Output
 
-The `memory start` command returns categorized memories. If a category has >5 items, it shows truncation info:
-```json
-"decisions": {
-  "items": [...],   // Top 5 by salience
-  "showing": 5,
-  "total": 12       // 12 total - use --category to see all
-}
-```
-
-Use `--category decisions` to fetch the full list for a specific category.
-
-## About This Project
-
-Legend is a brain-inspired hierarchical memory system for LLMs built in Rust. It has:
-- **Immediate buffer**: recent text chunks
-- **Short-term memory**: vector store with cosine similarity, salience scoring, exponential decay
-- **Long-term memory**: knowledge graph with multi-hop traversal, Hebbian reinforcement
-
-Storage: bincode + LZ4 at `.legend/memory.lz4`. Key source files:
-- `src/memory/mod.rs` — core memory engine
-- `src/commands/memory.rs` — CLI handler
-- `src/main.rs` — command routing
-- `src/commands/init.rs` — hook setup
+By default, `cargo run --quiet -- memory start` returns a high-signal Markdown summary designed for YOUR consumption. It contains the **LEGEND PROTOCOL (MANDATORY)** which you must follow.
 <!-- legend-end -->

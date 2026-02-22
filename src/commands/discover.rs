@@ -2,14 +2,32 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::memory::MemoryState;
+use crate::types::Feature;
+use crate::storage::{load_state, save_state, is_initialized};
 
 #[derive(Serialize)]
 pub struct DiscoveryReport {
     pub root: String,
+    pub metadata: ProjectMetadata,
     pub languages: HashMap<String, usize>,
-    pub directories: Vec<String>,
+    pub high_signal_files: Vec<HighSignalFile>,
     pub potential_features: Vec<SuggestedFeature>,
     pub total_files: usize,
+}
+
+#[derive(Serialize, Default)]
+pub struct ProjectMetadata {
+    pub name: String,
+    pub version: Option<String>,
+    pub description: Option<String>,
+    pub tech_stack: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct HighSignalFile {
+    pub path: String,
+    pub kind: String, // "Documentation", "Manifest", "EntryPoint"
 }
 
 #[derive(Serialize)]
@@ -26,6 +44,10 @@ const SKIP_DIRS: &[&str] = &[
 
 const SOURCE_ROOTS: &[&str] = &["src", "lib", "app", "pkg"];
 
+const DOC_FILES: &[&str] = &[
+    "README.md", "ARCHITECTURE.md", "VISION.md", "PLAN.md", "GEMINI.md", "CLAUDE.md", "CODEX.md", "PRD.md",
+];
+
 /// Scan a directory tree and return a discovery report.
 pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error::Error>> {
     let root_path = fs::canonicalize(root)?;
@@ -34,26 +56,15 @@ pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error:
 
     walk_directory(&root_path, &root_path, &mut languages, &mut all_files)?;
 
-    let mut top_dirs: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&root_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.starts_with('.') && !SKIP_DIRS.contains(&name.as_str()) {
-                    top_dirs.push(name);
-                }
-            }
-        }
-    }
-    top_dirs.sort();
-
+    let high_signal_files = scan_high_signal(&root_path, &all_files);
+    let metadata = extract_metadata(&root_path, &high_signal_files);
     let potential_features = detect_features(&root_path, &all_files);
 
     Ok(DiscoveryReport {
         root: root_path.to_string_lossy().to_string(),
+        metadata,
         languages,
-        directories: top_dirs,
+        high_signal_files,
         potential_features,
         total_files: all_files.len(),
     })
@@ -61,17 +72,208 @@ pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error:
 
 /// Handle the discover CLI command: JSON to stdout, summary to stderr.
 pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let root_path = if args.is_empty() { PathBuf::from(".") } else { PathBuf::from(&args[0]) };
-    let report = run_discovery(&root_path)?;
+    let mut apply = false;
+    let mut path = PathBuf::from(".");
 
-    let json = serde_json::to_string_pretty(&report)?;
-    println!("{}", json);
+    for arg in args {
+        if arg == "--apply" {
+            apply = true;
+        } else if !arg.starts_with('-') {
+            path = PathBuf::from(arg);
+        }
+    }
 
-    eprintln!("Discovered {} files in {}", report.total_files, report.root);
-    eprintln!("Languages: {}", format_language_summary(&report.languages));
-    eprintln!("Suggested features: {}", report.potential_features.len());
+    let report = run_discovery(&path)?;
+
+    if apply {
+        onboard_project(&path, &report)?;
+        println!("✓ Project onboarding complete. High-signal context ingested into Legend.");
+        println!("\nNext Steps for AI Agent:");
+        println!("1. Run 'legend memory start' to see the ingested context.");
+        println!("2. Use 'legend memory query' to explore specific modules or features.");
+        println!("3. If significant architectural details are missing, manually 'tick' them.");
+    } else {
+        let json = serde_json::to_string_pretty(&report)?;
+        println!("{}", json);
+
+        eprintln!("\nDiscovered {} files in {}", report.total_files, report.root);
+        eprintln!("Project: {} (v{})", report.metadata.name, report.metadata.version.as_deref().unwrap_or("unknown"));
+        eprintln!("Languages: {}", format_language_summary(&report.languages));
+        eprintln!("High-signal files: {}", report.high_signal_files.len());
+        eprintln!("Suggested features: {}", report.potential_features.len());
+        
+        if !is_initialized() {
+            eprintln!("\nTip: Run 'legend init' or 'legend discover --apply' to start tracking this project.");
+        } else {
+            eprintln!("\nTip: Run 'legend discover --apply' to ingest this context into Legend's memory.");
+        }
+    }
 
     Ok(())
+}
+
+/// Ingest high-signal context into Legend's memory and state.
+fn onboard_project(root: &Path, report: &DiscoveryReport) -> Result<(), Box<dyn std::error::Error>> {
+    let mut memory = MemoryState::load_or_default()?;
+    
+    // 1. Ingest metadata
+    let mut metadata_text = format!("ONBOARDING: Discovery report for {}\n", report.metadata.name);
+    if let Some(v) = &report.metadata.version { metadata_text.push_str(&format!("Version: {}\n", v)); }
+    if let Some(d) = &report.metadata.description { metadata_text.push_str(&format!("Description: {}\n", d)); }
+    if !report.metadata.tech_stack.is_empty() {
+        metadata_text.push_str(&format!("Tech Stack: {}\n", report.metadata.tech_stack.join(", ")));
+    }
+    memory.tick(&metadata_text);
+
+    // 2. Ingest high-signal files (Documentation & Manifests)
+    // We only ingest the content of the most important files to avoid blowing up memory.
+    for file in &report.high_signal_files {
+        // Prioritize Docs and Manifests for memory
+        if file.kind == "Documentation" || file.kind == "Manifest" {
+            let full_path = root.join(&file.path);
+            if let Ok(content) = fs::read_to_string(&full_path) {
+                // If the file is very large, chunking will happen in memory.tick()
+                eprintln!("  Ingesting {}...", file.path);
+                let tick_content = format!("CONTEXT: High-signal file '{}' ({})\n\n{}", file.path, file.kind, content);
+                memory.tick(&tick_content);
+            }
+        }
+    }
+
+    memory.save()?;
+
+    // 3. Update LegendState if initialized
+    if is_initialized() {
+        let mut state = load_state()?;
+        state.project_name = report.metadata.name.clone();
+        
+        for suggested in &report.potential_features {
+            // Only add if not already present
+            if !state.features.iter().any(|f| f.id == suggested.suggested_id) {
+                let mut feature = Feature::new(
+                    suggested.suggested_id.clone(),
+                    suggested.suggested_name.clone(),
+                    suggested.suggested_domain.clone(),
+                    format!("Auto-discovered from project structure ({} files)", suggested.files.len()),
+                );
+                feature.files_involved = suggested.files.clone();
+                state.add_feature(feature);
+            }
+        }
+        save_state(&state)?;
+    }
+
+    Ok(())
+}
+
+fn scan_high_signal(root: &Path, all_files: &[PathBuf]) -> Vec<HighSignalFile> {
+    let mut high_signal = Vec::new();
+
+    for path in all_files {
+        let rel_path = path.strip_prefix(root).unwrap_or(path);
+        let filename = rel_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        
+        // Root docs
+        if rel_path.parent().map(|p| p.as_os_str().is_empty()).unwrap_or(true) {
+            if DOC_FILES.contains(&filename) {
+                high_signal.push(HighSignalFile {
+                    path: rel_path.to_string_lossy().to_string(),
+                    kind: "Documentation".to_string(),
+                });
+                continue;
+            }
+        }
+
+        // Manifests
+        if is_manifest(filename) {
+            high_signal.push(HighSignalFile {
+                path: rel_path.to_string_lossy().to_string(),
+                kind: "Manifest".to_string(),
+            });
+            continue;
+        }
+
+        // Entry points
+        if is_entry_point(filename) {
+            high_signal.push(HighSignalFile {
+                path: rel_path.to_string_lossy().to_string(),
+                kind: "EntryPoint".to_string(),
+            });
+            continue;
+        }
+
+        // Subdirectory READMEs are also high signal
+        if filename == "README.md" {
+            high_signal.push(HighSignalFile {
+                path: rel_path.to_string_lossy().to_string(),
+                kind: "Documentation".to_string(),
+            });
+        }
+    }
+
+    high_signal
+}
+
+fn is_manifest(filename: &str) -> bool {
+    matches!(filename, "Cargo.toml" | "package.json" | "go.mod" | "requirements.txt" | "pyproject.toml" | "Gemfile" | "Makefile")
+}
+
+fn is_entry_point(filename: &str) -> bool {
+    matches!(filename, "main.rs" | "lib.rs" | "main.py" | "app.py" | "index.ts" | "index.js" | "main.go")
+}
+
+fn extract_metadata(root: &Path, high_signal: &[HighSignalFile]) -> ProjectMetadata {
+    let mut meta = ProjectMetadata::default();
+    meta.name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown Project".to_string());
+
+    for file in high_signal {
+        if file.kind == "Manifest" {
+            let path = root.join(&file.path);
+            if let Ok(content) = fs::read_to_string(path) {
+                if file.path.ends_with("Cargo.toml") {
+                    parse_cargo_toml(&content, &mut meta);
+                } else if file.path.ends_with("package.json") {
+                    parse_package_json(&content, &mut meta);
+                }
+            }
+        }
+    }
+
+    meta
+}
+
+fn parse_cargo_toml(content: &str, meta: &mut ProjectMetadata) {
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[package]" {
+            in_package = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_package = false;
+            continue;
+        }
+        if in_package {
+            if trimmed.starts_with("name =") {
+                meta.name = trimmed.split('=').nth(1).unwrap_or("").trim().trim_matches('"').to_string();
+            } else if trimmed.starts_with("version =") {
+                meta.version = Some(trimmed.split('=').nth(1).unwrap_or("").trim().trim_matches('"').to_string());
+            } else if trimmed.starts_with("description =") {
+                meta.description = Some(trimmed.split('=').nth(1).unwrap_or("").trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    meta.tech_stack.push("Rust".to_string());
+}
+
+fn parse_package_json(content: &str, meta: &mut ProjectMetadata) {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
+        if let Some(name) = v["name"].as_str() { meta.name = name.to_string(); }
+        if let Some(version) = v["version"].as_str() { meta.version = Some(version.to_string()); }
+        if let Some(desc) = v["description"].as_str() { meta.description = Some(desc.to_string()); }
+    }
+    meta.tech_stack.push("JavaScript/TypeScript".to_string());
 }
 
 /// Recursively walk a directory tree, collecting file paths and counting extensions.
@@ -87,7 +289,7 @@ fn walk_directory(
 
         if path.is_dir() {
             let name = entry.file_name();
-            if !SKIP_DIRS.contains(&name.to_string_lossy().as_ref()) {
+            if !SKIP_DIRS.contains(&name.to_string_lossy().as_ref()) && !name.to_string_lossy().starts_with('.') {
                 walk_directory(root, &path, languages, files)?;
             }
         } else if path.is_file() {
@@ -101,7 +303,6 @@ fn walk_directory(
 }
 
 /// Detect features from subdirectories under source roots.
-/// Detect potential features from subdirectories under known source roots (src/, lib/, etc.).
 fn detect_features(root: &Path, all_files: &[PathBuf]) -> Vec<SuggestedFeature> {
     let mut features: Vec<SuggestedFeature> = Vec::new();
 
@@ -123,7 +324,7 @@ fn detect_features(root: &Path, all_files: &[PathBuf]) -> Vec<SuggestedFeature> 
             }
 
             let dir_name = entry.file_name().to_string_lossy().to_string();
-            if dir_name.starts_with('.') {
+            if dir_name.starts_with('.') || SKIP_DIRS.contains(&dir_name.as_str()) {
                 continue;
             }
 
