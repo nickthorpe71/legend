@@ -207,7 +207,7 @@ fn setup_gemini_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "BeforeAgent",
         "SessionEnd",
         Some("AfterTool"),
-        Some("AfterAgent"),
+        None,
     )
 }
 
@@ -286,6 +286,9 @@ Launch the live 3D memory visualization dashboard:
 - Blockers: "BLOCKER: Can't proceed until X is resolved"
 - User preferences: "User prefers X approach"
 - Completed features: "Implemented X in file Y"
+- **Discussion conclusions**: "Discussed X with user, agreed on Y approach"
+- **Discoveries without file changes**: "Found that X module does Y"
+- **Rejected approaches**: "Decided against X because Y"
 
 **Tick frequency:** Aim for 3-8 ticks per session. After major decisions or substantial work.
 
@@ -388,7 +391,7 @@ fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "UserPromptSubmit",
         "Stop",
         Some("PostToolUse"),
-        Some("SubagentStop"),
+        None,
     )
 }
 
@@ -400,7 +403,7 @@ fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "UserPromptSubmit",
         "Stop",
         Some("PostToolUse"),
-        Some("SubagentStop"),
+        None,
     )
 }
 
@@ -427,7 +430,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("{cmd} memory start")
+            "command": format!("{cmd} memory start && touch .legend/.session_active")
         }]
     });
 
@@ -435,7 +438,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; {cmd} memory start; else [ -n \"$PROMPT\" ] && {cmd} memory query \"$PROMPT\" 2>/dev/null || true; fi")
+            "command": format!("now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; {cmd} memory start; else echo \"[LEGEND] Before answering: did the last exchange contain a significant decision, discovery, or user preference? If yes, tick it FIRST before responding: {cmd} memory tick '...'\"; [ -n \"$PROMPT\" ] && {cmd} memory query \"$PROMPT\" 2>/dev/null || true; fi")
         }]
     });
 
@@ -448,24 +451,25 @@ fn setup_agent_hooks(
                  tool=$(echo \"$input\" | sed -n 's/.*\"tool_name\": *\"\\([^\"]*\\)\".*/\\1/p'); \
                  status=\"success\"; \
                  if echo \"$input\" | grep -q '\"is_error\": *true'; then status=\"error\"; fi; \
-                 if [ -n \"$tool\" ]; then {cmd} memory tick --passive \"Experience: Executed tool '$tool' with status '$status'\" 2>/dev/null; fi; \
-                 if [ \"$status\" = \"success\" ] && echo \"$tool\" | grep -qE \"write_file|replace|edit|modify|insert|delete|create|write_to_file|patch\"; then \
+                 if [ \"$status\" = \"success\" ] && echo \"$tool\" | grep -iqE \"write_file|replace|edit|modify|insert|delete|create|write_to_file|patch|Write|Edit|NotebookEdit\"; then \
                    file=$(echo \"$input\" | sed -n 's/.*\"file_path\": *\"\\([^\"]*\\)\".*/\\1/p'); \
                    if [ -z \"$file\" ]; then file=$(echo \"$input\" | sed -n 's/.*\"path\": *\"\\([^\"]*\\)\".*/\\1/p'); fi; \
                    if [ -z \"$file\" ]; then file=\"unknown file\"; fi; \
-                   echo \"\\n[LEGEND PROTOCOL] MANDATE: You modified '$file'.\"; \
-                   echo \"1. Record your decision and rationale: {cmd} memory tick 'Decision: ... because ...' \"; \
-                   echo \"2. If this changes architecture, update ARCHITECTURE.md or tick an architecture insight.\"; \
+                   pending=$(cat \".legend/.pending_ticks\" 2>/dev/null || echo 0); \
+                   pending=$((pending + 1)); \
+                   echo \"$pending\" > \".legend/.pending_ticks\"; \
+                   if [ \"$pending\" -ge 4 ]; then \
+                     echo \"\\n🚨 CRITICAL [LEGEND] $pending un-ticked file edits! You modified '$file'.\"; \
+                   elif [ \"$pending\" -ge 2 ]; then \
+                     echo \"\\n⚠️  WARNING [LEGEND] $pending un-ticked file edits! You modified '$file'.\"; \
+                   else \
+                     echo \"\\n[LEGEND PROTOCOL] MANDATE: You modified '$file'.\"; \
+                   fi; \
+                   echo \"1. Tick the decision: {cmd} memory tick 'Decision: changed $file -- [why]'\"; \
+                   echo \"2. Also tick any significant discussion points: user preferences, architectural conclusions, discoveries.\"; \
+                   echo \"3. If this changes architecture, update ARCHITECTURE.md or tick an architecture insight.\"; \
                  fi"
             )
-        }]
-    });
-
-    let legend_after_agent_hook = json!({
-        "matcher": "*",
-        "hooks": [{
-            "type": "command",
-            "command": format!("{cmd} memory tick --passive \"Experience: Completed an agent turn. Current goal state updated.\" 2>/dev/null")
         }]
     });
 
@@ -474,10 +478,16 @@ fn setup_agent_hooks(
         "hooks": [{
             "type": "command",
             "command": format!(
-                "changed=$(git diff --name-only 2>/dev/null | head -5); \
-                 if [ -n \"$changed\" ]; then \
-                   count=$(echo \"$changed\" | wc -l); \
-                   echo \"\n[LEGEND] $count file(s) changed. SUMMARY MANDATE: Record final decisions and next steps before exiting: {cmd} memory tick '...' \"; \
+                "session_start=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); \
+                 last_tick_ts=$(grep '\"cmd\":\"tick\"' .legend/events.jsonl 2>/dev/null | tail -1 | sed -n 's/.*\"ts\":\\([0-9]*\\).*/\\1/p'); \
+                 if [ -z \"$last_tick_ts\" ] || [ \"$last_tick_ts\" -lt \"$session_start\" ]; then \
+                   echo \"\\n🚨 CRITICAL [LEGEND]: No ticks this session! Record decisions before exiting: {cmd} memory tick '...'\"; \
+                 else \
+                   changed=$(git diff --name-only 2>/dev/null | head -5); \
+                   if [ -n \"$changed\" ]; then \
+                     count=$(echo \"$changed\" | wc -l); \
+                     echo \"\\n[LEGEND] $count file(s) changed. SUMMARY MANDATE: Record final decisions and next steps before exiting: {cmd} memory tick '...' \"; \
+                   fi; \
                  fi"
             )
         }]
@@ -506,11 +516,9 @@ fn setup_agent_hooks(
             &legend_prompt_hook,
             &legend_stop_hook,
             &legend_after_tool_hook,
-            &legend_after_agent_hook,
             prompt_event,
             stop_event,
             after_tool_event,
-            after_agent_event,
         );
 
         let output = serde_json::to_string_pretty(&settings)?;
@@ -529,9 +537,6 @@ fn setup_agent_hooks(
         hooks_map.insert("SessionStart".to_string(), json!([legend_session_hook]));
         if let Some(evt) = after_tool_event {
             hooks_map.insert(evt.to_string(), json!([legend_after_tool_hook]));
-        }
-        if let Some(evt) = after_agent_event {
-            hooks_map.insert(evt.to_string(), json!([legend_after_agent_hook]));
         }
         hooks_map.insert(prompt_event.to_string(), json!([legend_prompt_hook]));
         hooks_map.insert(stop_event.to_string(), json!([legend_stop_hook]));
@@ -656,11 +661,9 @@ fn merge_legend_hooks(
     prompt_hook: &Value,
     stop_hook: &Value,
     after_tool_hook: &Value,
-    after_agent_hook: &Value,
     prompt_event: &str,
     stop_event: &str,
     after_tool_event: Option<&str>,
-    after_agent_event: Option<&str>,
 ) {
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
@@ -683,16 +686,6 @@ fn merge_legend_hooks(
         }
         if let Some(arr) = hooks.get_mut(evt).and_then(|s| s.as_array_mut()) {
             arr.push(after_tool_hook.clone());
-        }
-    }
-
-    // Add after-agent hook if the agent supports it
-    if let Some(evt) = after_agent_event {
-        if hooks.get(evt).is_none() {
-            hooks[evt] = json!([]);
-        }
-        if let Some(arr) = hooks.get_mut(evt).and_then(|s| s.as_array_mut()) {
-            arr.push(after_agent_hook.clone());
         }
     }
 

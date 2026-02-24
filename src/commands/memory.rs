@@ -158,7 +158,11 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut memory = MemoryState::load_or_default()?;
-    let tick_result = memory.tick(&text);
+    let tick_result = if opts.is_passive {
+        memory.tick_passive(&text)
+    } else {
+        memory.tick(&text)
+    };
     let should_consolidate = memory.should_suggest_consolidation();
 
     // Adjust salience based on flags
@@ -171,6 +175,9 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     memory.save()?;
+
+    // Reset pending-tick counter on every real tick
+    let _ = std::fs::write(".legend/.pending_ticks", "0");
 
     // Log rich event data
     let event_data = EventData::Tick(TickEventData {

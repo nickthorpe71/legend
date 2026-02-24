@@ -111,7 +111,7 @@ fn is_identifier(token: &str) -> bool {
 }
 
 /// Common English words and project-specific terms to exclude from entity extraction.
-fn is_stopword(token: &str) -> bool {
+pub fn is_stopword(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
     matches!(
         lower.as_str(),
@@ -136,6 +136,14 @@ fn is_stopword(token: &str) -> bool {
             | "line" | "lines" | "code" | "changes" | "change" | "update" | "updated"
         // Project-specific
             | "memory" | "legend" | "term"
+        // Generic infrastructure / hook noise terms that pollute L3
+            | "tool" | "success" | "status" | "state" | "file" | "text"
+            | "agent" | "turn" | "bash" | "session" | "goal" | "tick"
+            | "context" | "graph" | "nodes" | "entry" | "data" | "query"
+            | "output" | "start" | "input" | "result" | "results" | "path"
+            | "value" | "values" | "type" | "types" | "item" | "items"
+            | "list" | "map" | "key" | "keys" | "true" | "false" | "none"
+            | "null" | "empty" | "count" | "size" | "len" | "num"
     )
 }
 

@@ -29,6 +29,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "discover" => commands::discover::handle_discover(&args[2..])?,
         "memory" => commands::memory::handle_memory(&args[2..])?,
         "project" => commands::project::handle_project(&args[2..])?,
+        "dev" => commands::dev::handle_dev(&args[2..])?,
         "dashboard" => {
             // Check for --3d flag to launch Bevy dashboard
             if args.iter().any(|a| a == "--3d") {

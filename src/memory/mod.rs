@@ -585,8 +585,22 @@ impl MemoryState {
     /// Ingest text: chunk → embed → reconsolidate or match/merge/insert → update graph.
     /// Returns a TickResult describing what action was taken.
     pub fn tick(&mut self, text: &str) -> TickResult {
+        self.tick_impl(text, false)
+    }
+
+    /// Like tick(), but does not count toward consolidation and does not appear in
+    /// the session log. Used for automated/hook-generated ticks that should influence
+    /// L2/L3 (dedup, reconsolidation) but must not pollute session history or
+    /// trigger premature auto-consolidation.
+    pub fn tick_passive(&mut self, text: &str) -> TickResult {
+        self.tick_impl(text, true)
+    }
+
+    fn tick_impl(&mut self, text: &str, passive: bool) -> TickResult {
         self.clock += 1;
-        self.ticks_since_consolidation += 1;
+        if !passive {
+            self.ticks_since_consolidation += 1;
+        }
         self.apply_decay();
         self.stabilize_labile_entries();
         if self.clock % RENORM_INTERVAL == 0 {
@@ -596,13 +610,16 @@ impl MemoryState {
             self.normalize_graph_weights();
         }
 
-        // Append to chronological session log (preserves exact input)
-        self.session_log.push(SessionEntry {
-            timestamp: self.clock,
-            text: text.to_string(),
-        });
-        while self.session_log.len() > SESSION_LOG_CAPACITY {
-            self.session_log.remove(0);
+        // Append to chronological session log (preserves exact input).
+        // Passive ticks are excluded — they must not evict real session entries.
+        if !passive {
+            self.session_log.push(SessionEntry {
+                timestamp: self.clock,
+                text: text.to_string(),
+            });
+            while self.session_log.len() > SESSION_LOG_CAPACITY {
+                self.session_log.remove(0);
+            }
         }
 
         let mut last_context = MemoryContext {
@@ -1452,9 +1469,18 @@ impl MemoryState {
         compact: bool,
         category_filter: Option<&str>,
     ) -> serde_json::Value {
-        // Get recent sessions (just text, no timestamps)
-        let recent = self.recent_sessions(5);
-        let recent_sessions: Vec<&str> = recent.iter().map(|s| s.text.as_str()).collect();
+        // Get recent sessions — skip passive (EXPERIENCE:) entries so Recent Activity
+        // only shows meaningful user-initiated ticks, not tool telemetry noise.
+        let recent_sessions: Vec<&str> = self.session_log
+            .iter()
+            .rev()
+            .filter(|s| !s.text.contains("EXPERIENCE: Experience:"))
+            .take(5)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|s| s.text.as_str())
+            .collect();
 
         // --- Categorized short-term memories ---
         let mut decisions: Vec<serde_json::Value> = Vec::new();
