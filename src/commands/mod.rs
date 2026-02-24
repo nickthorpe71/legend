@@ -1,4 +1,5 @@
 pub mod dashboard;
+pub mod dev;
 pub mod discover;
 pub mod get_state;
 pub mod init;

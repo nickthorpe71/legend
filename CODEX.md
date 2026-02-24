@@ -60,6 +60,9 @@ cargo run --quiet -- dashboard
 - Blockers: "BLOCKER: Can't proceed until X is resolved"
 - User preferences: "User prefers X approach"
 - Completed features: "Implemented X in file Y"
+- **Discussion conclusions**: "Discussed X with user, agreed on Y approach"
+- **Discoveries without file changes**: "Found that X module does Y"
+- **Rejected approaches**: "Decided against X because Y"
 
 **Tick frequency:** Aim for 3-8 ticks per session. After major decisions or substantial work.
 
