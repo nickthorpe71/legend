@@ -438,7 +438,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; {cmd} memory start; else echo \"[LEGEND] Before answering: did the last exchange contain a significant decision, discovery, or user preference? If yes, tick it FIRST before responding: {cmd} memory tick '...'\"; [ -n \"$PROMPT\" ] && {cmd} memory query \"$PROMPT\" 2>/dev/null || true; fi")
+            "command": format!("now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; {cmd} memory start; else echo \"[LEGEND] Before answering: did the last exchange contain a significant decision, discovery, or user preference? If yes, tick it FIRST before responding: {cmd} memory tick '...'\"; if [ -n \"$PROMPT\" ] && echo \"$PROMPT\" | grep -iqE \"^(implement|add|fix|create|refactor|build|write|update|change|delete|remove|migrate|convert|optimize|improve|develop|design|make|generate|test|setup|integrate|debug|solve|enable|disable|extend)\"; then echo \"[LEGEND] MANDATE: Task-starting prompt detected. Run: {cmd} memory query \\\"<topic>\\\" BEFORE implementing.\"; fi; [ -n \"$PROMPT\" ] && {cmd} memory query \"$PROMPT\" 2>/dev/null || true; fi")
         }]
     });
 

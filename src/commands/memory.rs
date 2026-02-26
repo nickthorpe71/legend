@@ -207,6 +207,11 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     log_event_rich("tick", text.trim(), Some(event_data));
     print_tick_result(&tick_result);
 
+    // Auto-append to ARCHITECTURE.md when tick is tagged with ARCHITECTURE:
+    if text.trim().to_uppercase().starts_with("ARCHITECTURE:") {
+        append_to_architecture_md(text.trim());
+    }
+
     if should_consolidate {
         let summaries = memory.consolidate();
         memory.save()?; // save again after consolidation
@@ -375,6 +380,7 @@ struct StartOptions {
     compact: bool,
     json: bool,
     category: Option<String>,
+    tokens: bool,
 }
 
 fn parse_start_args(args: &[String]) -> StartOptions {
@@ -384,6 +390,7 @@ fn parse_start_args(args: &[String]) -> StartOptions {
         match args[i].as_str() {
             "--compact" | "-c" => opts.compact = true,
             "--json" | "-j" => opts.json = true,
+            "--tokens" | "-t" => opts.tokens = true,
             "--category" => {
                 if i + 1 < args.len() {
                     opts.category = Some(args[i + 1].clone());
@@ -438,42 +445,45 @@ fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
         println!("{}", json);
     } else {
-        print_start_summary_markdown(&summary);
+        let output = format_start_summary_markdown(&summary);
+        if opts.tokens {
+            print_token_overhead(&output, memory.session_log.len());
+        }
+        print!("{}", output);
     }
     Ok(())
 }
 
-fn print_start_summary_markdown(summary: &serde_json::Value) {
-    println!("# Legend Session Start Context");
-    println!();
+fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
+    let mut out = String::new();
+    out.push_str("# Legend Session Start Context\n\n");
 
-    println!("## LEGEND PROTOCOL (MANDATORY)");
-    println!("- **TICK DECISIONS**: After every file change or major decision, run `legend memory tick 'rationale...'`.");
-    println!("- **RESEARCH FIRST**: Run `legend memory start` or `query` before starting new tasks.");
-    println!("- **ARCHITECT**: Update ARCHITECTURE.md or TICK architecture insights when structure changes.");
-    println!("- **BRIDGE SESSIONS**: Record final decisions and next steps via `legend memory tick` before exiting.");
-    println!();
+    out.push_str("## LEGEND PROTOCOL (MANDATORY)\n");
+    out.push_str("- **TICK DECISIONS**: After every file change or major decision, run `legend memory tick 'rationale...'`.\n");
+    out.push_str("- **RESEARCH FIRST**: Run `legend memory start` or `query` before starting new tasks.\n");
+    out.push_str("- **ARCHITECT**: Update ARCHITECTURE.md or TICK architecture insights when structure changes.\n");
+    out.push_str("- **BRIDGE SESSIONS**: Record final decisions and next steps via `legend memory tick` before exiting.\n");
+    out.push('\n');
 
     if let Some(task) = summary.get("current_task").and_then(|t| t.as_str()) {
-        println!("## Current Task");
-        println!("> {}", task);
-        println!();
+        out.push_str("## Current Task\n");
+        out.push_str(&format!("> {}\n\n", task));
     }
 
     if let Some(sessions) = summary.get("recent_sessions").and_then(|s| s.as_array()) {
         if !sessions.is_empty() {
-            println!("## Recent Activity");
+            out.push_str("## Recent Activity\n");
             for session in sessions {
                 if let Some(text) = session.as_str() {
-                    println!("- {}", text);
+                    out.push_str(&format!("- {}\n", text));
                 }
             }
-            println!();
+            out.push('\n');
         }
     }
 
     if let Some(categorized) = summary.get("categorized").and_then(|c| c.as_object()) {
-        println!("## Categorized Memories");
+        out.push_str("## Categorized Memories\n");
         for (name, data) in categorized {
             let (items, total) = if let Some(obj) = data.as_object() {
                 let items = obj.get("items").and_then(|i| i.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
@@ -486,28 +496,51 @@ fn print_start_summary_markdown(summary: &serde_json::Value) {
             };
 
             if total > 0 {
-                println!("\n### {}", name.to_uppercase());
+                out.push_str(&format!("\n### {}\n", name.to_uppercase()));
                 for item in items {
                     if let Some(text) = item.as_str() {
-                        println!("- {}", text);
+                        out.push_str(&format!("- {}\n", text));
                     } else if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                        println!("- {}", text);
+                        out.push_str(&format!("- {}\n", text));
                     }
                 }
                 if total > items.len() as u64 {
-                    println!("- *...and {} more. Use `legend memory start --category {}` to see all.*", total - items.len() as u64, name);
+                    out.push_str(&format!("- *...and {} more. Use `legend memory start --category {}` to see all.*\n", total - items.len() as u64, name));
                 }
             }
         }
     }
 
     if let Some(warning) = summary.get("warning").and_then(|w| w.as_str()) {
-        println!("\n> [!WARNING]");
-        println!("> {}", warning);
+        out.push_str("\n> [!WARNING]\n");
+        out.push_str(&format!("> {}\n", warning));
     }
 
-    println!("\n---");
-    println!("*Use `legend memory tick \"...\"` to record your progress and decisions.*");
+    out.push_str("\n---\n");
+    out.push_str("*Use `legend memory tick \"...\"` to record your progress and decisions.*\n");
+    out
+}
+
+/// Estimate and print token overhead for the session start output.
+fn print_token_overhead(output: &str, session_count: usize) {
+    // Rough token estimate: ~4 chars per token (standard heuristic)
+    let start_tokens = output.len() / 4;
+    // Per-prompt hook reminder: ~100 tokens each, estimate 3 prompts/session
+    let prompt_hook_tokens_per_session = 100 * 3;
+    // Per-file-edit hook reminder: ~150 tokens, estimate 5 edits/session
+    let edit_hook_tokens_per_session = 150 * 5;
+    let total_per_session = start_tokens + prompt_hook_tokens_per_session + edit_hook_tokens_per_session;
+
+    eprintln!("\n## Token Overhead Estimate");
+    eprintln!("  Session start injection:  ~{} tokens", start_tokens);
+    eprintln!("  UserPromptSubmit hooks:   ~{} tokens/session (est. 3 prompts × 100)", prompt_hook_tokens_per_session);
+    eprintln!("  PostToolUse hooks:        ~{} tokens/session (est. 5 edits × 150)", edit_hook_tokens_per_session);
+    eprintln!("  Total per session:        ~{} tokens", total_per_session);
+    if session_count > 0 {
+        eprintln!("  Lifetime ({} sessions):   ~{} tokens", session_count, total_per_session * session_count);
+    }
+    eprintln!("  (Note: estimates carry ±30% uncertainty)");
+    eprintln!();
 }
 
 fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
@@ -524,7 +557,101 @@ fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(task) = memory.get_task() {
         println!("  Current task: {}", task);
     }
+
+    // Session quality metric from events.jsonl
+    if let Some(quality) = compute_session_quality() {
+        println!();
+        println!("Session quality (current session):");
+        println!("  Ticks total:      {}", quality.total_ticks);
+        println!("  Meaningful ticks: {} ({:.0}%)", quality.meaningful_ticks, quality.signal_rate * 100.0);
+        println!("  Queries:          {}", quality.queries);
+        println!("  Consolidations:   {}", quality.consolidations);
+        println!("  Quality score:    {}/100", quality.score);
+        if quality.score < 40 {
+            println!("  [LOW] Aim for more meaningful ticks and queries.");
+        } else if quality.score < 70 {
+            println!("  [OK] Consider querying before new tasks.");
+        } else {
+            println!("  [GOOD] Strong session signal.");
+        }
+    }
     Ok(())
+}
+
+/// Quality metrics for the current session.
+struct SessionQuality {
+    total_ticks: usize,
+    meaningful_ticks: usize,
+    signal_rate: f32,
+    queries: usize,
+    consolidations: usize,
+    score: u32,
+}
+
+/// Compute session quality by scanning events.jsonl since the last "start" event.
+fn compute_session_quality() -> Option<SessionQuality> {
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(EVENT_LOG_PATH).ok()?;
+    let lines: Vec<String> = std::io::BufReader::new(file)
+        .lines()
+        .filter_map(|l| l.ok())
+        .collect();
+
+    // Find the timestamp of the last "start" event
+    let last_start_ts: u64 = lines.iter().rev().find_map(|line| {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if v.get("cmd")?.as_str()? == "start" {
+            v.get("ts")?.as_u64()
+        } else {
+            None
+        }
+    })?;
+
+    let mut total_ticks = 0usize;
+    let mut meaningful_ticks = 0usize;
+    let mut queries = 0usize;
+    let mut consolidations = 0usize;
+
+    for line in &lines {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let ts = v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0);
+        if ts < last_start_ts { continue; }
+        let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
+        match cmd {
+            "tick" => {
+                total_ticks += 1;
+                let detail = v.get("detail").and_then(|d| d.as_str()).unwrap_or("");
+                if !detail.starts_with("EXPERIENCE:") {
+                    meaningful_ticks += 1;
+                }
+            }
+            "query" => queries += 1,
+            "auto_consolidate" | "consolidate" => consolidations += 1,
+            _ => {}
+        }
+    }
+
+    let signal_rate = if total_ticks > 0 {
+        meaningful_ticks as f32 / total_ticks as f32
+    } else {
+        0.0
+    };
+
+    // Quality score: 50% signal rate, 30% query presence, 20% consolidation bonus
+    let signal_score = (signal_rate * 50.0) as u32;
+    let query_score = ((queries as f32 / 3.0).min(1.0) * 30.0) as u32;
+    let consolidation_score = if consolidations > 0 { 20u32 } else { 0u32 };
+    let score = (signal_score + query_score + consolidation_score).min(100);
+
+    Some(SessionQuality {
+        total_ticks,
+        meaningful_ticks,
+        signal_rate,
+        queries,
+        consolidations,
+        score,
+    })
 }
 
 fn handle_reset() -> Result<(), Box<dyn std::error::Error>> {
@@ -742,6 +869,66 @@ fn handle_dump() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Convert a unix timestamp (seconds) to an ISO date string (YYYY-MM-DD).
+fn ts_to_iso_date(ts: u64) -> String {
+    let mut remaining = ts / 86400; // total days since epoch
+    let mut year = 1970u64;
+    loop {
+        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
+        if remaining < days_in_year { break; }
+        remaining -= days_in_year;
+        year += 1;
+    }
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_days: &[u64] = if is_leap {
+        &[31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        &[31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month = 1u64;
+    for &days in month_days {
+        if remaining < days { break; }
+        remaining -= days;
+        month += 1;
+    }
+    let day = remaining + 1;
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+/// Append a summary line to ARCHITECTURE.md after an ARCHITECTURE-tagged tick.
+/// Creates ARCHITECTURE.md if it doesn't exist.
+fn append_to_architecture_md(tick_text: &str) {
+    use std::io::Write;
+
+    let date = {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        ts_to_iso_date(ts)
+    };
+
+    // Truncate tick text to 200 chars for the entry
+    let summary = if tick_text.len() > 200 {
+        format!("{}…", &tick_text[..200])
+    } else {
+        tick_text.to_string()
+    };
+
+    let entry = format!("- **{}** — {}\n", date, summary);
+
+    let path = std::path::Path::new("ARCHITECTURE.md");
+    if path.exists() {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = f.write_all(entry.as_bytes());
+        }
+    } else {
+        let header = "# Architecture Notes\n\nAuto-generated from ARCHITECTURE: memory ticks.\n\n";
+        let content = format!("{}{}", header, entry);
+        let _ = std::fs::write(path, content);
+    }
+}
+
 /// Maximum lines in events.jsonl before rotation.
 const EVENT_LOG_MAX_LINES: usize = 10_000;
 const EVENT_LOG_PATH: &str = ".legend/events.jsonl";
@@ -799,6 +986,7 @@ fn print_memory_help() {
     println!("Usage:");
     println!("  legend memory start [options]   Session start: context + categorized in one call");
     println!("    --compact, -c                   Compact output (text only, no ids)");
+    println!("    --tokens, -t                    Show token overhead estimate for this session");
     println!("    --category <name>               Filter to one category (bugs, todos, decisions, architecture, preferences)");
     println!("  legend memory tick [options] <text>  Record a memory (decision, progress, discovery)");
     println!("    --blocker, -b                   Mark as blocker (boosts salience, prefixes with BLOCKER:)");

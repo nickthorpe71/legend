@@ -342,3 +342,4 @@ score = salience × 0.4 + ln(1 + usage) × 0.3 + exp(-age × 0.002) × 0.3
 | `src/storage.rs` | Feature state persistence (bincode + LZ4, separate from memory) |
 | `src/types.rs` | Feature tracking types (LegendState, Feature, FeatureStatus) |
 | `dashboard/` | Bevy 0.15 + bevy_egui 0.33 native 3D visualization app |
+- **2026-03-09** — ARCHITECTURE: commands/memory.rs handle_tick() now auto-appends to ARCHITECTURE.md when tick starts with ARCHITECTURE: prefix

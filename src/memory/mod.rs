@@ -1474,7 +1474,7 @@ impl MemoryState {
         let recent_sessions: Vec<&str> = self.session_log
             .iter()
             .rev()
-            .filter(|s| !s.text.contains("EXPERIENCE: Experience:"))
+            .filter(|s| !s.text.starts_with("EXPERIENCE:"))
             .take(5)
             .collect::<Vec<_>>()
             .into_iter()
