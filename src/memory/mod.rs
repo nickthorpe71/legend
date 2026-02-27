@@ -146,6 +146,9 @@ pub struct ShortTermEntry {
     /// Accumulated squared gradient for AdaGrad adaptive learning rate.
     #[serde(default)]
     pub gradient_sq_sum: f32,
+    /// Semantic density: weighted count of high-signal entities (CodeSymbols, FilePaths).
+    #[serde(default)]
+    pub density: f32,
 }
 
 /// A source reference to a file region for this memory.
@@ -278,6 +281,8 @@ pub struct GraphNode {
     pub last_seen: u64,
     #[serde(default)]
     pub salience: f32,
+    #[serde(default)]
+    pub source_texts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,6 +350,8 @@ pub struct GraphNodeSummary {
     /// The type of edge that connected this node (for neighbor lookups).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_type: Option<String>,
+    #[serde(default)]
+    pub source_texts: Vec<String>,
 }
 
 /// Feedback result from reinforcing entries after retrieval.
@@ -806,6 +813,7 @@ impl MemoryState {
                             kind: node.kind.clone(),
                             weight: node.weight * 0.7, // discount primed results slightly
                             edge_type: Some(edge.kind.clone()),
+                            source_texts: node.source_texts.clone(),
                         });
                     }
                 }
@@ -869,6 +877,7 @@ impl MemoryState {
                 .map(|e| e.salience)
                 .fold(0.0, f32::max)
                 .max(0.4);
+            let source_texts: Vec<String> = group.iter().map(|e| e.text.clone()).collect();
 
             let node_id = self.next_id;
             self.next_id += 1;
@@ -882,11 +891,12 @@ impl MemoryState {
                     weight: 1.0 + salience,
                     last_seen: self.clock,
                     salience,
+                    source_texts: source_texts.clone(),
                 },
             );
             self.long_term.index.insert(summary_text.clone(), node_id);
 
-            for entry in group {
+            for entry in &group {
                 self.update_graph(&entry.text, entry.salience);
                 if let Some(existing) = self.short_term.iter_mut().find(|e| e.id == entry.id) {
                     existing.usage = existing.usage.saturating_add(1);
@@ -900,6 +910,7 @@ impl MemoryState {
                 kind: "Summary".to_string(),
                 weight: 1.0 + salience,
                 edge_type: None,
+                source_texts,
             });
         }
 
@@ -961,6 +972,7 @@ impl MemoryState {
             entry.usage = entry.usage.saturating_add(1);
             entry.last_access = now;
             entry.reconsolidation_count += 1;
+            entry.density = calculate_density(&entry.text);
             // Re-stabilize: no longer labile
             entry.labile_until = 0;
             merge_memory_refs(&mut entry.refs, refs);
@@ -1061,6 +1073,7 @@ impl MemoryState {
             labile_until: 0,
             refs,
             gradient_sq_sum: 0.0,
+            density: calculate_density(text),
         });
         self.next_id += 1;
     }
@@ -1122,6 +1135,7 @@ impl MemoryState {
                         weight: 1.0,
                         last_seen: self.clock,
                         salience,
+                        source_texts: Vec::new(),
                     },
                 );
                 self.long_term.index.insert(entity.label.clone(), id);
@@ -1129,10 +1143,30 @@ impl MemoryState {
             };
 
             if let Some(node) = self.long_term.nodes.get_mut(&id) {
-                node.weight += NODE_WEIGHT_BASE + salience * 0.3;
+                // Code-aware weighting: boost high-signal kinds, penalize generic Terms
+                let weight_multiplier = match entity.kind.as_str() {
+                    "FilePath" => 2.0,
+                    "Function" | "Struct" | "Enum" | "Trait" | "Class" => 1.5,
+                    "Symbol" | "Type" => 1.2,
+                    "Term" => 0.5, // Generic terms get less weight
+                    _ => 1.0,
+                };
+
+                node.weight += (NODE_WEIGHT_BASE + salience * 0.3) * weight_multiplier;
                 node.last_seen = self.clock;
-                node.salience = (node.salience + salience * 0.5).min(1.0);
-                if entity.kind != "Term" && entity.kind != "Type" && entity.kind != "Symbol" {
+                node.salience = (node.salience + salience * 0.5 * weight_multiplier).min(1.0);
+
+                // Update kind if it was previously generic or less specific
+                let kind_priority = |k: &str| match k {
+                    "FilePath" => 5,
+                    "Function" | "Struct" | "Enum" | "Trait" | "Class" => 4,
+                    "Symbol" => 3,
+                    "Type" => 2,
+                    "Term" => 1,
+                    _ => 0,
+                };
+
+                if kind_priority(&entity.kind) > kind_priority(&node.kind) {
                     node.kind = entity.kind.clone();
                 }
             }
@@ -1195,6 +1229,7 @@ impl MemoryState {
                         kind: node.kind.clone(),
                         weight: node.weight,
                         edge_type: None, // direct match, no edge
+                        source_texts: node.source_texts.clone(),
                     });
                     seed_ids.push(node.id);
                 }
@@ -1219,6 +1254,7 @@ impl MemoryState {
                             kind: node.kind.clone(),
                             weight: node.weight + edge.weight,
                             edge_type: Some(edge.kind.clone()),
+                            source_texts: node.source_texts.clone(),
                         });
                     }
                 }
@@ -1236,6 +1272,7 @@ impl MemoryState {
                     kind: n.kind.clone(),
                     weight: n.weight,
                     edge_type: None,
+                    source_texts: n.source_texts.clone(),
                 })
                 .collect();
         }
@@ -1329,8 +1366,12 @@ impl MemoryState {
     fn apply_decay(&mut self) {
         let now = self.clock;
         for entry in &mut self.short_term {
+            // Semantic density reduces decay rate. High-density entries (many symbols/paths) persist longer.
+            let density_factor = (1.0 + entry.density * 0.1).min(2.0);
+            let effective_decay_rate = SHORT_TERM_DECAY_RATE / density_factor;
+
             let decay =
-                (-(now.saturating_sub(entry.last_access) as f32) * SHORT_TERM_DECAY_RATE).exp();
+                (-(now.saturating_sub(entry.last_access) as f32) * effective_decay_rate).exp();
             entry.salience *= decay;
         }
         for node in self.long_term.nodes.values_mut() {
@@ -1455,7 +1496,7 @@ impl MemoryState {
     /// Designed as a single cold-start call that gives the LLM everything it needs.
     #[allow(dead_code)]
     pub fn build_start_summary(&mut self) -> serde_json::Value {
-        self.build_start_summary_with_options(false, None)
+        self.build_start_summary_with_options(false, None, None)
     }
 
     /// Build session-start summary with options for compact output and category filtering.
@@ -1468,7 +1509,15 @@ impl MemoryState {
         &mut self,
         compact: bool,
         category_filter: Option<&str>,
+        query: Option<&str>,
     ) -> serde_json::Value {
+        // If a query is provided, perform an internal retrieval to "prime" the graph and surface relevant context.
+        // This automatically boosts the salience of related short-term entries and surfaces related graph nodes.
+        let mut query_context = None;
+        if let Some(q) = query {
+            query_context = Some(self.retrieve_context(q));
+        }
+
         // Get recent sessions — skip passive (EXPERIENCE:) entries so Recent Activity
         // only shows meaningful user-initiated ticks, not tool telemetry noise.
         let recent_sessions: Vec<&str> = self.session_log
@@ -1521,28 +1570,37 @@ impl MemoryState {
         let bugs_total = bugs.len();
         let preferences_total = preferences.len();
 
-        // Sort each category by salience descending (using internal salience, not exposed)
-        // We need to re-sort since we removed salience from output
-        let sort_by_salience = |list: &mut Vec<serde_json::Value>, entries: &[ShortTermEntry]| {
+        // Sort each category. If query_context exists, we prioritize items matched by the query.
+        // Otherwise, we sort by salience descending.
+        let sort_logic = |list: &mut Vec<serde_json::Value>, entries: &[ShortTermEntry], context: &Option<MemoryContext>| {
             // Create index mapping for sorting
             let mut indexed: Vec<(usize, f32)> = list
                 .iter()
                 .enumerate()
                 .filter_map(|(i, item)| {
-                    if compact {
-                        // In compact mode, match by text
+                    let id = if compact {
                         let text = item.as_str()?;
-                        entries
-                            .iter()
-                            .find(|e| e.text.starts_with(text.trim_end_matches('…')))
-                            .map(|e| (i, e.salience))
+                        entries.iter().find(|e| e.text.starts_with(text.trim_end_matches('…'))).map(|e| e.id)
                     } else {
-                        // In default mode, match by id
-                        let id = item["id"].as_u64()?;
-                        entries.iter().find(|e| e.id == id).map(|e| (i, e.salience))
+                        item["id"].as_u64()
+                    }?;
+
+                    let entry = entries.iter().find(|e| e.id == id)?;
+                    
+                    // Base score is salience
+                    let mut score = entry.salience;
+
+                    // If this entry was returned in the query context, give it a massive boost
+                    if let Some(ctx) = context {
+                        if let Some(matched) = ctx.short_term.iter().find(|m| m.id == id) {
+                            score += 10.0 + matched.similarity;
+                        }
                     }
+
+                    Some((i, score))
                 })
                 .collect();
+
             indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
             let sorted: Vec<serde_json::Value> =
@@ -1551,11 +1609,11 @@ impl MemoryState {
             list.truncate(5);
         };
 
-        sort_by_salience(&mut decisions, &self.short_term);
-        sort_by_salience(&mut architecture, &self.short_term);
-        sort_by_salience(&mut todos, &self.short_term);
-        sort_by_salience(&mut bugs, &self.short_term);
-        sort_by_salience(&mut preferences, &self.short_term);
+        sort_logic(&mut decisions, &self.short_term, &query_context);
+        sort_logic(&mut architecture, &self.short_term, &query_context);
+        sort_logic(&mut todos, &self.short_term, &query_context);
+        sort_logic(&mut bugs, &self.short_term, &query_context);
+        sort_logic(&mut preferences, &self.short_term, &query_context);
 
         // Helper to build category object with optional truncation indicator
         let build_category = |items: &[serde_json::Value], total: usize| -> serde_json::Value {
@@ -1868,6 +1926,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                 labile_until: e.labile_until,
                 refs: e.refs,
                 gradient_sq_sum: 0.0,
+                density: 0.0,
             }).collect(),
             long_term: v2.long_term,
             clock: v2.clock,
@@ -1894,6 +1953,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                 labile_until: e.labile_until,
                 refs: e.refs,
                 gradient_sq_sum: 0.0,
+                density: 0.0,
             }).collect(),
             long_term: old.long_term,
             clock: old.clock,
@@ -1957,6 +2017,20 @@ fn safe_truncate(s: &str, max_len: usize) -> String {
     format!("{}…", &s[..end])
 }
 
+fn calculate_density(text: &str) -> f32 {
+    let entities = extract_entities(text);
+    let mut score = 0.0;
+    for entity in entities {
+        score += match entity.kind.as_str() {
+            "FilePath" => 1.0,
+            "Function" | "Struct" | "Enum" | "Trait" | "Class" => 0.8,
+            "Symbol" | "Type" => 0.4,
+            _ => 0.05,
+        };
+    }
+    score
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1975,6 +2049,7 @@ mod tests {
             labile_until: 0,
             refs: vec![],
             gradient_sq_sum: 0.0,
+            density: 0.0,
         };
         let old = ShortTermEntry {
             id: 2,
@@ -1988,6 +2063,7 @@ mod tests {
             labile_until: 0,
             refs: vec![],
             gradient_sq_sum: 0.0,
+            density: 0.0,
         };
         assert!(eviction_score(&recent, 100) > eviction_score(&old, 100));
     }
@@ -2207,6 +2283,7 @@ mod tests {
                 weight: 0.01,
                 last_seen: 0,
                 salience: 0.0,
+                source_texts: Vec::new(),
             },
         );
         state.long_term.index.insert("weak_node".to_string(), id);
@@ -2222,6 +2299,7 @@ mod tests {
                 weight: 2.0,
                 last_seen: state.clock,
                 salience: 0.5,
+                source_texts: Vec::new(),
             },
         );
         state.long_term.index.insert("strong_node".to_string(), id2);
@@ -2271,6 +2349,7 @@ mod tests {
                     weight: i as f32 * 0.01,
                     last_seen: state.clock,
                     salience: 0.1,
+                    source_texts: Vec::new(),
                 },
             );
             state.long_term.index.insert(format!("node_{}", i), id);
@@ -2303,6 +2382,7 @@ mod tests {
             labile_until: 0,
             refs: vec![],
             gradient_sq_sum: 0.0,
+            density: 0.0,
         });
         // Advance clock far enough for pruning to kick in
         state.clock = 500;

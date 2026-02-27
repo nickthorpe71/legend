@@ -42,9 +42,23 @@ legend search --tag backend
 # Update features (pipe JSON to stdin)
 echo '{"features": [{"id": "auth", "status": "Complete"}]}' | legend update
 
-# Scan for project files
+## Onboarding & Discovery
+
+If you're starting in an existing codebase, Legend can autonomously generate an investigation plan to build a mental model of the project.
+
+```bash
+# 1. Scan the project to see a discovery report and investigation tasks
 legend discover
+
+# 2. Ingest high-signal files and the investigation plan into Legend's memory
+legend discover --apply
 ```
+
+### How LLM-Native Discovery Works:
+1.  **Static Analysis:** Legend scans for manifests (`Cargo.toml`, `package.json`), entry points, and documentation.
+2.  **Git Intelligence:** It analyzes the git history for architectural shifts, major refactors, and key decisions.
+3.  **Investigation Tasks:** It generates a "Task List" for the AI assistant (e.g., "Investigate commit `a1b2c3d` regarding the new caching layer").
+4.  **LLM Execution:** When you start a session, the LLM sees these tasks in memory and proactively runs the investigations to populate the long-term graph with high-signal insights.
 
 ## Tracking Features
 
