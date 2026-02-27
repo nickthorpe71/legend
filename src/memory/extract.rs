@@ -16,6 +16,19 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
     for line in text.lines() {
         let trimmed = line.trim();
 
+        // Path patterns (e.g. src/main.rs, .legend/state.lz4, ./docs/README.md)
+        // Look for tokens containing / and . with at least 3 chars
+        for token in trimmed.split_whitespace() {
+            let clean_token = token.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | '.' | ')' | ']' | ';'));
+            if (clean_token.contains('/') || clean_token.contains('\\')) && clean_token.contains('.') && clean_token.len() > 4 {
+                entities.push(ExtractedEntity {
+                    label: clean_token.to_string(),
+                    kind: "FilePath".to_string(),
+                    context: "mentions".to_string(),
+                });
+            }
+        }
+
         // Rust patterns
         try_extract(trimmed, "fn ", "Function", "defines", &mut entities);
         try_extract(trimmed, "struct ", "Struct", "defines", &mut entities);
@@ -134,6 +147,9 @@ pub fn is_stopword(token: &str) -> bool {
             | "added" | "files" | "zero" | "warnings" | "total" | "passed" | "failed"
             | "running" | "test" | "tests" | "error" | "errors" | "warning" | "note"
             | "line" | "lines" | "code" | "changes" | "change" | "update" | "updated"
+            | "improved" | "refactor" | "refactored" | "fixed" | "fixing" | "fix"
+            | "issue" | "issues" | "bug" | "bugs" | "completed" | "implement" | "implemented"
+            | "working" | "build" | "built" | "checked" | "checking" | "check"
         // Project-specific
             | "memory" | "legend" | "term"
         // Generic infrastructure / hook noise terms that pollute L3
@@ -151,7 +167,7 @@ pub fn is_stopword(token: &str) -> bool {
 fn infer_kind(label: &str) -> String {
     if label.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
         "Type".to_string()
-    } else if label.contains('_') {
+    } else if label.contains('_') || (label.chars().any(|c| c.is_lowercase()) && label.chars().any(|c| c.is_uppercase())) {
         "Symbol".to_string()
     } else {
         "Term".to_string()

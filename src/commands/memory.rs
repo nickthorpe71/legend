@@ -381,16 +381,25 @@ struct StartOptions {
     json: bool,
     category: Option<String>,
     tokens: bool,
+    query: Option<String>,
 }
 
 fn parse_start_args(args: &[String]) -> StartOptions {
     let mut opts = StartOptions::default();
     let mut i = 0;
+    let mut query_parts: Vec<&str> = Vec::new();
+
     while i < args.len() {
         match args[i].as_str() {
             "--compact" | "-c" => opts.compact = true,
             "--json" | "-j" => opts.json = true,
             "--tokens" | "-t" => opts.tokens = true,
+            "--query" | "-q" => {
+                if i + 1 < args.len() {
+                    opts.query = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
             "--category" => {
                 if i + 1 < args.len() {
                     opts.category = Some(args[i + 1].clone());
@@ -400,10 +409,21 @@ fn parse_start_args(args: &[String]) -> StartOptions {
             arg if arg.starts_with("--category=") => {
                 opts.category = Some(arg.trim_start_matches("--category=").to_string());
             }
+            arg if arg.starts_with("--query=") => {
+                opts.query = Some(arg.trim_start_matches("--query=").to_string());
+            }
+            arg if !arg.starts_with('-') => {
+                query_parts.push(arg);
+            }
             _ => {}
         }
         i += 1;
     }
+
+    if opts.query.is_none() && !query_parts.is_empty() {
+        opts.query = Some(query_parts.join(" "));
+    }
+
     opts
 }
 
@@ -414,7 +434,7 @@ fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_start_args(args);
     let mut memory = MemoryState::load_or_default()?;
     let mut summary =
-        memory.build_start_summary_with_options(opts.compact, opts.category.as_deref());
+        memory.build_start_summary_with_options(opts.compact, opts.category.as_deref(), opts.query.as_deref());
 
     // Add warning if session log is approaching capacity
     if memory.session_log.len() >= SESSION_LOG_WARNING_THRESHOLD {

@@ -13,7 +13,15 @@ pub struct DiscoveryReport {
     pub languages: HashMap<String, usize>,
     pub high_signal_files: Vec<HighSignalFile>,
     pub potential_features: Vec<SuggestedFeature>,
+    pub tasks: Vec<DiscoveryTask>,
     pub total_files: usize,
+}
+
+#[derive(Serialize)]
+pub struct DiscoveryTask {
+    pub id: String,
+    pub prompt: String,
+    pub tool_hint: String,
 }
 
 #[derive(Serialize, Default)]
@@ -48,6 +56,8 @@ const DOC_FILES: &[&str] = &[
     "README.md", "ARCHITECTURE.md", "VISION.md", "PLAN.md", "GEMINI.md", "CLAUDE.md", "CODEX.md", "PRD.md",
 ];
 
+use std::process::Command;
+
 /// Scan a directory tree and return a discovery report.
 pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error::Error>> {
     let root_path = fs::canonicalize(root)?;
@@ -59,6 +69,7 @@ pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error:
     let high_signal_files = scan_high_signal(&root_path, &all_files);
     let metadata = extract_metadata(&root_path, &high_signal_files);
     let potential_features = detect_features(&root_path, &all_files);
+    let tasks = generate_tasks(&root_path, &high_signal_files, &potential_features);
 
     Ok(DiscoveryReport {
         root: root_path.to_string_lossy().to_string(),
@@ -66,8 +77,71 @@ pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error:
         languages,
         high_signal_files,
         potential_features,
+        tasks,
         total_files: all_files.len(),
     })
+}
+
+fn generate_tasks(root: &Path, high_signal: &[HighSignalFile], features: &[SuggestedFeature]) -> Vec<DiscoveryTask> {
+    let mut tasks = Vec::new();
+
+    // 1. Documentation Task
+    if let Some(readme) = high_signal.iter().find(|f| f.path == "README.md" || f.path == "README") {
+        tasks.push(DiscoveryTask {
+            id: "read_readme".to_string(),
+            prompt: "The project has a README.md. Read it to understand the core goals and onboarding flow.".to_string(),
+            tool_hint: format!("read_file {{ \"file_path\": \"{}\" }}", readme.path),
+        });
+    }
+
+    // 2. Git History Task
+    let git_log = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("log")
+        .arg("-n")
+        .arg("10")
+        .arg("--oneline")
+        .output();
+
+    if let Ok(out) = git_log {
+        if out.status.success() {
+            let log = String::from_utf8_lossy(&out.stdout);
+            let mut high_signal_commits = Vec::new();
+            for line in log.lines() {
+                let lower = line.to_lowercase();
+                if ["refactor", "arch", "decision", "change", "major", "move", "fix"].iter().any(|k| lower.contains(k)) {
+                    high_signal_commits.push(line.to_string());
+                }
+            }
+
+            if !high_signal_commits.is_empty() {
+                tasks.push(DiscoveryTask {
+                    id: "git_history".to_string(),
+                    prompt: format!(
+                        "I found several interesting commits in the git history:\n{}\nPick the most significant ones and investigate their impact.",
+                        high_signal_commits.join("\n")
+                    ),
+                    tool_hint: "git log -p -n 5".to_string(),
+                });
+            }
+        }
+    }
+
+    // 3. Feature Investigation
+    if !features.is_empty() {
+        let feature_names: Vec<String> = features.iter().take(3).map(|f| f.suggested_name.clone()).collect();
+        tasks.push(DiscoveryTask {
+            id: "feature_deep_dive".to_string(),
+            prompt: format!(
+                "I've identified potential features like {}. Choose one and trace its implementation through the codebase.",
+                feature_names.join(", ")
+            ),
+            tool_hint: format!("ls -R {}", features[0].files[0].split('/').next().unwrap_or("src")),
+        });
+    }
+
+    tasks
 }
 
 /// Handle the discover CLI command: JSON to stdout, summary to stderr.
@@ -126,18 +200,24 @@ fn onboard_project(root: &Path, report: &DiscoveryReport) -> Result<(), Box<dyn 
     memory.tick(&metadata_text);
 
     // 2. Ingest high-signal files (Documentation & Manifests)
-    // We only ingest the content of the most important files to avoid blowing up memory.
     for file in &report.high_signal_files {
-        // Prioritize Docs and Manifests for memory
         if file.kind == "Documentation" || file.kind == "Manifest" {
             let full_path = root.join(&file.path);
             if let Ok(content) = fs::read_to_string(&full_path) {
-                // If the file is very large, chunking will happen in memory.tick()
                 eprintln!("  Ingesting {}...", file.path);
                 let tick_content = format!("CONTEXT: High-signal file '{}' ({})\n\n{}", file.path, file.kind, content);
                 memory.tick(&tick_content);
             }
         }
+    }
+
+    // 3. Ingest Discovery Tasks
+    if !report.tasks.is_empty() {
+        let mut tasks_text = String::from("ONBOARDING TASKS: The following investigations are recommended to complete the mental model:\n");
+        for task in &report.tasks {
+            tasks_text.push_str(&format!("- [{}] {}. Tool hint: {}\n", task.id, task.prompt, task.tool_hint));
+        }
+        memory.tick(&tasks_text);
     }
 
     memory.save()?;
