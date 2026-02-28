@@ -21,8 +21,13 @@ legend init
 This creates:
 - `.legend/` - Legend state storage
 - `.claude/settings.json` - Claude Code hooks (auto-loads context each session)
+- `.codex/settings.json` - Codex hooks (auto-loads context each session)
+- `.gemini/settings.json` - Gemini CLI hooks (auto-loads context each session)
+- `.github/copilot-instructions.md` - VS Code Copilot Chat instruction injection
+- `.rules`, `.cursorrules`, `.gemini/styleguide.md` - editor-specific instruction injection
+- `CLAUDE.md`, `CODEX.md`, `GEMINI.md`, `AGENTS.md` - shared Legend protocol instructions
 
-Now when you start Claude Code in this project, Legend context loads automatically.
+Now when you start your agent in this project, Legend context loads automatically.
 
 ## Usage
 
@@ -89,12 +94,19 @@ echo '{"remove_features": ["old-feature-id"]}' | legend update
 
 ## How It Works
 
-Legend stores project state in `.legend/state.lz4` using bincode + LZ4 compression for fast (<5ms) reads. When you run `legend init`, it also creates Claude Code hooks that:
+Legend stores project state in `.legend/state.lz4` using bincode + LZ4 compression for fast (<5ms) reads. When you run `legend init`, it also creates:
 
-1. **SessionStart**: Automatically loads Legend context when you start Claude Code
-2. **UserPromptSubmit**: Reminds Claude that Legend commands are available
+- Shell hooks for Claude Code, Codex, and Gemini CLI
+- Instruction-injection files for VS Code Copilot, Cursor, and Zed
 
-This means Claude Code always knows about your project's features, their status, and which files are involved.
+For hook-capable agents, Legend configures:
+
+1. **SessionStart**: Automatically loads Legend context when you start an agent session
+2. **Prompt hook** (`UserPromptSubmit` / `BeforeAgent`): Reminds the agent that Legend commands are available
+
+For instruction-injection agents (including Copilot), the same Legend protocol is auto-included in chat context.
+
+This means your coding agent always knows about your project's features, their status, and which files are involved.
 
 ## Status Values
 
