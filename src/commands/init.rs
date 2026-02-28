@@ -12,7 +12,7 @@ const LEGEND_MARKER_END: &str = "<!-- legend-end -->";
 /// Initialize a new Legend project
 ///
 /// Creates `.legend/` directory, auto-discovers features, sets up
-/// Claude Code hooks, and generates CLAUDE.md instructions.
+/// agent hooks, and generates agent instruction files.
 /// Safe to run multiple times - won't error if directory already exists.
 pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut discover_requested = false;
@@ -49,6 +49,7 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         setup_claude_md()?;
         setup_codex_hooks()?;
         setup_codex_md()?;
+        setup_agents_md()?;
         setup_copilot_instructions()?;
         setup_zed_rules()?;
         setup_gemini_styleguide()?;
@@ -107,6 +108,7 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     setup_claude_md()?;
     setup_codex_hooks()?;
     setup_codex_md()?;
+    setup_agents_md()?;
     setup_copilot_instructions()?;
     setup_zed_rules()?;
     setup_gemini_styleguide()?;
@@ -161,6 +163,11 @@ fn setup_claude_md() -> Result<(), Box<dyn std::error::Error>> {
 /// Generate or update CODEX.md with Legend usage instructions
 fn setup_codex_md() -> Result<(), Box<dyn std::error::Error>> {
     write_legend_markdown(Path::new("CODEX.md"), "CODEX.md", None)
+}
+
+/// Generate or update AGENTS.md with Legend usage instructions
+fn setup_agents_md() -> Result<(), Box<dyn std::error::Error>> {
+    write_legend_markdown(Path::new("AGENTS.md"), "AGENTS.md", None)
 }
 
 /// Generate or update .github/copilot-instructions.md
