@@ -39,12 +39,12 @@ pub struct SelectedNode {
 // Constants
 // ---------------------------------------------------------------------------
 
-const REPULSION: f32 = 80.0;
-const ATTRACTION: f32 = 0.008;
-const DAMPING: f32 = 0.82;
-const CENTER_GRAVITY: f32 = 0.006;
-const MAX_SPEED: f32 = 1.5;
-const SPAWN_RADIUS: f32 = 25.0;
+const REPULSION: f32 = 0.0;
+const ATTRACTION: f32 = 0.0;
+const DAMPING: f32 = 0.0;
+const CENTER_GRAVITY: f32 = 0.0;
+const MAX_SPEED: f32 = 0.0;
+const SPAWN_RADIUS: f32 = 20.0;
 
 // ---------------------------------------------------------------------------
 // Sync: spawn / despawn / update entities to match LegendData
@@ -94,7 +94,7 @@ pub fn sync_graph_entities(
             let pos = layout.positions.get(&node.id).copied().unwrap_or_default();
             commands
                 .entity(entity)
-                .insert(Transform::from_translation(pos).with_scale(Vec3::splat(size)));
+                .insert(Transform::from_translation(pos).with_scale(Vec3::splat(1.0)));
         } else {
             // --- spawn new node ---
             let nid = node.id;
@@ -115,7 +115,7 @@ pub fn sync_graph_entities(
             commands.spawn((
                 Mesh3d(sphere.clone()),
                 MeshMaterial3d(mat_handle.clone()),
-                Transform::from_translation(pos).with_scale(Vec3::splat(size)),
+                Transform::from_translation(pos).with_scale(Vec3::splat(1.0)),
                 GraphNode3D {
                     legend_id: node.id,
                     mat: mat_handle,

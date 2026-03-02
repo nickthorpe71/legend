@@ -30,10 +30,10 @@ fn main() {
             (
                 data::poll_legend_data,
                 graph::sync_graph_entities,
-                graph::force_layout,
+                // graph::force_layout, // Disabled: no auto-movement
                 graph::apply_layout_positions,
                 graph::draw_edges,
-                graph::animate_nodes,
+                // graph::animate_nodes, // Disabled: no auto-pulsing
                 graph::node_click_detection,
                 graph::highlight_selected,
                 panels::ui_panels,
@@ -48,13 +48,22 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn setup_scene(mut commands: Commands) {
+    let pitch: f32 = 0.4;
+    let yaw: f32 = 0.0;
+    let distance: f32 = 50.0;
+    let pos = Vec3::new(
+        distance * pitch.cos() * yaw.sin(),
+        distance * pitch.sin(),
+        distance * pitch.cos() * yaw.cos(),
+    );
+
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 25.0, 50.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(pos).looking_at(Vec3::ZERO, Vec3::Y),
         OrbitCamera {
-            distance: 50.0,
-            pitch: 0.4,
-            yaw: 0.0,
+            distance,
+            pitch,
+            yaw,
         },
     ));
 
@@ -87,13 +96,24 @@ struct OrbitCamera {
 fn orbit_camera(
     mut query: Query<(&mut OrbitCamera, &mut Transform)>,
     mouse_btn: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut motion: EventReader<MouseMotion>,
     mut scroll: EventReader<MouseWheel>,
+    mut egui_ctx: bevy_egui::EguiContexts,
 ) {
     let Ok((mut orbit, mut xf)) = query.get_single_mut() else {
         return;
     };
 
+    // Skip camera inputs if over UI
+    let ctx = egui_ctx.ctx_mut();
+    if ctx.is_pointer_over_area() || ctx.wants_pointer_input() {
+        motion.clear();
+        scroll.clear();
+        return;
+    }
+
+    // Right-click drag to rotate
     if mouse_btn.pressed(MouseButton::Right) {
         for ev in motion.read() {
             orbit.yaw -= ev.delta.x * 0.003;
@@ -103,8 +123,18 @@ fn orbit_camera(
         motion.clear();
     }
 
-    for ev in scroll.read() {
-        orbit.distance = (orbit.distance - ev.y * 3.0).clamp(10.0, 200.0);
+    // Scroll wheel to zoom — REQUIRE CTRL to avoid accidental scrolls
+    if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
+        for ev in scroll.read() {
+            if ev.y.abs() < 0.01 { continue; }
+            let scroll_amount = match ev.unit {
+                bevy::input::mouse::MouseScrollUnit::Line => ev.y * 5.0,
+                bevy::input::mouse::MouseScrollUnit::Pixel => ev.y * 0.1,
+            };
+            orbit.distance = (orbit.distance - scroll_amount).clamp(5.0, 500.0);
+        }
+    } else {
+        scroll.clear();
     }
 
     let d = orbit.distance;

@@ -490,6 +490,35 @@ fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
         out.push_str(&format!("> {}\n\n", task));
     }
 
+    if let Some(git_sync) = summary.get("git_sync") {
+        let commits = git_sync.get("new_commits").and_then(|c| c.as_array());
+        let uncommitted = git_sync.get("uncommitted_summary").and_then(|u| u.as_str());
+        
+        if (commits.is_some() && !commits.unwrap().is_empty()) || uncommitted.is_some() {
+            out.push_str("## Git Synchronization (Background Changes)\n");
+            out.push_str("> Legend has detected manual user changes since the last session. You should intelligently tick these into memory.\n\n");
+            
+            if let Some(commits) = commits {
+                if !commits.is_empty() {
+                    out.push_str("### New Commits\n");
+                    for commit in commits {
+                        if let Some(text) = commit.as_str() {
+                            out.push_str(&format!("- {}\n", text));
+                        }
+                    }
+                    out.push('\n');
+                }
+            }
+            
+            if let Some(uncommitted) = uncommitted {
+                out.push_str("### Uncommitted Changes\n");
+                out.push_str("```\n");
+                out.push_str(uncommitted);
+                out.push_str("\n```\n\n");
+            }
+        }
+    }
+
     if let Some(sessions) = summary.get("recent_sessions").and_then(|s| s.as_array()) {
         if !sessions.is_empty() {
             out.push_str("## Recent Activity\n");

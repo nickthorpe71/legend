@@ -119,6 +119,9 @@ pub struct MemoryState {
     /// IDs returned by the most recent retrieve_context() call, for contrastive descent.
     #[serde(default)]
     pub last_retrieved_ids: Vec<u64>,
+    /// Last Git commit SHA processed by Legend.
+    #[serde(default)]
+    pub last_synced_sha: Option<String>,
 }
 
 /// A single entry in the short-term vector store.
@@ -386,6 +389,7 @@ impl Default for MemoryState {
             current_task: None,
             ticks_since_consolidation: 0,
             last_retrieved_ids: Vec::new(),
+            last_synced_sha: None,
         }
     }
 }
@@ -562,6 +566,14 @@ impl Default for GraphMemory {
 // Core MemoryState logic
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitSyncInfo {
+    pub last_sha: Option<String>,
+    pub current_sha: Option<String>,
+    pub new_commits: Vec<String>,
+    pub uncommitted_summary: Option<String>,
+}
+
 impl MemoryState {
     pub fn load_or_default() -> Result<Self, Box<dyn std::error::Error>> {
         // Try to migrate corrupt backup first (old format without new fields)
@@ -574,15 +586,130 @@ impl MemoryState {
                 Ok(state) => Ok(state),
                 Err(err) => {
                     let backup = format!("{}.corrupt", MEMORY_FILE);
-                    let _ = fs::rename(MEMORY_FILE, &backup);
-                    eprintln!("Warning: failed to load memory store ({})", err);
-                    eprintln!("Backup saved to {}", backup);
+                    // Only move to backup if one doesn't already exist, to avoid overwriting 
+                    // potentially recoverable data from a previous crash.
+                    if !Path::new(&backup).exists() {
+                        let _ = fs::rename(MEMORY_FILE, &backup);
+                        eprintln!("Warning: failed to load memory store ({})", err);
+                        eprintln!("Backup saved to {}", backup);
+                    } else {
+                        eprintln!("Warning: failed to load memory store ({}), but a backup already exists.", err);
+                        // If load fails and backup exists, we are likely in a loop.
+                        // We should probably just start fresh to allow the session to proceed.
+                        eprintln!("Starting with a fresh memory store to avoid corruption loop.");
+                    }
                     Ok(Self::default())
                 }
             }
-        } else {
+        }
+ else {
             Ok(Self::default())
         }
+    }
+
+    /// Summarize Git changes since last sync.
+    /// Returns a list of commit messages and a summary of uncommitted changes.
+    pub fn get_git_summary(&mut self) -> GitSyncInfo {
+        use std::process::Command;
+
+        let current_sha = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string());
+
+        let mut commits = Vec::new();
+        if let (Some(last), Some(current)) = (&self.last_synced_sha, &current_sha) {
+            if last != current {
+                // Get commit messages between last sync and now
+                if let Ok(output) = Command::new("git")
+                    .args(["log", &format!("{}..{}", last, current), "--pretty=format:%h: %s"])
+                    .output()
+                {
+                    let log = String::from_utf8_lossy(&output.stdout);
+                    commits = log.lines().map(|s| s.to_string()).collect();
+                }
+            }
+        }
+
+        // Always check for uncommitted changes (dirty worktree)
+        let uncommitted = Command::new("git")
+            .args(["diff", "--stat"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let info = GitSyncInfo {
+            last_sha: self.last_synced_sha.clone(),
+            current_sha: current_sha.clone(),
+            new_commits: commits,
+            uncommitted_summary: uncommitted,
+        };
+
+        // Update anchor for next time
+        self.last_synced_sha = current_sha;
+
+        info
+    }
+
+    /// Scan project manifest files for dependencies and add them to the graph.
+    pub fn scan_ecosystem_dependencies(&mut self) {
+        // Rust
+        if let Ok(cargo) = fs::read_to_string("Cargo.toml") {
+            for line in cargo.lines() {
+                if let Some(pos) = line.find(" = ") {
+                    let name = line[..pos].trim();
+                    if !name.is_empty() && !name.starts_with('[') && !name.starts_with('#') {
+                        self.add_node_if_new(name, "Dependency", 0.3);
+                    }
+                }
+            }
+        }
+        // Node.js
+        if let Ok(pkg) = fs::read_to_string("package.json") {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&pkg) {
+                if let Some(deps) = json.get("dependencies").and_then(|v| v.as_object()) {
+                    for name in deps.keys() {
+                        self.add_node_if_new(name, "Dependency", 0.3);
+                    }
+                }
+                if let Some(dev_deps) = json.get("devDependencies").and_then(|v| v.as_object()) {
+                    for name in dev_deps.keys() {
+                        self.add_node_if_new(name, "Dependency", 0.3);
+                    }
+                }
+            }
+        }
+        // Python
+        if let Ok(reqs) = fs::read_to_string("requirements.txt") {
+            for line in reqs.lines() {
+                let name: String = line.chars().take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+                if !name.is_empty() {
+                    self.add_node_if_new(&name, "Dependency", 0.3);
+                }
+            }
+        }
+    }
+
+    fn add_node_if_new(&mut self, label: &str, kind: &str, salience: f32) {
+        if self.long_term.index.contains_key(label) {
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.long_term.nodes.insert(id, GraphNode {
+            id,
+            label: label.to_string(),
+            kind: kind.to_string(),
+            weight: 1.0,
+            last_seen: self.clock,
+            salience,
+            source_texts: Vec::new(),
+        });
+        self.long_term.index.insert(label.to_string(), id);
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -879,6 +1006,7 @@ impl MemoryState {
                 .max(0.4);
             let source_texts: Vec<String> = group.iter().map(|e| e.text.clone()).collect();
 
+            // 1. Create the primary Summary node
             let node_id = self.next_id;
             self.next_id += 1;
 
@@ -895,6 +1023,43 @@ impl MemoryState {
                 },
             );
             self.long_term.index.insert(summary_text.clone(), node_id);
+
+            // 2. Semantic Topic Extraction: find high-frequency entities in the group
+            let mut entity_counts: HashMap<String, (usize, String)> = HashMap::new();
+            for entry in &group {
+                let entities = crate::memory::extract::extract_entities(&entry.text);
+                for entity in entities {
+                    let entry = entity_counts.entry(entity.label.clone()).or_insert((0, entity.kind));
+                    entry.0 += 1;
+                }
+            }
+
+            // If an entity appears in >50% of the group, it's a strong Topic/Anchor for this milestone
+            let threshold = group.len() / 2;
+            for (label, (count, kind)) in entity_counts {
+                if count >= threshold && count > 1 {
+                    let topic_id = if let Some(&id) = self.long_term.index.get(&label) {
+                        id
+                    } else {
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        self.long_term.nodes.insert(id, GraphNode {
+                            id,
+                            label: label.clone(),
+                            kind: if kind == "Term" { "Topic".to_string() } else { kind },
+                            weight: 1.0,
+                            last_seen: self.clock,
+                            salience: 0.5,
+                            source_texts: Vec::new(),
+                        });
+                        self.long_term.index.insert(label.clone(), id);
+                        id
+                    };
+
+                    // Create/strengthen edge between Summary and Topic
+                    self.upsert_edge(node_id, topic_id, "represents");
+                }
+            }
 
             for entry in &group {
                 self.update_graph(&entry.text, entry.salience);
@@ -1440,6 +1605,34 @@ impl MemoryState {
     /// Set the current task description.
     pub fn set_task(&mut self, task: &str) {
         self.current_task = Some(task.to_string());
+        
+        // Link task to knowledge graph
+        let label = task.trim();
+        if !label.is_empty() {
+            let node_id = if let Some(&id) = self.long_term.index.get(label) {
+                id
+            } else {
+                let id = self.next_id;
+                self.next_id += 1;
+                self.long_term.nodes.insert(id, GraphNode {
+                    id,
+                    label: label.to_string(),
+                    kind: "Task".to_string(),
+                    weight: 1.5, // Tasks start with higher weight
+                    last_seen: self.clock,
+                    salience: 0.8,
+                    source_texts: Vec::new(),
+                });
+                self.long_term.index.insert(label.to_string(), id);
+                id
+            };
+            
+            // Prime task in graph
+            if let Some(node) = self.long_term.nodes.get_mut(&node_id) {
+                node.weight += 0.2;
+                node.last_seen = self.clock;
+            }
+        }
     }
 
     /// Clear the current task.
@@ -1517,6 +1710,8 @@ impl MemoryState {
         if let Some(q) = query {
             query_context = Some(self.retrieve_context(q));
         }
+
+        let git_sync = self.get_git_summary();
 
         // Get recent sessions — skip passive (EXPERIENCE:) entries so Recent Activity
         // only shows meaningful user-initiated ticks, not tool telemetry noise.
@@ -1648,6 +1843,7 @@ impl MemoryState {
 
         serde_json::json!({
             "current_task": self.current_task,
+            "git_sync": git_sync,
             "recent_sessions": recent_sessions,
             "categorized": {
                 "decisions": build_category(&decisions, decisions_total),
@@ -1857,6 +2053,13 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
 
     // ShortTermEntry before gradient_sq_sum was added (commit a0a40a7).
     #[derive(Debug, Clone, Deserialize)]
+    struct MemoryRefV1 {
+        pub path: String,
+        pub start_line: usize,
+        pub end_line: usize,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
     struct ShortTermEntryV1 {
         pub id: u64,
         pub text: String,
@@ -1872,8 +2075,47 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
         #[serde(default)]
         pub labile_until: u64,
         #[serde(default)]
-        pub refs: Vec<MemoryRef>,
+        pub refs: Vec<MemoryRefV1>,
         // gradient_sq_sum intentionally absent
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct ShortTermEntryV2 {
+        pub id: u64,
+        pub text: String,
+        #[serde(default)]
+        pub summary: String,
+        pub embedding: Vec<f32>,
+        pub last_access: u64,
+        pub usage: u32,
+        #[serde(default)]
+        pub salience: f32,
+        #[serde(default)]
+        pub reconsolidation_count: u32,
+        #[serde(default)]
+        pub labile_until: u64,
+        #[serde(default)]
+        pub refs: Vec<MemoryRef>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct MemoryStateV3 {
+        pub config: MemoryConfig,
+        pub immediate: VecDeque<String>,
+        pub short_term: Vec<ShortTermEntryV2>,
+        pub long_term: GraphMemory,
+        pub clock: u64,
+        pub next_id: u64,
+        #[serde(default)]
+        pub session_log: Vec<SessionEntry>,
+        #[serde(default)]
+        pub current_task: Option<String>,
+        #[serde(default)]
+        pub ticks_since_consolidation: u32,
+        #[serde(default)]
+        pub last_retrieved_ids: Vec<u64>,
+        #[serde(default)]
+        pub last_synced_sha: Option<String>,
     }
 
     // MemoryState with current_task/ticks_since_consolidation but before last_retrieved_ids.
@@ -1909,12 +2151,12 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
     let compressed = fs::read(CORRUPT_FILE)?;
     let serialized = lz4::block::decompress(&compressed, None)?;
 
-    // Try V2 first (has current_task/ticks_since_consolidation), then fall back to V1.
-    let new_state = if let Ok(v2) = bincode::deserialize::<MemoryStateV2>(&serialized) {
+    // Try V3 first (almost current, but old entries), then V2, then V1.
+    let new_state = if let Ok(v3) = bincode::deserialize::<MemoryStateV3>(&serialized) {
         MemoryState {
-            config: v2.config,
-            immediate: v2.immediate,
-            short_term: v2.short_term.into_iter().map(|e| ShortTermEntry {
+            config: v3.config,
+            immediate: v3.immediate,
+            short_term: v3.short_term.into_iter().map(|e| ShortTermEntry {
                 id: e.id,
                 text: e.text,
                 summary: e.summary,
@@ -1928,6 +2170,38 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                 gradient_sq_sum: 0.0,
                 density: 0.0,
             }).collect(),
+            long_term: v3.long_term,
+            clock: v3.clock,
+            next_id: v3.next_id,
+            session_log: v3.session_log,
+            current_task: v3.current_task,
+            ticks_since_consolidation: v3.ticks_since_consolidation,
+            last_retrieved_ids: v3.last_retrieved_ids,
+            last_synced_sha: v3.last_synced_sha,
+        }
+    } else if let Ok(v2) = bincode::deserialize::<MemoryStateV2>(&serialized) {
+        MemoryState {
+            config: v2.config,
+            immediate: v2.immediate,
+            short_term: v2.short_term.into_iter().map(|e| ShortTermEntry {
+                id: e.id,
+                text: e.text,
+                summary: e.summary,
+                embedding: e.embedding,
+                last_access: e.last_access,
+                usage: e.usage,
+                salience: e.salience,
+                reconsolidation_count: e.reconsolidation_count,
+                labile_until: e.labile_until,
+                refs: e.refs.into_iter().map(|r| MemoryRef {
+                    path: r.path,
+                    start_line: r.start_line,
+                    end_line: r.end_line,
+                    snippet: String::new(),
+                }).collect(),
+                gradient_sq_sum: 0.0,
+                density: 0.0,
+            }).collect(),
             long_term: v2.long_term,
             clock: v2.clock,
             next_id: v2.next_id,
@@ -1935,6 +2209,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             current_task: v2.current_task,
             ticks_since_consolidation: v2.ticks_since_consolidation,
             last_retrieved_ids: Vec::new(),
+            last_synced_sha: None,
         }
     } else {
         let old = bincode::deserialize::<MemoryStateV1>(&serialized)?;
@@ -1951,7 +2226,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                 salience: e.salience,
                 reconsolidation_count: e.reconsolidation_count,
                 labile_until: e.labile_until,
-                refs: e.refs,
+                refs: old_refs_to_current(e.refs),
                 gradient_sq_sum: 0.0,
                 density: 0.0,
             }).collect(),
@@ -1962,14 +2237,28 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             current_task: None,
             ticks_since_consolidation: 0,
             last_retrieved_ids: Vec::new(),
+            last_synced_sha: None,
         }
     };
+
+    fn old_refs_to_current(old: Vec<MemoryRefV1>) -> Vec<MemoryRef> {
+        old.into_iter().map(|r| MemoryRef {
+            path: r.path,
+            start_line: r.start_line,
+            end_line: r.end_line,
+            snippet: String::new(),
+        }).collect()
+    }
 
     // Save migrated state
     new_state.save()?;
 
     // Remove corrupt backup after successful migration
-    fs::remove_file(CORRUPT_FILE)?;
+    if let Err(e) = fs::remove_file(CORRUPT_FILE) {
+        eprintln!("  Warning: could not remove {} after migration: {}", CORRUPT_FILE, e);
+    } else {
+        eprintln!("  ✓ Cleaned up old format backup.");
+    }
 
     eprintln!(
         "✓ Migration complete: {} short-term entries, {} graph nodes recovered",
