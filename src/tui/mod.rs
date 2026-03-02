@@ -13,6 +13,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use serde::Deserialize;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::{self, BufRead};
 use std::time::{Duration, Instant};
@@ -256,11 +257,11 @@ impl App {
             }
 
             let mut items: Vec<GraphListItem> = dedup.into_values().collect();
-            items.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+            items.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(Ordering::Equal));
             items
         } else {
             let mut nodes: Vec<_> = self.memory.long_term.nodes.values().collect();
-            nodes.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+            nodes.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(Ordering::Equal));
             nodes
                 .into_iter()
                 .map(|node| GraphListItem {
@@ -507,8 +508,8 @@ impl App {
         }
 
         // Sort by edge weight
-        incoming.sort_by(|a, b| b.0.weight.partial_cmp(&a.0.weight).unwrap());
-        outgoing.sort_by(|a, b| b.0.weight.partial_cmp(&a.0.weight).unwrap());
+        incoming.sort_by(|a, b| b.0.weight.partial_cmp(&a.0.weight).unwrap_or(Ordering::Equal));
+        outgoing.sort_by(|a, b| b.0.weight.partial_cmp(&a.0.weight).unwrap_or(Ordering::Equal));
 
         let mut result = format!(
             "GRAPH NODE\n\n\

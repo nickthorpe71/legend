@@ -279,8 +279,19 @@ fn fetch_full_state(data: &mut LegendData, project_dir: &PathBuf) {
     data.clock = payload.clock;
     data.immediate = payload.immediate;
     data.short_term = payload.short_term;
-    data.graph_nodes = payload.graph.nodes;
-    data.graph_edges = payload.graph.edges;
+    
+    // Ensure weights are finite to prevent layout explosions
+    data.graph_nodes = payload.graph.nodes.into_iter().map(|mut n| {
+        if !n.weight.is_finite() { n.weight = 0.0; }
+        if !n.salience.is_finite() { n.salience = 0.0; }
+        n
+    }).collect();
+    
+    data.graph_edges = payload.graph.edges.into_iter().map(|mut e| {
+        if !e.weight.is_finite() { e.weight = 1.0; }
+        e
+    }).collect();
+    
     data.session_log = payload.session_log;
     data.dirty = true;
 }

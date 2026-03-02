@@ -118,3 +118,4 @@ This means your coding agent always knows about your project's features, their s
 ## License
 
 MIT
+User-added line for git test

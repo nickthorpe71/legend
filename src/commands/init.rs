@@ -130,6 +130,9 @@ fn migrate_memory_store() {
             let nodes = state.long_term.nodes.len();
 
             state.rebalance_weights();
+            
+            // Scan manifests for dependencies and add to graph
+            state.scan_ecosystem_dependencies();
 
             if let Err(e) = state.save() {
                 eprintln!("  Warning: failed to save memory store: {}", e);
