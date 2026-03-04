@@ -45,6 +45,7 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         // Migrate/refresh memory store to latest format
         migrate_memory_store();
 
+        setup_git_merge_driver()?;
         setup_claude_hooks()?;
         setup_claude_md()?;
         setup_codex_hooks()?;
@@ -105,6 +106,7 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     println!("  Created .legend/ directory");
     println!("  Saved initial state to .legend/state.lz4");
 
+    setup_git_merge_driver()?;
     setup_claude_hooks()?;
     setup_claude_md()?;
     setup_codex_hooks()?;
@@ -116,6 +118,51 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     setup_gemini_md()?;
     setup_gemini_hooks()?;
     setup_cursor_rules()?;
+
+    Ok(())
+}
+
+/// Set up Git merge driver for Legend state files (.lz4).
+///
+/// This tells Git to use 'legend git-merge-driver' to resolve conflicts
+/// in .legend/state.lz4 and .legend/memory.lz4.
+fn setup_git_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    // 1. Configure local git merge driver
+    let cmd = get_legend_command();
+    let git_config_cmd = format!("merge.legend.driver");
+    let git_config_val = format!("{} git-merge-driver %O %A %B %P", cmd);
+
+    let status = Command::new("git")
+        .args(["config", "--local", &git_config_cmd, &git_config_val])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("✓ Configured local Git merge driver for Legend");
+        }
+        _ => {
+            eprintln!("  Warning: failed to configure Git merge driver via 'git config'");
+        }
+    }
+
+    // 2. Add to .gitattributes
+    let attr_line = ".legend/*.lz4 merge=legend\n";
+    let attr_path = Path::new(".gitattributes");
+
+    if attr_path.exists() {
+        let content = fs::read_to_string(attr_path)?;
+        if !content.contains("merge=legend") {
+            let mut f = fs::OpenOptions::new().append(true).open(attr_path)?;
+            use std::io::Write;
+            f.write_all(attr_line.as_bytes())?;
+            println!("✓ Added Legend merge driver to .gitattributes");
+        }
+    } else {
+        fs::write(attr_path, attr_line)?;
+        println!("✓ Created .gitattributes with Legend merge driver");
+    }
 
     Ok(())
 }

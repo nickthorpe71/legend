@@ -22,12 +22,17 @@ pub fn save_state(state: &LegendState) -> Result<(), Box<dyn std::error::Error>>
 
 /// Load LegendState from disk (LZ4 → bincode).
 pub fn load_state() -> Result<LegendState, Box<dyn std::error::Error>> {
-    if !Path::new(STATE_FILE).exists() {
-        return Err("Legend not initialized. Run 'legend init' first.".into());
+    load_state_from_path(STATE_FILE)
+}
+
+/// Load LegendState from a specific path.
+pub fn load_state_from_path<P: AsRef<Path>>(path: P) -> Result<LegendState, Box<dyn std::error::Error>> {
+    if !path.as_ref().exists() {
+        return Err(format!("State file not found at {:?}", path.as_ref()).into());
     }
 
     let compressed =
-        fs::read(STATE_FILE).map_err(|e| format!("Failed to read state file: {}", e))?;
+        fs::read(path).map_err(|e| format!("Failed to read state file: {}", e))?;
 
     let serialized = lz4::block::decompress(&compressed, None)
         .map_err(|e| format!("Failed to decompress state: {}", e))?;
@@ -36,6 +41,19 @@ pub fn load_state() -> Result<LegendState, Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to deserialize state: {}", e))?;
 
     Ok(state)
+}
+
+/// Save LegendState to a specific path.
+pub fn save_state_to_path<P: AsRef<Path>>(state: &LegendState, path: P) -> Result<(), Box<dyn std::error::Error>> {
+    let serialized =
+        bincode::serialize(state).map_err(|e| format!("Failed to serialize state: {}", e))?;
+
+    let compressed = lz4::block::compress(&serialized, None, true)
+        .map_err(|e| format!("Failed to compress state: {}", e))?;
+
+    fs::write(path, &compressed).map_err(|e| format!("Failed to write state file: {}", e))?;
+
+    Ok(())
 }
 
 /// Check if Legend is initialized (state file exists).
