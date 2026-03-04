@@ -65,10 +65,11 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to create .legend directory: {}", e))?;
 
     let report = discover::run_discovery(Path::new(".")).ok();
-    let project_name = report.as_ref()
+    let project_name = report
+        .as_ref()
         .map(|r| r.metadata.name.clone())
         .unwrap_or_else(detect_project_name);
-    
+
     let mut state = LegendState::new(project_name);
 
     if let Some(r) = report {
@@ -92,7 +93,7 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 count
             );
         }
-        
+
         // Run discovery automatically on first init
         println!("  First-time initialization: Ingesting high-signal context into memory...");
         let _ = discover::handle_discover(&["--apply".to_string()]);
@@ -130,14 +131,17 @@ fn migrate_memory_store() {
             let nodes = state.long_term.nodes.len();
 
             state.rebalance_weights();
-            
+
             // Scan manifests for dependencies and add to graph
             state.scan_ecosystem_dependencies();
 
             if let Err(e) = state.save() {
                 eprintln!("  Warning: failed to save memory store: {}", e);
             } else if entries > 0 || nodes > 0 {
-                println!("  Memory store OK ({} entries, {} graph nodes)", entries, nodes);
+                println!(
+                    "  Memory store OK ({} entries, {} graph nodes)",
+                    entries, nodes
+                );
             }
         }
         Err(e) => {
@@ -515,7 +519,13 @@ fn setup_agent_hooks(
             println!("✓ Updating existing {} hooks", display_name);
         }
 
-        if has_legend_hooks(&settings, prompt_event, stop_event, after_tool_event, after_agent_event) {
+        if has_legend_hooks(
+            &settings,
+            prompt_event,
+            stop_event,
+            after_tool_event,
+            after_agent_event,
+        ) {
             println!("  {} hooks already configured", display_name);
             return Ok(());
         }
@@ -636,7 +646,8 @@ fn remove_any_legend_hooks(settings: &mut Value) -> bool {
     if let Some(hooks_obj) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
         for hook_type in hook_types {
             let mut should_remove_key = false;
-            if let Some(hook_entries) = hooks_obj.get_mut(hook_type).and_then(|s| s.as_array_mut()) {
+            if let Some(hook_entries) = hooks_obj.get_mut(hook_type).and_then(|s| s.as_array_mut())
+            {
                 let initial_len = hook_entries.len();
                 // Filter out entries that contain any Legend commands
                 hook_entries.retain(|entry| {

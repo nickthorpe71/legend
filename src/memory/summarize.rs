@@ -1,5 +1,4 @@
 /// Extractive summarization utilities.
-
 use crate::memory::ShortTermEntry;
 
 const MAX_SUMMARY_LEN: usize = 200;
@@ -8,9 +7,21 @@ const CHUNK_TARGET_LEN: usize = 200;
 
 /// Decision-rationale keywords that boost sentence importance.
 const DECISION_KEYWORDS: &[&str] = &[
-    "because", "chose", "decided", "instead", "rather", "reason",
-    "tradeoff", "trade-off", "over", "prefer", "picked", "approach",
-    "why", "so that", "in order to",
+    "because",
+    "chose",
+    "decided",
+    "instead",
+    "rather",
+    "reason",
+    "tradeoff",
+    "trade-off",
+    "over",
+    "prefer",
+    "picked",
+    "approach",
+    "why",
+    "so that",
+    "in order to",
 ];
 
 /// Summarize a single text chunk (extractive — pick best sentence).
@@ -39,13 +50,18 @@ pub fn summarize_single(text: &str) -> String {
             let has_code = s.contains("fn ") || s.contains("struct ") || s.contains("impl ");
             let has_key = s.contains(':') || s.contains('=') || s.contains("TODO");
             let has_decision = DECISION_KEYWORDS.iter().any(|kw| lower.contains(kw));
-            words + if has_code { 5 } else { 0 }
-                 + if has_key { 3 } else { 0 }
-                 + if has_decision { 8 } else { 0 }
+            words
+                + if has_code { 5 } else { 0 }
+                + if has_key { 3 } else { 0 }
+                + if has_decision { 8 } else { 0 }
         })
         .unwrap_or(&sentences[0]);
 
-    if best.len() <= MAX_SUMMARY_LEN { best.to_string() } else { best.chars().take(MAX_SUMMARY_LEN).collect() }
+    if best.len() <= MAX_SUMMARY_LEN {
+        best.to_string()
+    } else {
+        best.chars().take(MAX_SUMMARY_LEN).collect()
+    }
 }
 
 /// Merge two texts and pick the best sentence.
@@ -104,7 +120,11 @@ pub fn chunk_text(text: &str) -> Vec<String> {
         chunks.push(current);
     }
 
-    if chunks.is_empty() { vec![text.trim().to_string()] } else { chunks }
+    if chunks.is_empty() {
+        vec![text.trim().to_string()]
+    } else {
+        chunks
+    }
 }
 
 #[cfg(test)]
@@ -132,7 +152,9 @@ mod tests {
 
     #[test]
     fn test_chunk_text_long() {
-        let lines: Vec<String> = (0..20).map(|i| format!("Line {} has some content here.", i)).collect();
+        let lines: Vec<String> = (0..20)
+            .map(|i| format!("Line {} has some content here.", i))
+            .collect();
         let text = lines.join("\n");
         let chunks = chunk_text(&text);
         assert!(chunks.len() > 1);
@@ -144,7 +166,10 @@ mod tests {
                      We chose cosine similarity over Euclidean distance because it is scale-invariant. \
                      The system also supports batch processing for throughput optimization.";
         let summary = summarize_single(text);
-        assert!(summary.contains("chose") || summary.contains("because"),
-            "Decision-rationale sentence should be selected, got: {}", summary);
+        assert!(
+            summary.contains("chose") || summary.contains("because"),
+            "Decision-rationale sentence should be selected, got: {}",
+            summary
+        );
     }
 }

@@ -27,15 +27,16 @@ pub struct FeatureUpdate {
 /// Read JSON from stdin, merge updates into state, recalculate recency, and save.
 pub fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
-    io::stdin().read_to_string(&mut input)
+    io::stdin()
+        .read_to_string(&mut input)
         .map_err(|e| format!("Failed to read stdin: {}", e))?;
 
     if input.trim().is_empty() {
         return Err("No input provided. Pipe JSON to stdin.".into());
     }
 
-    let update: Update = serde_json::from_str(&input)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+    let update: Update =
+        serde_json::from_str(&input).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
     let mut state = load_state()?;
     merge_updates(&mut state, update)?;
@@ -46,11 +47,16 @@ pub fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn merge_updates(state: &mut LegendState, update: Update) -> Result<(), Box<dyn std::error::Error>> {
+fn merge_updates(
+    state: &mut LegendState,
+    update: Update,
+) -> Result<(), Box<dyn std::error::Error>> {
     let now = current_timestamp();
 
     let mut id_to_index: HashMap<String, usize> = state
-        .features.iter().enumerate()
+        .features
+        .iter()
+        .enumerate()
         .map(|(i, f)| (f.id.clone(), i))
         .collect();
 
@@ -76,20 +82,43 @@ fn merge_updates(state: &mut LegendState, update: Update) -> Result<(), Box<dyn 
 
 /// Apply partial update to an existing feature (only Some fields are overwritten).
 fn apply_update(feature: &mut Feature, update: FeatureUpdate, now: i64) {
-    if let Some(name) = update.name { feature.name = name; }
-    if let Some(domain) = update.domain { feature.domain = domain; }
-    if let Some(description) = update.description { feature.description = description; }
-    if let Some(status) = update.status { feature.status = status; }
-    if let Some(tags) = update.tags { feature.tags = tags; }
-    if update.context.is_some() { feature.context = update.context; }
-    if let Some(files) = update.files_involved { feature.files_involved = files; }
+    if let Some(name) = update.name {
+        feature.name = name;
+    }
+    if let Some(domain) = update.domain {
+        feature.domain = domain;
+    }
+    if let Some(description) = update.description {
+        feature.description = description;
+    }
+    if let Some(status) = update.status {
+        feature.status = status;
+    }
+    if let Some(tags) = update.tags {
+        feature.tags = tags;
+    }
+    if update.context.is_some() {
+        feature.context = update.context;
+    }
+    if let Some(files) = update.files_involved {
+        feature.files_involved = files;
+    }
     feature.last_updated = now;
 }
 
-fn create_feature_from_update(update: FeatureUpdate, now: i64) -> Result<Feature, Box<dyn std::error::Error>> {
-    let name = update.name.ok_or_else(|| format!("New feature '{}' requires 'name' field", update.id))?;
-    let domain = update.domain.ok_or_else(|| format!("New feature '{}' requires 'domain' field", update.id))?;
-    let description = update.description.ok_or_else(|| format!("New feature '{}' requires 'description' field", update.id))?;
+fn create_feature_from_update(
+    update: FeatureUpdate,
+    now: i64,
+) -> Result<Feature, Box<dyn std::error::Error>> {
+    let name = update
+        .name
+        .ok_or_else(|| format!("New feature '{}' requires 'name' field", update.id))?;
+    let domain = update
+        .domain
+        .ok_or_else(|| format!("New feature '{}' requires 'domain' field", update.id))?;
+    let description = update
+        .description
+        .ok_or_else(|| format!("New feature '{}' requires 'description' field", update.id))?;
 
     Ok(Feature {
         id: update.id,
@@ -189,8 +218,14 @@ mod tests {
         let old_score = state.find_feature("old").unwrap().recency_score;
         let new_score = state.find_feature("new").unwrap().recency_score;
 
-        assert!(new_score > old_score, "New features should have higher recency");
+        assert!(
+            new_score > old_score,
+            "New features should have higher recency"
+        );
         assert!(new_score > 0.9, "Recent feature should be close to 1.0");
-        assert!(old_score < 0.1, "30-day-old feature should have low recency");
+        assert!(
+            old_score < 0.1,
+            "30-day-old feature should have low recency"
+        );
     }
 }

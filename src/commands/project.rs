@@ -1,7 +1,7 @@
-use crate::storage::{load_state, save_state};
-use crate::types::{current_timestamp, Feature, FeatureStatus};
 use crate::commands::update::FeatureUpdate;
 use crate::memory::MemoryState;
+use crate::storage::{load_state, save_state};
+use crate::types::{current_timestamp, Feature, FeatureStatus};
 
 /// Handle 'project' command and its subcommands.
 pub fn handle_project(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -25,10 +25,10 @@ pub fn handle_project(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
 
 fn handle_project_summary() -> Result<(), Box<dyn std::error::Error>> {
     let state = load_state()?;
-    
+
     println!("# Project: {}", state.project_name);
     println!();
-    
+
     if state.features.is_empty() {
         println!("No features tracked yet.");
         return Ok(());
@@ -36,11 +36,11 @@ fn handle_project_summary() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("| ID | Name | Status | Domain |");
     println!("|----|------|--------|--------|");
-    
+
     for f in &state.features {
         println!("| {} | {} | {:?} | {} |", f.id, f.name, f.status, f.domain);
     }
-    
+
     Ok(())
 }
 
@@ -66,19 +66,19 @@ fn handle_project_set(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
         match args[i].as_str() {
             "--status" => {
                 if i + 1 < args.len() {
-                    update.status = Some(parse_status(&args[i+1])?);
+                    update.status = Some(parse_status(&args[i + 1])?);
                     i += 1;
                 }
             }
             "--name" => {
                 if i + 1 < args.len() {
-                    update.name = Some(args[i+1].clone());
+                    update.name = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
             "--domain" => {
                 if i + 1 < args.len() {
-                    update.domain = Some(args[i+1].clone());
+                    update.domain = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
@@ -89,7 +89,7 @@ fn handle_project_set(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
 
     let mut state = load_state()?;
     let now = current_timestamp();
-    
+
     let mut found = false;
     let mut feature_name = id.clone();
 
@@ -120,7 +120,11 @@ fn handle_project_set(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
             };
             state.features.push(feature);
         } else {
-            return Err(format!("Feature '{}' not found. To create it, provide --name and --domain.", id).into());
+            return Err(format!(
+                "Feature '{}' not found. To create it, provide --name and --domain.",
+                id
+            )
+            .into());
         }
     }
 
@@ -129,7 +133,10 @@ fn handle_project_set(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     // Passive experiential logging: status updates are events worth remembering
     if let Some(status) = update.status {
         let mut memory = MemoryState::load_or_default()?;
-        memory.tick(&format!("PROGRESS: Feature '{}' status updated to {:?}", feature_name, status));
+        memory.tick(&format!(
+            "PROGRESS: Feature '{}' status updated to {:?}",
+            feature_name, status
+        ));
         let _ = memory.save();
     }
 
@@ -138,9 +145,15 @@ fn handle_project_set(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
 }
 
 fn apply_update(feature: &mut Feature, update: FeatureUpdate, now: i64) {
-    if let Some(name) = update.name { feature.name = name; }
-    if let Some(domain) = update.domain { feature.domain = domain; }
-    if let Some(status) = update.status { feature.status = status; }
+    if let Some(name) = update.name {
+        feature.name = name;
+    }
+    if let Some(domain) = update.domain {
+        feature.domain = domain;
+    }
+    if let Some(status) = update.status {
+        feature.status = status;
+    }
     feature.last_updated = now;
 }
 
@@ -150,7 +163,11 @@ fn parse_status(s: &str) -> Result<FeatureStatus, Box<dyn std::error::Error>> {
         "in-progress" | "inprogress" | "active" => Ok(FeatureStatus::InProgress),
         "complete" | "done" => Ok(FeatureStatus::Complete),
         "blocked" => Ok(FeatureStatus::Blocked),
-        _ => Err(format!("Invalid status '{}'. Valid: Pending, In-Progress, Complete, Blocked", s).into()),
+        _ => Err(format!(
+            "Invalid status '{}'. Valid: Pending, In-Progress, Complete, Blocked",
+            s
+        )
+        .into()),
     }
 }
 

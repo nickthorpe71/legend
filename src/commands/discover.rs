@@ -1,10 +1,10 @@
+use crate::memory::MemoryState;
+use crate::storage::{is_initialized, load_state, save_state};
+use crate::types::Feature;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::memory::MemoryState;
-use crate::types::Feature;
-use crate::storage::{load_state, save_state, is_initialized};
 
 #[derive(Serialize)]
 pub struct DiscoveryReport {
@@ -47,13 +47,27 @@ pub struct SuggestedFeature {
 }
 
 const SKIP_DIRS: &[&str] = &[
-    ".git", ".legend", "target", "node_modules", ".vscode", ".idea", "build", "bin",
+    ".git",
+    ".legend",
+    "target",
+    "node_modules",
+    ".vscode",
+    ".idea",
+    "build",
+    "bin",
 ];
 
 const SOURCE_ROOTS: &[&str] = &["src", "lib", "app", "pkg"];
 
 const DOC_FILES: &[&str] = &[
-    "README.md", "ARCHITECTURE.md", "VISION.md", "PLAN.md", "GEMINI.md", "CLAUDE.md", "CODEX.md", "PRD.md",
+    "README.md",
+    "ARCHITECTURE.md",
+    "VISION.md",
+    "PLAN.md",
+    "GEMINI.md",
+    "CLAUDE.md",
+    "CODEX.md",
+    "PRD.md",
 ];
 
 use std::process::Command;
@@ -82,11 +96,18 @@ pub fn run_discovery(root: &Path) -> Result<DiscoveryReport, Box<dyn std::error:
     })
 }
 
-fn generate_tasks(root: &Path, high_signal: &[HighSignalFile], features: &[SuggestedFeature]) -> Vec<DiscoveryTask> {
+fn generate_tasks(
+    root: &Path,
+    high_signal: &[HighSignalFile],
+    features: &[SuggestedFeature],
+) -> Vec<DiscoveryTask> {
     let mut tasks = Vec::new();
 
     // 1. Documentation Task
-    if let Some(readme) = high_signal.iter().find(|f| f.path == "README.md" || f.path == "README") {
+    if let Some(readme) = high_signal
+        .iter()
+        .find(|f| f.path == "README.md" || f.path == "README")
+    {
         tasks.push(DiscoveryTask {
             id: "read_readme".to_string(),
             prompt: "The project has a README.md. Read it to understand the core goals and onboarding flow.".to_string(),
@@ -110,7 +131,12 @@ fn generate_tasks(root: &Path, high_signal: &[HighSignalFile], features: &[Sugge
             let mut high_signal_commits = Vec::new();
             for line in log.lines() {
                 let lower = line.to_lowercase();
-                if ["refactor", "arch", "decision", "change", "major", "move", "fix"].iter().any(|k| lower.contains(k)) {
+                if [
+                    "refactor", "arch", "decision", "change", "major", "move", "fix",
+                ]
+                .iter()
+                .any(|k| lower.contains(k))
+                {
                     high_signal_commits.push(line.to_string());
                 }
             }
@@ -130,7 +156,11 @@ fn generate_tasks(root: &Path, high_signal: &[HighSignalFile], features: &[Sugge
 
     // 3. Feature Investigation
     if !features.is_empty() {
-        let feature_names: Vec<String> = features.iter().take(3).map(|f| f.suggested_name.clone()).collect();
+        let feature_names: Vec<String> = features
+            .iter()
+            .take(3)
+            .map(|f| f.suggested_name.clone())
+            .collect();
         tasks.push(DiscoveryTask {
             id: "feature_deep_dive".to_string(),
             prompt: format!(
@@ -170,16 +200,25 @@ pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>
         let json = serde_json::to_string_pretty(&report)?;
         println!("{}", json);
 
-        eprintln!("\nDiscovered {} files in {}", report.total_files, report.root);
-        eprintln!("Project: {} (v{})", report.metadata.name, report.metadata.version.as_deref().unwrap_or("unknown"));
+        eprintln!(
+            "\nDiscovered {} files in {}",
+            report.total_files, report.root
+        );
+        eprintln!(
+            "Project: {} (v{})",
+            report.metadata.name,
+            report.metadata.version.as_deref().unwrap_or("unknown")
+        );
         eprintln!("Languages: {}", format_language_summary(&report.languages));
         eprintln!("High-signal files: {}", report.high_signal_files.len());
         eprintln!("Suggested features: {}", report.potential_features.len());
-        
+
         if !is_initialized() {
             eprintln!("\nTip: Run 'legend init' or 'legend discover --apply' to start tracking this project.");
         } else {
-            eprintln!("\nTip: Run 'legend discover --apply' to ingest this context into Legend's memory.");
+            eprintln!(
+                "\nTip: Run 'legend discover --apply' to ingest this context into Legend's memory."
+            );
         }
     }
 
@@ -187,15 +226,28 @@ pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>
 }
 
 /// Ingest high-signal context into Legend's memory and state.
-fn onboard_project(root: &Path, report: &DiscoveryReport) -> Result<(), Box<dyn std::error::Error>> {
+fn onboard_project(
+    root: &Path,
+    report: &DiscoveryReport,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut memory = MemoryState::load_or_default()?;
-    
+
     // 1. Ingest metadata
-    let mut metadata_text = format!("ONBOARDING: Discovery report for {}\n", report.metadata.name);
-    if let Some(v) = &report.metadata.version { metadata_text.push_str(&format!("Version: {}\n", v)); }
-    if let Some(d) = &report.metadata.description { metadata_text.push_str(&format!("Description: {}\n", d)); }
+    let mut metadata_text = format!(
+        "ONBOARDING: Discovery report for {}\n",
+        report.metadata.name
+    );
+    if let Some(v) = &report.metadata.version {
+        metadata_text.push_str(&format!("Version: {}\n", v));
+    }
+    if let Some(d) = &report.metadata.description {
+        metadata_text.push_str(&format!("Description: {}\n", d));
+    }
     if !report.metadata.tech_stack.is_empty() {
-        metadata_text.push_str(&format!("Tech Stack: {}\n", report.metadata.tech_stack.join(", ")));
+        metadata_text.push_str(&format!(
+            "Tech Stack: {}\n",
+            report.metadata.tech_stack.join(", ")
+        ));
     }
     memory.tick(&metadata_text);
 
@@ -205,7 +257,10 @@ fn onboard_project(root: &Path, report: &DiscoveryReport) -> Result<(), Box<dyn 
             let full_path = root.join(&file.path);
             if let Ok(content) = fs::read_to_string(&full_path) {
                 eprintln!("  Ingesting {}...", file.path);
-                let tick_content = format!("CONTEXT: High-signal file '{}' ({})\n\n{}", file.path, file.kind, content);
+                let tick_content = format!(
+                    "CONTEXT: High-signal file '{}' ({})\n\n{}",
+                    file.path, file.kind, content
+                );
                 memory.tick(&tick_content);
             }
         }
@@ -215,7 +270,10 @@ fn onboard_project(root: &Path, report: &DiscoveryReport) -> Result<(), Box<dyn 
     if !report.tasks.is_empty() {
         let mut tasks_text = String::from("ONBOARDING TASKS: The following investigations are recommended to complete the mental model:\n");
         for task in &report.tasks {
-            tasks_text.push_str(&format!("- [{}] {}. Tool hint: {}\n", task.id, task.prompt, task.tool_hint));
+            tasks_text.push_str(&format!(
+                "- [{}] {}. Tool hint: {}\n",
+                task.id, task.prompt, task.tool_hint
+            ));
         }
         memory.tick(&tasks_text);
     }
@@ -226,15 +284,22 @@ fn onboard_project(root: &Path, report: &DiscoveryReport) -> Result<(), Box<dyn 
     if is_initialized() {
         let mut state = load_state()?;
         state.project_name = report.metadata.name.clone();
-        
+
         for suggested in &report.potential_features {
             // Only add if not already present
-            if !state.features.iter().any(|f| f.id == suggested.suggested_id) {
+            if !state
+                .features
+                .iter()
+                .any(|f| f.id == suggested.suggested_id)
+            {
                 let mut feature = Feature::new(
                     suggested.suggested_id.clone(),
                     suggested.suggested_name.clone(),
                     suggested.suggested_domain.clone(),
-                    format!("Auto-discovered from project structure ({} files)", suggested.files.len()),
+                    format!(
+                        "Auto-discovered from project structure ({} files)",
+                        suggested.files.len()
+                    ),
                 );
                 feature.files_involved = suggested.files.clone();
                 state.add_feature(feature);
@@ -252,9 +317,13 @@ fn scan_high_signal(root: &Path, all_files: &[PathBuf]) -> Vec<HighSignalFile> {
     for path in all_files {
         let rel_path = path.strip_prefix(root).unwrap_or(path);
         let filename = rel_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        
+
         // Root docs
-        if rel_path.parent().map(|p| p.as_os_str().is_empty()).unwrap_or(true) {
+        if rel_path
+            .parent()
+            .map(|p| p.as_os_str().is_empty())
+            .unwrap_or(true)
+        {
             if DOC_FILES.contains(&filename) {
                 high_signal.push(HighSignalFile {
                     path: rel_path.to_string_lossy().to_string(),
@@ -295,16 +364,31 @@ fn scan_high_signal(root: &Path, all_files: &[PathBuf]) -> Vec<HighSignalFile> {
 }
 
 fn is_manifest(filename: &str) -> bool {
-    matches!(filename, "Cargo.toml" | "package.json" | "go.mod" | "requirements.txt" | "pyproject.toml" | "Gemfile" | "Makefile")
+    matches!(
+        filename,
+        "Cargo.toml"
+            | "package.json"
+            | "go.mod"
+            | "requirements.txt"
+            | "pyproject.toml"
+            | "Gemfile"
+            | "Makefile"
+    )
 }
 
 fn is_entry_point(filename: &str) -> bool {
-    matches!(filename, "main.rs" | "lib.rs" | "main.py" | "app.py" | "index.ts" | "index.js" | "main.go")
+    matches!(
+        filename,
+        "main.rs" | "lib.rs" | "main.py" | "app.py" | "index.ts" | "index.js" | "main.go"
+    )
 }
 
 fn extract_metadata(root: &Path, high_signal: &[HighSignalFile]) -> ProjectMetadata {
     let mut meta = ProjectMetadata::default();
-    meta.name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown Project".to_string());
+    meta.name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Unknown Project".to_string());
 
     for file in high_signal {
         if file.kind == "Manifest" {
@@ -336,11 +420,33 @@ fn parse_cargo_toml(content: &str, meta: &mut ProjectMetadata) {
         }
         if in_package {
             if trimmed.starts_with("name =") {
-                meta.name = trimmed.split('=').nth(1).unwrap_or("").trim().trim_matches('"').to_string();
+                meta.name = trimmed
+                    .split('=')
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
             } else if trimmed.starts_with("version =") {
-                meta.version = Some(trimmed.split('=').nth(1).unwrap_or("").trim().trim_matches('"').to_string());
+                meta.version = Some(
+                    trimmed
+                        .split('=')
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim()
+                        .trim_matches('"')
+                        .to_string(),
+                );
             } else if trimmed.starts_with("description =") {
-                meta.description = Some(trimmed.split('=').nth(1).unwrap_or("").trim().trim_matches('"').to_string());
+                meta.description = Some(
+                    trimmed
+                        .split('=')
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim()
+                        .trim_matches('"')
+                        .to_string(),
+                );
             }
         }
     }
@@ -349,9 +455,15 @@ fn parse_cargo_toml(content: &str, meta: &mut ProjectMetadata) {
 
 fn parse_package_json(content: &str, meta: &mut ProjectMetadata) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
-        if let Some(name) = v["name"].as_str() { meta.name = name.to_string(); }
-        if let Some(version) = v["version"].as_str() { meta.version = Some(version.to_string()); }
-        if let Some(desc) = v["description"].as_str() { meta.description = Some(desc.to_string()); }
+        if let Some(name) = v["name"].as_str() {
+            meta.name = name.to_string();
+        }
+        if let Some(version) = v["version"].as_str() {
+            meta.version = Some(version.to_string());
+        }
+        if let Some(desc) = v["description"].as_str() {
+            meta.description = Some(desc.to_string());
+        }
     }
     meta.tech_stack.push("JavaScript/TypeScript".to_string());
 }
@@ -369,12 +481,16 @@ fn walk_directory(
 
         if path.is_dir() {
             let name = entry.file_name();
-            if !SKIP_DIRS.contains(&name.to_string_lossy().as_ref()) && !name.to_string_lossy().starts_with('.') {
+            if !SKIP_DIRS.contains(&name.to_string_lossy().as_ref())
+                && !name.to_string_lossy().starts_with('.')
+            {
                 walk_directory(root, &path, languages, files)?;
             }
         } else if path.is_file() {
             if let Some(ext) = path.extension() {
-                *languages.entry(ext.to_string_lossy().to_lowercase()).or_insert(0) += 1;
+                *languages
+                    .entry(ext.to_string_lossy().to_lowercase())
+                    .or_insert(0) += 1;
             }
             files.push(path);
         }
@@ -411,7 +527,11 @@ fn detect_features(root: &Path, all_files: &[PathBuf]) -> Vec<SuggestedFeature> 
             let dir_files: Vec<String> = all_files
                 .iter()
                 .filter(|f| f.starts_with(&path))
-                .filter_map(|f| f.strip_prefix(root).ok().map(|p| p.to_string_lossy().to_string()))
+                .filter_map(|f| {
+                    f.strip_prefix(root)
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                })
                 .collect();
 
             if dir_files.len() < 2 {
@@ -434,13 +554,25 @@ fn detect_features(root: &Path, all_files: &[PathBuf]) -> Vec<SuggestedFeature> 
 /// Map a directory name to a domain category (security, api, storage, ui, testing).
 fn infer_domain(dir_name: &str) -> String {
     let name = dir_name.to_lowercase();
-    if ["auth", "login", "session"].iter().any(|k| name.contains(k)) {
+    if ["auth", "login", "session"]
+        .iter()
+        .any(|k| name.contains(k))
+    {
         "security".to_string()
-    } else if ["api", "routes", "endpoints"].iter().any(|k| name.contains(k)) {
+    } else if ["api", "routes", "endpoints"]
+        .iter()
+        .any(|k| name.contains(k))
+    {
         "api".to_string()
-    } else if ["db", "storage", "models", "schema"].iter().any(|k| name.contains(k)) {
+    } else if ["db", "storage", "models", "schema"]
+        .iter()
+        .any(|k| name.contains(k))
+    {
         "storage".to_string()
-    } else if ["ui", "components", "views", "pages"].iter().any(|k| name.contains(k)) {
+    } else if ["ui", "components", "views", "pages"]
+        .iter()
+        .any(|k| name.contains(k))
+    {
         "ui".to_string()
     } else if ["test", "spec"].iter().any(|k| name.contains(k)) {
         "testing".to_string()
@@ -473,7 +605,12 @@ fn format_language_summary(languages: &HashMap<String, usize>) -> String {
     }
     let mut sorted: Vec<_> = languages.iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(a.1));
-    sorted.iter().take(5).map(|(ext, count)| format!("{} ({})", ext, count)).collect::<Vec<_>>().join(", ")
+    sorted
+        .iter()
+        .take(5)
+        .map(|(ext, count)| format!("{} ({})", ext, count))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]

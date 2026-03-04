@@ -53,15 +53,19 @@ fn handle_prune_noise() -> Result<(), Box<dyn std::error::Error>> {
         .long_term
         .nodes
         .iter()
-        .filter(|(_, n)| {
-            HOOK_LABELS.contains(&n.label.as_str()) || is_stopword(&n.label)
-        })
+        .filter(|(_, n)| HOOK_LABELS.contains(&n.label.as_str()) || is_stopword(&n.label))
         .map(|(id, _)| *id)
         .collect();
 
     let l3_before = memory.long_term.nodes.len();
-    memory.long_term.nodes.retain(|id, _| !noise_ids.contains(id));
-    memory.long_term.index.retain(|_, id| !noise_ids.contains(id));
+    memory
+        .long_term
+        .nodes
+        .retain(|id, _| !noise_ids.contains(id));
+    memory
+        .long_term
+        .index
+        .retain(|_, id| !noise_ids.contains(id));
     let l3_removed = l3_before - memory.long_term.nodes.len();
 
     // --- L3 edges: drop any edge touching a removed node ---
