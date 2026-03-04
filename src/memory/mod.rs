@@ -594,9 +594,9 @@ impl MemoryState {
                         eprintln!("Backup saved to {}", backup);
                     } else {
                         eprintln!("Warning: failed to load memory store ({}), but a backup already exists.", err);
-                        // If load fails and backup exists, we are likely in a loop.
-                        // We should probably just start fresh to allow the session to proceed.
                         eprintln!("Starting with a fresh memory store to avoid corruption loop.");
+                        // Remove the unloadable memory file so next save writes a clean one
+                        let _ = fs::remove_file(MEMORY_FILE);
                     }
                     Ok(Self::default())
                 }
@@ -2149,7 +2149,15 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
     }
 
     let compressed = fs::read(CORRUPT_FILE)?;
-    let serialized = lz4::block::decompress(&compressed, None)?;
+    let serialized = match lz4::block::decompress(&compressed, None) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("  Backup file is unrecoverable (decompress failed: {}). Archiving.", e);
+            let archive = format!("{}.unrecoverable", CORRUPT_FILE);
+            let _ = fs::rename(CORRUPT_FILE, &archive);
+            return Ok(None);
+        }
+    };
 
     // Try V3 first (almost current, but old entries), then V2, then V1.
     let new_state = if let Ok(v3) = bincode::deserialize::<MemoryStateV3>(&serialized) {
@@ -2212,32 +2220,39 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             last_synced_sha: None,
         }
     } else {
-        let old = bincode::deserialize::<MemoryStateV1>(&serialized)?;
-        MemoryState {
-            config: old.config,
-            immediate: old.immediate,
-            short_term: old.short_term.into_iter().map(|e| ShortTermEntry {
-                id: e.id,
-                text: e.text,
-                summary: e.summary,
-                embedding: e.embedding,
-                last_access: e.last_access,
-                usage: e.usage,
-                salience: e.salience,
-                reconsolidation_count: e.reconsolidation_count,
-                labile_until: e.labile_until,
-                refs: old_refs_to_current(e.refs),
-                gradient_sq_sum: 0.0,
-                density: 0.0,
-            }).collect(),
-            long_term: old.long_term,
-            clock: old.clock,
-            next_id: old.next_id,
-            session_log: old.session_log,
-            current_task: None,
-            ticks_since_consolidation: 0,
-            last_retrieved_ids: Vec::new(),
-            last_synced_sha: None,
+        match bincode::deserialize::<MemoryStateV1>(&serialized) {
+            Ok(old) => MemoryState {
+                config: old.config,
+                immediate: old.immediate,
+                short_term: old.short_term.into_iter().map(|e| ShortTermEntry {
+                    id: e.id,
+                    text: e.text,
+                    summary: e.summary,
+                    embedding: e.embedding,
+                    last_access: e.last_access,
+                    usage: e.usage,
+                    salience: e.salience,
+                    reconsolidation_count: e.reconsolidation_count,
+                    labile_until: e.labile_until,
+                    refs: old_refs_to_current(e.refs),
+                    gradient_sq_sum: 0.0,
+                    density: 0.0,
+                }).collect(),
+                long_term: old.long_term,
+                clock: old.clock,
+                next_id: old.next_id,
+                session_log: old.session_log,
+                current_task: None,
+                ticks_since_consolidation: 0,
+                last_retrieved_ids: Vec::new(),
+                last_synced_sha: None,
+            },
+            Err(_) => {
+                eprintln!("  Backup file is unrecoverable (no format matched). Archiving.");
+                let archive = format!("{}.unrecoverable", CORRUPT_FILE);
+                let _ = fs::rename(CORRUPT_FILE, &archive);
+                return Ok(None);
+            }
         }
     };
 
