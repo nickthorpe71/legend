@@ -36,9 +36,14 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
             ("added", "Action"), ("adding", "Action"), ("removed", "Action"), 
             ("removing", "Action"), ("tested", "Action"), ("testing", "Action"),
             ("debugged", "Action"), ("debugging", "Action"), ("optimized", "Action"),
+            ("migrated", "Action"), ("migrating", "Action"), ("deployed", "Action"),
+            ("deploying", "Action"), ("validated", "Action"), ("validating", "Action"),
+            ("investigated", "Action"), ("investigating", "Action"), ("documented", "Action"),
+            ("documenting", "Action"), ("reverted", "Action"), ("reverting", "Action"),
+            ("rolled back", "Action"), ("rollback", "Action"),
         ];
         for (verb, kind) in actions {
-            if lower.starts_with(verb) || lower.contains(&format!(". {}", verb)) {
+            if sentence_contains_phrase(&lower, verb) {
                 entities.push(ExtractedEntity {
                     label: verb.to_string(),
                     kind: kind.to_string(),
@@ -50,14 +55,32 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         // 3. Environment patterns
         let envs = [
             "wsl", "docker", "production", "staging", "ubuntu", "linux", "windows", 
-            "macos", "s3", "github", "aws", "localhost", "browser", "cli",
+            "macos", "s3", "github", "aws", "localhost", "browser", "cli", "kubernetes",
+            "k8s", "gcp", "azure", "devcontainer", "vm", "ci", "cd", "github actions",
         ];
         for env in envs {
-            if lower.contains(env) {
+            if sentence_contains_phrase(&lower, env) {
                 // Find original casing if possible, or use the env string
                 entities.push(ExtractedEntity {
                     label: env.to_string(),
                     kind: "Environment".to_string(),
+                    context: "mentions".to_string(),
+                });
+            }
+        }
+
+        // 3b. High-signal technology/tool patterns (constrained dictionary)
+        let tools = [
+            "postgres", "postgresql", "redis", "kafka", "grpc", "graphql",
+            "react", "nextjs", "tailwind", "vite", "webpack", "jest", "pytest",
+            "tokio", "actix", "axum", "fastapi", "django", "flask",
+            "terraform", "ansible", "prometheus", "grafana", "nginx",
+        ];
+        for tool in tools {
+            if sentence_contains_phrase(&lower, tool) {
+                entities.push(ExtractedEntity {
+                    label: tool.to_string(),
+                    kind: "Tool".to_string(),
                     context: "mentions".to_string(),
                 });
             }
@@ -180,14 +203,136 @@ fn extract_identifiers(text: &str) -> Vec<String> {
     }
 
     let mut unique = HashMap::new();
-    for token in tokens.into_iter().filter(|t| {
-        t.len() > 2
-            && !is_stopword(t)
-            && !t.chars().all(|c| c.is_ascii_digit()) // filter pure numbers
-    }) {
-        unique.entry(token).or_insert(());
+    for token in tokens {
+        for variant in expand_identifier_variants(&token) {
+            if variant.len() > 2
+                && !is_stopword(&variant)
+                && !variant.chars().all(|c| c.is_ascii_digit())
+            {
+                unique.entry(variant).or_insert(());
+            }
+        }
     }
     unique.into_keys().collect()
+}
+
+/// Normalize identifier tokens with constrained variants:
+/// original token + snake/camel components + simple singular form.
+fn expand_identifier_variants(token: &str) -> Vec<String> {
+    let mut out: HashMap<String, ()> = HashMap::new();
+    out.insert(token.to_string(), ());
+
+    for part in split_identifier_parts(token) {
+        out.insert(part.clone(), ());
+        let lower_part = part.to_ascii_lowercase();
+        out.insert(lower_part.clone(), ());
+        if let Some(singular) = singularize(&lower_part) {
+            out.insert(singular, ());
+        }
+    }
+
+    let lower = token.to_ascii_lowercase();
+    out.insert(lower.clone(), ());
+    if let Some(singular) = singularize(&lower) {
+        out.insert(singular, ());
+    }
+
+    out.into_keys().collect()
+}
+
+fn split_identifier_parts(token: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+
+    for raw in token.split(['_', '-']) {
+        if raw.is_empty() {
+            continue;
+        }
+        parts.push(raw.to_string());
+        parts.extend(split_camel_case(raw));
+    }
+
+    parts
+}
+
+fn split_camel_case(input: &str) -> Vec<String> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = input.chars().collect();
+
+    for (idx, &ch) in chars.iter().enumerate() {
+        let prev = if idx > 0 { Some(chars[idx - 1]) } else { None };
+        let next = chars.get(idx + 1).copied();
+        let is_boundary = match (prev, next) {
+            (Some(p), Some(n)) => {
+                (p.is_ascii_lowercase() && ch.is_ascii_uppercase())
+                    || (p.is_ascii_alphabetic() && ch.is_ascii_digit())
+                    || (p.is_ascii_digit() && ch.is_ascii_alphabetic())
+                    || (p.is_ascii_uppercase() && ch.is_ascii_uppercase() && n.is_ascii_lowercase())
+            }
+            (Some(p), None) => {
+                (p.is_ascii_lowercase() && ch.is_ascii_uppercase())
+                    || (p.is_ascii_alphabetic() && ch.is_ascii_digit())
+                    || (p.is_ascii_digit() && ch.is_ascii_alphabetic())
+            }
+            _ => false,
+        };
+
+        if is_boundary && !current.is_empty() {
+            parts.push(current.clone());
+            current.clear();
+        }
+        current.push(ch);
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
+}
+
+fn singularize(token: &str) -> Option<String> {
+    if token.len() <= 3 {
+        return None;
+    }
+
+    if token.ends_with("ies") && token.len() > 4 {
+        return Some(format!("{}y", &token[..token.len() - 3]));
+    }
+    if token.ends_with("es") && token.len() > 4 {
+        let stem = &token[..token.len() - 2];
+        if !stem.ends_with('s') {
+            return Some(stem.to_string());
+        }
+    }
+    if token.ends_with('s') && !token.ends_with("ss") {
+        return Some(token[..token.len() - 1].to_string());
+    }
+
+    None
+}
+
+/// Phrase match with lightweight sentence/word boundaries.
+fn sentence_contains_phrase(lower_text: &str, phrase: &str) -> bool {
+    if lower_text.starts_with(phrase) {
+        return true;
+    }
+
+    let patterns = [
+        format!(". {}", phrase),
+        format!("! {}", phrase),
+        format!("? {}", phrase),
+        format!(", {}", phrase),
+        format!("; {}", phrase),
+        format!(": {}", phrase),
+        format!(" {}", phrase),
+    ];
+
+    patterns.iter().any(|p| lower_text.contains(p))
 }
 
 /// True if the token looks like a valid identifier (starts with letter or underscore).
@@ -313,6 +458,28 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_expanded_actions_and_envs() {
+        let entities = extract_entities(
+            "Investigating deploy failures in kubernetes. We rolled back in production.",
+        );
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+        assert!(labels.contains(&"investigating"), "got: {:?}", labels);
+        assert!(labels.contains(&"rolled back"), "got: {:?}", labels);
+        assert!(labels.contains(&"kubernetes"), "got: {:?}", labels);
+        assert!(labels.contains(&"production"), "got: {:?}", labels);
+    }
+
+    #[test]
+    fn test_extract_tools_dictionary() {
+        let entities = extract_entities("We moved services to graphql + redis and added prometheus dashboards.");
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+        assert!(labels.contains(&"graphql"), "got: {:?}", labels);
+        assert!(labels.contains(&"redis"), "got: {:?}", labels);
+        assert!(labels.contains(&"prometheus"), "got: {:?}", labels);
+        assert_eq!(entities.iter().find(|e| e.label == "graphql").unwrap().kind, "Tool");
+    }
+
+    #[test]
     fn test_extract_assignment_pattern() {
         let entities = extract_entities("my_config_value = 42");
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
@@ -335,5 +502,17 @@ mod tests {
         assert!(labels.contains(&"IService"));
         assert!(labels.contains(&"com.legend"));
         assert!(labels.contains(&"X"));
+    }
+
+    #[test]
+    fn test_identifier_normalization_splits_and_singularizes() {
+        let ids = extract_identifiers("DataProcessors parse_http_requests and UserIDs");
+        assert!(ids.contains(&"DataProcessors".to_string()), "got: {:?}", ids);
+        assert!(ids.contains(&"dataProcessor".to_string()) || ids.contains(&"DataProcessor".to_string()) || ids.contains(&"dataprocessor".to_string()), "got: {:?}", ids);
+        assert!(ids.contains(&"parse".to_string()), "got: {:?}", ids);
+        assert!(ids.contains(&"http".to_string()), "got: {:?}", ids);
+        assert!(ids.contains(&"requests".to_string()), "got: {:?}", ids);
+        assert!(ids.contains(&"request".to_string()), "got: {:?}", ids);
+        assert!(ids.contains(&"user".to_string()) || ids.contains(&"User".to_string()), "got: {:?}", ids);
     }
 }
