@@ -29,6 +29,8 @@ Finally, retrieval should be both semantic and relational. Semantic similarity c
 ## 3. System Architecture
 Legend persists memory state in `.legend/memory.lz4` as a serialized Rust `MemoryState`. All memory operations are exposed through the `legend memory` command family and are designed to operate locally without network calls. The implementation uses deterministic algorithms and bounded data structures to maintain predictable runtime behavior.
 
+Legend also includes an LLM-orchestration surface (`legend llm`) for selective augmentation tasks such as entity extraction and cluster summarization. The memory engine remains local and deterministic: it creates typed tasks with explicit schemas and acceptance rules, while model execution is performed by the calling agent runtime. Returned outputs are applied only after validation (shape, confidence, and safety checks), preserving deterministic fallback when augmented output is low quality.
+
 The architecture is hierarchical. Layer 1 is an immediate FIFO buffer (`VecDeque<String>`) with capacity 256. It stores raw recent text with minimal interpretation, preserving recency at low overhead. Layer 2 is a short-term semantic store (`Vec<ShortTermEntry>`) with capacity 1024. Each entry includes text, summary, 256-dimensional embedding, salience, usage count, access metadata, reconsolidation metadata, optional source references, and adaptive reinforcement state. Layer 3 is a long-term associative graph with up to 2048 nodes and 8192 edges, where nodes represent extracted entities and edges represent typed relationships reinforced over time.
 
 The architecture is unified by a single ingestion primitive: the tick. Every significant event can be recorded as a tick, and each tick updates all three layers through a deterministic pipeline. The same state object tracks a monotonic clock, current task context, recent retrieval IDs, and a Git synchronization anchor (`last_synced_sha`) for cold-start reconciliation.
@@ -71,6 +73,8 @@ Consolidation runs by clustering short-term entries at similarity `>= theta_low`
 
 Consolidation is suggested after fifteen non-passive ticks, reflecting an empirical balance: too frequent consolidation over-compresses active work; too infrequent consolidation leaves short-term memory fragmented.
 
+In operational use, `memory tick` can emit LLM triggers when text is long and weakly anchored by high-signal entities. This path is intentionally guarded: duplicate suppression (text fingerprint + task kind), per-kind pending limits, and tick-gap rate limits prevent queue amplification under repetitive low-signal input.
+
 ### 4.8 Boundedness and Stability Guarantees
 Legend enforces bounded memory with explicit capacities and pruning functions. Short-term entries are removed when their composite survival score drops below threshold; graph nodes/edges are pruned by decayed weight and hard-cap limits. Periodic salience renormalization and graph weight normalization prevent reinforcement blow-up. Together, these controls ensure that learning dynamics remain stable over long sessions and that retrieval quality does not collapse under accumulation pressure.
 
@@ -89,7 +93,7 @@ A major failure mode of agent workflows appears when humans modify the repositor
 ## 6. Implementation Integrity
 Legend’s persistence path emphasizes robustness. Memory is serialized with bincode, compressed with LZ4, and written atomically via temporary file and rename. Corrupt stores are quarantined to a `.corrupt` backup path, and migration fallbacks are implemented to avoid repeated startup loops when historical schema variants are encountered. These guarantees matter because memory infrastructure that fails under normal interruption patterns cannot support longitudinal cognition in practice.
 
-The system also exposes structured events (`tick`, `query`, `reinforce`, `consolidate`, `start`) through `.legend/events.jsonl`, enabling dashboard observability and session-quality introspection without external telemetry services.
+The system also exposes structured events (`tick`, `query`, `reinforce`, `consolidate`, `start`) through `.legend/events.jsonl`, enabling dashboard observability and session-quality introspection without external telemetry services. LLM task state is persisted separately so active orchestration remains bounded: pending tasks are kept in `.legend/llm_tasks.json`, while completed tasks are archived to compressed storage (`.legend/llm_tasks_archive.lz4`).
 
 ## 7. Operational Roles: Agent and Human
 Legend is agent-operated by design. The expected steady-state loop is autonomous at the memory layer: the LLM starts each session with `memory start`, writes high-signal events through `memory tick`, and retrieves context with `memory query` before entering unfamiliar parts of the codebase. In this role, the model is both producer and consumer of memory, and the quality of longitudinal behavior depends on the consistency of that loop.
@@ -150,7 +154,7 @@ The current evidence base has limits. Some headline outcomes are estimator-deriv
 Reliability status is strong but incomplete. On March 2, 2026, `cargo test -q` in the Legend codebase ran 95 tests with 94 passing and 1 failing (`storage::tests::test_load_nonexistent`). This does not invalidate the architecture, but it sets a clear boundary on current reliability claims.
 
 ## 13. Limitations
-Legend remains a heuristic, bounded, single-process system. Short-term retrieval is linear scan over capped entries rather than approximate nearest-neighbor indexing. Entity extraction is pattern-driven rather than parser-complete AST analysis, and salience scoring uses rule-based priors rather than learned objective functions. Consolidation is extractive and can compress nuanced arguments too aggressively in some cases. Finally, Legend currently optimizes for local single-agent workflows rather than distributed multi-agent consensus memory.
+Legend remains a heuristic, bounded, single-process system. Short-term retrieval is linear scan over capped entries rather than approximate nearest-neighbor indexing. Entity extraction is pattern-driven rather than parser-complete AST analysis, and salience scoring uses rule-based priors rather than learned objective functions. Consolidation is extractive and can compress nuanced arguments too aggressively in some cases. LLM augmentation is likewise bounded by design: triggering and task generation are integrated, but external model execution and result submission remain orchestrator-dependent. Finally, Legend currently optimizes for local single-agent workflows rather than distributed multi-agent consensus memory.
 
 These are acknowledged constraints, not hidden defects, and they define a clear research agenda.
 

@@ -8,6 +8,7 @@ use std::io::{self, Read};
 use std::path::Path;
 
 const LLM_TASKS_PATH: &str = ".legend/llm_tasks.json";
+const LLM_TASKS_ARCHIVE_PATH: &str = ".legend/llm_tasks_archive.lz4";
 const MIN_ENTITY_TASK_CONFIDENCE: f32 = 0.65;
 const MAX_ENTITY_APPLY: usize = 50;
 const AUTO_MAX_PENDING_PER_KIND: usize = 3;
@@ -437,6 +438,8 @@ fn handle_apply(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "status": "rejected",
             "reason": validation.reason,
         }));
+        let completed = tasks.remove(task_idx);
+        archive_tasks(&[completed])?;
         save_tasks(&tasks)?;
 
         println!(
@@ -487,6 +490,8 @@ fn handle_apply(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     tasks[task_idx].status = TaskStatus::Applied;
     tasks[task_idx].apply_summary = Some(apply_summary.clone());
+    let completed = tasks.remove(task_idx);
+    archive_tasks(&[completed])?;
     save_tasks(&tasks)?;
 
     println!(
@@ -536,7 +541,13 @@ fn handle_show(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     let task_id = &args[0];
     let tasks = load_tasks()?;
-    let Some(task) = tasks.into_iter().find(|t| t.id == *task_id) else {
+    if let Some(task) = tasks.into_iter().find(|t| t.id == *task_id) {
+        println!("{}", serde_json::to_string(&task)?);
+        return Ok(());
+    }
+
+    let archived = load_archived_tasks()?;
+    let Some(task) = archived.into_iter().find(|t| t.id == *task_id) else {
         return Err(format!("Task '{}' not found", task_id).into());
     };
     println!("{}", serde_json::to_string(&task)?);
@@ -952,13 +963,64 @@ fn load_tasks() -> Result<Vec<LlmTaskRecord>, Box<dyn std::error::Error>> {
     }
     let tasks = serde_json::from_str::<Vec<LlmTaskRecord>>(&content)
         .map_err(|e| format!("Failed to parse {}: {}", LLM_TASKS_PATH, e))?;
-    Ok(tasks)
+    Ok(tasks
+        .into_iter()
+        .filter(|t| t.status == TaskStatus::Pending)
+        .collect())
 }
 
 fn save_tasks(tasks: &[LlmTaskRecord]) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(".legend")?;
-    let content = serde_json::to_string_pretty(tasks)?;
+    let pending: Vec<&LlmTaskRecord> = tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Pending)
+        .collect();
+    let content = serde_json::to_string_pretty(&pending)?;
     std::fs::write(LLM_TASKS_PATH, content)?;
+    Ok(())
+}
+
+fn load_archived_tasks() -> Result<Vec<LlmTaskRecord>, Box<dyn std::error::Error>> {
+    if !Path::new(LLM_TASKS_ARCHIVE_PATH).exists() {
+        return Ok(Vec::new());
+    }
+    let compressed = std::fs::read(LLM_TASKS_ARCHIVE_PATH)?;
+    if compressed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let decompressed = lz4::block::decompress(&compressed, None)
+        .map_err(|e| format!("Failed to decompress {}: {}", LLM_TASKS_ARCHIVE_PATH, e))?;
+    let text = String::from_utf8(decompressed)
+        .map_err(|e| format!("Invalid UTF-8 in {}: {}", LLM_TASKS_ARCHIVE_PATH, e))?;
+
+    let mut out = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let task: LlmTaskRecord = serde_json::from_str(line)
+            .map_err(|e| format!("Failed to parse archived task line: {}", e))?;
+        out.push(task);
+    }
+    Ok(out)
+}
+
+fn archive_tasks(tasks: &[LlmTaskRecord]) -> Result<(), Box<dyn std::error::Error>> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+
+    let mut archived = load_archived_tasks()?;
+    archived.extend(tasks.iter().cloned());
+
+    let mut text = String::new();
+    for task in archived {
+        text.push_str(&serde_json::to_string(&task)?);
+        text.push('\n');
+    }
+
+    std::fs::create_dir_all(".legend")?;
+    let compressed = lz4::block::compress(text.as_bytes(), None, true)
+        .map_err(|e| format!("Failed to compress archive: {}", e))?;
+    std::fs::write(LLM_TASKS_ARCHIVE_PATH, compressed)?;
     Ok(())
 }
 
@@ -979,7 +1041,7 @@ fn print_llm_help() {
     println!("    options: --text <text> | --input-json <json> | --source <label>");
     println!("  legend llm apply <task_id> [--result <json>]  Validate/apply a model result");
     println!("  legend llm list [n]                Show recent tasks (default 20)");
-    println!("  legend llm show <task_id>          Show full task record");
+    println!("  legend llm show <task_id>          Show full task record (pending or archived)");
 }
 
 #[cfg(test)]

@@ -1,1 +1,2 @@
+.legend/*.lz4 merge=legend
 models/gliner2-int8.bin filter=lfs diff=lfs merge=lfs -text
