@@ -1810,6 +1810,41 @@ impl MemoryState {
         }
     }
 
+    /// Merge knowledge from another MemoryState by replaying its unique session log entries.
+    /// This is an idempotent "smart merge" that avoids ID collisions by organic replay.
+    pub fn merge_from_log(&mut self, other: MemoryState) {
+        // Find session log entries in 'other' that are NOT in 'self'
+        let our_texts: HashSet<&str> = self.session_log.iter().map(|s| s.text.as_str()).collect();
+
+        let mut to_replay = Vec::new();
+        for other_entry in other.session_log {
+            if !our_texts.contains(other_entry.text.as_str()) {
+                to_replay.push(other_entry);
+            }
+        }
+
+        // Sort by timestamp to preserve order
+        to_replay.sort_by_key(|e| e.timestamp);
+
+        if !to_replay.is_empty() {
+            eprintln!("[LEGEND] Smart-merging {} new session memories...", to_replay.len());
+            for entry in to_replay {
+                // Passive tick to avoid polluting the session log we just used for diffing,
+                // and to avoid recursive auto-consolidations during the merge itself.
+                self.tick_passive(&entry.text);
+            }
+        }
+
+        // Merge task if ours is empty
+        if self.current_task.is_none() {
+            self.current_task = other.current_task;
+        }
+
+        // Keep the later clock to ensure future entries have unique IDs
+        self.clock = self.clock.max(other.clock);
+        self.next_id = self.next_id.max(other.next_id);
+    }
+
     /// Clear the current task.
     pub fn clear_task(&mut self) {
         self.current_task = None;
@@ -2214,8 +2249,12 @@ pub fn reset_memory() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn load_memory() -> Result<MemoryState, Box<dyn std::error::Error>> {
+    load_memory_from_path(MEMORY_FILE)
+}
+
+pub fn load_memory_from_path<P: AsRef<Path>>(path: P) -> Result<MemoryState, Box<dyn std::error::Error>> {
     let compressed =
-        fs::read(MEMORY_FILE).map_err(|e| format!("Failed to read memory file: {}", e))?;
+        fs::read(path).map_err(|e| format!("Failed to read memory file: {}", e))?;
     let serialized = lz4::block::decompress(&compressed, None)
         .map_err(|e| format!("Failed to decompress memory: {}", e))?;
     let state: MemoryState = bincode::deserialize(&serialized)
@@ -2492,15 +2531,20 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
 }
 
 fn save_memory(state: &MemoryState) -> Result<(), Box<dyn std::error::Error>> {
+    save_memory_to_path(state, MEMORY_FILE)
+}
+
+pub fn save_memory_to_path<P: AsRef<Path>>(state: &MemoryState, path: P) -> Result<(), Box<dyn std::error::Error>> {
     let serialized =
         bincode::serialize(state).map_err(|e| format!("Failed to serialize memory: {}", e))?;
     let compressed = lz4::block::compress(&serialized, None, true)
         .map_err(|e| format!("Failed to compress memory: {}", e))?;
 
-    let temp_file = format!("{}.tmp", MEMORY_FILE);
+    let path_ref = path.as_ref();
+    let temp_file = format!("{}.tmp", path_ref.display());
     fs::write(&temp_file, &compressed)
         .map_err(|e| format!("Failed to write temp memory file: {}", e))?;
-    fs::rename(&temp_file, MEMORY_FILE)
+    fs::rename(&temp_file, path_ref)
         .map_err(|e| format!("Failed to write memory file: {}", e))?;
     Ok(())
 }

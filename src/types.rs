@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +87,33 @@ impl LegendState {
 
     pub fn find_feature(&self, id: &str) -> Option<&Feature> {
         self.features.iter().find(|f| f.id == id)
+    }
+
+    /// Merge another LegendState into this one.
+    /// Features with the same ID are merged by taking the one with the latest last_updated timestamp.
+    pub fn merge(&mut self, other: LegendState) {
+        let mut feature_map: HashMap<String, Feature> = self
+            .features
+            .drain(..)
+            .map(|f| (f.id.clone(), f))
+            .collect();
+
+        for other_feature in other.features {
+            if let Some(existing) = feature_map.get_mut(&other_feature.id) {
+                if other_feature.last_updated > existing.last_updated {
+                    *existing = other_feature;
+                }
+            } else {
+                feature_map.insert(other_feature.id.clone(), other_feature);
+            }
+        }
+
+        self.features = feature_map.into_values().collect();
+        if self.project_name.is_empty() {
+            self.project_name = other.project_name;
+        }
+        self.created_at = self.created_at.min(other.created_at);
+        self.touch();
     }
 
     pub fn touch(&mut self) {

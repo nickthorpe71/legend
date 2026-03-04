@@ -27,6 +27,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "show" => commands::show::handle_show()?,
         "search" => commands::search::handle_search(&args[2..])?,
         "discover" => commands::discover::handle_discover(&args[2..])?,
+        "git-merge-driver" => commands::merge::handle_git_merge_driver(&args[2..])?,
         "memory" => commands::memory::handle_memory(&args[2..])?,
         "llm" => commands::llm::handle_llm(&args[2..])?,
         "project" => commands::project::handle_project(&args[2..])?,
