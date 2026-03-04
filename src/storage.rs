@@ -6,18 +6,16 @@ const STATE_FILE: &str = ".legend/state.lz4";
 
 /// Save LegendState to disk (bincode → LZ4, atomic write via temp+rename).
 pub fn save_state(state: &LegendState) -> Result<(), Box<dyn std::error::Error>> {
-    let serialized = bincode::serialize(state)
-        .map_err(|e| format!("Failed to serialize state: {}", e))?;
+    let serialized =
+        bincode::serialize(state).map_err(|e| format!("Failed to serialize state: {}", e))?;
 
     let compressed = lz4::block::compress(&serialized, None, true)
         .map_err(|e| format!("Failed to compress state: {}", e))?;
 
     let temp_file = format!("{}.tmp", STATE_FILE);
-    fs::write(&temp_file, &compressed)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    fs::write(&temp_file, &compressed).map_err(|e| format!("Failed to write temp file: {}", e))?;
 
-    fs::rename(&temp_file, STATE_FILE)
-        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+    fs::rename(&temp_file, STATE_FILE).map_err(|e| format!("Failed to rename temp file: {}", e))?;
 
     Ok(())
 }
@@ -28,8 +26,8 @@ pub fn load_state() -> Result<LegendState, Box<dyn std::error::Error>> {
         return Err("Legend not initialized. Run 'legend init' first.".into());
     }
 
-    let compressed = fs::read(STATE_FILE)
-        .map_err(|e| format!("Failed to read state file: {}", e))?;
+    let compressed =
+        fs::read(STATE_FILE).map_err(|e| format!("Failed to read state file: {}", e))?;
 
     let serialized = lz4::block::decompress(&compressed, None)
         .map_err(|e| format!("Failed to decompress state: {}", e))?;

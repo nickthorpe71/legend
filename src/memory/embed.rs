@@ -91,42 +91,92 @@ pub fn compute_salience(text: &str) -> f32 {
 
     // Decision language — highest importance
     let decision_keywords = [
-        "chose", "decided", "decision", "instead of", "rather than",
-        "rejected", "opted", "went with", "trade-off", "tradeoff",
+        "chose",
+        "decided",
+        "decision",
+        "instead of",
+        "rather than",
+        "rejected",
+        "opted",
+        "went with",
+        "trade-off",
+        "tradeoff",
     ];
-    let decision_hits = decision_keywords.iter().filter(|kw| lowered.contains(*kw)).count();
+    let decision_hits = decision_keywords
+        .iter()
+        .filter(|kw| lowered.contains(*kw))
+        .count();
     if decision_hits >= 2 {
         score += 0.5;
     } else if decision_hits >= 1 {
         score += 0.3;
     }
     // Rationale language amplifies decisions
-    if decision_hits > 0 && (lowered.contains("because") || lowered.contains("rationale")
-        || lowered.contains("reason")) {
+    if decision_hits > 0
+        && (lowered.contains("because")
+            || lowered.contains("rationale")
+            || lowered.contains("reason"))
+    {
         score += 0.15;
     }
 
     // Bug/incident language — high importance
-    if ["bug", "broke", "broken", "revert", "crash", "panic", "regression",
-        "incident", "hotfix"].iter().any(|kw| lowered.contains(kw)) {
+    if [
+        "bug",
+        "broke",
+        "broken",
+        "revert",
+        "crash",
+        "panic",
+        "regression",
+        "incident",
+        "hotfix",
+    ]
+    .iter()
+    .any(|kw| lowered.contains(kw))
+    {
         score += 0.4;
     }
 
     // TODO/blocker language
-    if lowered.contains("todo") || lowered.contains("fixme") || lowered.contains("important")
-        || lowered.contains("blocker") || lowered.contains("blocked") {
+    if lowered.contains("todo")
+        || lowered.contains("fixme")
+        || lowered.contains("important")
+        || lowered.contains("blocker")
+        || lowered.contains("blocked")
+    {
         score += 0.3;
     }
 
     // Architecture/structural statements
-    if ["architecture", "module", "component", "layer", "interface", "api",
-        "schema", "pipeline"].iter().any(|kw| lowered.contains(kw)) {
+    if [
+        "architecture",
+        "module",
+        "component",
+        "layer",
+        "interface",
+        "api",
+        "schema",
+        "pipeline",
+    ]
+    .iter()
+    .any(|kw| lowered.contains(kw))
+    {
         score += 0.25;
     }
 
     // Preference/convention
-    if ["user wants", "user prefers", "preference", "convention", "always use",
-        "never use"].iter().any(|kw| lowered.contains(kw)) {
+    if [
+        "user wants",
+        "user prefers",
+        "preference",
+        "convention",
+        "always use",
+        "never use",
+    ]
+    .iter()
+    .any(|kw| lowered.contains(kw))
+    {
         score += 0.3;
     }
 
@@ -189,7 +239,10 @@ mod tests {
 
     #[test]
     fn test_merge_embeddings() {
-        assert_eq!(merge_embeddings(&[1.0, 0.0, 0.5], &[0.0, 1.0, 0.5]), vec![0.5, 0.5, 0.5]);
+        assert_eq!(
+            merge_embeddings(&[1.0, 0.0, 0.5], &[0.0, 1.0, 0.5]),
+            vec![0.5, 0.5, 0.5]
+        );
     }
 
     #[test]

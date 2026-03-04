@@ -34,7 +34,11 @@ pub fn handle_show() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("{}", "-".repeat(72));
-    let complete = state.features.iter().filter(|f| f.status == FeatureStatus::Complete).count();
+    let complete = state
+        .features
+        .iter()
+        .filter(|f| f.status == FeatureStatus::Complete)
+        .count();
     println!("{}/{} features complete", complete, state.features.len());
 
     Ok(())

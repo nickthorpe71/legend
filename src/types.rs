@@ -117,7 +117,10 @@ mod tests {
         assert_eq!(feature.id, "auth");
         assert_eq!(feature.name, "Authentication");
         assert_eq!(feature.domain, "security");
-        assert_eq!(feature.description, "User authentication system with JWT tokens");
+        assert_eq!(
+            feature.description,
+            "User authentication system with JWT tokens"
+        );
         assert_eq!(feature.status, FeatureStatus::Pending);
         assert!(feature.tags.is_empty());
         assert!(feature.context.is_none());

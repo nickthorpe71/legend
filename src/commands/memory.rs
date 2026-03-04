@@ -1,3 +1,4 @@
+use super::llm::{auto_trigger_for_text, LlmAutoTriggerSummary};
 use crate::memory::{reset_memory, MemoryContext, MemoryState, ReinforceResult, TickResult};
 use serde::Serialize;
 use std::io::{self, Read};
@@ -138,7 +139,11 @@ fn parse_tick_args(args: &[String]) -> Result<TickOptions, Box<dyn std::error::E
         text_parts.join(" ")
     };
 
-    Ok(TickOptions { text, is_blocker, is_passive })
+    Ok(TickOptions {
+        text,
+        is_blocker,
+        is_passive,
+    })
 }
 
 fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -166,7 +171,11 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let should_consolidate = memory.should_suggest_consolidation();
 
     // Adjust salience based on flags
-    if let Some(entry) = memory.short_term.iter_mut().find(|e| e.id == tick_result.entry_id) {
+    if let Some(entry) = memory
+        .short_term
+        .iter_mut()
+        .find(|e| e.id == tick_result.entry_id)
+    {
         if opts.is_blocker {
             entry.salience = (entry.salience + 0.4).min(1.0);
         } else if opts.is_passive {
@@ -182,7 +191,8 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // Log rich event data
     let event_data = EventData::Tick(TickEventData {
         entry_id: Some(tick_result.entry_id),
-        matches: tick_result.context
+        matches: tick_result
+            .context
             .short_term
             .iter()
             .take(5)
@@ -192,7 +202,8 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 text_preview: truncate_text(&m.text, 80),
             })
             .collect(),
-        graph_nodes: tick_result.context
+        graph_nodes: tick_result
+            .context
             .long_term
             .iter()
             .take(5)
@@ -205,7 +216,15 @@ fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             .collect(),
     });
     log_event_rich("tick", text.trim(), Some(event_data));
-    print_tick_result(&tick_result);
+    let llm_trigger = match auto_trigger_for_text(text.trim(), "memory_tick", Some(memory.clock)) {
+        Ok(summary) => Some(summary),
+        Err(err) => {
+            eprintln!("[llm auto-trigger skipped: {}]", err);
+            None
+        }
+    };
+
+    print_tick_result(&tick_result, llm_trigger);
 
     // Auto-append to ARCHITECTURE.md when tick is tagged with ARCHITECTURE:
     if text.trim().to_uppercase().starts_with("ARCHITECTURE:") {
@@ -433,8 +452,11 @@ const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
 fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_start_args(args);
     let mut memory = MemoryState::load_or_default()?;
-    let mut summary =
-        memory.build_start_summary_with_options(opts.compact, opts.category.as_deref(), opts.query.as_deref());
+    let mut summary = memory.build_start_summary_with_options(
+        opts.compact,
+        opts.category.as_deref(),
+        opts.query.as_deref(),
+    );
 
     // Add warning if session log is approaching capacity
     if memory.session_log.len() >= SESSION_LOG_WARNING_THRESHOLD {
@@ -480,7 +502,9 @@ fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
 
     out.push_str("## LEGEND PROTOCOL (MANDATORY)\n");
     out.push_str("- **TICK DECISIONS**: After every file change or major decision, run `legend memory tick 'rationale...'`.\n");
-    out.push_str("- **RESEARCH FIRST**: Run `legend memory start` or `query` before starting new tasks.\n");
+    out.push_str(
+        "- **RESEARCH FIRST**: Run `legend memory start` or `query` before starting new tasks.\n",
+    );
     out.push_str("- **ARCHITECT**: Update ARCHITECTURE.md or TICK architecture insights when structure changes.\n");
     out.push_str("- **BRIDGE SESSIONS**: Record final decisions and next steps via `legend memory tick` before exiting.\n");
     out.push('\n');
@@ -493,11 +517,11 @@ fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
     if let Some(git_sync) = summary.get("git_sync") {
         let commits = git_sync.get("new_commits").and_then(|c| c.as_array());
         let uncommitted = git_sync.get("uncommitted_summary").and_then(|u| u.as_str());
-        
+
         if (commits.is_some() && !commits.unwrap().is_empty()) || uncommitted.is_some() {
             out.push_str("## Git Synchronization (Background Changes)\n");
             out.push_str("> Legend has detected manual user changes since the last session. You should intelligently tick these into memory.\n\n");
-            
+
             if let Some(commits) = commits {
                 if !commits.is_empty() {
                     out.push_str("### New Commits\n");
@@ -509,7 +533,7 @@ fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
                     out.push('\n');
                 }
             }
-            
+
             if let Some(uncommitted) = uncommitted {
                 out.push_str("### Uncommitted Changes\n");
                 out.push_str("```\n");
@@ -535,8 +559,15 @@ fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
         out.push_str("## Categorized Memories\n");
         for (name, data) in categorized {
             let (items, total) = if let Some(obj) = data.as_object() {
-                let items = obj.get("items").and_then(|i| i.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
-                let total = obj.get("total").and_then(|t| t.as_u64()).unwrap_or(items.len() as u64);
+                let items = obj
+                    .get("items")
+                    .and_then(|i| i.as_array())
+                    .map(|a| a.as_slice())
+                    .unwrap_or(&[]);
+                let total = obj
+                    .get("total")
+                    .and_then(|t| t.as_u64())
+                    .unwrap_or(items.len() as u64);
                 (items, total)
             } else if let Some(arr) = data.as_array() {
                 (arr.as_slice(), arr.len() as u64)
@@ -554,7 +585,11 @@ fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
                     }
                 }
                 if total > items.len() as u64 {
-                    out.push_str(&format!("- *...and {} more. Use `legend memory start --category {}` to see all.*\n", total - items.len() as u64, name));
+                    out.push_str(&format!(
+                        "- *...and {} more. Use `legend memory start --category {}` to see all.*\n",
+                        total - items.len() as u64,
+                        name
+                    ));
                 }
             }
         }
@@ -578,15 +613,26 @@ fn print_token_overhead(output: &str, session_count: usize) {
     let prompt_hook_tokens_per_session = 100 * 3;
     // Per-file-edit hook reminder: ~150 tokens, estimate 5 edits/session
     let edit_hook_tokens_per_session = 150 * 5;
-    let total_per_session = start_tokens + prompt_hook_tokens_per_session + edit_hook_tokens_per_session;
+    let total_per_session =
+        start_tokens + prompt_hook_tokens_per_session + edit_hook_tokens_per_session;
 
     eprintln!("\n## Token Overhead Estimate");
     eprintln!("  Session start injection:  ~{} tokens", start_tokens);
-    eprintln!("  UserPromptSubmit hooks:   ~{} tokens/session (est. 3 prompts × 100)", prompt_hook_tokens_per_session);
-    eprintln!("  PostToolUse hooks:        ~{} tokens/session (est. 5 edits × 150)", edit_hook_tokens_per_session);
+    eprintln!(
+        "  UserPromptSubmit hooks:   ~{} tokens/session (est. 3 prompts × 100)",
+        prompt_hook_tokens_per_session
+    );
+    eprintln!(
+        "  PostToolUse hooks:        ~{} tokens/session (est. 5 edits × 150)",
+        edit_hook_tokens_per_session
+    );
     eprintln!("  Total per session:        ~{} tokens", total_per_session);
     if session_count > 0 {
-        eprintln!("  Lifetime ({} sessions):   ~{} tokens", session_count, total_per_session * session_count);
+        eprintln!(
+            "  Lifetime ({} sessions):   ~{} tokens",
+            session_count,
+            total_per_session * session_count
+        );
     }
     eprintln!("  (Note: estimates carry ±30% uncertainty)");
     eprintln!();
@@ -612,7 +658,11 @@ fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
         println!();
         println!("Session quality (current session):");
         println!("  Ticks total:      {}", quality.total_ticks);
-        println!("  Meaningful ticks: {} ({:.0}%)", quality.meaningful_ticks, quality.signal_rate * 100.0);
+        println!(
+            "  Meaningful ticks: {} ({:.0}%)",
+            quality.meaningful_ticks,
+            quality.signal_rate * 100.0
+        );
         println!("  Queries:          {}", quality.queries);
         println!("  Consolidations:   {}", quality.consolidations);
         println!("  Quality score:    {}/100", quality.score);
@@ -663,9 +713,13 @@ fn compute_session_quality() -> Option<SessionQuality> {
     let mut consolidations = 0usize;
 
     for line in &lines {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         let ts = v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0);
-        if ts < last_start_ts { continue; }
+        if ts < last_start_ts {
+            continue;
+        }
         let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
         match cmd {
             "tick" => {
@@ -881,11 +935,7 @@ fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
 fn print_context(context: MemoryContext) {
     // Simplified output: just text and topic labels (no IDs, weights, refs)
     let memories: Vec<&str> = context.short_term.iter().map(|m| m.text.as_str()).collect();
-    let related_topics: Vec<&str> = context
-        .long_term
-        .iter()
-        .map(|n| n.label.as_str())
-        .collect();
+    let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
 
     let result = serde_json::json!({
         "memories": memories,
@@ -895,11 +945,12 @@ fn print_context(context: MemoryContext) {
     println!("{}", json);
 }
 
-fn print_tick_result(result: &TickResult) {
-    // Simplified output: just action and entry_id (no context dump)
+fn print_tick_result(result: &TickResult, llm_trigger: Option<LlmAutoTriggerSummary>) {
+    // Simplified output: action and entry_id; include llm trigger metadata when available.
     let output = serde_json::json!({
         "action": result.action,
         "entry_id": result.entry_id,
+        "llm_trigger": llm_trigger,
     });
     let json = serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);
@@ -923,8 +974,14 @@ fn ts_to_iso_date(ts: u64) -> String {
     let mut remaining = ts / 86400; // total days since epoch
     let mut year = 1970u64;
     loop {
-        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 366 } else { 365 };
-        if remaining < days_in_year { break; }
+        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+            366
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
         remaining -= days_in_year;
         year += 1;
     }
@@ -936,7 +993,9 @@ fn ts_to_iso_date(ts: u64) -> String {
     };
     let mut month = 1u64;
     for &days in month_days {
-        if remaining < days { break; }
+        if remaining < days {
+            break;
+        }
         remaining -= days;
         month += 1;
     }
@@ -1037,11 +1096,15 @@ fn print_memory_help() {
     println!("    --compact, -c                   Compact output (text only, no ids)");
     println!("    --tokens, -t                    Show token overhead estimate for this session");
     println!("    --category <name>               Filter to one category (bugs, todos, decisions, architecture, preferences)");
-    println!("  legend memory tick [options] <text>  Record a memory (decision, progress, discovery)");
+    println!(
+        "  legend memory tick [options] <text>  Record a memory (decision, progress, discovery)"
+    );
     println!("    --blocker, -b                   Mark as blocker (boosts salience, prefixes with BLOCKER:)");
     println!("  legend memory tick              Record a memory (reads stdin)");
     println!("  legend memory query [options] <text>  Query memory (auto-reinforces top result)");
-    println!("    --reasons, -r                   Include similarity scores and retrieval reasoning");
+    println!(
+        "    --reasons, -r                   Include similarity scores and retrieval reasoning"
+    );
     println!("  legend memory task              Show current task");
     println!("  legend memory task set <text>   Set current task");
     println!("  legend memory task clear        Clear current task");

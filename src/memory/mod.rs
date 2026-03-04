@@ -372,6 +372,29 @@ pub struct ReinforcedEntry {
     pub signal: f32,
 }
 
+/// A schema-validated entity proposed by an external LLM task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmEntity {
+    pub label: String,
+    pub kind: String,
+    pub context: String,
+    #[serde(default = "default_llm_confidence")]
+    pub confidence: f32,
+}
+
+fn default_llm_confidence() -> f32 {
+    0.7
+}
+
+/// Result of applying validated LLM entities into the long-term graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmEntityApplyResult {
+    pub accepted_entities: usize,
+    pub created_nodes: usize,
+    pub updated_nodes: usize,
+    pub edges_reinforced: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -391,6 +414,20 @@ impl Default for MemoryState {
             last_retrieved_ids: Vec::new(),
             last_synced_sha: None,
         }
+    }
+}
+
+/// Order of semantic specificity for graph node kinds.
+fn node_kind_priority(kind: &str) -> u8 {
+    match kind {
+        "FilePath" => 8,
+        "Function" | "Struct" | "Enum" | "Trait" | "Class" | "Interface" | "Module" => 7,
+        "Tool" | "Environment" => 6,
+        "Symbol" | "Type" => 5,
+        "Action" | "Decorator" | "Import" | "Package" | "Export" | "Impl" => 4,
+        "Topic" => 3,
+        "Term" => 2,
+        _ => 1,
     }
 }
 
@@ -586,7 +623,7 @@ impl MemoryState {
                 Ok(state) => Ok(state),
                 Err(err) => {
                     let backup = format!("{}.corrupt", MEMORY_FILE);
-                    // Only move to backup if one doesn't already exist, to avoid overwriting 
+                    // Only move to backup if one doesn't already exist, to avoid overwriting
                     // potentially recoverable data from a previous crash.
                     if !Path::new(&backup).exists() {
                         let _ = fs::rename(MEMORY_FILE, &backup);
@@ -601,8 +638,7 @@ impl MemoryState {
                     Ok(Self::default())
                 }
             }
-        }
- else {
+        } else {
             Ok(Self::default())
         }
     }
@@ -624,7 +660,11 @@ impl MemoryState {
             if last != current {
                 // Get commit messages between last sync and now
                 if let Ok(output) = Command::new("git")
-                    .args(["log", &format!("{}..{}", last, current), "--pretty=format:%h: %s"])
+                    .args([
+                        "log",
+                        &format!("{}..{}", last, current),
+                        "--pretty=format:%h: %s",
+                    ])
                     .output()
                 {
                     let log = String::from_utf8_lossy(&output.stdout);
@@ -686,7 +726,10 @@ impl MemoryState {
         // Python
         if let Ok(reqs) = fs::read_to_string("requirements.txt") {
             for line in reqs.lines() {
-                let name: String = line.chars().take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+                let name: String = line
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
                 if !name.is_empty() {
                     self.add_node_if_new(&name, "Dependency", 0.3);
                 }
@@ -700,15 +743,18 @@ impl MemoryState {
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.long_term.nodes.insert(id, GraphNode {
+        self.long_term.nodes.insert(
             id,
-            label: label.to_string(),
-            kind: kind.to_string(),
-            weight: 1.0,
-            last_seen: self.clock,
-            salience,
-            source_texts: Vec::new(),
-        });
+            GraphNode {
+                id,
+                label: label.to_string(),
+                kind: kind.to_string(),
+                weight: 1.0,
+                last_seen: self.clock,
+                salience,
+                source_texts: Vec::new(),
+            },
+        );
         self.long_term.index.insert(label.to_string(), id);
     }
 
@@ -1029,7 +1075,9 @@ impl MemoryState {
             for entry in &group {
                 let entities = crate::memory::extract::extract_entities(&entry.text);
                 for entity in entities {
-                    let entry = entity_counts.entry(entity.label.clone()).or_insert((0, entity.kind));
+                    let entry = entity_counts
+                        .entry(entity.label.clone())
+                        .or_insert((0, entity.kind));
                     entry.0 += 1;
                 }
             }
@@ -1043,15 +1091,22 @@ impl MemoryState {
                     } else {
                         let id = self.next_id;
                         self.next_id += 1;
-                        self.long_term.nodes.insert(id, GraphNode {
+                        self.long_term.nodes.insert(
                             id,
-                            label: label.clone(),
-                            kind: if kind == "Term" { "Topic".to_string() } else { kind },
-                            weight: 1.0,
-                            last_seen: self.clock,
-                            salience: 0.5,
-                            source_texts: Vec::new(),
-                        });
+                            GraphNode {
+                                id,
+                                label: label.clone(),
+                                kind: if kind == "Term" {
+                                    "Topic".to_string()
+                                } else {
+                                    kind
+                                },
+                                weight: 1.0,
+                                last_seen: self.clock,
+                                salience: 0.5,
+                                source_texts: Vec::new(),
+                            },
+                        );
                         self.long_term.index.insert(label.clone(), id);
                         id
                     };
@@ -1082,6 +1137,132 @@ impl MemoryState {
         self.prune_short_term();
         self.prune_graph();
         summaries
+    }
+
+    /// Apply externally generated, schema-validated entities into the graph.
+    /// This is intentionally conservative: low-confidence or stopword labels are skipped.
+    pub fn apply_llm_entities(
+        &mut self,
+        source_text: &str,
+        entities: &[LlmEntity],
+        task_confidence: f32,
+    ) -> LlmEntityApplyResult {
+        self.clock += 1;
+        let now = self.clock;
+
+        let mut accepted_entities = 0usize;
+        let mut created_nodes = 0usize;
+        let mut updated_nodes = 0usize;
+        let mut node_ids = Vec::new();
+        let mut contexts = Vec::new();
+
+        for entity in entities {
+            let label = entity.label.trim();
+            if label.len() < 2 || label.len() > 120 {
+                continue;
+            }
+            if crate::memory::extract::is_stopword(label) {
+                continue;
+            }
+
+            let confidence = entity.confidence.clamp(0.0, 1.0);
+            if confidence < 0.5 {
+                continue;
+            }
+
+            let normalized_kind = match entity.kind.as_str() {
+                "FilePath" | "Function" | "Struct" | "Enum" | "Trait" | "Class" | "Interface"
+                | "Module" | "Symbol" | "Type" | "Term" | "Topic" | "Tool" | "Environment"
+                | "Action" | "Decorator" | "Import" | "Package" | "Export" | "Impl" => {
+                    entity.kind.clone()
+                }
+                _ => "Term".to_string(),
+            };
+
+            let normalized_context = match entity.context.as_str() {
+                "defines" | "uses" | "implements" | "mentions" | "performs" => {
+                    entity.context.clone()
+                }
+                _ => "mentions".to_string(),
+            };
+
+            let id = if let Some(&existing) = self.long_term.index.get(label) {
+                updated_nodes += 1;
+                existing
+            } else {
+                let id = self.next_id;
+                self.next_id += 1;
+                created_nodes += 1;
+                self.long_term.nodes.insert(
+                    id,
+                    GraphNode {
+                        id,
+                        label: label.to_string(),
+                        kind: normalized_kind.clone(),
+                        weight: 1.0,
+                        last_seen: now,
+                        salience: task_confidence.clamp(0.0, 1.0),
+                        source_texts: Vec::new(),
+                    },
+                );
+                self.long_term.index.insert(label.to_string(), id);
+                id
+            };
+
+            if let Some(node) = self.long_term.nodes.get_mut(&id) {
+                let weight_multiplier = match normalized_kind.as_str() {
+                    "FilePath" => 2.0,
+                    "Function" | "Struct" | "Enum" | "Trait" | "Class" | "Interface" => 1.6,
+                    "Tool" | "Environment" => 1.4,
+                    "Symbol" | "Type" => 1.2,
+                    "Term" => 0.5,
+                    _ => 1.0,
+                };
+                node.weight += (NODE_WEIGHT_BASE + task_confidence * 0.2 + confidence * 0.2)
+                    * weight_multiplier;
+                node.salience = (node.salience + task_confidence * 0.2 + confidence * 0.2).min(1.0);
+                node.last_seen = now;
+                if node_kind_priority(&normalized_kind) > node_kind_priority(&node.kind) {
+                    node.kind = normalized_kind.clone();
+                }
+                if !source_text.trim().is_empty() {
+                    node.source_texts.push(source_text.to_string());
+                    if node.source_texts.len() > 6 {
+                        let overflow = node.source_texts.len() - 6;
+                        node.source_texts.drain(0..overflow);
+                    }
+                }
+            }
+
+            accepted_entities += 1;
+            node_ids.push(id);
+            contexts.push(normalized_context);
+        }
+
+        let mut edges_reinforced = 0usize;
+        for i in 0..node_ids.len() {
+            for j in (i + 1)..node_ids.len() {
+                let edge_kind = match (contexts[i].as_str(), contexts[j].as_str()) {
+                    ("defines", "mentions") => "contains",
+                    (a, b) if a == "uses" || b == "uses" => "depends-on",
+                    (a, b) if a == "implements" || b == "implements" => "implements",
+                    ("defines", "defines") => "co-defined",
+                    (a, b) if a == "performs" || b == "performs" => "drives",
+                    _ => "related",
+                };
+                self.upsert_edge(node_ids[i], node_ids[j], edge_kind);
+                edges_reinforced += 1;
+            }
+        }
+
+        self.prune_graph();
+
+        LlmEntityApplyResult {
+            accepted_entities,
+            created_nodes,
+            updated_nodes,
+            edges_reinforced,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1322,16 +1503,7 @@ impl MemoryState {
                 node.salience = (node.salience + salience * 0.5 * weight_multiplier).min(1.0);
 
                 // Update kind if it was previously generic or less specific
-                let kind_priority = |k: &str| match k {
-                    "FilePath" => 5,
-                    "Function" | "Struct" | "Enum" | "Trait" | "Class" => 4,
-                    "Symbol" => 3,
-                    "Type" => 2,
-                    "Term" => 1,
-                    _ => 0,
-                };
-
-                if kind_priority(&entity.kind) > kind_priority(&node.kind) {
+                if node_kind_priority(&entity.kind) > node_kind_priority(&node.kind) {
                     node.kind = entity.kind.clone();
                 }
             }
@@ -1605,7 +1777,7 @@ impl MemoryState {
     /// Set the current task description.
     pub fn set_task(&mut self, task: &str) {
         self.current_task = Some(task.to_string());
-        
+
         // Link task to knowledge graph
         let label = task.trim();
         if !label.is_empty() {
@@ -1614,19 +1786,22 @@ impl MemoryState {
             } else {
                 let id = self.next_id;
                 self.next_id += 1;
-                self.long_term.nodes.insert(id, GraphNode {
+                self.long_term.nodes.insert(
                     id,
-                    label: label.to_string(),
-                    kind: "Task".to_string(),
-                    weight: 1.5, // Tasks start with higher weight
-                    last_seen: self.clock,
-                    salience: 0.8,
-                    source_texts: Vec::new(),
-                });
+                    GraphNode {
+                        id,
+                        label: label.to_string(),
+                        kind: "Task".to_string(),
+                        weight: 1.5, // Tasks start with higher weight
+                        last_seen: self.clock,
+                        salience: 0.8,
+                        source_texts: Vec::new(),
+                    },
+                );
                 self.long_term.index.insert(label.to_string(), id);
                 id
             };
-            
+
             // Prime task in graph
             if let Some(node) = self.long_term.nodes.get_mut(&node_id) {
                 node.weight += 0.2;
@@ -1715,7 +1890,8 @@ impl MemoryState {
 
         // Get recent sessions — skip passive (EXPERIENCE:) entries so Recent Activity
         // only shows meaningful user-initiated ticks, not tool telemetry noise.
-        let recent_sessions: Vec<&str> = self.session_log
+        let recent_sessions: Vec<&str> = self
+            .session_log
             .iter()
             .rev()
             .filter(|s| !s.text.starts_with("EXPERIENCE:"))
@@ -1767,7 +1943,9 @@ impl MemoryState {
 
         // Sort each category. If query_context exists, we prioritize items matched by the query.
         // Otherwise, we sort by salience descending.
-        let sort_logic = |list: &mut Vec<serde_json::Value>, entries: &[ShortTermEntry], context: &Option<MemoryContext>| {
+        let sort_logic = |list: &mut Vec<serde_json::Value>,
+                          entries: &[ShortTermEntry],
+                          context: &Option<MemoryContext>| {
             // Create index mapping for sorting
             let mut indexed: Vec<(usize, f32)> = list
                 .iter()
@@ -1775,13 +1953,16 @@ impl MemoryState {
                 .filter_map(|(i, item)| {
                     let id = if compact {
                         let text = item.as_str()?;
-                        entries.iter().find(|e| e.text.starts_with(text.trim_end_matches('…'))).map(|e| e.id)
+                        entries
+                            .iter()
+                            .find(|e| e.text.starts_with(text.trim_end_matches('…')))
+                            .map(|e| e.id)
                     } else {
                         item["id"].as_u64()
                     }?;
 
                     let entry = entries.iter().find(|e| e.id == id)?;
-                    
+
                     // Base score is salience
                     let mut score = entry.salience;
 
@@ -1830,7 +2011,9 @@ impl MemoryState {
                 "architecture" | "arch" => (&architecture, architecture_total),
                 "todos" | "todo" => (&todos, todos_total),
                 "bugs" | "bug" => (&bugs, bugs_total),
-                "preferences" | "preference" | "prefs" | "pref" => (&preferences, preferences_total),
+                "preferences" | "preference" | "prefs" | "pref" => {
+                    (&preferences, preferences_total)
+                }
                 _ => return serde_json::json!({"error": format!("Unknown category: {}", filter)}),
             };
             return serde_json::json!({
@@ -2152,7 +2335,10 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
     let serialized = match lz4::block::decompress(&compressed, None) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("  Backup file is unrecoverable (decompress failed: {}). Archiving.", e);
+            eprintln!(
+                "  Backup file is unrecoverable (decompress failed: {}). Archiving.",
+                e
+            );
             let archive = format!("{}.unrecoverable", CORRUPT_FILE);
             let _ = fs::rename(CORRUPT_FILE, &archive);
             return Ok(None);
@@ -2164,20 +2350,24 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
         MemoryState {
             config: v3.config,
             immediate: v3.immediate,
-            short_term: v3.short_term.into_iter().map(|e| ShortTermEntry {
-                id: e.id,
-                text: e.text,
-                summary: e.summary,
-                embedding: e.embedding,
-                last_access: e.last_access,
-                usage: e.usage,
-                salience: e.salience,
-                reconsolidation_count: e.reconsolidation_count,
-                labile_until: e.labile_until,
-                refs: e.refs,
-                gradient_sq_sum: 0.0,
-                density: 0.0,
-            }).collect(),
+            short_term: v3
+                .short_term
+                .into_iter()
+                .map(|e| ShortTermEntry {
+                    id: e.id,
+                    text: e.text,
+                    summary: e.summary,
+                    embedding: e.embedding,
+                    last_access: e.last_access,
+                    usage: e.usage,
+                    salience: e.salience,
+                    reconsolidation_count: e.reconsolidation_count,
+                    labile_until: e.labile_until,
+                    refs: e.refs,
+                    gradient_sq_sum: 0.0,
+                    density: 0.0,
+                })
+                .collect(),
             long_term: v3.long_term,
             clock: v3.clock,
             next_id: v3.next_id,
@@ -2191,25 +2381,33 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
         MemoryState {
             config: v2.config,
             immediate: v2.immediate,
-            short_term: v2.short_term.into_iter().map(|e| ShortTermEntry {
-                id: e.id,
-                text: e.text,
-                summary: e.summary,
-                embedding: e.embedding,
-                last_access: e.last_access,
-                usage: e.usage,
-                salience: e.salience,
-                reconsolidation_count: e.reconsolidation_count,
-                labile_until: e.labile_until,
-                refs: e.refs.into_iter().map(|r| MemoryRef {
-                    path: r.path,
-                    start_line: r.start_line,
-                    end_line: r.end_line,
-                    snippet: String::new(),
-                }).collect(),
-                gradient_sq_sum: 0.0,
-                density: 0.0,
-            }).collect(),
+            short_term: v2
+                .short_term
+                .into_iter()
+                .map(|e| ShortTermEntry {
+                    id: e.id,
+                    text: e.text,
+                    summary: e.summary,
+                    embedding: e.embedding,
+                    last_access: e.last_access,
+                    usage: e.usage,
+                    salience: e.salience,
+                    reconsolidation_count: e.reconsolidation_count,
+                    labile_until: e.labile_until,
+                    refs: e
+                        .refs
+                        .into_iter()
+                        .map(|r| MemoryRef {
+                            path: r.path,
+                            start_line: r.start_line,
+                            end_line: r.end_line,
+                            snippet: String::new(),
+                        })
+                        .collect(),
+                    gradient_sq_sum: 0.0,
+                    density: 0.0,
+                })
+                .collect(),
             long_term: v2.long_term,
             clock: v2.clock,
             next_id: v2.next_id,
@@ -2224,20 +2422,24 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             Ok(old) => MemoryState {
                 config: old.config,
                 immediate: old.immediate,
-                short_term: old.short_term.into_iter().map(|e| ShortTermEntry {
-                    id: e.id,
-                    text: e.text,
-                    summary: e.summary,
-                    embedding: e.embedding,
-                    last_access: e.last_access,
-                    usage: e.usage,
-                    salience: e.salience,
-                    reconsolidation_count: e.reconsolidation_count,
-                    labile_until: e.labile_until,
-                    refs: old_refs_to_current(e.refs),
-                    gradient_sq_sum: 0.0,
-                    density: 0.0,
-                }).collect(),
+                short_term: old
+                    .short_term
+                    .into_iter()
+                    .map(|e| ShortTermEntry {
+                        id: e.id,
+                        text: e.text,
+                        summary: e.summary,
+                        embedding: e.embedding,
+                        last_access: e.last_access,
+                        usage: e.usage,
+                        salience: e.salience,
+                        reconsolidation_count: e.reconsolidation_count,
+                        labile_until: e.labile_until,
+                        refs: old_refs_to_current(e.refs),
+                        gradient_sq_sum: 0.0,
+                        density: 0.0,
+                    })
+                    .collect(),
                 long_term: old.long_term,
                 clock: old.clock,
                 next_id: old.next_id,
@@ -2257,12 +2459,14 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
     };
 
     fn old_refs_to_current(old: Vec<MemoryRefV1>) -> Vec<MemoryRef> {
-        old.into_iter().map(|r| MemoryRef {
-            path: r.path,
-            start_line: r.start_line,
-            end_line: r.end_line,
-            snippet: String::new(),
-        }).collect()
+        old.into_iter()
+            .map(|r| MemoryRef {
+                path: r.path,
+                start_line: r.start_line,
+                end_line: r.end_line,
+                snippet: String::new(),
+            })
+            .collect()
     }
 
     // Save migrated state
@@ -2270,7 +2474,10 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
 
     // Remove corrupt backup after successful migration
     if let Err(e) = fs::remove_file(CORRUPT_FILE) {
-        eprintln!("  Warning: could not remove {} after migration: {}", CORRUPT_FILE, e);
+        eprintln!(
+            "  Warning: could not remove {} after migration: {}",
+            CORRUPT_FILE, e
+        );
     } else {
         eprintln!("  ✓ Cleaned up old format backup.");
     }
@@ -3093,7 +3300,8 @@ mod tests {
     fn test_edge_last_seen_updated() {
         let mut state = MemoryState::default();
         state.tick("fn process() uses struct Data");
-        let initial_last_seen: Vec<u64> = state.long_term.edges.iter().map(|e| e.last_seen).collect();
+        let initial_last_seen: Vec<u64> =
+            state.long_term.edges.iter().map(|e| e.last_seen).collect();
         assert!(!initial_last_seen.is_empty(), "should have edges");
         // Query to trigger Hebbian reinforcement
         state.retrieve_context("process Data");

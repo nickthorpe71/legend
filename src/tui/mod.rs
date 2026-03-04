@@ -436,9 +436,13 @@ impl App {
         let idx = self.list_state.selected().unwrap_or(0);
         match self.view {
             View::ShortTerm => self.memory.short_term.get(idx).map(|e| e.text.clone()),
-            View::Graph => self
-                .graph_selected_id()
-                .and_then(|id| self.memory.long_term.nodes.get(&id).map(|n| n.label.clone())),
+            View::Graph => self.graph_selected_id().and_then(|id| {
+                self.memory
+                    .long_term
+                    .nodes
+                    .get(&id)
+                    .map(|n| n.label.clone())
+            }),
             View::Events => {
                 let events: Vec<_> = self.events.iter().rev().collect();
                 events
@@ -508,8 +512,16 @@ impl App {
         }
 
         // Sort by edge weight
-        incoming.sort_by(|a, b| b.0.weight.partial_cmp(&a.0.weight).unwrap_or(Ordering::Equal));
-        outgoing.sort_by(|a, b| b.0.weight.partial_cmp(&a.0.weight).unwrap_or(Ordering::Equal));
+        incoming.sort_by(|a, b| {
+            b.0.weight
+                .partial_cmp(&a.0.weight)
+                .unwrap_or(Ordering::Equal)
+        });
+        outgoing.sort_by(|a, b| {
+            b.0.weight
+                .partial_cmp(&a.0.weight)
+                .unwrap_or(Ordering::Equal)
+        });
 
         let mut result = format!(
             "GRAPH NODE\n\n\
@@ -710,12 +722,28 @@ fn base64_encode(data: &[u8]) -> String {
     let mut i = 0;
     while i < data.len() {
         let b0 = data[i] as u32;
-        let b1 = if i + 1 < data.len() { data[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < data.len() { data[i + 2] as u32 } else { 0 };
+        let b1 = if i + 1 < data.len() {
+            data[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < data.len() {
+            data[i + 2] as u32
+        } else {
+            0
+        };
         out.push(CHARS[((b0 >> 2) & 0x3F) as usize] as char);
         out.push(CHARS[((b0 << 4 | b1 >> 4) & 0x3F) as usize] as char);
-        out.push(if i + 1 < data.len() { CHARS[((b1 << 2 | b2 >> 6) & 0x3F) as usize] as char } else { '=' });
-        out.push(if i + 2 < data.len() { CHARS[(b2 & 0x3F) as usize] as char } else { '=' });
+        out.push(if i + 1 < data.len() {
+            CHARS[((b1 << 2 | b2 >> 6) & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if i + 2 < data.len() {
+            CHARS[(b2 & 0x3F) as usize] as char
+        } else {
+            '='
+        });
         i += 3;
     }
     out

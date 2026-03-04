@@ -28,6 +28,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "search" => commands::search::handle_search(&args[2..])?,
         "discover" => commands::discover::handle_discover(&args[2..])?,
         "memory" => commands::memory::handle_memory(&args[2..])?,
+        "llm" => commands::llm::handle_llm(&args[2..])?,
         "project" => commands::project::handle_project(&args[2..])?,
         "dev" => commands::dev::handle_dev(&args[2..])?,
         "dashboard" => {
@@ -55,6 +56,9 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  memory [start|tick|query|...]  Hierarchical memory (context, decisions, history)");
+    println!(
+        "  llm [signals|task|apply|...]    Policy-driven LLM task orchestration and validation"
+    );
     println!("  project [ls|set|schema]         Project feature roadmap & status management");
     println!("  discover [path]                 Scan project to suggest features and context");
     println!("  dashboard [--3d]               Launch TUI dashboard (--3d for Bevy 3D view)");

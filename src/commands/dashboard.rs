@@ -27,7 +27,7 @@ pub fn handle_dashboard() -> Result<(), Box<dyn std::error::Error>> {
             .args([
                 "/C",
                 "start",
-                "",  // window title (empty)
+                "", // window title (empty)
                 &win_exe,
                 "--project-dir",
                 &win_project_dir,
@@ -58,10 +58,8 @@ pub fn handle_dashboard() -> Result<(), Box<dyn std::error::Error>> {
 fn find_dashboard_exe(project_dir: &PathBuf) -> Result<PathBuf, String> {
     let candidates = if is_wsl() {
         vec![
-            project_dir
-                .join("dashboard/target/x86_64-pc-windows-gnu/release/legend-dashboard.exe"),
-            project_dir
-                .join("dashboard/target/x86_64-pc-windows-gnu/debug/legend-dashboard.exe"),
+            project_dir.join("dashboard/target/x86_64-pc-windows-gnu/release/legend-dashboard.exe"),
+            project_dir.join("dashboard/target/x86_64-pc-windows-gnu/debug/legend-dashboard.exe"),
         ]
     } else {
         vec![

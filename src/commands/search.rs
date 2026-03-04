@@ -4,13 +4,19 @@ use crate::types::Feature;
 /// Search features by keyword, domain, tag, or status. Output JSON to stdout.
 pub fn handle_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
-        return Err("Usage: legend search <query> [--domain <d>] [--tag <t>] [--status <s>]".into());
+        return Err(
+            "Usage: legend search <query> [--domain <d>] [--tag <t>] [--status <s>]".into(),
+        );
     }
 
     let query = parse_args(args)?;
     let state = storage::load_state()?;
 
-    let results: Vec<&Feature> = state.features.iter().filter(|f| matches_query(f, &query)).collect();
+    let results: Vec<&Feature> = state
+        .features
+        .iter()
+        .filter(|f| matches_query(f, &query))
+        .collect();
 
     if results.is_empty() {
         println!("[]");
@@ -43,9 +49,18 @@ fn parse_args(args: &[String]) -> Result<SearchQuery, Box<dyn std::error::Error>
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--domain" => { i += 1; domain = Some(args.get(i).ok_or("--domain requires a value")?.clone()); }
-            "--tag" => { i += 1; tag = Some(args.get(i).ok_or("--tag requires a value")?.clone()); }
-            "--status" => { i += 1; status = Some(args.get(i).ok_or("--status requires a value")?.clone()); }
+            "--domain" => {
+                i += 1;
+                domain = Some(args.get(i).ok_or("--domain requires a value")?.clone());
+            }
+            "--tag" => {
+                i += 1;
+                tag = Some(args.get(i).ok_or("--tag requires a value")?.clone());
+            }
+            "--status" => {
+                i += 1;
+                status = Some(args.get(i).ok_or("--status requires a value")?.clone());
+            }
             other => {
                 if let Some(ref mut kw) = keyword {
                     kw.push(' ');
@@ -58,7 +73,12 @@ fn parse_args(args: &[String]) -> Result<SearchQuery, Box<dyn std::error::Error>
         i += 1;
     }
 
-    Ok(SearchQuery { keyword, domain, tag, status })
+    Ok(SearchQuery {
+        keyword,
+        domain,
+        tag,
+        status,
+    })
 }
 
 /// All provided filters must match (AND logic). Keyword is case-insensitive.
@@ -69,23 +89,38 @@ fn matches_query(feature: &Feature, query: &SearchQuery) -> bool {
             || feature.name.to_lowercase().contains(&kw_lower)
             || feature.domain.to_lowercase().contains(&kw_lower)
             || feature.description.to_lowercase().contains(&kw_lower)
-            || feature.context.as_ref().map(|c| c.to_lowercase().contains(&kw_lower)).unwrap_or(false)
-            || feature.tags.iter().any(|t| t.to_lowercase().contains(&kw_lower));
-        if !matches_keyword { return false; }
+            || feature
+                .context
+                .as_ref()
+                .map(|c| c.to_lowercase().contains(&kw_lower))
+                .unwrap_or(false)
+            || feature
+                .tags
+                .iter()
+                .any(|t| t.to_lowercase().contains(&kw_lower));
+        if !matches_keyword {
+            return false;
+        }
     }
 
     if let Some(ref d) = query.domain {
-        if feature.domain.to_lowercase() != d.to_lowercase() { return false; }
+        if feature.domain.to_lowercase() != d.to_lowercase() {
+            return false;
+        }
     }
 
     if let Some(ref t) = query.tag {
         let t_lower = t.to_lowercase();
-        if !feature.tags.iter().any(|tag| tag.to_lowercase() == t_lower) { return false; }
+        if !feature.tags.iter().any(|tag| tag.to_lowercase() == t_lower) {
+            return false;
+        }
     }
 
     if let Some(ref s) = query.status {
         let status_str = format!("{:?}", feature.status);
-        if status_str.to_lowercase() != s.to_lowercase() { return false; }
+        if status_str.to_lowercase() != s.to_lowercase() {
+            return false;
+        }
     }
 
     true

@@ -1,5 +1,4 @@
 /// Entity extraction from text (code-aware + plain identifiers).
-
 use std::collections::HashMap;
 
 pub struct ExtractedEntity {
@@ -19,8 +18,13 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
 
         // 1. Path patterns
         for token in trimmed.split_whitespace() {
-            let clean_token = token.trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | ',' | '.' | ')' | ']' | ';'));
-            if (clean_token.contains('/') || clean_token.contains('\\')) && clean_token.contains('.') && clean_token.len() > 4 {
+            let clean_token = token.trim_matches(|c: char| {
+                matches!(c, '`' | '"' | '\'' | ',' | '.' | ')' | ']' | ';')
+            });
+            if (clean_token.contains('/') || clean_token.contains('\\'))
+                && clean_token.contains('.')
+                && clean_token.len() > 4
+            {
                 entities.push(ExtractedEntity {
                     label: clean_token.to_string(),
                     kind: "FilePath".to_string(),
@@ -31,16 +35,35 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
 
         // 2. Action patterns (Verbs at the start of lines or sentences)
         let actions = [
-            ("fixed", "Action"), ("fixing", "Action"), ("refactored", "Action"), 
-            ("refactoring", "Action"), ("implemented", "Action"), ("implementing", "Action"),
-            ("added", "Action"), ("adding", "Action"), ("removed", "Action"), 
-            ("removing", "Action"), ("tested", "Action"), ("testing", "Action"),
-            ("debugged", "Action"), ("debugging", "Action"), ("optimized", "Action"),
-            ("migrated", "Action"), ("migrating", "Action"), ("deployed", "Action"),
-            ("deploying", "Action"), ("validated", "Action"), ("validating", "Action"),
-            ("investigated", "Action"), ("investigating", "Action"), ("documented", "Action"),
-            ("documenting", "Action"), ("reverted", "Action"), ("reverting", "Action"),
-            ("rolled back", "Action"), ("rollback", "Action"),
+            ("fixed", "Action"),
+            ("fixing", "Action"),
+            ("refactored", "Action"),
+            ("refactoring", "Action"),
+            ("implemented", "Action"),
+            ("implementing", "Action"),
+            ("added", "Action"),
+            ("adding", "Action"),
+            ("removed", "Action"),
+            ("removing", "Action"),
+            ("tested", "Action"),
+            ("testing", "Action"),
+            ("debugged", "Action"),
+            ("debugging", "Action"),
+            ("optimized", "Action"),
+            ("migrated", "Action"),
+            ("migrating", "Action"),
+            ("deployed", "Action"),
+            ("deploying", "Action"),
+            ("validated", "Action"),
+            ("validating", "Action"),
+            ("investigated", "Action"),
+            ("investigating", "Action"),
+            ("documented", "Action"),
+            ("documenting", "Action"),
+            ("reverted", "Action"),
+            ("reverting", "Action"),
+            ("rolled back", "Action"),
+            ("rollback", "Action"),
         ];
         for (verb, kind) in actions {
             if sentence_contains_phrase(&lower, verb) {
@@ -54,9 +77,29 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
 
         // 3. Environment patterns
         let envs = [
-            "wsl", "docker", "production", "staging", "ubuntu", "linux", "windows", 
-            "macos", "s3", "github", "aws", "localhost", "browser", "cli", "kubernetes",
-            "k8s", "gcp", "azure", "devcontainer", "vm", "ci", "cd", "github actions",
+            "wsl",
+            "docker",
+            "production",
+            "staging",
+            "ubuntu",
+            "linux",
+            "windows",
+            "macos",
+            "s3",
+            "github",
+            "aws",
+            "localhost",
+            "browser",
+            "cli",
+            "kubernetes",
+            "k8s",
+            "gcp",
+            "azure",
+            "devcontainer",
+            "vm",
+            "ci",
+            "cd",
+            "github actions",
         ];
         for env in envs {
             if sentence_contains_phrase(&lower, env) {
@@ -71,10 +114,30 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
 
         // 3b. High-signal technology/tool patterns (constrained dictionary)
         let tools = [
-            "postgres", "postgresql", "redis", "kafka", "grpc", "graphql",
-            "react", "nextjs", "tailwind", "vite", "webpack", "jest", "pytest",
-            "tokio", "actix", "axum", "fastapi", "django", "flask",
-            "terraform", "ansible", "prometheus", "grafana", "nginx",
+            "postgres",
+            "postgresql",
+            "redis",
+            "kafka",
+            "grpc",
+            "graphql",
+            "react",
+            "nextjs",
+            "tailwind",
+            "vite",
+            "webpack",
+            "jest",
+            "pytest",
+            "tokio",
+            "actix",
+            "axum",
+            "fastapi",
+            "django",
+            "flask",
+            "terraform",
+            "ansible",
+            "prometheus",
+            "grafana",
+            "nginx",
         ];
         for tool in tools {
             if sentence_contains_phrase(&lower, tool) {
@@ -89,14 +152,22 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         // 4. Code patterns (Multi-language)
         // Rust/Python/JS/Java/C++ keywords
         let keywords = [
-            ("fn ", "Function", "defines"), ("def ", "Function", "defines"), 
-            ("function ", "Function", "defines"), ("struct ", "Struct", "defines"),
-            ("class ", "Class", "defines"), ("interface ", "Interface", "defines"),
-            ("trait ", "Trait", "defines"), ("impl ", "Impl", "implements"),
-            ("mod ", "Module", "defines"), ("module ", "Module", "defines"),
-            ("use ", "Import", "uses"), ("import ", "Import", "uses"),
-            ("package ", "Package", "defines"), ("export ", "Export", "defines"),
-            ("let ", "Symbol", "defines"), ("var ", "Symbol", "defines"),
+            ("fn ", "Function", "defines"),
+            ("def ", "Function", "defines"),
+            ("function ", "Function", "defines"),
+            ("struct ", "Struct", "defines"),
+            ("class ", "Class", "defines"),
+            ("interface ", "Interface", "defines"),
+            ("trait ", "Trait", "defines"),
+            ("impl ", "Impl", "implements"),
+            ("mod ", "Module", "defines"),
+            ("module ", "Module", "defines"),
+            ("use ", "Import", "uses"),
+            ("import ", "Import", "uses"),
+            ("package ", "Package", "defines"),
+            ("export ", "Export", "defines"),
+            ("let ", "Symbol", "defines"),
+            ("var ", "Symbol", "defines"),
             ("const ", "Symbol", "defines"),
         ];
         for (kw, kind, ctx) in keywords {
@@ -117,8 +188,11 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
         // @Decorator
         if let Some(pos) = trimmed.find('@') {
-            let rest = &trimmed[pos+1..];
-            let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            let rest = &trimmed[pos + 1..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
             if name.len() > 2 && !is_stopword(&name) {
                 entities.push(ExtractedEntity {
                     label: name,
@@ -147,7 +221,13 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
 }
 
 /// Try to extract an identifier after a code keyword (e.g. "fn ", "struct ").
-fn try_extract(line: &str, keyword: &str, kind: &str, context: &str, out: &mut Vec<ExtractedEntity>) {
+fn try_extract(
+    line: &str,
+    keyword: &str,
+    kind: &str,
+    context: &str,
+    out: &mut Vec<ExtractedEntity>,
+) {
     if let Some(name) = extract_after_keyword(line, keyword) {
         out.push(ExtractedEntity {
             label: name,
@@ -159,11 +239,22 @@ fn try_extract(line: &str, keyword: &str, kind: &str, context: &str, out: &mut V
 
 /// Parse the identifier name immediately following a keyword like "fn " or "struct ".
 fn extract_after_keyword(line: &str, keyword: &str) -> Option<String> {
-    let rest = line.strip_prefix(keyword)
+    let rest = line
+        .strip_prefix(keyword)
         .or_else(|| line.find(keyword).map(|pos| &line[pos + keyword.len()..]))?;
 
     // Skip common modifiers to find the actual identifier
-    let modifiers = ["const ", "static ", "async ", "pub ", "public ", "private ", "protected ", "final ", "readonly "];
+    let modifiers = [
+        "const ",
+        "static ",
+        "async ",
+        "pub ",
+        "public ",
+        "private ",
+        "protected ",
+        "final ",
+        "readonly ",
+    ];
     let mut current = rest.trim_start();
     let mut changed = true;
     while changed {
@@ -176,11 +267,16 @@ fn extract_after_keyword(line: &str, keyword: &str) -> Option<String> {
         }
     }
 
-    let name: String = current.chars()
+    let name: String = current
+        .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
         .collect();
 
-    if !name.is_empty() && !is_stopword(&name) { Some(name) } else { None }
+    if !name.is_empty() && !is_stopword(&name) {
+        Some(name)
+    } else {
+        None
+    }
 }
 
 /// Scan text for standalone identifiers (alphanumeric + underscore tokens).
@@ -385,9 +481,16 @@ pub fn is_stopword(token: &str) -> bool {
 
 /// Classify an identifier as Type (uppercase), Symbol (has underscore), or Term.
 fn infer_kind(label: &str) -> String {
-    if label.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+    if label
+        .chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+    {
         "Type".to_string()
-    } else if label.contains('_') || (label.chars().any(|c| c.is_lowercase()) && label.chars().any(|c| c.is_uppercase())) {
+    } else if label.contains('_')
+        || (label.chars().any(|c| c.is_lowercase()) && label.chars().any(|c| c.is_uppercase()))
+    {
         "Symbol".to_string()
     } else {
         "Term".to_string()
@@ -445,7 +548,10 @@ mod tests {
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"fixed"));
         assert!(labels.contains(&"refactored"));
-        assert_eq!(entities.iter().find(|e| e.label == "fixed").unwrap().kind, "Action");
+        assert_eq!(
+            entities.iter().find(|e| e.label == "fixed").unwrap().kind,
+            "Action"
+        );
     }
 
     #[test]
@@ -454,7 +560,10 @@ mod tests {
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"wsl"));
         assert!(labels.contains(&"docker"));
-        assert_eq!(entities.iter().find(|e| e.label == "wsl").unwrap().kind, "Environment");
+        assert_eq!(
+            entities.iter().find(|e| e.label == "wsl").unwrap().kind,
+            "Environment"
+        );
     }
 
     #[test]
@@ -471,12 +580,17 @@ mod tests {
 
     #[test]
     fn test_extract_tools_dictionary() {
-        let entities = extract_entities("We moved services to graphql + redis and added prometheus dashboards.");
+        let entities = extract_entities(
+            "We moved services to graphql + redis and added prometheus dashboards.",
+        );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"graphql"), "got: {:?}", labels);
         assert!(labels.contains(&"redis"), "got: {:?}", labels);
         assert!(labels.contains(&"prometheus"), "got: {:?}", labels);
-        assert_eq!(entities.iter().find(|e| e.label == "graphql").unwrap().kind, "Tool");
+        assert_eq!(
+            entities.iter().find(|e| e.label == "graphql").unwrap().kind,
+            "Tool"
+        );
     }
 
     #[test]
@@ -484,7 +598,14 @@ mod tests {
         let entities = extract_entities("my_config_value = 42");
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"my_config_value"));
-        assert_eq!(entities.iter().find(|e| e.label == "my_config_value").unwrap().kind, "Symbol");
+        assert_eq!(
+            entities
+                .iter()
+                .find(|e| e.label == "my_config_value")
+                .unwrap()
+                .kind,
+            "Symbol"
+        );
     }
 
     #[test]
@@ -492,12 +613,20 @@ mod tests {
         let entities = extract_entities("@Component class MyUI {}");
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"Component"));
-        assert_eq!(entities.iter().find(|e| e.label == "Component").unwrap().kind, "Decorator");
+        assert_eq!(
+            entities
+                .iter()
+                .find(|e| e.label == "Component")
+                .unwrap()
+                .kind,
+            "Decorator"
+        );
     }
 
     #[test]
     fn test_multi_language_keywords() {
-        let entities = extract_entities("interface IService {}; package com.legend; export const X = 1;");
+        let entities =
+            extract_entities("interface IService {}; package com.legend; export const X = 1;");
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"IService"));
         assert!(labels.contains(&"com.legend"));
@@ -507,12 +636,26 @@ mod tests {
     #[test]
     fn test_identifier_normalization_splits_and_singularizes() {
         let ids = extract_identifiers("DataProcessors parse_http_requests and UserIDs");
-        assert!(ids.contains(&"DataProcessors".to_string()), "got: {:?}", ids);
-        assert!(ids.contains(&"dataProcessor".to_string()) || ids.contains(&"DataProcessor".to_string()) || ids.contains(&"dataprocessor".to_string()), "got: {:?}", ids);
+        assert!(
+            ids.contains(&"DataProcessors".to_string()),
+            "got: {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"dataProcessor".to_string())
+                || ids.contains(&"DataProcessor".to_string())
+                || ids.contains(&"dataprocessor".to_string()),
+            "got: {:?}",
+            ids
+        );
         assert!(ids.contains(&"parse".to_string()), "got: {:?}", ids);
         assert!(ids.contains(&"http".to_string()), "got: {:?}", ids);
         assert!(ids.contains(&"requests".to_string()), "got: {:?}", ids);
         assert!(ids.contains(&"request".to_string()), "got: {:?}", ids);
-        assert!(ids.contains(&"user".to_string()) || ids.contains(&"User".to_string()), "got: {:?}", ids);
+        assert!(
+            ids.contains(&"user".to_string()) || ids.contains(&"User".to_string()),
+            "got: {:?}",
+            ids
+        );
     }
 }
