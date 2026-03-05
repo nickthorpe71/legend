@@ -39,6 +39,17 @@ Requires [Rust](https://rustup.rs/).
 cargo install --git https://github.com/nickthorpe71/legend
 ```
 
+### Update
+
+Re-run the same install command to update to the latest version:
+
+| Shell | Command |
+|-------|---------|
+| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/nickthorpe71/legend/master/install.sh \| bash` |
+| PowerShell | `irm https://raw.githubusercontent.com/nickthorpe71/legend/master/install.ps1 \| iex` |
+| Git Bash (Windows) | `curl -fsSL https://raw.githubusercontent.com/nickthorpe71/legend/master/install.sh \| bash` |
+| CMD | `powershell -Command "irm https://raw.githubusercontent.com/nickthorpe71/legend/master/install.ps1 \| iex"` |
+
 ## Getting Started
 
 ### 1. Initialize Legend in your project
