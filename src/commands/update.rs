@@ -139,8 +139,7 @@ fn create_feature_from_update(
 fn recalculate_recency_scores(state: &mut LegendState) {
     let now = current_timestamp();
     const HALF_LIFE_SECS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
-    const LN_2: f64 = 0.693147;
-    let decay_rate = LN_2 / HALF_LIFE_SECS;
+    let decay_rate = std::f64::consts::LN_2 / HALF_LIFE_SECS;
 
     for feature in &mut state.features {
         let age = (now - feature.last_updated) as f64;
