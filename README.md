@@ -6,8 +6,29 @@ Legend persists project state and feature progress across sessions so AI coding 
 
 ## Installation
 
+### Quick Install (macOS / Linux)
+
 ```bash
-cargo install legend
+curl -fsSL https://raw.githubusercontent.com/nickthorpe71/legend/master/install.sh | bash
+```
+
+### Download Binary
+
+Prebuilt binaries are available on the [Releases page](https://github.com/nickthorpe71/legend/releases/latest):
+
+| Platform | Binary |
+|----------|--------|
+| Linux x86_64 | `legend-linux-x86_64` |
+| macOS x86_64 (Intel) | `legend-macos-x86_64` |
+| macOS aarch64 (Apple Silicon) | `legend-macos-aarch64` |
+| Windows x86_64 | `legend-windows-x86_64.exe` |
+
+Download, make executable (`chmod +x`), and move to a directory in your PATH.
+
+### Build from Source
+
+```bash
+cargo install --git https://github.com/nickthorpe71/legend
 ```
 
 ## Quick Start
@@ -118,4 +139,3 @@ This means your coding agent always knows about your project's features, their s
 ## License
 
 MIT
-User-added line for git test
