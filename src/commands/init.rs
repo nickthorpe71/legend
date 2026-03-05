@@ -314,21 +314,28 @@ This returns the "MANDATORY PROTOCOL", stats, recent session log, top graph node
 ### 2. During Session (FREQUENTLY)
 After every significant action (writing code, making a decision, discovering something, completing a task), record it:
 ```bash
-{cmd} memory tick "description of what just happened"
+{cmd} memory tick <<'EOF'
+description of what just happened
+EOF
 ```
+**IMPORTANT:** Always use heredoc (`<<'EOF'`) for tick and query messages. This prevents bash from interpreting backticks, apostrophes, or special characters in your text.
 You MUST tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
 
 ### 3. Before New Tasks (REQUIRED)
 Query for relevant context before diving into unfamiliar work:
 ```bash
-{cmd} memory query "topic you're about to work on"
+{cmd} memory query <<'EOF'
+topic you are about to work on
+EOF
 ```
 The top result is automatically reinforced — frequently useful memories rise naturally.
 
 ### 4. Session End (REQUIRED)
 Summarize what was accomplished:
 ```bash
-{cmd} memory tick "Session summary: what was done, what's next, any blockers"
+{cmd} memory tick <<'EOF'
+Session summary: what was done, what is next, any blockers
+EOF
 ```
 
 ## Memory Commands
@@ -336,8 +343,8 @@ Summarize what was accomplished:
 | Command | When to Use |
 |---------|-------------|
 | `{cmd} memory start` | **Session start** — one call for full context |
-| `{cmd} memory tick "<text>"` | Record decision, progress, discovery, blocker |
-| `{cmd} memory query "<text>"` | Recall related context (auto-reinforces top result) |
+| `{cmd} memory tick <<'EOF'`...`EOF` | Record decision, progress, discovery, blocker |
+| `{cmd} memory query <<'EOF'`...`EOF` | Recall related context (auto-reinforces top result) |
 | `{cmd} memory reinforce <signal> <id...>` | Explicit feedback: 1.0 = useful, -1.0 = irrelevant |
 | `{cmd} memory stats` | Check storage usage |
 | `{cmd} memory sessions [n]` | View chronological session log |
