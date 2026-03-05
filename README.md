@@ -2,7 +2,7 @@
 
 **Lightweight context memory for AI-assisted development.**
 
-Legend persists project state and feature progress across sessions so AI coding assistants don't lose context. Run `legend init` in any project to get started.
+Legend gives AI coding assistants persistent memory across sessions. It automatically tracks decisions, discoveries, and progress so your agent never loses context.
 
 ## Installation
 
@@ -29,118 +29,81 @@ Prebuilt binaries are available on the [Releases page](https://github.com/nickth
 | macOS aarch64 (Apple Silicon) | `legend-macos-aarch64` |
 | Windows x86_64 | `legend-windows-x86_64.exe` |
 
-Download, make executable (`chmod +x`), and move to a directory in your PATH.
-
 ### Build from Source
+
+Requires [Rust](https://rustup.rs/).
 
 ```bash
 cargo install --git https://github.com/nickthorpe71/legend
 ```
 
-## Quick Start
+## Getting Started
+
+### 1. Initialize Legend in your project
 
 ```bash
-# Initialize Legend in your project
 cd ~/my-project
 legend init
 ```
 
-This creates:
-- `.legend/` - Legend state storage
-- `.claude/settings.json` - Claude Code hooks (auto-loads context each session)
-- `.codex/settings.json` - Codex hooks (auto-loads context each session)
-- `.gemini/settings.json` - Gemini CLI hooks (auto-loads context each session)
-- `.github/copilot-instructions.md` - VS Code Copilot Chat instruction injection
-- `.rules`, `.cursorrules`, `.gemini/styleguide.md` - editor-specific instruction injection
-- `CLAUDE.md`, `CODEX.md`, `GEMINI.md`, `AGENTS.md` - shared Legend protocol instructions
+This sets up:
+- `.legend/` — compressed memory storage
+- Agent hooks for **Claude Code**, **Codex**, and **Gemini CLI** (auto-loads context each session)
+- Instruction injection for **VS Code Copilot**, **Cursor**, and **Zed**
+- Protocol files (`CLAUDE.md`, `CODEX.md`, `GEMINI.md`, `AGENTS.md`) that teach your agent how to use Legend
 
-Now when you start your agent in this project, Legend context loads automatically.
+Once initialized, your AI agent automatically loads Legend context at the start of every session.
 
-## Usage
+### 2. Discover your codebase
 
-```bash
-# View current state (human-readable)
-legend show
+When you start your first session with an AI agent, ask it:
 
-# Get full state as JSON (for AI consumption)
-legend get_state
+> "Run `legend discover --apply` to scan this project and build initial context."
 
-# Search for features
-legend search auth
-legend search --status InProgress
-legend search --domain api
-legend search --tag backend
+Legend will analyze your project's structure, manifests, entry points, git history, and documentation, then ingest the findings into memory. This gives your agent a head start on understanding the codebase.
 
-# Update features (pipe JSON to stdin)
-echo '{"features": [{"id": "auth", "status": "Complete"}]}' | legend update
+### 3. Start working
 
-## Onboarding & Discovery
+That's it. Legend works in the background from here:
 
-If you're starting in an existing codebase, Legend can autonomously generate an investigation plan to build a mental model of the project.
+- **Session start** — your agent runs `legend memory start` to load context from prior sessions
+- **During work** — your agent runs `legend memory tick "..."` to record decisions, bugs, and progress
+- **Before unfamiliar tasks** — your agent runs `legend memory query "..."` to recall relevant context
+- **Consolidation** — Legend automatically merges related memories into a long-term knowledge graph
+
+Over time, Legend builds a rich, compressed history of your project that any compatible agent can draw from.
+
+## Dashboard
+
+Launch the memory visualization dashboard to explore your project's knowledge graph:
 
 ```bash
-# 1. Scan the project to see a discovery report and investigation tasks
-legend discover
-
-# 2. Ingest high-signal files and the investigation plan into Legend's memory
-legend discover --apply
+legend dashboard
 ```
 
-### How LLM-Native Discovery Works:
-1.  **Static Analysis:** Legend scans for manifests (`Cargo.toml`, `package.json`), entry points, and documentation.
-2.  **Git Intelligence:** It analyzes the git history for architectural shifts, major refactors, and key decisions.
-3.  **Investigation Tasks:** It generates a "Task List" for the AI assistant (e.g., "Investigate commit `a1b2c3d` regarding the new caching layer").
-4.  **LLM Execution:** When you start a session, the LLM sees these tasks in memory and proactively runs the investigations to populate the long-term graph with high-signal insights.
+## Memory Commands
 
-## Tracking Features
+These are primarily used by your AI agent automatically, but you can run them manually too:
 
-Add a new feature:
-```bash
-echo '{
-  "features": [{
-    "id": "user-auth",
-    "name": "User Authentication",
-    "domain": "backend",
-    "description": "Login/logout with JWT tokens",
-    "status": "InProgress",
-    "tags": ["security", "api"],
-    "files_involved": ["src/auth.rs", "src/middleware.rs"]
-  }]
-}' | legend update
-```
-
-Update an existing feature (only `id` + changed fields needed):
-```bash
-echo '{"features": [{"id": "user-auth", "status": "Complete"}]}' | legend update
-```
-
-Remove a feature:
-```bash
-echo '{"remove_features": ["old-feature-id"]}' | legend update
-```
+| Command | Purpose |
+|---------|---------|
+| `legend memory start` | Load session context (run at session start) |
+| `legend memory tick "<text>"` | Record a decision, discovery, or progress note |
+| `legend memory query "<text>"` | Search memory for relevant context |
+| `legend memory stats` | Check memory storage usage |
+| `legend memory sessions` | View chronological session log |
+| `legend memory consolidate` | Merge similar memories into long-term graph |
+| `legend memory task set "<text>"` | Set the current task |
 
 ## How It Works
 
-Legend stores project state in `.legend/state.lz4` using bincode + LZ4 compression for fast (<5ms) reads. When you run `legend init`, it also creates:
+Legend stores memories in `.legend/memory.lz4` using LZ4 compression for fast (<5ms) reads. Memories are organized into three layers:
 
-- Shell hooks for Claude Code, Codex, and Gemini CLI
-- Instruction-injection files for VS Code Copilot, Cursor, and Zed
+1. **Short-term** — recent ticks, high detail, decays over time
+2. **Mid-term** — consolidated clusters of related memories
+3. **Long-term** — a knowledge graph of entities, relationships, and architectural patterns
 
-For hook-capable agents, Legend configures:
-
-1. **SessionStart**: Automatically loads Legend context when you start an agent session
-2. **Prompt hook** (`UserPromptSubmit` / `BeforeAgent`): Reminds the agent that Legend commands are available
-
-For instruction-injection agents (including Copilot), the same Legend protocol is auto-included in chat context.
-
-This means your coding agent always knows about your project's features, their status, and which files are involved.
-
-## Status Values
-
-- `Pending` - Not started
-- `InProgress` - Currently being worked on
-- `Blocked` - Waiting on something
-- `Complete` - Done
+Salience-based retrieval ensures the most relevant memories surface first. Frequently accessed memories are automatically reinforced; stale ones decay naturally.
 
 ## License
 
