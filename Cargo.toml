@@ -1,6 +1,6 @@
 [package]
 name = "legend"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Nick Thorpe"]
 description = "Lightweight context memory layer for AI-assisted development"
@@ -28,3 +28,7 @@ crossterm = "0.28"
 # [[bench]]
 # name = "performance"
 # harness = false
+
+[profile.release]
+strip = true
+lto = "thin"
