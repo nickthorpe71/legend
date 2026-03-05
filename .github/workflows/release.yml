@@ -105,6 +105,11 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/nickthorpe71/legend/master/install.sh | bash
             ```
 
+            **Quick install (Windows PowerShell):**
+            ```powershell
+            irm https://raw.githubusercontent.com/nickthorpe71/legend/master/install.ps1 | iex
+            ```
+
             **Manual download:** grab the binary for your platform below, make it executable, and move it to your PATH.
 
             **Build from source:**

@@ -12,6 +12,12 @@ Legend persists project state and feature progress across sessions so AI coding 
 curl -fsSL https://raw.githubusercontent.com/nickthorpe71/legend/master/install.sh | bash
 ```
 
+### Quick Install (Windows PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/nickthorpe71/legend/master/install.ps1 | iex
+```
+
 ### Download Binary
 
 Prebuilt binaries are available on the [Releases page](https://github.com/nickthorpe71/legend/releases/latest):
