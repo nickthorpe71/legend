@@ -6,9 +6,10 @@ INSTALL_DIR="${LEGEND_INSTALL_DIR:-$HOME/.local/bin}"
 
 # Detect OS
 case "$(uname -s)" in
-  Linux*)  OS="linux" ;;
-  Darwin*) OS="macos" ;;
-  *)       echo "Error: Unsupported OS $(uname -s). Use Windows releases from GitHub." >&2; exit 1 ;;
+  Linux*)          OS="linux" ;;
+  Darwin*)         OS="macos" ;;
+  MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
+  *)               echo "Error: Unsupported OS $(uname -s)." >&2; exit 1 ;;
 esac
 
 # Detect architecture
@@ -18,7 +19,11 @@ case "$(uname -m)" in
   *)             echo "Error: Unsupported architecture $(uname -m)." >&2; exit 1 ;;
 esac
 
-BINARY="legend-${OS}-${ARCH}"
+if [ "$OS" = "windows" ]; then
+  BINARY="legend-${OS}-${ARCH}.exe"
+else
+  BINARY="legend-${OS}-${ARCH}"
+fi
 
 echo "Detecting platform: ${OS} ${ARCH}"
 
@@ -40,10 +45,16 @@ mkdir -p "$INSTALL_DIR"
 
 # Download binary
 echo "Downloading ${BINARY}..."
-curl -fsSL "$URL" -o "${INSTALL_DIR}/legend"
-chmod +x "${INSTALL_DIR}/legend"
+if [ "$OS" = "windows" ]; then
+  DEST="${INSTALL_DIR}/legend.exe"
+else
+  DEST="${INSTALL_DIR}/legend"
+fi
 
-echo "Installed legend ${TAG} to ${INSTALL_DIR}/legend"
+curl -fsSL "$URL" -o "$DEST"
+chmod +x "$DEST"
+
+echo "Installed legend ${TAG} to ${DEST}"
 
 # Check if install dir is in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
