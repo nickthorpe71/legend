@@ -4,6 +4,8 @@
 
 Legend gives AI coding assistants persistent memory across sessions. It automatically tracks decisions, discoveries, and progress so your agent never loses context.
 
+> For a deeper understanding of Legend's architecture and design principles, read the [Legend Paper](LEGEND_PAPER.md).
+
 ## Installation
 
 ### Quick Install (macOS / Linux)
