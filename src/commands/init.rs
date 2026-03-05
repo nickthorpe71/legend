@@ -122,10 +122,10 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Set up Git merge driver for Legend state files (.lz4).
+/// Set up Git merge driver for Legend state files (.lz4 and events.jsonl).
 ///
 /// This tells Git to use 'legend git-merge-driver' to resolve conflicts
-/// in .legend/state.lz4 and .legend/memory.lz4.
+/// in .legend/state.lz4, .legend/memory.lz4, and .legend/events.jsonl.
 fn setup_git_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
 
@@ -148,19 +148,31 @@ fn setup_git_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 2. Add to .gitattributes
-    let attr_line = ".legend/*.lz4 merge=legend\n";
+    let attr_lines: &[&str] = &[
+        ".legend/*.lz4 merge=legend",
+        ".legend/events.jsonl merge=legend",
+    ];
     let attr_path = Path::new(".gitattributes");
 
     if attr_path.exists() {
         let content = fs::read_to_string(attr_path)?;
-        if !content.contains("merge=legend") {
+        let mut added = false;
+        {
             let mut f = fs::OpenOptions::new().append(true).open(attr_path)?;
             use std::io::Write;
-            f.write_all(attr_line.as_bytes())?;
-            println!("✓ Added Legend merge driver to .gitattributes");
+            for line in attr_lines {
+                if !content.contains(line) {
+                    f.write_all(format!("{}\n", line).as_bytes())?;
+                    added = true;
+                }
+            }
+        }
+        if added {
+            println!("✓ Updated .gitattributes with Legend merge driver rules");
         }
     } else {
-        fs::write(attr_path, attr_line)?;
+        let content = attr_lines.join("\n") + "\n";
+        fs::write(attr_path, content)?;
         println!("✓ Created .gitattributes with Legend merge driver");
     }
 
