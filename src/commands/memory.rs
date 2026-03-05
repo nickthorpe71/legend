@@ -601,7 +601,7 @@ fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
     }
 
     out.push_str("\n---\n");
-    out.push_str("*Use `legend memory tick \"...\"` to record your progress and decisions.*\n");
+    out.push_str("*Use heredoc for tick/query: `legend memory tick <<'EOF'` ... `EOF`*\n");
     out
 }
 
