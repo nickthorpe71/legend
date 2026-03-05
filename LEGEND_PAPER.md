@@ -127,27 +127,121 @@ The paper’s claims can be evaluated against explicit hypotheses rather than na
 
 Each hypothesis can be tracked with reproducible command outputs (`memory start --tokens`, `memory stats`, `memory sessions`, and test runs), fixed sampling windows, and explicit uncertainty declarations where estimates are used. This protocol is not yet a randomized controlled study, but it is falsifiable and suitable for iterative engineering validation.
 
-## 10. Empirical Outcomes: A Case Study in Strategy Game Development
-Current evidence comes from longitudinal operational use across multiple repositories and from the project’s built-in telemetry surfaces (`events.jsonl`, token overhead estimator, storage statistics, and tests). These results should be interpreted as engineering evidence rather than controlled academic trials, but they are concrete and reproducible within the project tooling.
+## 10. Empirical Outcomes: A Case Study in Tactical RPG Development
 
-### 10.1 Longitudinal Metrics
-In a case study involving the development of a complex, terminal-based strategy game, a 14-day analysis of the `events.jsonl` telemetry revealed a sustained high-intensity development cycle:
-- **Total Duration:** 13.9 days of active development.
-- **Session Continuity:** 198 distinct sessions successfully initialized and synchronized via Legend hooks.
-- **Memory Density:** 950 total ticks recorded, of which 949 (99.9%) were manual high-signal entries.
-- **Knowledge Categorization:** 144 bug root-cause analyses, 19 architectural refactors, and 15 core design decisions were explicitly persisted and retrieved across session boundaries.
+Current evidence comes from longitudinal operational use and from Legend’s built-in telemetry surfaces (`events.jsonl`, storage statistics, and graph introspection). The primary case study tracks the full development lifecycle of a Fire Emblem-inspired tactical RPG built in Rust, from initial concept through multiple architectural pivots to a feature-complete prototype. These results should be interpreted as engineering evidence rather than controlled academic trials, but they are concrete, reproducible within the project tooling, and internally consistent across multiple observational dimensions.
 
-At the time of sampling, the memory store for this project remained extremely lean: `.legend/memory.lz4` occupied 217KB, despite representing nearly 200 sessions of complex path-dependent work.
+### 10.1 Project Context and Methodology
 
-### 10.2 Token Efficiency and Net Savings
-Session-start token overhead is estimated by built-in heuristics. Across the strategy game case study, Legend maintained an average session-start injection of approximately 1,112 tokens.
+The subject project is a pixel-art tactical RPG featuring procedural map generation, a music composition system (MML-based), unit bonding mechanics, and a biome-driven visual theming engine. Development was conducted by a single developer working with an LLM agent across 218 sessions over 16.4 days. Legend was integrated from project inception via `CLAUDE.md` mandate, meaning all sessions operated under the full memory protocol: `memory start` at session open, `memory tick` after significant actions, `memory query` before unfamiliar work, and summary ticks at session close.
 
-Estimated net savings reached approximately **150,000+ tokens** over the 198-session history. This is calculated by comparing the automated injection against a conservative manual context reconstruction baseline (3,000–5,000 tokens) required for an agent to regain equivalent situational awareness in a stateless workflow. This represents a ~65% reduction in "re-onboarding" costs.
+The project underwent a major architectural pivot on day one—shifting from a tower defense game to a Fire Emblem-style tactics game—and subsequently evolved through multiple feature phases including procedural generation, sprite rendering, campaign progression, and music systems. This pivot-rich trajectory makes it a strong test case for Legend’s continuity and decision-retention claims.
 
-### 10.3 Behavioral Evidence
-Beyond aggregate metrics, the telemetry reveals three recurring behavioral patterns that directly reflect the mechanisms described in Section 8.1. First, decision stability: the agent consistently recalled domain-specific constants and design choices (e.g., "Mixed damage takes max(phys, mag) instead of average") that would otherwise have been lost or hallucinated between sessions—evidence that selective persistence and reconsolidation are preserving high-salience traces across session boundaries. Second, failure path avoidance: recorded root-cause analyses (e.g., a dead-end approach in terrain generation) were persisted with sufficient relational context that subsequent sessions surfaced them before the failed approach was retried—evidence of effective graph-primed retrieval. Third, task hand-off efficiency: the 198-session continuity was maintained with zero manual re-onboarding prompts, with the agent autonomously resuming multi-day tasks from retrieved checklists and reproduction steps—evidence of cold-start synchronization functioning as intended.
+All metrics below are derived from the project’s `events.jsonl` telemetry log (1,410 total events) and `.legend/memory.lz4` graph state.
 
-Taken together, these outcomes support a moderate conclusion: Legend already delivers measurable continuity and efficiency gains in real workflows, while still requiring more formal evaluation and ongoing hardening for publication-grade claims.
+### 10.2 Aggregate Metrics
+
+| Metric | Value |
+|--------|-------|
+| Active development duration | 16.4 days (394 hours) |
+| Sessions initialized | 218 |
+| Ticks recorded | 1,055 |
+| Explicit queries issued | 76 |
+| Auto-consolidations triggered | 57 |
+| Manual consolidations | 4 |
+| Memory groups merged | 239 |
+| Average ticks per session | 4.8 |
+| Query-to-tick ratio | 1:13.8 |
+| Total event log size | 1.38 MB |
+| Compressed memory graph size | 0.15 MB |
+| Storage compression ratio | 9.2:1 (graph vs. raw log) |
+
+The memory graph remained bounded at 0.15 MB despite encoding 218 sessions of path-dependent work, confirming that Legend’s pruning and consolidation mechanisms prevent unbounded growth under sustained use (Section 4.8).
+
+### 10.3 Tick Content Categorization
+
+Manual classification of tick content reveals the distribution of recorded knowledge:
+
+| Category | Count | Proportion | Description |
+|----------|-------|------------|-------------|
+| Feature implementation | 191 | 18.1% | New systems and capabilities built |
+| Bug reports and root-cause analyses | 119 | 11.3% | Problems discovered, symptoms documented |
+| Session summaries | 74 | 7.0% | End-of-session state and next-steps |
+| Architecture decisions | 38 | 3.6% | Structural choices with rationale |
+| Explicit decisions with rationale | 23 | 2.2% | Deliberate trade-off documentation |
+| Discussion conclusions | 16 | 1.5% | User–agent agreements on direction |
+| Bug fixes | 13 | 1.2% | Resolutions with root-cause linkage |
+| Blockers | 12 | 1.1% | External dependencies, stuck points |
+| Discoveries | 5 | 0.5% | Insights without corresponding file changes |
+| Contextual and directional | 564 | 53.5% | User feedback, reference material, direction changes |
+
+The 53.5% contextual category warrants specific attention. These entries capture user feedback, design direction changes, reference material, and in-progress reasoning that does not fit rigid categories. Inspection of samples reveals content such as "User provided reference sprite for knight class," "Moving from terminal rendering to bitmap," and "User needs dialog/notification system for story beats." This material is valuable precisely because it records *why* the project moved in particular directions—tacit rationale that is irretrievable from code diffs or commit messages alone.
+
+### 10.4 Tick Frequency Decline and Memory Self-Sufficiency
+
+A distinctive pattern emerges when tick frequency is analyzed by session cohort:
+
+| Session range | Avg. ticks/session | Phase |
+|---------------|-------------------|-------|
+| 1–50 | 11.8 | Foundation and rapid exploration |
+| 51–100 | 3.3 | Refinement and stabilization |
+| 101–150 | 1.0 | Steady-state, memory-sufficient |
+| 151–218 | 3.0 | New feature introduction |
+
+The declining curve from 11.8 to 1.0 ticks per session is not evidence of disengagement. Rather, it reflects a transition from knowledge-building to knowledge-retrieval: as the memory graph matured, the agent needed to record less because prior context was available via retrieval and cold-start injection. The recovery to 3.0 ticks in sessions 151–218 corresponds to the introduction of new subsystems (biome theming, campaign progression) that generated genuinely novel information not yet captured in existing memory.
+
+This pattern is consistent with the theoretical expectation from Section 2: a well-functioning memory system should exhibit decreasing marginal recording cost as its coverage of the project’s decision space increases. The system becomes self-sufficient rather than self-amplifying.
+
+### 10.5 Query Patterns and Retrieval Behavior
+
+The 76 explicit queries cluster around game design mechanics and systems integration:
+
+| Query topic | Frequency | Example |
+|-------------|-----------|---------|
+| Campaign/progression | 10 | "after each battle next level campaign progression" |
+| Story and narrative | 6 | "roguelike plan gameplay design features" |
+| Battle mechanics | 5 | "new feature gameplay loop campaign" |
+| Animation | 4 | "movement animation enemy sprites" |
+| Class system | 3 | "class upgrades progression peasant soldier warrior" |
+| Enemy behavior | 3 | "enemy teleportation bug movement position" |
+
+Two observations are notable. First, queries focus on *design-level* concerns (campaign structure, progression philosophy) rather than implementation details (function signatures, file locations)—suggesting that Legend’s primary retrieval value in this project was preserving design intent across sessions, not serving as a code search tool. Second, the low query frequency (5.4% of all events) combined with the tick frequency decline implies that most context was delivered automatically via `memory start` cold-start injection rather than requiring explicit recall.
+
+### 10.6 Consolidation Dynamics
+
+Auto-consolidation first triggered after 109 ticks and subsequently occurred 57 times, merging 239 memory groups at an average of 4.2 groups per consolidation event. This cadence aligns with the 15-tick consolidation suggestion interval (Section 4.7) and confirms that the clustering threshold produces actionable group sizes—neither so aggressive as to over-compress active work, nor so conservative as to leave short-term memory fragmented.
+
+The graph node composition evolved to reflect domain-specific concerns. The five most frequently referenced node types across tick events were `EXPERIENCE` (549 occurrences), `Executed` (528), `tool` (525), `status` (458), and `Fixed` (119). These reflect the game development domain’s characteristic cycle of implementation, testing, and iteration. Domain-specific symbols such as `pixel_renderer` (64 occurrences) and `units` (108) demonstrate that the entity extraction pipeline (Section 4.5) successfully captures project-specific vocabulary and promotes it to durable graph structure.
+
+### 10.7 Storage Efficiency
+
+Total Legend storage for the project remained at 1.54 MB:
+
+| File | Size | Purpose |
+|------|------|---------|
+| `events.jsonl` | 1.38 MB | Append-only telemetry log |
+| `memory.lz4` | 0.15 MB | Compressed graph + short-term memory |
+| `llm_tasks.json` | 0.01 MB | Pending augmentation tasks |
+
+The 9.2:1 compression ratio between the raw event log and the active memory graph demonstrates that consolidation and pruning are performing as designed: 218 sessions of complex, path-dependent work are represented in 0.15 MB of structured memory. This is consistent with the boundedness guarantees described in Section 4.8.
+
+### 10.8 Behavioral Evidence
+
+Beyond aggregate metrics, the telemetry reveals four recurring behavioral patterns that directly reflect the mechanisms described in Section 8.1.
+
+**Decision stability.** The agent consistently recalled domain-specific constants and design choices (e.g., "Mixed damage takes max(phys, mag) instead of average," "Honor is rewarded, not just admired" as a core design tenet) that would otherwise have been lost or hallucinated between sessions. This is evidence that selective persistence and reconsolidation are preserving high-salience traces across session boundaries.
+
+**Failure path avoidance.** Recorded root-cause analyses (e.g., dead-end approaches in terrain generation, pre-calculated pathfinding causing units to route around each other’s starting positions) were persisted with sufficient relational context that subsequent sessions surfaced them before the failed approach was retried. This is evidence of effective graph-primed retrieval operating on bug and architecture ticks.
+
+**Design principle continuity across pivots.** The day-one pivot from tower defense to tactics RPG was captured with explicit rationale for what was retained (grid system, cursor mechanics) and what was replaced (towers with units, waves with turn-based combat). Subsequent sessions referenced this pivot context when making analogous design decisions, demonstrating that Legend preserved not just the outcome but the decision framework. Later, the "Spine Method" for procedural map generation was recorded as a design philosophy (structured tactical layouts over random noise scatter), and subsequent scenario implementations referenced this principle via query retrieval.
+
+**Task hand-off efficiency.** The 218-session continuity was maintained with zero manual re-onboarding prompts. The agent autonomously resumed multi-day tasks from retrieved checklists and reproduction steps, evidence of cold-start synchronization functioning as intended.
+
+### 10.9 Interpretation and Limitations
+
+Taken together, these outcomes support a moderate conclusion: Legend delivers measurable continuity and efficiency gains in a real, pivot-rich development workflow. The tick frequency decline pattern provides indirect evidence for the system’s central theoretical claim—that memory quality depends on selective persistence rather than maximum retained volume. As the graph matured, less recording was needed because the right information was already available.
+
+Several limitations apply. The case study involves a single developer working with a single agent, and the tick categorization was performed post hoc rather than by automated classification. The token savings estimate from prior sampling (approximately 150,000+ tokens over the session history, based on a conservative 3,000–5,000 token manual re-onboarding baseline versus Legend’s approximately 1,100-token automated injection) has not been validated against a controlled stateless baseline. Cross-project generalization remains to be established.
 
 ## 11. Threats to Validity and Reliability Status
 The current evidence base has limits. Some headline outcomes are estimator-derived rather than directly metered, and therefore carry uncertainty. Cross-project comparisons are observational and may confound workload shape, team behavior, and repository complexity. Sampling windows are also uneven across projects.
