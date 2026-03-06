@@ -322,13 +322,13 @@ EOF
 You MUST tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
 
 ### 3. Before New Tasks (REQUIRED)
-Query for relevant context before diving into unfamiliar work:
+Query for relevant context BEFORE diving into unfamiliar work:
 ```bash
 {cmd} memory query <<'EOF'
 topic you are about to work on
 EOF
 ```
-The top result is automatically reinforced — frequently useful memories rise naturally.
+**ALWAYS query before starting work on a new topic.** The top result is automatically reinforced — frequently useful memories rise naturally. Skipping this step means you lose access to prior decisions and context.
 
 ### 4. Session End (REQUIRED)
 Summarize what was accomplished:
@@ -371,6 +371,11 @@ Launch the live 3D memory visualization dashboard:
 - **Rejected approaches**: "Decided against X because Y"
 
 **Tick frequency:** Aim for 3-8 ticks per session. After major decisions or substantial work.
+
+**You MUST query before:**
+- Starting work on a module or feature you haven't touched this session
+- Investigating a bug — query the error message or affected module
+- Making a design decision — check if a prior decision exists
 
 ## Understanding Start Output
 

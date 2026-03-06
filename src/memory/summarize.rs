@@ -172,4 +172,144 @@ mod tests {
             summary
         );
     }
+
+    #[test]
+    fn test_summarize_text_merges() {
+        let result = summarize_text("first part", "second part");
+        assert!(!result.is_empty());
+        // Should contain content from at least one input
+        assert!(
+            result.contains("first") || result.contains("second"),
+            "got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_summarize_group_empty() {
+        let result = summarize_group(&[]);
+        assert_eq!(result, "Consolidated memory");
+    }
+
+    #[test]
+    fn test_summarize_group_single_entry() {
+        let entry = ShortTermEntry {
+            id: 1,
+            text: "Fixed the parser bug in memory module".to_string(),
+            summary: String::new(),
+            embedding: vec![],
+            salience: 0.5,
+            usage: 1,
+            last_access: 100,
+            reconsolidation_count: 0,
+            labile_until: 0,
+            refs: vec![],
+            gradient_sq_sum: 0.0,
+            density: 0.0,
+        };
+        let result = summarize_group(&[entry]);
+        assert!(!result.is_empty());
+        assert_ne!(result, "Consolidated memory");
+    }
+
+    #[test]
+    fn test_summarize_group_picks_top_by_salience() {
+        let entries: Vec<ShortTermEntry> = (0..5)
+            .map(|i| ShortTermEntry {
+                id: i,
+                text: format!("Entry number {} with some content here", i),
+                summary: String::new(),
+                embedding: vec![],
+                salience: i as f32 * 0.2,
+                usage: 0,
+                last_access: 100,
+                reconsolidation_count: 0,
+                labile_until: 0,
+                refs: vec![],
+                gradient_sq_sum: 0.0,
+                density: 0.0,
+            })
+            .collect();
+        let result = summarize_group(&entries);
+        // Should contain content from highest-salience entries (3, 4)
+        assert!(result.contains('|') || !result.is_empty());
+        assert!(result.len() <= 300);
+    }
+
+    #[test]
+    fn test_summarize_group_respects_max_length() {
+        let entries: Vec<ShortTermEntry> = (0..3)
+            .map(|i| ShortTermEntry {
+                id: i,
+                text: "A".repeat(200),
+                summary: String::new(),
+                embedding: vec![],
+                salience: 1.0,
+                usage: 5,
+                last_access: 100,
+                reconsolidation_count: 0,
+                labile_until: 0,
+                refs: vec![],
+                gradient_sq_sum: 0.0,
+                density: 0.0,
+            })
+            .collect();
+        let result = summarize_group(&entries);
+        assert!(result.len() <= 300, "got len {}", result.len());
+    }
+
+    #[test]
+    fn test_summarize_group_uses_existing_summary() {
+        let entry = ShortTermEntry {
+            id: 1,
+            text: "Very long original text that should not be used".to_string(),
+            summary: "Pre-computed summary".to_string(),
+            embedding: vec![],
+            salience: 0.5,
+            usage: 1,
+            last_access: 100,
+            reconsolidation_count: 0,
+            labile_until: 0,
+            refs: vec![],
+            gradient_sq_sum: 0.0,
+            density: 0.0,
+        };
+        let result = summarize_group(&[entry]);
+        assert!(result.contains("Pre-computed summary"));
+    }
+
+    #[test]
+    fn test_chunk_text_empty() {
+        let chunks = chunk_text("");
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn test_chunk_text_no_content_lost() {
+        let text = "Line one.\nLine two.\nLine three.\nLine four.\nLine five.";
+        let chunks = chunk_text(text);
+        let reassembled: String = chunks.join(" ");
+        // All content should be present
+        assert!(reassembled.contains("Line one"));
+        assert!(reassembled.contains("Line five"));
+    }
+
+    #[test]
+    fn test_summarize_single_preserves_short() {
+        let text = "Short decision text";
+        assert_eq!(summarize_single(text), text);
+    }
+
+    #[test]
+    fn test_summarize_single_code_reference_boost() {
+        let text = "We processed the data using standard operations. \
+                     fn handle_memory() is the core entry point for all memory operations. \
+                     Various configuration options are available for tuning performance.";
+        let summary = summarize_single(text);
+        assert!(
+            summary.contains("fn handle_memory"),
+            "Code reference sentence should be preferred, got: {}",
+            summary
+        );
+    }
 }

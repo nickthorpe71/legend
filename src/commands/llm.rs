@@ -1145,4 +1145,177 @@ mod tests {
             Some(25)
         ));
     }
+
+    // -----------------------------------------------------------------------
+    // analyze_text_for_llm
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_analyze_short_text_no_llm() {
+        let report = analyze_text_for_llm("Fixed a bug");
+        assert!(!report.needs_llm);
+        assert!(report.recommended_tasks.is_empty());
+    }
+
+    #[test]
+    fn test_analyze_long_multipart_recommends_cluster_summary() {
+        let text = "First we fixed the parser. | Then we updated the serializer. | Finally we ran all tests and verified the output matched expectations. | Additional cleanup was performed on unused imports and dead code paths.";
+        let report = analyze_text_for_llm(text);
+        assert!(
+            report.recommended_tasks.iter().any(|t| t.kind == "cluster_summary"),
+            "Long multi-part text should recommend cluster_summary, got: {:?}",
+            report.recommended_tasks.iter().map(|t| &t.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_analyze_ambiguous_query_recommends_rerank() {
+        let text = "Which approach should we use for caching, or is there a better alternative for handling distributed state across multiple services in production?";
+        let report = analyze_text_for_llm(text);
+        assert!(
+            report.recommended_tasks.iter().any(|t| t.kind == "query_rerank"),
+            "Ambiguous query should recommend rerank, got: {:?}",
+            report.recommended_tasks.iter().map(|t| &t.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_analyze_metrics_populated() {
+        let text = "Fixed a bug in src/main.rs";
+        let report = analyze_text_for_llm(text);
+        assert!(report.metrics.chars > 0);
+        assert!(report.metrics.words > 0);
+    }
+
+    #[test]
+    fn test_analyze_tasks_sorted_by_priority() {
+        // Long text with separators and a question — should trigger multiple
+        let text = "The team discussed how the service behaved during the release and we described the incident in broad language without naming concrete modules or files or function names or infrastructure providers or tooling details so the report remained high level? | Is it good or bad that we also added a new cache layer and refactored the query pipeline and updated all documentation?";
+        let report = analyze_text_for_llm(text);
+        if report.recommended_tasks.len() >= 2 {
+            assert!(
+                report.recommended_tasks[0].priority <= report.recommended_tasks[1].priority,
+                "Tasks should be sorted by priority"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // text_fingerprint
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_text_fingerprint_deterministic() {
+        let a = text_fingerprint("Hello, world!");
+        let b = text_fingerprint("Hello, world!");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_text_fingerprint_case_insensitive() {
+        let a = text_fingerprint("Hello World");
+        let b = text_fingerprint("hello world");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_text_fingerprint_normalizes_punctuation() {
+        let a = text_fingerprint("hello, world!");
+        let b = text_fingerprint("hello world");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_text_fingerprint_different_text_different_hash() {
+        assert_ne!(text_fingerprint("hello"), text_fingerprint("world"));
+    }
+
+    // -----------------------------------------------------------------------
+    // should_enqueue_auto_task — additional coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_should_enqueue_empty_tasks() {
+        assert!(should_enqueue_auto_task(
+            &[],
+            &LlmTaskKind::EntityExtract,
+            &text_fingerprint("test"),
+            Some(100)
+        ));
+    }
+
+    #[test]
+    fn test_should_enqueue_respects_pending_cap() {
+        let tasks: Vec<LlmTaskRecord> = (0..3)
+            .map(|i| LlmTaskRecord {
+                id: format!("t{}", i),
+                kind: LlmTaskKind::EntityExtract,
+                status: TaskStatus::Pending,
+                created_ts: 1,
+                updated_ts: 1,
+                source: "memory_tick".into(),
+                trigger: analyze_text_for_llm("dummy"),
+                input: json!({"text": format!("unique text {}", i)}),
+                prompt: "".into(),
+                json_schema: json!({}),
+                acceptance_rules: json!({}),
+                result: None,
+                apply_summary: None,
+                input_fingerprint: Some(text_fingerprint(&format!("unique text {}", i))),
+                source_tick: Some(i as u64),
+            })
+            .collect();
+
+        // Should reject — already at cap (3)
+        assert!(!should_enqueue_auto_task(
+            &tasks,
+            &LlmTaskKind::EntityExtract,
+            &text_fingerprint("brand new text"),
+            Some(100)
+        ));
+    }
+
+    #[test]
+    fn test_should_enqueue_different_kind_not_blocked() {
+        let tasks = vec![LlmTaskRecord {
+            id: "t1".into(),
+            kind: LlmTaskKind::EntityExtract,
+            status: TaskStatus::Pending,
+            created_ts: 1,
+            updated_ts: 1,
+            source: "memory_tick".into(),
+            trigger: analyze_text_for_llm("dummy"),
+            input: json!({"text": "x"}),
+            prompt: "".into(),
+            json_schema: json!({}),
+            acceptance_rules: json!({}),
+            result: None,
+            apply_summary: None,
+            input_fingerprint: Some(text_fingerprint("x")),
+            source_tick: Some(10),
+        }];
+
+        // Different kind should not be blocked by EntityExtract
+        assert!(should_enqueue_auto_task(
+            &tasks,
+            &LlmTaskKind::ClusterSummary,
+            &text_fingerprint("different"),
+            Some(100)
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // LlmTaskKind::parse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_llm_task_kind_parse() {
+        assert_eq!(LlmTaskKind::parse("entity_extract"), Some(LlmTaskKind::EntityExtract));
+        assert_eq!(LlmTaskKind::parse("extract"), Some(LlmTaskKind::EntityExtract));
+        assert_eq!(LlmTaskKind::parse("cluster_summary"), Some(LlmTaskKind::ClusterSummary));
+        assert_eq!(LlmTaskKind::parse("summary"), Some(LlmTaskKind::ClusterSummary));
+        assert_eq!(LlmTaskKind::parse("query_rerank"), Some(LlmTaskKind::QueryRerank));
+        assert_eq!(LlmTaskKind::parse("rerank"), Some(LlmTaskKind::QueryRerank));
+        assert_eq!(LlmTaskKind::parse("unknown"), None);
+    }
 }

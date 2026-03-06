@@ -2,6 +2,7 @@ use super::llm::{auto_trigger_for_text, LlmAutoTriggerSummary};
 use crate::memory::{reset_memory, MemoryContext, MemoryState, ReinforceResult, TickResult};
 use serde::Serialize;
 use std::io::{self, Read};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // Rich Event Data Types for Dashboard Observability
@@ -146,11 +147,39 @@ fn parse_tick_args(args: &[String]) -> Result<TickOptions, Box<dyn std::error::E
     })
 }
 
+/// Detect known noise patterns that should be rejected before storage.
+fn is_noise_tick(text: &str) -> bool {
+    let t = text.trim();
+    // Empty or near-empty
+    if t.len() < 10 {
+        return true;
+    }
+    // Auto-generated tool telemetry
+    if t.contains("Executed tool") && t.contains("with status") {
+        return true;
+    }
+    // Agent turn noise
+    if t.starts_with("EXPERIENCE:") && t.contains("Completed an agent turn") {
+        return true;
+    }
+    // Generic experience with empty tool/status
+    if t.starts_with("EXPERIENCE:") && t.contains("''") {
+        return true;
+    }
+    false
+}
+
 fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_tick_args(args)?;
 
     if opts.text.trim().is_empty() {
         return Err("No input provided for tick".into());
+    }
+
+    // Reject known noise patterns
+    if is_noise_tick(opts.text.trim()) {
+        eprintln!("[tick rejected: low-quality content detected]");
+        return Ok(());
     }
 
     // Prepend prefixes if flags are set
@@ -446,6 +475,57 @@ fn parse_start_args(args: &[String]) -> StartOptions {
     opts
 }
 
+// ---------------------------------------------------------------------------
+// Version check (cached GitHub release)
+// ---------------------------------------------------------------------------
+
+const VERSION_CACHE_PATH: &str = ".legend/.latest_version";
+const VERSION_CHECK_INTERVAL: u64 = 86400; // 24 hours
+
+/// Read cached latest version; return Some(latest) if an update is available.
+fn check_version_cached() -> Option<String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let content = std::fs::read_to_string(VERSION_CACHE_PATH).ok()?;
+    let mut lines = content.lines();
+    let cached_ts: u64 = lines.next()?.parse().ok()?;
+    let latest = lines.next()?.trim().to_string();
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+
+    // Only warn if cache is fresh and latest is strictly greater
+    if now - cached_ts < VERSION_CHECK_INTERVAL && version_greater(&latest, current) {
+        return Some(latest);
+    }
+    None
+}
+
+/// Compare semver strings numerically (major.minor.patch).
+fn version_greater(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.split('.').filter_map(|s| s.parse().ok()).collect()
+    };
+    parse(a) > parse(b)
+}
+
+/// Spawn a background process to refresh the version cache from GitHub releases.
+fn refresh_version_cache_background() {
+    let _ = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!(
+                r#"latest=$(curl -sf --max-time 5 https://api.github.com/repos/nickthorpe71/legend/releases/latest | grep -o '"tag_name":"[^"]*"' | head -1 | sed 's/.*"v\?\([^"]*\)".*/\1/'); if [ -n "$latest" ]; then printf '%s\n%s\n' "$(date +%s)" "$latest" > {path}; fi"#,
+                path = VERSION_CACHE_PATH
+            ),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 /// Session log capacity warning threshold (90% of SESSION_LOG_CAPACITY=100)
 const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
 
@@ -472,6 +552,21 @@ fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Check for version updates (from cached GitHub release)
+    let update_available = check_version_cached();
+    if let Some(ref latest) = update_available {
+        if let Some(obj) = summary.as_object_mut() {
+            obj.insert(
+                "update_available".to_string(),
+                serde_json::json!(format!(
+                    "v{} → v{}",
+                    env!("CARGO_PKG_VERSION"),
+                    latest
+                )),
+            );
+        }
+    }
+
     // Log rich event data with memory stats
     let event_data = EventData::Start(StartEventData {
         clock: memory.clock,
@@ -493,6 +588,10 @@ fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         print!("{}", output);
     }
+
+    // Refresh version cache in the background (non-blocking)
+    refresh_version_cache_background();
+
     Ok(())
 }
 
@@ -598,6 +697,13 @@ fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
     if let Some(warning) = summary.get("warning").and_then(|w| w.as_str()) {
         out.push_str("\n> [!WARNING]\n");
         out.push_str(&format!("> {}\n", warning));
+    }
+
+    if let Some(update) = summary.get("update_available").and_then(|u| u.as_str()) {
+        out.push_str(&format!(
+            "\n> **Update available:** Legend {} — run `curl -fsSL https://raw.githubusercontent.com/nickthorpe71/legend/master/install.sh | bash` to update.\n",
+            update
+        ));
     }
 
     out.push_str("\n---\n");
@@ -1116,4 +1222,348 @@ fn print_memory_help() {
     println!("    --all, -a                       Include empty entries");
     println!("  legend memory consolidate       Merge similar memories into long-term graph");
     println!("  legend memory reset             Reset memory store");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // is_noise_tick
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_noise_tick_rejects_short() {
+        assert!(is_noise_tick("hi"));
+        assert!(is_noise_tick("         ")); // whitespace-only
+        assert!(is_noise_tick("123456789")); // exactly 9 chars
+    }
+
+    #[test]
+    fn test_noise_tick_accepts_exactly_10_chars() {
+        assert!(!is_noise_tick("1234567890")); // exactly 10 chars
+    }
+
+    #[test]
+    fn test_noise_tick_rejects_tool_telemetry() {
+        assert!(is_noise_tick(
+            "Executed tool \"read_file\" with status \"success\""
+        ));
+        assert!(is_noise_tick(
+            "EXPERIENCE: Executed tool 'ls' with status 'ok'"
+        ));
+    }
+
+    #[test]
+    fn test_noise_tick_rejects_agent_turn_noise() {
+        assert!(is_noise_tick(
+            "EXPERIENCE: Completed an agent turn with no changes"
+        ));
+    }
+
+    #[test]
+    fn test_noise_tick_rejects_empty_tool_status() {
+        assert!(is_noise_tick(
+            "EXPERIENCE: Experience: Executed tool '' with status ''"
+        ));
+    }
+
+    #[test]
+    fn test_noise_tick_accepts_legitimate_experience() {
+        assert!(!is_noise_tick(
+            "EXPERIENCE: User navigated to the settings page and changed theme"
+        ));
+    }
+
+    #[test]
+    fn test_noise_tick_accepts_normal_tick() {
+        assert!(!is_noise_tick("Fixed bug in parser module"));
+        assert!(!is_noise_tick(
+            "DECISION: Chose Tokio over async-std because broader ecosystem support"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // version_greater
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_version_greater_patch() {
+        assert!(version_greater("1.0.1", "1.0.0"));
+        assert!(!version_greater("1.0.0", "1.0.1"));
+    }
+
+    #[test]
+    fn test_version_greater_minor() {
+        assert!(version_greater("1.1.0", "1.0.9"));
+        assert!(!version_greater("1.0.9", "1.1.0"));
+    }
+
+    #[test]
+    fn test_version_greater_major() {
+        assert!(version_greater("2.0.0", "1.9.9"));
+        assert!(!version_greater("1.9.9", "2.0.0"));
+    }
+
+    #[test]
+    fn test_version_greater_equal() {
+        assert!(!version_greater("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn test_version_greater_missing_components() {
+        // "1" parses to [1], "1.0.0" to [1,0,0] — Vec comparison handles this
+        assert!(!version_greater("1", "1.0.0"));
+        assert!(version_greater("2", "1.0.0"));
+    }
+
+    #[test]
+    fn test_version_greater_malformed() {
+        // Non-numeric parts are skipped by filter_map
+        assert!(!version_greater("1.a.0", "1.0.0")); // parses as [1,0] vs [1,0,0]
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_tick_args
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_tick_args_simple_text() {
+        let args = vec!["hello".to_string(), "world".to_string()];
+        let opts = parse_tick_args(&args).unwrap();
+        assert_eq!(opts.text, "hello world");
+        assert!(!opts.is_blocker);
+        assert!(!opts.is_passive);
+    }
+
+    #[test]
+    fn test_parse_tick_args_blocker_flag() {
+        let args = vec!["--blocker".to_string(), "can't".to_string(), "proceed".to_string()];
+        let opts = parse_tick_args(&args).unwrap();
+        assert!(opts.is_blocker);
+        assert_eq!(opts.text, "can't proceed");
+    }
+
+    #[test]
+    fn test_parse_tick_args_passive_flag() {
+        let args = vec!["--passive".to_string(), "observed".to_string(), "event".to_string()];
+        let opts = parse_tick_args(&args).unwrap();
+        assert!(opts.is_passive);
+        assert_eq!(opts.text, "observed event");
+    }
+
+    #[test]
+    fn test_parse_tick_args_short_flags() {
+        let args = vec!["-b".to_string(), "stuck".to_string()];
+        let opts = parse_tick_args(&args).unwrap();
+        assert!(opts.is_blocker);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_query_args
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_query_args_simple() {
+        let args = vec!["memory".to_string(), "system".to_string()];
+        let opts = parse_query_args(&args).unwrap();
+        assert_eq!(opts.query, "memory system");
+        assert!(!opts.show_reasons);
+    }
+
+    #[test]
+    fn test_parse_query_args_reasons_flag() {
+        let args = vec!["--reasons".to_string(), "test".to_string()];
+        let opts = parse_query_args(&args).unwrap();
+        assert!(opts.show_reasons);
+        assert_eq!(opts.query, "test");
+    }
+
+    #[test]
+    fn test_parse_query_args_short_reasons() {
+        let args = vec!["-r".to_string(), "query".to_string()];
+        let opts = parse_query_args(&args).unwrap();
+        assert!(opts.show_reasons);
+    }
+
+    #[test]
+    fn test_parse_query_args_empty_rejects() {
+        let args: Vec<String> = vec![];
+        assert!(parse_query_args(&args).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_start_args
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_start_args_defaults() {
+        let args: Vec<String> = vec![];
+        let opts = parse_start_args(&args);
+        assert!(!opts.compact);
+        assert!(!opts.json);
+        assert!(!opts.tokens);
+        assert!(opts.category.is_none());
+        assert!(opts.query.is_none());
+    }
+
+    #[test]
+    fn test_parse_start_args_compact() {
+        let args = vec!["--compact".to_string()];
+        assert!(parse_start_args(&args).compact);
+        let args = vec!["-c".to_string()];
+        assert!(parse_start_args(&args).compact);
+    }
+
+    #[test]
+    fn test_parse_start_args_category_space() {
+        let args = vec!["--category".to_string(), "bugs".to_string()];
+        let opts = parse_start_args(&args);
+        assert_eq!(opts.category, Some("bugs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_start_args_category_equals() {
+        let args = vec!["--category=architecture".to_string()];
+        let opts = parse_start_args(&args);
+        assert_eq!(opts.category, Some("architecture".to_string()));
+    }
+
+    #[test]
+    fn test_parse_start_args_query_equals() {
+        let args = vec!["--query=memory system".to_string()];
+        let opts = parse_start_args(&args);
+        assert_eq!(opts.query, Some("memory system".to_string()));
+    }
+
+    #[test]
+    fn test_parse_start_args_json_and_tokens() {
+        let args = vec!["--json".to_string(), "--tokens".to_string()];
+        let opts = parse_start_args(&args);
+        assert!(opts.json);
+        assert!(opts.tokens);
+    }
+
+    #[test]
+    fn test_parse_start_args_positional_query() {
+        let args = vec!["some".to_string(), "topic".to_string()];
+        let opts = parse_start_args(&args);
+        assert_eq!(opts.query, Some("some topic".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // ts_to_iso_date
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ts_to_iso_date_epoch() {
+        assert_eq!(ts_to_iso_date(0), "1970-01-01");
+    }
+
+    #[test]
+    fn test_ts_to_iso_date_known_date() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        assert_eq!(ts_to_iso_date(1704067200), "2024-01-01");
+    }
+
+    #[test]
+    fn test_ts_to_iso_date_leap_year() {
+        // 2024-02-29 00:00:00 UTC = 1709164800
+        assert_eq!(ts_to_iso_date(1709164800), "2024-02-29");
+    }
+
+    #[test]
+    fn test_ts_to_iso_date_non_leap_year() {
+        // 2023-03-01 00:00:00 UTC = 1677628800
+        assert_eq!(ts_to_iso_date(1677628800), "2023-03-01");
+    }
+
+    #[test]
+    fn test_ts_to_iso_date_year_boundary() {
+        // 2023-12-31 23:59:59 UTC = 1704067199
+        assert_eq!(ts_to_iso_date(1704067199), "2023-12-31");
+    }
+
+    // -----------------------------------------------------------------------
+    // format_start_summary_markdown
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_start_summary_includes_protocol() {
+        let summary = serde_json::json!({});
+        let out = format_start_summary_markdown(&summary);
+        assert!(out.contains("LEGEND PROTOCOL (MANDATORY)"));
+        assert!(out.contains("TICK DECISIONS"));
+    }
+
+    #[test]
+    fn test_format_start_summary_current_task() {
+        let summary = serde_json::json!({
+            "current_task": "Fix the parser"
+        });
+        let out = format_start_summary_markdown(&summary);
+        assert!(out.contains("## Current Task"));
+        assert!(out.contains("Fix the parser"));
+    }
+
+    #[test]
+    fn test_format_start_summary_warning() {
+        let summary = serde_json::json!({
+            "warning": "Session log at 95% capacity (95/100). Oldest entries will be dropped."
+        });
+        let out = format_start_summary_markdown(&summary);
+        assert!(out.contains("[!WARNING]"));
+        assert!(out.contains("95% capacity"));
+    }
+
+    #[test]
+    fn test_format_start_summary_update_available() {
+        let summary = serde_json::json!({
+            "update_available": "v0.3.3 → v0.4.0"
+        });
+        let out = format_start_summary_markdown(&summary);
+        assert!(out.contains("Update available"));
+        assert!(out.contains("v0.3.3 → v0.4.0"));
+        assert!(out.contains("install.sh"));
+    }
+
+    #[test]
+    fn test_format_start_summary_git_sync() {
+        let summary = serde_json::json!({
+            "git_sync": {
+                "new_commits": ["abc123 Fix typo", "def456 Add feature"],
+                "uncommitted_summary": "M src/main.rs"
+            }
+        });
+        let out = format_start_summary_markdown(&summary);
+        assert!(out.contains("Git Synchronization"));
+        assert!(out.contains("abc123 Fix typo"));
+        assert!(out.contains("M src/main.rs"));
+    }
+
+    #[test]
+    fn test_format_start_summary_categorized_with_overflow() {
+        let summary = serde_json::json!({
+            "categorized": {
+                "bugs": {
+                    "items": ["Bug one", "Bug two"],
+                    "total": 5
+                }
+            }
+        });
+        let out = format_start_summary_markdown(&summary);
+        assert!(out.contains("### BUGS"));
+        assert!(out.contains("Bug one"));
+        assert!(out.contains("...and 3 more"));
+    }
+
+    #[test]
+    fn test_format_start_summary_recent_sessions() {
+        let summary = serde_json::json!({
+            "recent_sessions": ["Fixed parser", "Added tests"]
+        });
+        let out = format_start_summary_markdown(&summary);
+        assert!(out.contains("## Recent Activity"));
+        assert!(out.contains("Fixed parser"));
+    }
 }
