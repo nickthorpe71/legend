@@ -658,4 +658,117 @@ mod tests {
             ids
         );
     }
+
+    // -----------------------------------------------------------------------
+    // extract_after_keyword — edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_after_keyword_basic() {
+        assert_eq!(
+            extract_after_keyword("fn process_data() {", "fn "),
+            Some("process_data".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_after_keyword_with_modifiers() {
+        assert_eq!(
+            extract_after_keyword("pub async fn handle_request()", "fn "),
+            Some("handle_request".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_after_keyword_class() {
+        assert_eq!(
+            extract_after_keyword("class MyService {}", "class "),
+            Some("MyService".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_after_keyword_returns_none_for_stopword() {
+        // "the" is a stopword
+        assert_eq!(extract_after_keyword("fn the()", "fn "), None);
+    }
+
+    #[test]
+    fn test_extract_after_keyword_not_at_start() {
+        assert_eq!(
+            extract_after_keyword("  struct Config {}", "struct "),
+            Some("Config".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_entities — code patterns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_entities_file_path() {
+        let entities = extract_entities("Modified src/commands/memory.rs for the fix");
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+        assert!(
+            labels.contains(&"src/commands/memory.rs"),
+            "got: {:?}",
+            labels
+        );
+        let fp = entities.iter().find(|e| e.label == "src/commands/memory.rs").unwrap();
+        assert_eq!(fp.kind, "FilePath");
+    }
+
+    #[test]
+    fn test_extract_entities_multiple_code_keywords() {
+        let entities = extract_entities("fn main() { struct Config {} impl Config {} }");
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+        assert!(labels.contains(&"main"), "got: {:?}", labels);
+        assert!(labels.contains(&"Config"), "got: {:?}", labels);
+    }
+
+    #[test]
+    fn test_extract_entities_deduplicates() {
+        let entities = extract_entities("fn Config { struct Config; class Config }");
+        let config_count = entities.iter().filter(|e| e.label == "Config").count();
+        assert_eq!(config_count, 1, "Should deduplicate: {:?}", entities.iter().map(|e| &e.label).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_extract_entities_empty_input() {
+        let entities = extract_entities("");
+        assert!(entities.is_empty());
+    }
+
+    #[test]
+    fn test_extract_entities_trait_and_impl() {
+        let entities = extract_entities("trait Serializable {} impl Serializable for Config {}");
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+        assert!(labels.contains(&"Serializable"), "got: {:?}", labels);
+        assert!(labels.contains(&"Config"), "got: {:?}", labels);
+    }
+
+    #[test]
+    fn test_extract_entities_import_use() {
+        let entities = extract_entities("use std::collections::HashMap;");
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+        // The `use` keyword extraction parses the next token; `::` splits into parts
+        assert!(
+            labels.contains(&"HashMap") || labels.contains(&"std"),
+            "Should extract import symbols, got: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_extract_entities_mixed_content() {
+        let entities = extract_entities(
+            "Fixed bug in src/parser.rs. Deployed to production using docker. fn handle_request() handles the main API flow."
+        );
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+        assert!(labels.contains(&"src/parser.rs"), "file path: {:?}", labels);
+        assert!(labels.contains(&"fixed"), "action: {:?}", labels);
+        assert!(labels.contains(&"production"), "env: {:?}", labels);
+        assert!(labels.contains(&"docker"), "env: {:?}", labels);
+        assert!(labels.contains(&"handle_request"), "fn: {:?}", labels);
+    }
 }

@@ -261,4 +261,85 @@ mod tests {
     fn test_compute_salience_todo() {
         assert!(compute_salience("TODO: fix bug") > compute_salience("no urgency here"));
     }
+
+    #[test]
+    fn test_compute_salience_decision_language() {
+        let s = compute_salience("DECISION: Chose Tokio over async-std because broader ecosystem");
+        assert!(s >= 0.3, "decision text should score high, got {}", s);
+    }
+
+    #[test]
+    fn test_compute_salience_decision_with_rationale_boost() {
+        let without = compute_salience("Decided to use Redis");
+        let with = compute_salience("Decided to use Redis because it has better pub/sub");
+        assert!(with > without, "rationale should boost: {} vs {}", with, without);
+    }
+
+    #[test]
+    fn test_compute_salience_bug_language() {
+        let s = compute_salience("Bug: the server crashes on empty input");
+        assert!(s >= 0.4, "bug text should score high, got {}", s);
+    }
+
+    #[test]
+    fn test_compute_salience_blocker() {
+        let s = compute_salience("BLOCKER: blocked on API key provisioning");
+        assert!(s >= 0.3, "blocker text should score high, got {}", s);
+    }
+
+    #[test]
+    fn test_compute_salience_architecture() {
+        let s = compute_salience("The API layer interfaces with the schema module");
+        assert!(s >= 0.25, "architecture text should score, got {}", s);
+    }
+
+    #[test]
+    fn test_compute_salience_preference() {
+        let s = compute_salience("User prefers dark mode, always use minimal UI");
+        assert!(s >= 0.3, "preference text should score, got {}", s);
+    }
+
+    #[test]
+    fn test_compute_salience_minimum_floor() {
+        let s = compute_salience("nothing special here at all");
+        assert!(s >= 0.05, "floor should be 0.05, got {}", s);
+    }
+
+    #[test]
+    fn test_compute_salience_capped_at_one() {
+        // Pile on every keyword category
+        let s = compute_salience("DECISION: Chose X because crash bug regression BLOCKER TODO architecture API schema module user prefers convention fn main() {} ``` code ```");
+        assert!(s <= 1.0, "should cap at 1.0, got {}", s);
+    }
+
+    #[test]
+    fn test_embed_empty_input() {
+        let v = embed_text("", 256);
+        assert_eq!(v.len(), 256);
+        // Empty input should still produce a vector (all zeros is fine)
+    }
+
+    #[test]
+    fn test_embed_single_word() {
+        let v = embed_text("hello", 256);
+        assert_eq!(v.len(), 256);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.01 || norm == 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_different_lengths() {
+        // Should handle gracefully (min length)
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![1.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!(sim >= 0.0 && sim <= 1.0, "got {}", sim);
+    }
+
+    #[test]
+    fn test_merge_embeddings_different_lengths() {
+        let result = merge_embeddings(&[1.0, 2.0, 3.0], &[4.0, 5.0]);
+        assert_eq!(result.len(), 2); // min length
+        assert_eq!(result, vec![2.5, 3.5]);
+    }
 }
