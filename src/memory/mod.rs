@@ -44,6 +44,8 @@ const GRAPH_PRUNE_WEIGHT: f32 = 0.05;
 const AUTO_REINFORCE_SCALE: f32 = 0.03;
 /// Minimum similarity for a tick to reconsolidate a labile memory instead of creating new.
 const RECONSOLIDATION_THRESHOLD: f32 = 0.35;
+/// Minimum cosine similarity for a query result to be returned (noise floor).
+const MIN_QUERY_SIMILARITY: f32 = 0.15;
 /// How many ticks a memory stays labile after retrieval before re-stabilizing.
 const LABILE_WINDOW: u64 = 5;
 /// Number of ticks before suggesting a consolidation.
@@ -1453,6 +1455,7 @@ impl MemoryState {
             .collect();
         scored.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
         scored.truncate(k);
+        scored.retain(|s| s.similarity >= MIN_QUERY_SIMILARITY);
         scored
     }
 
@@ -1598,21 +1601,9 @@ impl MemoryState {
             }
         }
 
-        if results.is_empty() {
-            results = self
-                .long_term
-                .nodes
-                .values()
-                .map(|n| GraphNodeSummary {
-                    id: n.id,
-                    label: n.label.clone(),
-                    kind: n.kind.clone(),
-                    weight: n.weight,
-                    edge_type: None,
-                    source_texts: n.source_texts.clone(),
-                })
-                .collect();
-        }
+        // No fallback: if no entities matched, return empty rather than dumping
+        // all nodes. Associative priming in retrieve_context() already covers
+        // the case where direct entity lookup finds nothing.
 
         // Deduplicate by id, keeping highest weight
         let mut deduped: HashMap<u64, GraphNodeSummary> = HashMap::new();
@@ -3357,5 +3348,94 @@ mod tests {
             .zip(initial_last_seen.iter())
             .any(|(edge, &initial)| edge.last_seen > initial);
         assert!(any_updated, "edge last_seen should be updated after query");
+    }
+
+    // ---- Commit 1: Retrieval noise floor tests ----
+
+    #[test]
+    fn test_top_k_filters_below_min_similarity() {
+        let mut state = MemoryState::default();
+        // Insert entries that are very different from the query
+        state.tick("HUD overlap fix: adjusted widget z-order rendering");
+        state.tick("window state change callback handler refactored");
+        state.tick("player health bar UI component styling");
+        // Query something completely unrelated
+        let ctx = state.retrieve_context("MML syntax reference documentation");
+        // All results should be above the noise floor or empty
+        for s in &ctx.short_term {
+            assert!(
+                s.similarity >= MIN_QUERY_SIMILARITY,
+                "result below noise floor: sim={:.4} text={}",
+                s.similarity,
+                &s.text[..s.text.len().min(50)]
+            );
+        }
+    }
+
+    #[test]
+    fn test_top_k_keeps_relevant_results() {
+        let mut state = MemoryState::default();
+        state.tick("MML syntax reference: use #tempo 120 for tempo");
+        state.tick("MML note commands: cdefgab with octave modifiers");
+        state.tick("unrelated window rendering pipeline");
+        let ctx = state.retrieve_context("MML syntax");
+        // Should have at least one result (the MML entries)
+        assert!(
+            !ctx.short_term.is_empty(),
+            "should return relevant MML results"
+        );
+        assert!(ctx.short_term[0].text.contains("MML"));
+    }
+
+    #[test]
+    fn test_top_k_empty_when_nothing_relevant() {
+        let mut state = MemoryState::default();
+        state.tick("alpha beta gamma delta");
+        state.tick("epsilon zeta theta iota");
+        // Query with completely disjoint vocabulary
+        let results = state.top_k_similar(
+            &embed_text("xylophone zamboni quasar", state.config.embedding_dim),
+            5,
+        );
+        // Either empty or all above threshold
+        for r in &results {
+            assert!(r.similarity >= MIN_QUERY_SIMILARITY);
+        }
+    }
+
+    #[test]
+    fn test_graph_lookup_no_match_returns_empty() {
+        let mut state = MemoryState::default();
+        // Add some graph nodes via tick
+        state.tick("fn process_data() in src/main.rs");
+        assert!(!state.long_term.nodes.is_empty());
+        // Query with entities that don't match any graph node
+        let results = state.graph_lookup("xylophone_function zamboni_module", 10);
+        assert!(
+            results.is_empty(),
+            "graph_lookup should return empty when no entities match, got {} results",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn test_graph_lookup_match_still_works() {
+        let mut state = MemoryState::default();
+        state.tick("fn process_data() handles struct Config");
+        // Query with a matching entity
+        let results = state.graph_lookup("process_data", 10);
+        assert!(
+            !results.is_empty(),
+            "graph_lookup should still return results for matching entities"
+        );
+    }
+
+    #[test]
+    fn test_min_query_similarity_constant_reasonable() {
+        // Sanity: threshold should be between 0 and 1
+        assert!(MIN_QUERY_SIMILARITY > 0.0);
+        assert!(MIN_QUERY_SIMILARITY < 1.0);
+        // Should be low enough not to filter genuinely relevant results
+        assert!(MIN_QUERY_SIMILARITY <= 0.2);
     }
 }
