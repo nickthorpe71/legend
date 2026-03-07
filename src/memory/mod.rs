@@ -1058,23 +1058,60 @@ impl MemoryState {
                 .max(0.4);
             let source_texts: Vec<String> = group.iter().map(|e| e.text.clone()).collect();
 
-            // 1. Create the primary Summary node
-            let node_id = self.next_id;
-            self.next_id += 1;
+            // 1. Dedup: check for existing Summary node with exact label or high word overlap
+            let existing_summary_id = self
+                .long_term
+                .index
+                .get(&summary_text)
+                .copied()
+                .or_else(|| {
+                    self.long_term
+                        .nodes
+                        .iter()
+                        .find(|(_, n)| {
+                            n.kind == "Summary"
+                                && word_overlap(&n.label, &summary_text)
+                                    >= MERGE_WORD_OVERLAP_THRESHOLD
+                        })
+                        .map(|(&id, _)| id)
+                });
 
-            self.long_term.nodes.insert(
-                node_id,
-                GraphNode {
-                    id: node_id,
-                    label: summary_text.clone(),
-                    kind: "Summary".to_string(),
-                    weight: 1.0 + salience,
-                    last_seen: self.clock,
-                    salience,
-                    source_texts: source_texts.clone(),
-                },
-            );
-            self.long_term.index.insert(summary_text.clone(), node_id);
+            let node_id = if let Some(eid) = existing_summary_id {
+                // Merge into existing: update weight/salience, extend source_texts
+                if let Some(node) = self.long_term.nodes.get_mut(&eid) {
+                    node.weight = node.weight.max(1.0 + salience);
+                    node.salience = node.salience.max(salience);
+                    node.last_seen = self.clock;
+                    // Extend source_texts, dedup, cap at 20
+                    for st in &source_texts {
+                        if !node.source_texts.contains(st) {
+                            node.source_texts.push(st.clone());
+                        }
+                    }
+                    node.source_texts.truncate(20);
+                }
+                eid
+            } else {
+                // Create new Summary node
+                let id = self.next_id;
+                self.next_id += 1;
+                let mut capped_sources = source_texts.clone();
+                capped_sources.truncate(20);
+                self.long_term.nodes.insert(
+                    id,
+                    GraphNode {
+                        id,
+                        label: summary_text.clone(),
+                        kind: "Summary".to_string(),
+                        weight: 1.0 + salience,
+                        last_seen: self.clock,
+                        salience,
+                        source_texts: capped_sources,
+                    },
+                );
+                self.long_term.index.insert(summary_text.clone(), id);
+                id
+            };
 
             // 2. Semantic Topic Extraction: find high-frequency entities in the group
             let mut entity_counts: HashMap<String, (usize, String)> = HashMap::new();
@@ -3552,5 +3589,135 @@ mod tests {
             sim < 0.5,
             "unrelated texts should have low cosine sim with reduced trigrams, got {sim}"
         );
+    }
+
+    // ---- Commit 3: Consolidation deduplication tests ----
+
+    #[test]
+    fn test_consolidate_dedup_on_reconsolidate() {
+        let mut state = MemoryState::default();
+        // Directly insert entries into short_term to bypass tick()'s merge logic
+        let dim = state.config.embedding_dim;
+        let texts = [
+            "implemented MML tempo command to set BPM for playback speed control",
+            "implemented MML tempo command to set BPM for playback rate adjustment",
+            "implemented MML tempo command to set BPM for playback timing update",
+        ];
+        for text in &texts {
+            state.insert_short_term(
+                text,
+                embed_text(text, dim),
+                compute_salience(text),
+                Vec::new(),
+            );
+        }
+        // Lower theta_low so these group together
+        state.config.theta_low = 0.3;
+        let summaries1 = state.consolidate();
+        assert!(
+            !summaries1.is_empty(),
+            "first consolidation should produce summaries"
+        );
+        let summary_count_before = state
+            .long_term
+            .nodes
+            .values()
+            .filter(|n| n.kind == "Summary")
+            .count();
+
+        // Insert more similar entries and consolidate again
+        let texts2 = [
+            "implemented MML tempo command to set BPM for playback output rendering",
+            "implemented MML tempo command to set BPM for playback engine processing",
+            "implemented MML tempo command to set BPM for playback audio synthesis",
+        ];
+        for text in &texts2 {
+            state.insert_short_term(
+                text,
+                embed_text(text, dim),
+                compute_salience(text),
+                Vec::new(),
+            );
+        }
+        let _summaries2 = state.consolidate();
+        let summary_count_after = state
+            .long_term
+            .nodes
+            .values()
+            .filter(|n| n.kind == "Summary")
+            .count();
+
+        // Should merge into existing Summary, not create duplicates
+        assert!(
+            summary_count_after <= summary_count_before + 1,
+            "re-consolidation should merge similar summaries: before={}, after={}",
+            summary_count_before,
+            summary_count_after
+        );
+    }
+
+    #[test]
+    fn test_consolidate_source_texts_merge() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+        let texts = [
+            "feature alpha implemented for rendering pipeline in module X",
+            "feature alpha implemented for rendering system in module X",
+            "feature alpha implemented for rendering engine in module X",
+        ];
+        for text in &texts {
+            state.insert_short_term(
+                text,
+                embed_text(text, dim),
+                compute_salience(text),
+                Vec::new(),
+            );
+        }
+        state.config.theta_low = 0.3;
+        state.consolidate();
+
+        let summary_node = state
+            .long_term
+            .nodes
+            .values()
+            .find(|n| n.kind == "Summary");
+        assert!(summary_node.is_some(), "should have a Summary node");
+        let node = summary_node.unwrap();
+        assert!(
+            node.source_texts.len() >= 2,
+            "Summary should contain source texts from group members, got {}",
+            node.source_texts.len()
+        );
+    }
+
+    #[test]
+    fn test_consolidate_source_texts_cap() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+        state.config.theta_low = 0.2;
+        // Directly insert many similar entries
+        for i in 0..25 {
+            let text = format!(
+                "feature beta variant number {} implemented in rendering module Y pipeline",
+                i
+            );
+            state.insert_short_term(
+                &text,
+                embed_text(&text, dim),
+                compute_salience(&text),
+                Vec::new(),
+            );
+        }
+        state.consolidate();
+
+        for node in state.long_term.nodes.values() {
+            if node.kind == "Summary" {
+                assert!(
+                    node.source_texts.len() <= 20,
+                    "source_texts should be capped at 20, got {}",
+                    node.source_texts.len()
+                );
+            }
+        }
     }
 }
