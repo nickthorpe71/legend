@@ -158,6 +158,10 @@ pub struct ShortTermEntry {
     /// Semantic density: weighted count of high-signal entities (CodeSymbols, FilePaths).
     #[serde(default)]
     pub density: f32,
+    /// Whether this entry has been consolidated into the long-term graph.
+    /// Consolidated entries are filtered from query results to avoid redundancy.
+    #[serde(default)]
+    pub consolidated: bool,
 }
 
 /// A source reference to a file region for this memory.
@@ -1164,6 +1168,7 @@ impl MemoryState {
                 if let Some(existing) = self.short_term.iter_mut().find(|e| e.id == entry.id) {
                     existing.usage = existing.usage.saturating_add(1);
                     existing.last_access = self.clock;
+                    existing.consolidated = true;
                 }
             }
 
@@ -1463,6 +1468,7 @@ impl MemoryState {
             refs,
             gradient_sq_sum: 0.0,
             density: calculate_density(text),
+            consolidated: false,
         });
         self.next_id += 1;
     }
@@ -1496,6 +1502,7 @@ impl MemoryState {
         let mut scored: Vec<MemorySnippet> = self
             .short_term
             .iter()
+            .filter(|e| !e.consolidated)
             .map(|e| {
                 let cosine = cosine_similarity(&e.embedding, embedding);
                 let keyword_bonus = if !query_keywords.is_empty() {
@@ -2459,6 +2466,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                     refs: e.refs,
                     gradient_sq_sum: 0.0,
                     density: 0.0,
+                    consolidated: false,
                 })
                 .collect(),
             long_term: v3.long_term,
@@ -2499,6 +2507,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                         .collect(),
                     gradient_sq_sum: 0.0,
                     density: 0.0,
+                    consolidated: false,
                 })
                 .collect(),
             long_term: v2.long_term,
@@ -2531,6 +2540,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                         refs: old_refs_to_current(e.refs),
                         gradient_sq_sum: 0.0,
                         density: 0.0,
+                        consolidated: false,
                     })
                     .collect(),
                 long_term: old.long_term,
@@ -2659,6 +2669,7 @@ mod tests {
             refs: vec![],
             gradient_sq_sum: 0.0,
             density: 0.0,
+            consolidated: false,
         };
         let old = ShortTermEntry {
             id: 2,
@@ -2673,6 +2684,7 @@ mod tests {
             refs: vec![],
             gradient_sq_sum: 0.0,
             density: 0.0,
+            consolidated: false,
         };
         assert!(eviction_score(&recent, 100) > eviction_score(&old, 100));
     }
@@ -2992,6 +3004,7 @@ mod tests {
             refs: vec![],
             gradient_sq_sum: 0.0,
             density: 0.0,
+            consolidated: false,
         });
         // Advance clock far enough for pruning to kick in
         state.clock = 500;
@@ -3719,5 +3732,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- Commit 4: Consolidated entry filtering tests ----
+
+    #[test]
+    fn test_consolidated_entries_filtered_from_queries() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+        // Insert entries that will form a group
+        let texts = [
+            "MML tempo command sets BPM for playback speed in the engine",
+            "MML tempo directive sets BPM for playback rate in the engine",
+            "MML tempo instruction sets BPM for playback timing in the engine",
+        ];
+        for text in &texts {
+            state.insert_short_term(
+                text,
+                embed_text(text, dim),
+                compute_salience(text),
+                Vec::new(),
+            );
+        }
+        state.config.theta_low = 0.3;
+        state.consolidate();
+
+        // All grouped entries should now be consolidated
+        let consolidated_count = state.short_term.iter().filter(|e| e.consolidated).count();
+        assert!(
+            consolidated_count >= 2,
+            "at least 2 entries should be marked consolidated, got {}",
+            consolidated_count
+        );
+
+        // Query should not return consolidated entries
+        let ctx = state.retrieve_context("MML tempo BPM");
+        for snippet in &ctx.short_term {
+            let entry = state.short_term.iter().find(|e| e.id == snippet.id);
+            if let Some(e) = entry {
+                assert!(
+                    !e.consolidated,
+                    "consolidated entry should not appear in query results"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_consolidated_defaults_false() {
+        let mut state = MemoryState::default();
+        state.tick("some new memory entry");
+        let entry = state.short_term.last().unwrap();
+        assert!(
+            !entry.consolidated,
+            "new entries should default to consolidated=false"
+        );
+    }
+
+    #[test]
+    fn test_unconsolidated_entries_still_appear() {
+        let mut state = MemoryState::default();
+        state.tick("unique standalone MML note commands reference guide");
+        // No consolidation — entry should appear in results
+        let ctx = state.retrieve_context("MML note commands");
+        assert!(
+            !ctx.short_term.is_empty(),
+            "unconsolidated entries should still appear in query results"
+        );
+        assert!(ctx.short_term[0].text.contains("MML"));
     }
 }
