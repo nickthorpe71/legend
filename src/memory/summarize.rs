@@ -206,6 +206,7 @@ mod tests {
             refs: vec![],
             gradient_sq_sum: 0.0,
             density: 0.0,
+            consolidated: false,
         };
         let result = summarize_group(&[entry]);
         assert!(!result.is_empty());
@@ -228,6 +229,7 @@ mod tests {
                 refs: vec![],
                 gradient_sq_sum: 0.0,
                 density: 0.0,
+                consolidated: false,
             })
             .collect();
         let result = summarize_group(&entries);
@@ -252,6 +254,7 @@ mod tests {
                 refs: vec![],
                 gradient_sq_sum: 0.0,
                 density: 0.0,
+                consolidated: false,
             })
             .collect();
         let result = summarize_group(&entries);
@@ -273,6 +276,7 @@ mod tests {
             refs: vec![],
             gradient_sq_sum: 0.0,
             density: 0.0,
+            consolidated: false,
         };
         let result = summarize_group(&[entry]);
         assert!(result.contains("Pre-computed summary"));
