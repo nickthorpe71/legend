@@ -2318,9 +2318,98 @@ pub fn load_memory_from_path<P: AsRef<Path>>(path: P) -> Result<MemoryState, Box
         fs::read(path).map_err(|e| format!("Failed to read memory file: {}", e))?;
     let serialized = lz4::block::decompress(&compressed, None)
         .map_err(|e| format!("Failed to decompress memory: {}", e))?;
-    let state: MemoryState = bincode::deserialize(&serialized)
-        .map_err(|e| format!("Failed to deserialize memory: {}", e))?;
-    Ok(state)
+
+    // Try current format first
+    if let Ok(state) = bincode::deserialize::<MemoryState>(&serialized) {
+        return Ok(state);
+    }
+
+    // Fall back to V4 (pre-consolidated field, has gradient_sq_sum + density)
+    if let Ok(v4) = bincode::deserialize::<MemoryStateV4>(&serialized) {
+        eprintln!("Migrating memory from v0.3.4 format (adding consolidated field)...");
+        return Ok(migrate_v4(v4));
+    }
+
+    Err("Failed to deserialize memory: no known format matched".into())
+}
+
+/// ShortTermEntry before `consolidated` was added (v0.3.4 format).
+#[derive(Debug, Clone, Deserialize)]
+struct ShortTermEntryV4 {
+    pub id: u64,
+    pub text: String,
+    #[serde(default)]
+    pub summary: String,
+    pub embedding: Vec<f32>,
+    pub last_access: u64,
+    pub usage: u32,
+    #[serde(default)]
+    pub salience: f32,
+    #[serde(default)]
+    pub reconsolidation_count: u32,
+    #[serde(default)]
+    pub labile_until: u64,
+    #[serde(default)]
+    pub refs: Vec<MemoryRef>,
+    #[serde(default)]
+    pub gradient_sq_sum: f32,
+    #[serde(default)]
+    pub density: f32,
+    // `consolidated` intentionally absent — this is the pre-v0.3.5 format
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MemoryStateV4 {
+    pub config: MemoryConfig,
+    pub immediate: VecDeque<String>,
+    pub short_term: Vec<ShortTermEntryV4>,
+    pub long_term: GraphMemory,
+    pub clock: u64,
+    pub next_id: u64,
+    #[serde(default)]
+    pub session_log: Vec<SessionEntry>,
+    #[serde(default)]
+    pub current_task: Option<String>,
+    #[serde(default)]
+    pub ticks_since_consolidation: u32,
+    #[serde(default)]
+    pub last_retrieved_ids: Vec<u64>,
+    #[serde(default)]
+    pub last_synced_sha: Option<String>,
+}
+
+fn migrate_v4(v4: MemoryStateV4) -> MemoryState {
+    MemoryState {
+        config: v4.config,
+        immediate: v4.immediate,
+        short_term: v4
+            .short_term
+            .into_iter()
+            .map(|e| ShortTermEntry {
+                id: e.id,
+                text: e.text,
+                summary: e.summary,
+                embedding: e.embedding,
+                last_access: e.last_access,
+                usage: e.usage,
+                salience: e.salience,
+                reconsolidation_count: e.reconsolidation_count,
+                labile_until: e.labile_until,
+                refs: e.refs,
+                gradient_sq_sum: e.gradient_sq_sum,
+                density: e.density,
+                consolidated: false,
+            })
+            .collect(),
+        long_term: v4.long_term,
+        clock: v4.clock,
+        next_id: v4.next_id,
+        session_log: v4.session_log,
+        current_task: v4.current_task,
+        ticks_since_consolidation: v4.ticks_since_consolidation,
+        last_retrieved_ids: v4.last_retrieved_ids,
+        last_synced_sha: v4.last_synced_sha,
+    }
 }
 
 /// Attempt to migrate old memory format from .corrupt backup.
@@ -2445,8 +2534,10 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
         }
     };
 
-    // Try V3 first (almost current, but old entries), then V2, then V1.
-    let new_state = if let Ok(v3) = bincode::deserialize::<MemoryStateV3>(&serialized) {
+    // Try V4 first (pre-consolidated), then V3, V2, V1.
+    let new_state = if let Ok(v4) = bincode::deserialize::<MemoryStateV4>(&serialized) {
+        migrate_v4(v4)
+    } else if let Ok(v3) = bincode::deserialize::<MemoryStateV3>(&serialized) {
         MemoryState {
             config: v3.config,
             immediate: v3.immediate,
@@ -3800,5 +3891,50 @@ mod tests {
             "unconsolidated entries should still appear in query results"
         );
         assert!(ctx.short_term[0].text.contains("MML"));
+    }
+
+    // ---- V4 migration test ----
+
+    #[test]
+    fn test_v4_migration_preserves_data() {
+        let v4 = MemoryStateV4 {
+            config: MemoryConfig::default(),
+            immediate: VecDeque::new(),
+            short_term: vec![ShortTermEntryV4 {
+                id: 42,
+                text: "test memory entry".to_string(),
+                summary: "test".to_string(),
+                embedding: vec![1.0, 2.0, 3.0],
+                last_access: 100,
+                usage: 5,
+                salience: 0.7,
+                reconsolidation_count: 2,
+                labile_until: 0,
+                refs: vec![],
+                gradient_sq_sum: 0.5,
+                density: 0.3,
+            }],
+            long_term: GraphMemory::default(),
+            clock: 200,
+            next_id: 43,
+            session_log: vec![],
+            current_task: Some("test task".to_string()),
+            ticks_since_consolidation: 5,
+            last_retrieved_ids: vec![1, 2],
+            last_synced_sha: Some("abc123".to_string()),
+        };
+
+        let migrated = migrate_v4(v4);
+        assert_eq!(migrated.clock, 200);
+        assert_eq!(migrated.next_id, 43);
+        assert_eq!(migrated.short_term.len(), 1);
+        let entry = &migrated.short_term[0];
+        assert_eq!(entry.id, 42);
+        assert_eq!(entry.text, "test memory entry");
+        assert_eq!(entry.gradient_sq_sum, 0.5);
+        assert_eq!(entry.density, 0.3);
+        assert!(!entry.consolidated, "migrated entries should have consolidated=false");
+        assert_eq!(migrated.current_task, Some("test task".to_string()));
+        assert_eq!(migrated.last_synced_sha, Some("abc123".to_string()));
     }
 }
