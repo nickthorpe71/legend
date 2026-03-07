@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FeatureStatus {
+    #[default]
     Pending,
     InProgress,
     Blocked,
@@ -12,6 +13,7 @@ pub enum FeatureStatus {
 
 /// A single tracked feature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Feature {
     pub id: String,
     pub name: String,
@@ -24,6 +26,24 @@ pub struct Feature {
     pub created_at: i64,
     pub last_updated: i64,
     pub recency_score: f64,
+}
+
+impl Default for Feature {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            domain: String::new(),
+            tags: Vec::new(),
+            status: FeatureStatus::Pending,
+            description: String::new(),
+            context: None,
+            files_involved: Vec::new(),
+            created_at: 0,
+            last_updated: 0,
+            recency_score: 0.0,
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -59,8 +79,20 @@ impl Feature {
     }
 }
 
+impl Default for LegendState {
+    fn default() -> Self {
+        Self {
+            project_name: String::new(),
+            features: Vec::new(),
+            created_at: 0,
+            last_updated: 0,
+        }
+    }
+}
+
 /// The entire persisted state for a Legend project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LegendState {
     pub project_name: String,
     pub features: Vec<Feature>,
