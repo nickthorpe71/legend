@@ -22,7 +22,7 @@ pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
             for window in chars.windows(3) {
                 let trigram: String = window.iter().collect();
                 let idx = (fnv_hash(trigram.as_bytes()) as usize) % dim;
-                vector[idx] += 0.5;
+                vector[idx] += 0.3;
             }
         }
     }

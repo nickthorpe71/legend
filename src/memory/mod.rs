@@ -46,6 +46,10 @@ const AUTO_REINFORCE_SCALE: f32 = 0.03;
 const RECONSOLIDATION_THRESHOLD: f32 = 0.35;
 /// Minimum cosine similarity for a query result to be returned (noise floor).
 const MIN_QUERY_SIMILARITY: f32 = 0.15;
+/// Bonus added per non-stopword query keyword found in an entry's text.
+const KEYWORD_MATCH_BONUS: f32 = 0.05;
+/// Maximum total keyword bonus that can be applied.
+const KEYWORD_MATCH_BONUS_CAP: f32 = 0.2;
 /// How many ticks a memory stays labile after retrieval before re-stabilizing.
 const LABILE_WINDOW: u64 = 5;
 /// Number of ticks before suggesting a consolidation.
@@ -919,7 +923,7 @@ impl MemoryState {
         self.apply_decay();
 
         let embedding = embed_text(query, self.config.embedding_dim);
-        let mut snippets = self.top_k_similar(&embedding, 5);
+        let mut snippets = self.top_k_similar(&embedding, 5, query);
 
         for snippet in &mut snippets {
             if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == snippet.id) {
@@ -1442,15 +1446,37 @@ impl MemoryState {
     }
 
     /// Return the top-k most similar short-term entries to the given embedding.
-    fn top_k_similar(&self, embedding: &[f32], k: usize) -> Vec<MemorySnippet> {
+    /// When `query` is provided, non-stopword keywords that appear in entry text
+    /// receive a small similarity bonus to improve lexical precision.
+    fn top_k_similar(&self, embedding: &[f32], k: usize, query: &str) -> Vec<MemorySnippet> {
+        // Pre-compute query keywords (lowercased, non-stopword, len > 1)
+        let query_keywords: Vec<String> = query
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|w| w.len() > 1 && !extract::is_stopword(w))
+            .collect();
+
         let mut scored: Vec<MemorySnippet> = self
             .short_term
             .iter()
-            .map(|e| MemorySnippet {
-                id: e.id,
-                text: e.text.clone(),
-                similarity: cosine_similarity(&e.embedding, embedding),
-                refs: e.refs.clone(),
+            .map(|e| {
+                let cosine = cosine_similarity(&e.embedding, embedding);
+                let keyword_bonus = if !query_keywords.is_empty() {
+                    let entry_lower = e.text.to_lowercase();
+                    let matches = query_keywords
+                        .iter()
+                        .filter(|kw| entry_lower.contains(kw.as_str()))
+                        .count();
+                    (matches as f32 * KEYWORD_MATCH_BONUS).min(KEYWORD_MATCH_BONUS_CAP)
+                } else {
+                    0.0
+                };
+                MemorySnippet {
+                    id: e.id,
+                    text: e.text.clone(),
+                    similarity: cosine + keyword_bonus,
+                    refs: e.refs.clone(),
+                }
             })
             .collect();
         scored.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
@@ -3396,6 +3422,7 @@ mod tests {
         let results = state.top_k_similar(
             &embed_text("xylophone zamboni quasar", state.config.embedding_dim),
             5,
+            "xylophone zamboni quasar",
         );
         // Either empty or all above threshold
         for r in &results {
@@ -3437,5 +3464,93 @@ mod tests {
         assert!(MIN_QUERY_SIMILARITY < 1.0);
         // Should be low enough not to filter genuinely relevant results
         assert!(MIN_QUERY_SIMILARITY <= 0.2);
+    }
+
+    // ---- Commit 2: Keyword bonus + trigram tests ----
+
+    #[test]
+    fn test_keyword_bonus_boosts_matching_entry() {
+        let mut state = MemoryState::default();
+        state.tick("MML syntax reference: tempo and note commands");
+        state.tick("unrelated rendering pipeline for sprites");
+        let embedding = embed_text("MML syntax", state.config.embedding_dim);
+        let results = state.top_k_similar(&embedding, 5, "MML syntax");
+        assert!(!results.is_empty());
+        // The MML entry should be first
+        assert!(
+            results[0].text.contains("MML"),
+            "keyword bonus should boost the MML entry to top"
+        );
+    }
+
+    #[test]
+    fn test_keyword_bonus_capped() {
+        let mut state = MemoryState::default();
+        // Entry with many matching keywords
+        state.tick("alpha bravo charlie delta echo foxtrot golf hotel");
+        let embedding = embed_text(
+            "alpha bravo charlie delta echo foxtrot golf hotel",
+            state.config.embedding_dim,
+        );
+        let results = state.top_k_similar(
+            &embedding,
+            5,
+            "alpha bravo charlie delta echo foxtrot golf hotel",
+        );
+        assert!(!results.is_empty());
+        // Keyword bonus is capped at KEYWORD_MATCH_BONUS_CAP (0.2)
+        // The cosine sim alone is ~1.0, so total should not exceed 1.0 + cap
+        assert!(results[0].similarity <= 1.0 + KEYWORD_MATCH_BONUS_CAP + 0.01);
+    }
+
+    #[test]
+    fn test_keyword_bonus_ignores_stopwords() {
+        let mut state = MemoryState::default();
+        state.tick("the and for with this that from");
+        let embedding = embed_text("the and for", state.config.embedding_dim);
+        let results = state.top_k_similar(&embedding, 5, "the and for");
+        // Stopwords should not contribute to keyword bonus
+        // Result may or may not pass similarity threshold, but if it does
+        // the bonus should be 0 (only stopwords in query)
+        for r in &results {
+            // Cosine sim should be the only factor (no keyword bonus)
+            let cosine_only = cosine_similarity(
+                &embed_text(&r.text, state.config.embedding_dim),
+                &embedding,
+            );
+            // Allow small float tolerance
+            assert!(
+                (r.similarity - cosine_only).abs() < 0.01,
+                "stopword-only query should add no keyword bonus"
+            );
+        }
+    }
+
+    #[test]
+    fn test_keyword_bonus_empty_query() {
+        let mut state = MemoryState::default();
+        state.tick("some memory entry about testing");
+        let embedding = embed_text("", state.config.embedding_dim);
+        let results = state.top_k_similar(&embedding, 5, "");
+        // Should not panic, bonus should be 0
+        for r in &results {
+            assert!(r.similarity >= -1.0); // just a sanity check
+        }
+    }
+
+    #[test]
+    fn test_trigram_reduced_weight_improves_discrimination() {
+        // With reduced trigram weight (0.3 vs old 0.5), entries with
+        // completely different words but overlapping trigrams should
+        // have lower similarity
+        let dim = 256;
+        let a = embed_text("MML syntax reference", dim);
+        let b = embed_text("HUD overlap fix", dim);
+        let sim = cosine_similarity(&a, &b);
+        // These are unrelated — similarity should be low
+        assert!(
+            sim < 0.5,
+            "unrelated texts should have low cosine sim with reduced trigrams, got {sim}"
+        );
     }
 }
