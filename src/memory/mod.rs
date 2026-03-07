@@ -13,6 +13,11 @@ use std::path::Path;
 
 const MEMORY_FILE: &str = ".legend/memory.lz4";
 
+/// Magic bytes prepended to MessagePack payloads (after LZ4 decompression).
+const MSGPACK_MAGIC: &[u8; 4] = b"LGND";
+/// Format version for the MessagePack serialization.
+const MSGPACK_FORMAT_VERSION: u8 = 1;
+
 // Decay & reinforcement tuning constants
 const SHORT_TERM_DECAY_RATE: f32 = 0.001;
 const LONG_TERM_DECAY_RATE: f32 = 0.0005;
@@ -79,6 +84,7 @@ const GRAPH_NORM_INTERVAL: u64 = 5;
 
 /// Tuning parameters for the three-layer memory system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MemoryConfig {
     /// Max items in the immediate (FIFO) buffer.
     pub immediate_capacity: usize,
@@ -106,6 +112,7 @@ impl Default for MemoryConfig {
 
 /// Three-layer memory: immediate FIFO buffer, short-term vector store, long-term knowledge graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MemoryState {
     pub config: MemoryConfig,
     pub immediate: VecDeque<String>,
@@ -130,8 +137,29 @@ pub struct MemoryState {
     pub last_synced_sha: Option<String>,
 }
 
+impl Default for ShortTermEntry {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            text: String::new(),
+            summary: String::new(),
+            embedding: Vec::new(),
+            last_access: 0,
+            usage: 0,
+            salience: 0.0,
+            reconsolidation_count: 0,
+            labile_until: 0,
+            refs: Vec::new(),
+            gradient_sq_sum: 0.0,
+            density: 0.0,
+            consolidated: false,
+        }
+    }
+}
+
 /// A single entry in the short-term vector store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ShortTermEntry {
     pub id: u64,
     pub text: String,
@@ -164,8 +192,20 @@ pub struct ShortTermEntry {
     pub consolidated: bool,
 }
 
+impl Default for MemoryRef {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            start_line: 0,
+            end_line: 0,
+            snippet: String::new(),
+        }
+    }
+}
+
 /// A source reference to a file region for this memory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MemoryRef {
     pub path: String,
     pub start_line: usize,
@@ -278,6 +318,7 @@ fn build_ref_snippet(line: &str) -> String {
 
 /// Long-term knowledge graph: labeled nodes connected by typed edges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GraphMemory {
     pub nodes: HashMap<u64, GraphNode>,
     pub edges: Vec<GraphEdge>,
@@ -285,20 +326,46 @@ pub struct GraphMemory {
     pub index: HashMap<String, u64>,
 }
 
+impl Default for GraphNode {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            label: String::new(),
+            kind: String::new(),
+            weight: 0.0,
+            last_seen: 0,
+            salience: 0.0,
+            source_texts: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GraphNode {
     pub id: u64,
     pub label: String,
     pub kind: String,
     pub weight: f32,
     pub last_seen: u64,
-    #[serde(default)]
     pub salience: f32,
-    #[serde(default)]
     pub source_texts: Vec<String>,
 }
 
+impl Default for GraphEdge {
+    fn default() -> Self {
+        Self {
+            from: 0,
+            to: 0,
+            weight: 0.0,
+            kind: "related".to_string(),
+            last_seen: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GraphEdge {
     pub from: u64,
     pub to: u64,
@@ -306,7 +373,6 @@ pub struct GraphEdge {
     #[serde(default = "default_edge_kind")]
     pub kind: String,
     /// Clock tick when this edge was last reinforced.
-    #[serde(default)]
     pub last_seen: u64,
 }
 
@@ -314,8 +380,18 @@ fn default_edge_kind() -> String {
     "related".to_string()
 }
 
+impl Default for SessionEntry {
+    fn default() -> Self {
+        Self {
+            timestamp: 0,
+            text: String::new(),
+        }
+    }
+}
+
 /// A timestamped session log entry preserving full tick text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionEntry {
     pub timestamp: u64,
     pub text: String,
@@ -2316,17 +2392,26 @@ fn load_memory() -> Result<MemoryState, Box<dyn std::error::Error>> {
 pub fn load_memory_from_path<P: AsRef<Path>>(path: P) -> Result<MemoryState, Box<dyn std::error::Error>> {
     let compressed =
         fs::read(path).map_err(|e| format!("Failed to read memory file: {}", e))?;
-    let serialized = lz4::block::decompress(&compressed, None)
+    let decompressed = lz4::block::decompress(&compressed, None)
         .map_err(|e| format!("Failed to decompress memory: {}", e))?;
 
-    // Try current format first
-    if let Ok(state) = bincode::deserialize::<MemoryState>(&serialized) {
+    // MessagePack format: starts with LGND magic + version byte
+    if decompressed.len() >= 5 && &decompressed[..4] == MSGPACK_MAGIC {
+        let _version = decompressed[4];
+        let state: MemoryState = rmp_serde::from_slice(&decompressed[5..])
+            .map_err(|e| format!("Failed to deserialize msgpack memory: {}", e))?;
+        return Ok(state);
+    }
+
+    // Legacy bincode fallback: try current format first
+    if let Ok(state) = bincode::deserialize::<MemoryState>(&decompressed) {
+        eprintln!("Migrating memory from bincode to msgpack format...");
         return Ok(state);
     }
 
     // Fall back to V4 (pre-consolidated field, has gradient_sq_sum + density)
-    if let Ok(v4) = bincode::deserialize::<MemoryStateV4>(&serialized) {
-        eprintln!("Migrating memory from v0.3.4 format (adding consolidated field)...");
+    if let Ok(v4) = bincode::deserialize::<MemoryStateV4>(&decompressed) {
+        eprintln!("Migrating memory from v0.3.4 bincode format...");
         return Ok(migrate_v4(v4));
     }
 
@@ -2534,8 +2619,10 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
         }
     };
 
-    // Try V4 first (pre-consolidated), then V3, V2, V1.
-    let new_state = if let Ok(v4) = bincode::deserialize::<MemoryStateV4>(&serialized) {
+    // Try msgpack first, then bincode V4, V3, V2, V1.
+    let new_state = if serialized.len() >= 5 && &serialized[..4] == MSGPACK_MAGIC {
+        rmp_serde::from_slice::<MemoryState>(&serialized[5..])?
+    } else if let Ok(v4) = bincode::deserialize::<MemoryStateV4>(&serialized) {
         migrate_v4(v4)
     } else if let Ok(v3) = bincode::deserialize::<MemoryStateV3>(&serialized) {
         MemoryState {
@@ -2691,8 +2778,15 @@ fn save_memory(state: &MemoryState) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn save_memory_to_path<P: AsRef<Path>>(state: &MemoryState, path: P) -> Result<(), Box<dyn std::error::Error>> {
     let serialized =
-        bincode::serialize(state).map_err(|e| format!("Failed to serialize memory: {}", e))?;
-    let compressed = lz4::block::compress(&serialized, None, true)
+        rmp_serde::to_vec_named(state).map_err(|e| format!("Failed to serialize memory: {}", e))?;
+
+    // Prepend magic header: LGND + version byte
+    let mut payload = Vec::with_capacity(5 + serialized.len());
+    payload.extend_from_slice(MSGPACK_MAGIC);
+    payload.push(MSGPACK_FORMAT_VERSION);
+    payload.extend_from_slice(&serialized);
+
+    let compressed = lz4::block::compress(&payload, None, true)
         .map_err(|e| format!("Failed to compress memory: {}", e))?;
 
     let path_ref = path.as_ref();
@@ -3936,5 +4030,298 @@ mod tests {
         assert!(!entry.consolidated, "migrated entries should have consolidated=false");
         assert_eq!(migrated.current_task, Some("test task".to_string()));
         assert_eq!(migrated.last_synced_sha, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn test_msgpack_roundtrip() {
+        let dir = std::env::temp_dir().join("legend_test_msgpack_rt");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("memory.lz4");
+
+        let mut state = MemoryState::default();
+        state.clock = 42;
+        state.next_id = 10;
+        state.short_term.push(ShortTermEntry {
+            id: 1,
+            text: "msgpack roundtrip test".into(),
+            summary: "test".into(),
+            embedding: vec![0.1, 0.2, 0.3],
+            last_access: 40,
+            usage: 3,
+            salience: 0.5,
+            consolidated: true,
+            ..ShortTermEntry::default()
+        });
+
+        save_memory_to_path(&state, &path).expect("save");
+        let loaded = load_memory_from_path(&path).expect("load");
+
+        assert_eq!(loaded.clock, 42);
+        assert_eq!(loaded.next_id, 10);
+        assert_eq!(loaded.short_term.len(), 1);
+        assert_eq!(loaded.short_term[0].text, "msgpack roundtrip test");
+        assert_eq!(loaded.short_term[0].embedding, vec![0.1, 0.2, 0.3]);
+        assert!(loaded.short_term[0].consolidated);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_bincode_to_msgpack_auto_migration() {
+        let dir = std::env::temp_dir().join("legend_test_bc_to_mp");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("memory.lz4");
+
+        // Save in old bincode format
+        let mut state = MemoryState::default();
+        state.clock = 99;
+        state.short_term.push(ShortTermEntry {
+            id: 5,
+            text: "bincode entry".into(),
+            salience: 0.7,
+            ..ShortTermEntry::default()
+        });
+        let serialized = bincode::serialize(&state).unwrap();
+        let compressed = lz4::block::compress(&serialized, None, true).unwrap();
+        fs::write(&path, &compressed).unwrap();
+
+        // Load should succeed via bincode fallback
+        let loaded = load_memory_from_path(&path).expect("load bincode");
+        assert_eq!(loaded.clock, 99);
+        assert_eq!(loaded.short_term[0].text, "bincode entry");
+
+        // Re-save should write msgpack
+        save_memory_to_path(&loaded, &path).expect("re-save as msgpack");
+
+        // Verify it's now msgpack format
+        let compressed2 = fs::read(&path).unwrap();
+        let decompressed = lz4::block::decompress(&compressed2, None).unwrap();
+        assert_eq!(&decompressed[..4], b"LGND");
+        assert_eq!(decompressed[4], 1);
+
+        // Load again from msgpack
+        let reloaded = load_memory_from_path(&path).expect("load msgpack");
+        assert_eq!(reloaded.clock, 99);
+        assert_eq!(reloaded.short_term[0].text, "bincode entry");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_msgpack_backward_compat_missing_fields() {
+        // Simulate loading msgpack data that's missing a field (e.g., consolidated).
+        // Struct-level #[serde(default)] should fill it with Default.
+        #[derive(Debug, Serialize)]
+        struct OldEntry {
+            id: u64,
+            text: String,
+            summary: String,
+            embedding: Vec<f32>,
+            last_access: u64,
+            usage: u32,
+            salience: f32,
+            // missing: consolidated, density, gradient_sq_sum, etc.
+        }
+
+        let old = OldEntry {
+            id: 7,
+            text: "old format".into(),
+            summary: "old".into(),
+            embedding: vec![0.5],
+            last_access: 10,
+            usage: 1,
+            salience: 0.3,
+        };
+
+        let bytes = rmp_serde::to_vec_named(&old).unwrap();
+        let loaded: ShortTermEntry = rmp_serde::from_slice(&bytes).unwrap();
+
+        assert_eq!(loaded.id, 7);
+        assert_eq!(loaded.text, "old format");
+        assert!(!loaded.consolidated); // default
+        assert_eq!(loaded.density, 0.0); // default
+        assert_eq!(loaded.gradient_sq_sum, 0.0); // default
+        assert_eq!(loaded.reconsolidation_count, 0); // default
+    }
+
+    #[test]
+    fn test_msgpack_forward_compat_unknown_fields() {
+        // Simulate loading msgpack data with extra unknown fields.
+        // rmp_serde should silently ignore them.
+        #[derive(Debug, Serialize)]
+        struct FutureEntry {
+            id: u64,
+            text: String,
+            summary: String,
+            embedding: Vec<f32>,
+            last_access: u64,
+            usage: u32,
+            salience: f32,
+            consolidated: bool,
+            reconsolidation_count: u32,
+            labile_until: u64,
+            refs: Vec<MemoryRef>,
+            gradient_sq_sum: f32,
+            density: f32,
+            // Future fields not in current struct
+            future_field_str: String,
+            future_field_num: u64,
+        }
+
+        let future = FutureEntry {
+            id: 9,
+            text: "from the future".into(),
+            summary: "future".into(),
+            embedding: vec![0.9],
+            last_access: 50,
+            usage: 2,
+            salience: 0.8,
+            consolidated: true,
+            reconsolidation_count: 3,
+            labile_until: 55,
+            refs: vec![],
+            gradient_sq_sum: 1.5,
+            density: 2.0,
+            future_field_str: "unknown".into(),
+            future_field_num: 42,
+        };
+
+        let bytes = rmp_serde::to_vec_named(&future).unwrap();
+        let loaded: ShortTermEntry = rmp_serde::from_slice(&bytes).unwrap();
+
+        assert_eq!(loaded.id, 9);
+        assert_eq!(loaded.text, "from the future");
+        assert!(loaded.consolidated);
+        assert_eq!(loaded.density, 2.0);
+        // Unknown fields silently ignored — no crash
+    }
+
+    #[test]
+    fn test_msgpack_full_state_missing_field_no_data_loss() {
+        // End-to-end test: save a full MemoryState as msgpack using a struct
+        // that's MISSING the `consolidated` field, then load with the current
+        // struct. This is the exact scenario that caused the v0.3.5 data wipe
+        // with bincode — it must work with msgpack.
+        #[derive(Debug, Serialize)]
+        struct OldShortTermEntry {
+            id: u64,
+            text: String,
+            summary: String,
+            embedding: Vec<f32>,
+            last_access: u64,
+            usage: u32,
+            salience: f32,
+            reconsolidation_count: u32,
+            labile_until: u64,
+            refs: Vec<MemoryRef>,
+            gradient_sq_sum: f32,
+            density: f32,
+            // `consolidated` intentionally absent — simulates v0.3.4
+        }
+
+        #[derive(Debug, Serialize)]
+        struct OldMemoryState {
+            config: MemoryConfig,
+            immediate: VecDeque<String>,
+            short_term: Vec<OldShortTermEntry>,
+            long_term: GraphMemory,
+            clock: u64,
+            next_id: u64,
+            session_log: Vec<SessionEntry>,
+            current_task: Option<String>,
+            ticks_since_consolidation: u32,
+            last_retrieved_ids: Vec<u64>,
+            last_synced_sha: Option<String>,
+        }
+
+        let dir = std::env::temp_dir().join("legend_test_no_data_loss");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("memory.lz4");
+
+        // Build an "old" state missing consolidated field
+        let old_state = OldMemoryState {
+            config: MemoryConfig::default(),
+            immediate: VecDeque::from(["hello".to_string()]),
+            short_term: vec![
+                OldShortTermEntry {
+                    id: 1,
+                    text: "important memory".into(),
+                    summary: "important".into(),
+                    embedding: vec![0.1, 0.2, 0.3],
+                    last_access: 50,
+                    usage: 5,
+                    salience: 0.9,
+                    reconsolidation_count: 2,
+                    labile_until: 0,
+                    refs: vec![MemoryRef {
+                        path: "src/main.rs".into(),
+                        start_line: 10,
+                        end_line: 20,
+                        snippet: "fn main()".into(),
+                    }],
+                    gradient_sq_sum: 0.5,
+                    density: 1.2,
+                },
+                OldShortTermEntry {
+                    id: 2,
+                    text: "another memory".into(),
+                    summary: "another".into(),
+                    embedding: vec![0.4, 0.5, 0.6],
+                    last_access: 45,
+                    usage: 3,
+                    salience: 0.7,
+                    reconsolidation_count: 0,
+                    labile_until: 0,
+                    refs: vec![],
+                    gradient_sq_sum: 0.0,
+                    density: 0.0,
+                },
+            ],
+            long_term: GraphMemory::default(),
+            clock: 100,
+            next_id: 3,
+            session_log: vec![SessionEntry {
+                timestamp: 99,
+                text: "test session".into(),
+            }],
+            current_task: Some("testing msgpack".into()),
+            ticks_since_consolidation: 5,
+            last_retrieved_ids: vec![1],
+            last_synced_sha: Some("deadbeef".into()),
+        };
+
+        // Serialize as msgpack with LGND header
+        let serialized = rmp_serde::to_vec_named(&old_state).unwrap();
+        let mut payload = Vec::with_capacity(5 + serialized.len());
+        payload.extend_from_slice(MSGPACK_MAGIC);
+        payload.push(MSGPACK_FORMAT_VERSION);
+        payload.extend_from_slice(&serialized);
+        let compressed = lz4::block::compress(&payload, None, true).unwrap();
+        fs::write(&path, &compressed).unwrap();
+
+        // Load with current MemoryState (which has `consolidated` field)
+        let loaded = load_memory_from_path(&path).expect("must not fail!");
+
+        // ALL data must be preserved
+        assert_eq!(loaded.clock, 100);
+        assert_eq!(loaded.next_id, 3);
+        assert_eq!(loaded.immediate.len(), 1);
+        assert_eq!(loaded.immediate[0], "hello");
+        assert_eq!(loaded.short_term.len(), 2);
+        assert_eq!(loaded.short_term[0].id, 1);
+        assert_eq!(loaded.short_term[0].text, "important memory");
+        assert_eq!(loaded.short_term[0].salience, 0.9);
+        assert_eq!(loaded.short_term[0].refs.len(), 1);
+        assert_eq!(loaded.short_term[0].refs[0].path, "src/main.rs");
+        // Missing `consolidated` defaults to false
+        assert!(!loaded.short_term[0].consolidated);
+        assert!(!loaded.short_term[1].consolidated);
+        assert_eq!(loaded.short_term[1].id, 2);
+        assert_eq!(loaded.short_term[1].text, "another memory");
+        assert_eq!(loaded.session_log.len(), 1);
+        assert_eq!(loaded.current_task, Some("testing msgpack".into()));
+        assert_eq!(loaded.last_synced_sha, Some("deadbeef".into()));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
