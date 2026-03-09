@@ -131,7 +131,7 @@ fn setup_git_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Configure local git merge driver
     let cmd = get_legend_command();
-    let git_config_cmd = format!("merge.legend.driver");
+    let git_config_cmd = "merge.legend.driver".to_string();
     let git_config_val = format!("{} git-merge-driver %O %A %B %P", cmd);
 
     let status = Command::new("git")
@@ -603,13 +603,15 @@ fn setup_agent_hooks(
 
         merge_legend_hooks(
             &mut settings,
-            &legend_session_hook,
-            &legend_prompt_hook,
-            &legend_stop_hook,
-            &legend_after_tool_hook,
-            prompt_event,
-            stop_event,
-            after_tool_event,
+            LegendHooks {
+                session_hook: &legend_session_hook,
+                prompt_hook: &legend_prompt_hook,
+                stop_hook: &legend_stop_hook,
+                after_tool_hook: &legend_after_tool_hook,
+                prompt_event,
+                stop_event,
+                after_tool_event,
+            },
         );
 
         let output = serde_json::to_string_pretty(&settings)?;
@@ -746,17 +748,18 @@ fn remove_any_legend_hooks(settings: &mut Value) -> bool {
     removed
 }
 
+struct LegendHooks<'a> {
+    session_hook: &'a Value,
+    prompt_hook: &'a Value,
+    stop_hook: &'a Value,
+    after_tool_hook: &'a Value,
+    prompt_event: &'a str,
+    stop_event: &'a str,
+    after_tool_event: Option<&'a str>,
+}
+
 /// Merge Legend hooks into existing settings
-fn merge_legend_hooks(
-    settings: &mut Value,
-    session_hook: &Value,
-    prompt_hook: &Value,
-    stop_hook: &Value,
-    after_tool_hook: &Value,
-    prompt_event: &str,
-    stop_event: &str,
-    after_tool_event: Option<&str>,
-) {
+fn merge_legend_hooks(settings: &mut Value, hooks_config: LegendHooks) {
     if settings.get("hooks").is_none() {
         settings["hooks"] = json!({});
     }
@@ -768,32 +771,38 @@ fn merge_legend_hooks(
         hooks["SessionStart"] = json!([]);
     }
     if let Some(arr) = hooks.get_mut("SessionStart").and_then(|s| s.as_array_mut()) {
-        arr.push(session_hook.clone());
+        arr.push(hooks_config.session_hook.clone());
     }
 
     // Add after-tool hook if the agent supports it
-    if let Some(evt) = after_tool_event {
+    if let Some(evt) = hooks_config.after_tool_event {
         if hooks.get(evt).is_none() {
             hooks[evt] = json!([]);
         }
         if let Some(arr) = hooks.get_mut(evt).and_then(|s| s.as_array_mut()) {
-            arr.push(after_tool_hook.clone());
+            arr.push(hooks_config.after_tool_hook.clone());
         }
     }
 
     // Add prompt hook (e.g. UserPromptSubmit or BeforeAgent)
-    if hooks.get(prompt_event).is_none() {
-        hooks[prompt_event] = json!([]);
+    if hooks.get(hooks_config.prompt_event).is_none() {
+        hooks[hooks_config.prompt_event] = json!([]);
     }
-    if let Some(arr) = hooks.get_mut(prompt_event).and_then(|s| s.as_array_mut()) {
-        arr.push(prompt_hook.clone());
+    if let Some(arr) = hooks
+        .get_mut(hooks_config.prompt_event)
+        .and_then(|s| s.as_array_mut())
+    {
+        arr.push(hooks_config.prompt_hook.clone());
     }
 
     // Add stop hook (e.g. Stop or SessionEnd)
-    if hooks.get(stop_event).is_none() {
-        hooks[stop_event] = json!([]);
+    if hooks.get(hooks_config.stop_event).is_none() {
+        hooks[hooks_config.stop_event] = json!([]);
     }
-    if let Some(arr) = hooks.get_mut(stop_event).and_then(|s| s.as_array_mut()) {
-        arr.push(stop_hook.clone());
+    if let Some(arr) = hooks
+        .get_mut(hooks_config.stop_event)
+        .and_then(|s| s.as_array_mut())
+    {
+        arr.push(hooks_config.stop_hook.clone());
     }
 }

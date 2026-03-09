@@ -76,4 +76,8 @@ cargo run --quiet -- dashboard
 ## Understanding Start Output
 
 By default, `cargo run --quiet -- memory start` returns a high-signal Markdown summary designed for YOUR consumption. It contains the **LEGEND PROTOCOL (MANDATORY)** which you must follow.
+
+## Git and Legend Files
+
+The `.legend/` directory contains your persistent memory state (`memory.lz4`, `state.lz4`, `events.jsonl`, etc.). These files **should be committed to git** alongside the project. They are part of the project's context — not temporary or machine-specific. When committing project changes, include `.legend/` file changes in the same commit. Do not add `.legend/` to `.gitignore`.
 <!-- legend-end -->

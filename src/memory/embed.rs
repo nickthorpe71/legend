@@ -1,4 +1,5 @@
 /// N-gram embedding and vector similarity functions.
+use crate::memory::keywords::{ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, CODE_KEYWORDS, DECISION_KEYWORDS, PREFERENCE_KEYWORDS, TODO_KEYWORDS};
 
 /// Compute an n-gram embedding vector of given dimension.
 ///
@@ -90,19 +91,7 @@ pub fn compute_salience(text: &str) -> f32 {
     let lowered = text.to_lowercase();
 
     // Decision language — highest importance
-    let decision_keywords = [
-        "chose",
-        "decided",
-        "decision",
-        "instead of",
-        "rather than",
-        "rejected",
-        "opted",
-        "went with",
-        "trade-off",
-        "tradeoff",
-    ];
-    let decision_hits = decision_keywords
+    let decision_hits = DECISION_KEYWORDS
         .iter()
         .filter(|kw| lowered.contains(*kw))
         .count();
@@ -121,67 +110,31 @@ pub fn compute_salience(text: &str) -> f32 {
     }
 
     // Bug/incident language — high importance
-    if [
-        "bug",
-        "broke",
-        "broken",
-        "revert",
-        "crash",
-        "panic",
-        "regression",
-        "incident",
-        "hotfix",
-    ]
-    .iter()
-    .any(|kw| lowered.contains(kw))
-    {
+    if BUG_KEYWORDS.iter().any(|kw| lowered.contains(kw)) {
         score += 0.4;
     }
 
     // TODO/blocker language
-    if lowered.contains("todo")
-        || lowered.contains("fixme")
-        || lowered.contains("important")
-        || lowered.contains("blocker")
-        || lowered.contains("blocked")
-    {
+    if TODO_KEYWORDS.iter().any(|kw| lowered.contains(kw)) {
         score += 0.3;
     }
 
     // Architecture/structural statements
-    if [
-        "architecture",
-        "module",
-        "component",
-        "layer",
-        "interface",
-        "api",
-        "schema",
-        "pipeline",
-    ]
-    .iter()
-    .any(|kw| lowered.contains(kw))
-    {
+    if ARCHITECTURE_KEYWORDS.iter().any(|kw| lowered.contains(kw)) {
         score += 0.25;
     }
 
     // Preference/convention
-    if [
-        "user wants",
-        "user prefers",
-        "preference",
-        "convention",
-        "always use",
-        "never use",
-    ]
-    .iter()
-    .any(|kw| lowered.contains(kw))
-    {
+    if PREFERENCE_KEYWORDS.iter().any(|kw| lowered.contains(kw)) {
         score += 0.3;
     }
 
     // Code references
-    if text.contains("```") || lowered.contains("fn ") || lowered.contains("struct ") {
+    if text.contains("```")
+        || CODE_KEYWORDS
+            .iter()
+            .any(|(kw, _, _): &(&str, &str, &str)| lowered.contains(kw.trim()))
+    {
         score += 0.15;
     }
 
@@ -198,7 +151,7 @@ pub fn compute_salience(text: &str) -> f32 {
         score += 0.15;
     }
 
-    score.min(1.0).max(0.05)
+    score.clamp(0.05, 1.0)
 }
 
 #[cfg(test)]
@@ -333,7 +286,7 @@ mod tests {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0];
         let sim = cosine_similarity(&a, &b);
-        assert!(sim >= 0.0 && sim <= 1.0, "got {}", sim);
+        assert!((0.0..=1.0).contains(&sim), "got {}", sim);
     }
 
     #[test]

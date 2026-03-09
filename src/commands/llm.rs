@@ -390,15 +390,12 @@ fn handle_apply(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut i = 1usize;
     while i < args.len() {
-        match args[i].as_str() {
-            "--result" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("Missing value for --result".into());
-                }
-                result_json = Some(serde_json::from_str(&args[i])?);
+        if args[i].as_str() == "--result" {
+            i += 1;
+            if i >= args.len() {
+                return Err("Missing value for --result".into());
             }
-            _ => {}
+            result_json = Some(serde_json::from_str(&args[i])?);
         }
         i += 1;
     }
@@ -1237,7 +1234,7 @@ mod tests {
     #[test]
     fn test_should_enqueue_empty_tasks() {
         assert!(should_enqueue_auto_task(
-            &[],
+            &[] as &[LlmTaskRecord],
             &LlmTaskKind::EntityExtract,
             &text_fingerprint("test"),
             Some(100)

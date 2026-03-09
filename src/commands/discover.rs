@@ -323,14 +323,13 @@ fn scan_high_signal(root: &Path, all_files: &[PathBuf]) -> Vec<HighSignalFile> {
             .parent()
             .map(|p| p.as_os_str().is_empty())
             .unwrap_or(true)
+            && DOC_FILES.contains(&filename)
         {
-            if DOC_FILES.contains(&filename) {
-                high_signal.push(HighSignalFile {
-                    path: rel_path.to_string_lossy().to_string(),
-                    kind: "Documentation".to_string(),
-                });
-                continue;
-            }
+            high_signal.push(HighSignalFile {
+                path: rel_path.to_string_lossy().to_string(),
+                kind: "Documentation".to_string(),
+            });
+            continue;
         }
 
         // Manifests
@@ -384,11 +383,13 @@ fn is_entry_point(filename: &str) -> bool {
 }
 
 fn extract_metadata(root: &Path, high_signal: &[HighSignalFile]) -> ProjectMetadata {
-    let mut meta = ProjectMetadata::default();
-    meta.name = root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Unknown Project".to_string());
+    let mut meta = ProjectMetadata {
+        name: root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Unknown Project".to_string()),
+        ..Default::default()
+    };
 
     for file in high_signal {
         if file.kind == "Manifest" {
@@ -470,7 +471,7 @@ fn parse_package_json(content: &str, meta: &mut ProjectMetadata) {
 
 /// Recursively walk a directory tree, collecting file paths and counting extensions.
 fn walk_directory(
-    root: &Path,
+    _root: &Path,
     dir: &Path,
     languages: &mut HashMap<String, usize>,
     files: &mut Vec<PathBuf>,
@@ -484,7 +485,7 @@ fn walk_directory(
             if !SKIP_DIRS.contains(&name.to_string_lossy().as_ref())
                 && !name.to_string_lossy().starts_with('.')
             {
-                walk_directory(root, &path, languages, files)?;
+                walk_directory(_root, &path, languages, files)?;
             }
         } else if path.is_file() {
             if let Some(ext) = path.extension() {
@@ -583,7 +584,7 @@ fn infer_domain(dir_name: &str) -> String {
 
 /// Convert a snake_case or kebab-case string to Title Case.
 fn title_case(s: &str) -> String {
-    s.split(|c: char| c == '_' || c == '-')
+    s.split(['_', '-'])
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();

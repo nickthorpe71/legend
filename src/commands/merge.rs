@@ -79,7 +79,7 @@ fn merge_jsonl_events(
             result.push('\n');
         }
     }
-    for ((_, line), _) in &new_lines {
+    for (_, line) in new_lines.keys() {
         result.push_str(line);
         result.push('\n');
     }

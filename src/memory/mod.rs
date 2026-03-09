@@ -1,5 +1,6 @@
 pub mod embed;
 pub mod extract;
+pub mod keywords;
 pub mod summarize;
 
 use embed::{compute_salience, cosine_similarity, embed_text, merge_embeddings};
@@ -192,19 +193,8 @@ pub struct ShortTermEntry {
     pub consolidated: bool,
 }
 
-impl Default for MemoryRef {
-    fn default() -> Self {
-        Self {
-            path: String::new(),
-            start_line: 0,
-            end_line: 0,
-            snippet: String::new(),
-        }
-    }
-}
-
 /// A source reference to a file region for this memory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct MemoryRef {
     pub path: String,
@@ -317,7 +307,7 @@ fn build_ref_snippet(line: &str) -> String {
 }
 
 /// Long-term knowledge graph: labeled nodes connected by typed edges.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct GraphMemory {
     pub nodes: HashMap<u64, GraphNode>,
@@ -380,17 +370,8 @@ fn default_edge_kind() -> String {
     "related".to_string()
 }
 
-impl Default for SessionEntry {
-    fn default() -> Self {
-        Self {
-            timestamp: 0,
-            text: String::new(),
-        }
-    }
-}
-
 /// A timestamped session log entry preserving full tick text.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SessionEntry {
     pub timestamp: u64,
@@ -544,125 +525,48 @@ impl MemoryCategory {
     }
 }
 
+use keywords::{
+    ACTION_KEYWORDS, ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, DECISION_KEYWORDS, PREFERENCE_KEYWORDS,
+    TODO_KEYWORDS,
+};
+
 /// Detect the primary category of a text based on keyword patterns.
 pub fn classify_text(text: &str) -> MemoryCategory {
     let lower = text.to_lowercase();
 
     // Decision patterns (highest priority)
-    let decision_score = [
-        "chose",
-        "decided",
-        "decision",
-        "instead of",
-        "rather than",
-        "over",
-        "picked",
-        "opted",
-        "went with",
-        "trade-off",
-        "tradeoff",
-        "because",
-        "rationale",
-        "rejected",
-        "approach",
-    ]
-    .iter()
-    .filter(|kw| lower.contains(*kw))
-    .count();
+    let decision_score = DECISION_KEYWORDS
+        .iter()
+        .filter(|kw| lower.contains(*kw))
+        .count();
     if decision_score >= 2 {
         return MemoryCategory::Decision;
     }
 
-    // Bug patterns
-    if [
-        "bug",
-        "broke",
-        "broken",
-        "revert",
-        "reverted",
-        "crash",
-        "panic",
-        "regression",
-        "fix",
-        "hotfix",
-        "incident",
-    ]
-    .iter()
-    .any(|kw| lower.contains(kw))
-    {
-        return MemoryCategory::Bug;
-    }
-
     // TODO patterns
-    if [
-        "todo",
-        "fixme",
-        "hack",
-        "still need",
-        "not yet",
-        "remaining",
-        "blocker",
-        "blocked",
-    ]
-    .iter()
-    .any(|kw| lower.contains(kw))
-    {
+    if TODO_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
         return MemoryCategory::Todo;
     }
 
-    // Architecture patterns
-    if [
-        "architecture",
-        "module",
-        "component",
-        "layer",
-        "system",
-        "interface",
-        "api",
-        "schema",
-        "pipeline",
-        "pattern",
-        "struct ",
-        "trait ",
-        "impl ",
-    ]
-    .iter()
-    .any(|kw| lower.contains(kw))
-    {
-        return MemoryCategory::Architecture;
-    }
-
     // Preference patterns
-    if [
-        "prefer",
-        "preference",
-        "user wants",
-        "user prefers",
-        "style",
-        "convention",
-        "always use",
-        "never use",
-    ]
-    .iter()
-    .any(|kw| lower.contains(kw))
-    {
+    if PREFERENCE_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
         return MemoryCategory::Preference;
     }
 
+    // Architecture patterns
+    if ARCHITECTURE_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        return MemoryCategory::Architecture;
+    }
+
+    // Bug patterns
+    if BUG_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+        return MemoryCategory::Bug;
+    }
+
     // Progress patterns
-    if [
-        "implemented",
-        "completed",
-        "finished",
-        "added",
-        "created",
-        "built",
-        "shipped",
-        "merged",
-        "deployed",
-    ]
-    .iter()
-    .any(|kw| lower.contains(kw))
+    if ACTION_KEYWORDS
+        .iter()
+        .any(|(verb, _)| lower.contains(*verb))
     {
         return MemoryCategory::Progress;
     }
@@ -673,16 +577,6 @@ pub fn classify_text(text: &str) -> MemoryCategory {
     }
 
     MemoryCategory::General
-}
-
-impl Default for GraphMemory {
-    fn default() -> Self {
-        Self {
-            nodes: HashMap::new(),
-            edges: Vec::new(),
-            index: HashMap::new(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -869,10 +763,10 @@ impl MemoryState {
         }
         self.apply_decay();
         self.stabilize_labile_entries();
-        if self.clock % RENORM_INTERVAL == 0 {
+        if self.clock.is_multiple_of(RENORM_INTERVAL) {
             self.renormalize_salience();
         }
-        if self.clock % GRAPH_NORM_INTERVAL == 0 {
+        if self.clock.is_multiple_of(GRAPH_NORM_INTERVAL) {
             self.normalize_graph_weights();
         }
 
@@ -1114,15 +1008,15 @@ impl MemoryState {
             let mut group = vec![seed.clone()];
             used[i] = true;
 
-            for j in (i + 1)..self.short_term.len() {
-                if used[j] {
+            for (j, is_used) in used.iter_mut().enumerate().skip(i + 1) {
+                if *is_used {
                     continue;
                 }
                 if cosine_similarity(&seed.embedding, &self.short_term[j].embedding)
                     >= self.config.theta_low
                 {
                     group.push(self.short_term[j].clone());
-                    used[j] = true;
+                    *is_used = true;
                 }
             }
             groups.push(group);
@@ -1416,7 +1310,7 @@ impl MemoryState {
             // Reconsolidation requires meaningful relation but lower bar than merge
             if sim >= RECONSOLIDATION_THRESHOLD && overlap >= 0.1 {
                 let score = sim * 0.6 + overlap * 0.4;
-                if best.map_or(true, |(_, best_score)| score > best_score) {
+                if best.is_none_or(|(_, best_score)| score > best_score) {
                     best = Some((entry.id, score));
                 }
             }
@@ -3015,7 +2909,7 @@ mod tests {
         let id = state.short_term[0].id;
         let salience_before = state.short_term[0].salience;
 
-        let result = state.reinforce(&[id], 1.0);
+        let result = state.reinforce(&[id][..], 1.0);
         assert_eq!(result.reinforced.len(), 1);
         assert!(
             result.reinforced[0].salience_after > salience_before,
@@ -3032,7 +2926,7 @@ mod tests {
         let id = state.short_term[0].id;
         let salience_before = state.short_term[0].salience;
 
-        let result = state.reinforce(&[id], -1.0);
+        let result = state.reinforce(&[id][..], -1.0);
         assert_eq!(result.reinforced.len(), 1);
         assert!(
             result.reinforced[0].salience_after < salience_before,
@@ -3051,7 +2945,7 @@ mod tests {
         // Capture graph weights before reinforcement
         let weight_before: f32 = state.long_term.nodes.values().map(|n| n.weight).sum();
 
-        state.reinforce(&[id], 1.0);
+        state.reinforce(&[id][..], 1.0);
 
         let weight_after: f32 = state.long_term.nodes.values().map(|n| n.weight).sum();
 
@@ -3067,7 +2961,7 @@ mod tests {
     fn test_reinforce_unknown_id_ignored() {
         let mut state = MemoryState::default();
         state.tick("some entry");
-        let result = state.reinforce(&[9999], 1.0);
+        let result = state.reinforce(&[9999][..], 1.0);
         assert!(
             result.reinforced.is_empty(),
             "unknown ID should be silently ignored"
@@ -3364,6 +3258,41 @@ mod tests {
         assert_eq!(
             classify_text("Had to revert the migration due to data loss"),
             MemoryCategory::Bug
+        );
+    }
+
+    #[test]
+    fn test_classify_priority_todo_wins_over_bug() {
+        // "TODO: fix the bug" should be a TODO, not a BUG
+        assert_eq!(
+            classify_text("TODO: fix the critical bug"),
+            MemoryCategory::Todo
+        );
+    }
+
+    #[test]
+    fn test_classify_priority_preference_wins_over_bug() {
+        // "I prefer explicit error types" should be PREFERENCE, not BUG (even though 'error' is in BUG_KEYWORDS)
+        assert_eq!(
+            classify_text("User prefers explicit error types over anyhow"),
+            MemoryCategory::Preference
+        );
+    }
+
+    #[test]
+    fn test_classify_text_progress_polyglot() {
+        // Test our new ACTION_KEYWORDS for progress
+        assert_eq!(
+            classify_text("Finished the user login implementation"),
+            MemoryCategory::Progress
+        );
+        assert_eq!(
+            classify_text("Merged the feature branch into master"),
+            MemoryCategory::Progress
+        );
+        assert_eq!(
+            classify_text("Shipped the new version to production"),
+            MemoryCategory::Progress
         );
     }
 
@@ -3695,10 +3624,10 @@ mod tests {
     #[test]
     fn test_min_query_similarity_constant_reasonable() {
         // Sanity: threshold should be between 0 and 1
-        assert!(MIN_QUERY_SIMILARITY > 0.0);
-        assert!(MIN_QUERY_SIMILARITY < 1.0);
+        const { assert!(MIN_QUERY_SIMILARITY > 0.0) };
+        const { assert!(MIN_QUERY_SIMILARITY < 1.0) };
         // Should be low enough not to filter genuinely relevant results
-        assert!(MIN_QUERY_SIMILARITY <= 0.2);
+        const { assert!(MIN_QUERY_SIMILARITY <= 0.2) };
     }
 
     // ---- Commit 2: Keyword bonus + trigram tests ----
@@ -4038,9 +3967,11 @@ mod tests {
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("memory.lz4");
 
-        let mut state = MemoryState::default();
-        state.clock = 42;
-        state.next_id = 10;
+        let mut state = MemoryState {
+            clock: 42,
+            next_id: 10,
+            ..MemoryState::default()
+        };
         state.short_term.push(ShortTermEntry {
             id: 1,
             text: "msgpack roundtrip test".into(),
@@ -4073,8 +4004,10 @@ mod tests {
         let path = dir.join("memory.lz4");
 
         // Save in old bincode format
-        let mut state = MemoryState::default();
-        state.clock = 99;
+        let mut state = MemoryState {
+            clock: 99,
+            ..MemoryState::default()
+        };
         state.short_term.push(ShortTermEntry {
             id: 5,
             text: "bincode entry".into(),
