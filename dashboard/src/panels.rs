@@ -216,11 +216,7 @@ pub fn ui_panels(mut ctx: EguiContexts, data: Res<LegendData>, mut selected: Res
                         .collect();
 
                     // Age
-                    let age = if data.clock > node.last_seen {
-                        data.clock - node.last_seen
-                    } else {
-                        0
-                    };
+                    let age = data.clock.saturating_sub(node.last_seen);
 
                     // Strongest neighbor
                     let strongest_neighbor = neighbors.first().and_then(|(nid, w, _, _)| {

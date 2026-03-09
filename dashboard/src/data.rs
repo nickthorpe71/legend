@@ -117,6 +117,7 @@ pub struct DumpSession {
 // Live event from `.legend/events.jsonl`
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum EventData {
@@ -127,6 +128,7 @@ pub enum EventData {
     Start(StartEventData),
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct TickEventData {
     pub entry_id: Option<u64>,
@@ -134,6 +136,7 @@ pub struct TickEventData {
     pub graph_nodes: Vec<GraphHit>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct QueryEventData {
     pub matches: Vec<MatchedEntry>,
@@ -141,6 +144,7 @@ pub struct QueryEventData {
     pub primed_count: usize,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct MatchedEntry {
     pub id: u64,
@@ -148,6 +152,7 @@ pub struct MatchedEntry {
     pub text_preview: String,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphHit {
     pub id: u64,
@@ -156,6 +161,7 @@ pub struct GraphHit {
     pub weight: f32,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ReinforceEventData {
     pub signal: f32,
@@ -163,6 +169,7 @@ pub struct ReinforceEventData {
     pub graph_nodes_affected: usize,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ReinforceEntryData {
     pub id: u64,
@@ -170,18 +177,21 @@ pub struct ReinforceEntryData {
     pub after: f32,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ConsolidateEventData {
     pub groups_merged: usize,
     pub summaries: Vec<ConsolidatedGroup>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ConsolidatedGroup {
     pub node_id: u64,
     pub label: String,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct StartEventData {
     pub clock: u64,
@@ -390,7 +400,7 @@ fn shell_escape(s: &str) -> String {
 // Event log polling — reads new lines from `.legend/events.jsonl`
 // ---------------------------------------------------------------------------
 
-fn poll_events(data: &mut LegendData, project_dir: &PathBuf) {
+fn poll_events(data: &mut LegendData, project_dir: &std::path::Path) {
     let events_path = project_dir.join(".legend").join("events.jsonl");
     let Ok(file) = std::fs::File::open(&events_path) else {
         return;

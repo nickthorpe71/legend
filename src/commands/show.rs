@@ -17,8 +17,8 @@ pub fn handle_show() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     println!(
-        "{:<20} {:<14} {:<12} {:<8} {}",
-        "ID", "DOMAIN", "STATUS", "RECENCY", "NAME"
+        "{:<20} {:<14} {:<12} {:<8} NAME",
+        "ID", "DOMAIN", "STATUS", "RECENCY"
     );
     println!("{}", "-".repeat(72));
 

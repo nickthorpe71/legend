@@ -1,557 +1,314 @@
-# R* - The Rust Way of No Way
+# R* — The Way of No Way
 
-> *"In strategy, it is important to see distant things as if they were close and to take a distanced view of close things."*
-> — Miyamoto Musashi, The Book of Five Rings
+R* is a practical style for writing Rust. Understand your data, write the concrete thing, compress only what repeats.
 
----
-
-## The Principle
-
-**Adapt to the terrain.**
-
-There is no fixed style. There is no "proper Rust way." There are fundamentals, and there is the problem in front of you.
-
-Master the basics. Favor simplicity. Reach for power only when the need is clear—you will know when the time comes. Use macros when macros are needed (it is rare). Use traits when traits clarify (not before). Clone when cloning serves the code.
-
-Do not follow dogma. Do not write code to impress other Rust programmers. Write code that works, that is clear, that can be changed.
-
-If you fight the borrow checker for an hour, you are on the wrong path. Restructure. Own the data. Move forward.
-
-Measure continuously. Progress in small steps. Favor working code over perfect code.
-
-This is the way*.
+There is no fixed way. There is the problem, and there are the fundamentals.
 
 ---
 
-## The Ground - Foundation
+# Core Approach
 
-### On Simplicity
+## Data First
 
-**Small is knowable.**
+Start every design by asking what the data looks like and how it flows through the program. Don't start with traits, interfaces, or architectural diagrams. Start with the structs.
 
-- Small functions (one purpose)
-- Small modules (one responsibility)
-- Small APIs (one obvious path)
+Flat structs over nested hierarchies. `enum` variants over trait-object polymorphism — dynamic dispatch costs 10-15x more than a match arm and hides the actual code path. Choose containers by access pattern, not by habit.
 
-Prefer fewer moving parts over framework patterns. A 50-line function you understand beats 5 abstractions you don't.
+If you cannot describe the data layout on a whiteboard in under a minute, the design is too complex. The shape of the data determines the shape of the code. Get the data right and the code writes itself; get it wrong and no amount of abstraction will save you.
 
-### On Clarity
+Think about how the data is stored in memory. A `Vec<Entity>` where each entity holds its components is often better than separate systems connected by IDs — until [profiling](#how-to-measure) says otherwise. Contiguous data wins by default.
 
-**Local over global.**
+## Concrete Then Compress
 
-The reader should understand each function without jumping across the codebase. If you must jump to understand, the abstraction has failed.
+Write the inline, concrete solution first. Do not extract a function, trait, or module for *reuse* until a pattern has appeared at least three times. A function called from one site for reuse is indirection, not abstraction. (Extracting for *readability* — naming a block of logic to clarify a long function — is always fine.)
 
-Names are long and boring:
+A clear 50-line function is often better than five abstractions.
+
+Compression means removing duplication that actually exists, not duplication you predict. Three similar blocks of code are a signal. Two are a coincidence. When you do extract, the new unit must justify itself: it must simplify every call site, not just centralize code.
+
+Resist the urge to generalize early. The first implementation teaches you what the problem actually is. The second shows you what varies. The third reveals the real abstraction.
+
+Steps:
+
+1. Make it work.
+2. Make it correct.
+3. Make it fast.
+
+Working code reveals the real problem.
+
+Do not skip steps. Do not design for hypothetical future requirements. [Measure](#how-to-measure) continuously.
+
+## Explicit State
+
+Functions take explicit inputs and return explicit outputs. Write pure functions by default — they are testable, composable, and inherently thread-safe.
+
+If a function performs I/O, allocates, or mutates shared state, the name says so:
+
 ```rust
-fn parse_feature_from_json(bytes: &[u8]) -> Result<Feature>
-fn calculate_recency_score(days_since_update: f64) -> f64
-fn write_state_atomic(path: &Path, state: &State) -> Result<()>
+fn load_state(path: &Path) -> Result<State>    // I/O is in the name
+fn calculate_score(feature: &Feature) -> f64    // pure: inputs in, output out
 ```
 
-Not:
+Minimize nested conditionals. Flatten logic with early returns. Each function should have one job. A long function that does one thing sequentially is fine — a short function that does three things is not.
+
+Names should be explicit and descriptive. A reader should not need to navigate the entire codebase to understand a function.
+
 ```rust
-fn parse(b: &[u8]) -> Result<F>  // What are we parsing? What is F?
-fn score(d: f64) -> f64          // Score of what?
-fn write(p: &Path, s: &S) -> R   // Too generic, too clever
+fn parse_feature_from_json(bytes: &[u8]) -> Result<Feature>    // clear
+fn calculate_recency_score(days: f64) -> f64                    // clear
+fn process(b: &[u8]) -> Result<Feature>                          // too vague
 ```
 
-### On Control
+---
 
-**Deterministic over magical.**
+# The Rust Subset
 
-No hidden work. No surprising side effects. No action at a distance.
+Rust is a large language. Most programs require only a small part of it. R* defines a practical subset.
 
-If a function modifies global state, allocates memory, or performs I/O, the name and signature must make this clear.
+## Types
 
-```rust
-fn load_state() -> Result<State>           // Clear: I/O happens
-fn calculate_score(feature: &Feature) -> f64  // Clear: pure computation
+Core: `struct`, `enum`, `Option<T>`, `Result<T, E>`, `Vec<T>`, `&[T]`, `String`, `&str`, `[T; N]`.
+Primitives: `i32`, `u32`, `usize`, `f32`, `f64`, `bool`.
+
+These form the foundation of most code.
+
+**`String` vs `&str`:** Accept `&str` in function parameters, store `String` in structs. Convert with `.to_string()` or `.as_str()`. This covers 90% of cases.
+
+## Ownership and Lifetimes
+
+Borrow by default. Clone when cost is acceptable and clarity improves.
+
+```
+fn process(data: &[Item]) -> Output     // borrow
+fn update(state: &mut State)            // mutable borrow
 ```
 
-### On Invariants
+Reasonable to clone: small structs, pipeline stages, lifetime simplification, concurrent tasks.
+Avoid cloning: large buffers, large collections, hot loops.
 
-**Make invalid states unrepresentable.**
+Understand the cost. [Measure](#how-to-measure) if uncertain.
 
-Use the type system. If a value must be non-empty, the type should enforce it. If a state machine has three states, use an enum with three variants.
+**Lifetimes.** Most lifetimes are inferred — you will not write them often. When the compiler asks for one, it means a reference in the output must be tied to an input:
 
 ```rust
-// Bad: Can represent invalid state
-struct Feature {
-    id: Option<String>,  // Why optional? ID is required
-}
+fn first_word(s: &str) -> &str          // lifetime inferred: output lives as long as input
+fn longest<'a>(a: &'a str, b: &'a str) -> &'a str   // explicit: both inputs must outlive output
+```
 
-// Good: Cannot construct invalid feature
-struct Feature {
-    id: String,  // Required, enforced by constructor
-}
+If lifetime annotations start spreading through your code, restructure: return owned data, clone, or break the function apart. Lifetimes that require diagrams are a red flag.
 
-impl Feature {
-    fn new(id: String) -> Result<Self> {
-        if id.is_empty() {
-            return Err("Feature ID cannot be empty".into());
-        }
-        Ok(Feature { id })
+## Control Flow
+
+Tools: `if`, `match`, `for`, `while`, `return`.
+
+Use `match` + `enum` for state machines and domain logic. This combination replaces most of what other languages use class hierarchies for, at a fraction of the runtime cost.
+
+Keep match arms short — extract complex arm bodies into functions.
+
+## Iterators
+
+Core methods: `iter`, `map`, `filter`, `fold`, `collect`, `enumerate`, `zip`, `flat_map`. Everything else (`sum`, `count`, `any`, `all`, `find`) is a specialization of `fold` — use `fold` directly or use a loop.
+
+Use closures when they remain small. Chain freely for filter-map-collect patterns. When a chain exceeds three methods or the logic branches, use a loop instead.
+
+```rust
+// iterator: shaping data
+let active: Vec<&Feature> = features.iter().filter(|f| f.active).collect();
+
+// loop: reasoning through logic
+let mut result = Vec::new();
+for feature in &features {
+    if feature.status == Status::Complete && feature.score > threshold {
+        result.push(feature);
     }
 }
 ```
 
----
+Loops for reasoning. Iterators for shaping data.
 
-## The Way of Data - Types and Ownership
+## Traits and Generics
 
-### On Ownership
+Derive standard traits: `Debug`, `Clone`, `Default`, `PartialEq`. Use traits for small interface boundaries and library integration. Do not build trait hierarchies in application code.
 
-**Ownership is a tool, not a religion.**
-
-Borrowing is preferred. Cloning is not evil. Choose based on the situation:
-
-**Borrow when:**
-- Data stays in one scope
-- Function only reads the data
-- Performance matters and data is large
-
-**Clone when:**
-- Data passes through multiple functions
-- Lifetime complexity obscures logic
-- Data is small and clone cost is negligible
-
-**Mind the cost.** Cloning a `String` is cheap. Cloning a 10MB `Vec<u8>` is not. Profile. Measure. Decide.
+Use generics in utility functions and libraries. Avoid complex generic signatures in application code — concrete types are easier to read, debug, and compile.
 
 ```rust
-// Borrow: data used once, stays local
-fn print_feature(feature: &Feature) {
-    println!("{}", feature.name);
-}
-
-// Clone: data travels through pipeline
-fn process_features(features: Vec<Feature>) -> Vec<ProcessedFeature> {
-    features.into_iter()
-        .map(|f| process(f))  // Owns f, transforms it
-        .collect()
-}
+fn find_by_key<T, K: PartialEq>(items: &[T], key: K, f: fn(&T) -> K) -> Option<&T>
 ```
 
-**For concurrency:** `Arc<Mutex<T>>` is the default. `Arc` for shared ownership, `Mutex` for shared mutation. Do not fight the borrow checker with lifetimes across threads—own the data.
+## Macros
 
-### On Types
+Allowed: `println!`, `format!`, `vec!`, `assert!`, derive macros.
 
-**Flat and simple.**
+No macro DSLs. No proc macros in application code unless the alternative is significantly worse. Code must remain visible and understandable — if you cannot read the expanded output in your head, the macro is too complex.
 
-Avoid builders. Avoid complex constructors. Prefer plain structs with public fields or simple `new()` functions.
+---
+
+# Data Design
+
+Prefer flat structs with explicit fields:
 
 ```rust
-// Good: Direct construction
 struct Feature {
-    id: String,
+    id: FeatureId,
     name: String,
     status: Status,
 }
-
-impl Feature {
-    fn new(id: String, name: String) -> Self {
-        Feature {
-            id,
-            name,
-            status: Status::Pending,
-        }
-    }
-}
-
-// Also good: Public fields if validation isn't needed
-struct Point {
-    pub x: f64,
-    pub y: f64,
-}
-
-let p = Point { x: 1.0, y: 2.0 };
 ```
 
-**Newtypes prevent bugs:**
+Attach methods with `impl` blocks. Use `new()` as a constructor when initialization needs validation or defaults:
+
+```rust
+impl Feature {
+    fn new(id: FeatureId, name: String) -> Self {
+        Self { id, name, status: Status::Pending }
+    }
+}
+```
+
+Do not use builder patterns for simple types — a `new()` function with clear parameters is almost always sufficient.
+
+Use newtypes to prevent confusion between semantically different values:
+
 ```rust
 struct FeatureId(String);
 struct Timestamp(i64);
-
-// Now you cannot accidentally pass a Timestamp where a FeatureId is expected
-fn get_feature(id: FeatureId) -> Option<Feature> { /* ... */ }
 ```
 
-Use newtypes when they prevent mistakes. Do not wrap everything "just in case."
+Wrap where confusion causes bugs. Do not wrap everything.
 
-### On Data Structures
+Choose data structures by access pattern:
 
-**Think before you reach for `Vec`.**
-
-`Vec` is not always the answer. Consider:
-
-- **Fixed size?** Use array: `[T; N]`
-- **Small and bounded?** Use `SmallVec` or stack allocation
-- **Key-value lookup?** Use `HashMap`
-- **Ordered iteration?** Use `Vec`
-- **Unique values?** Use `HashSet`
-
-Choose the structure that matches the access pattern. Do not default to `Vec` because it is common.
-
-```rust
-// Known size at compile time
-const MAX_FEATURES: usize = 100;
-let features: [Feature; MAX_FEATURES] = /* ... */;
-
-// Unknown size, grows dynamically
-let features: Vec<Feature> = vec![];
 ```
+[T; N]        fixed-size, known at compile time
+Vec<T>        ordered, dynamic
+HashMap<K,V>  key-value lookup
+HashSet<T>    uniqueness, membership tests
+```
+
+Do not default to `Vec` for everything. Think about how data will be queried, iterated, and mutated. The right container eliminates code; the wrong one generates it.
 
 ---
 
-## The Way of Flow - Control and Errors
+# Error Handling
 
-### On Errors
+No `unwrap()` in production code. Allowed in tests, prototypes, and proven-impossible states (with a comment explaining why).
 
-**No `unwrap()` in production code. Period.**
-
-Allowed only in:
-- Tests
-- Prototypes (marked clearly)
-- Truly impossible states (with comment explaining why)
+Use `?` for propagation. Use `match` when recovery is possible. Do not over-handle errors — if you cannot do anything useful with an error, propagate it.
 
 ```rust
-// Bad: Panic on error
-let file = File::open(path).unwrap();
-
-// Good: Propagate error
-let file = File::open(path)?;
-
-// Good: Handle error explicitly
-let file = match File::open(path) {
-    Ok(f) => f,
-    Err(e) => {
-        eprintln!("Failed to open {}: {}", path.display(), e);
-        return Err(e.into());
-    }
-};
+let file = File::open(path)?;                    // propagate
+let config = parse(input).unwrap_or_default();   // recover with default
 ```
 
-**On `expect()`:** Acceptable for impossible states if you explain why:
-```rust
-// OK: We just inserted this key, it must exist
-let value = map.get(&key).expect("key was just inserted");
-```
+Application errors: `Result<T, Box<dyn Error>>` or a single app-level enum.
+Library errors: explicit error enums with meaningful variants.
 
-But consider: could you restructure to avoid the expectation?
+Keep error types simple. Every error message must be actionable — if a user cannot fix the problem from the message alone, the message is wrong.
 
-**Error types:** Keep them simple. For applications, `Box<dyn Error>` is fine. For libraries, use custom enums. Add context at boundaries.
+## Option
+
+`Option<T>` is how Rust represents "might not exist." Handle it explicitly:
 
 ```rust
-// Application: simple is fine
-fn run() -> Result<(), Box<dyn Error>> { /* ... */ }
-
-// Library: custom error type
-#[derive(Debug)]
-enum LegendError {
-    Io(std::io::Error),
-    InvalidState(String),
-    CorruptedData { path: PathBuf, reason: String },
+if let Some(user) = users.get(id) {     // act on presence
+    greet(user);
 }
+let name = config.name.unwrap_or_default();          // provide a fallback
+let port = config.port.unwrap_or(8080);              // provide a specific default
+let host = config.host.as_deref().unwrap_or("localhost");  // Option<String> → &str
 ```
 
-### On Match
-
-**Match is for scannable control flow.**
-
-Arms should be short. Logic belongs in functions, not in match arms.
-
-```rust
-// Good: Clean, scannable
-match command {
-    Command::Init => init()?,
-    Command::Load => load()?,
-    Command::Save => save()?,
-    Command::Show => show()?,
-}
-
-// Bad: Logic buried in arms
-match command {
-    Command::Init => {
-        let path = PathBuf::from(".legend");
-        if !path.exists() {
-            fs::create_dir_all(&path)?;
-        }
-        let state = State::default();
-        write_state(&path.join("state.lz4"), &state)?;
-        println!("Initialized");
-    }
-    // ... more buried logic
-}
-
-// Better: Extract to functions
-match command {
-    Command::Init => handle_init()?,
-    // ...
-}
-
-fn handle_init() -> Result<()> {
-    let path = PathBuf::from(".legend");
-    if !path.exists() {
-        fs::create_dir_all(&path)?;
-    }
-    let state = State::default();
-    write_state(&path.join("state.lz4"), &state)?;
-    println!("Initialized");
-    Ok(())
-}
-```
-
-**Exhaustiveness is a feature.** Let the compiler tell you when you forgot a case.
-
-### On Iterators vs Loops
-
-**Iterators are zero-cost abstractions.** They compile to the same code as a `for` loop. Use them when they clarify intent.
-
-```rust
-// Iterator: Clear intent, composable
-let completed: Vec<_> = features
-    .iter()
-    .filter(|f| f.status == Status::Complete)
-    .collect();
-
-// For loop: Fine when iterators obscure
-let mut completed = Vec::new();
-for feature in &features {
-    if feature.status == Status::Complete {
-        completed.push(feature);
-    }
-}
-```
-
-**Choose based on clarity, not performance.** Both are equally fast. If the iterator chain becomes hard to read (3+ chained methods with complex closures), use a `for` loop.
-
-**Cognitive cost matters:** A reader unfamiliar with `flat_map` and `filter_map` will struggle. Use judgment. Favor the clearer form.
+Use `?` to propagate `None` in functions that return `Option`. Use `map` to transform the inner value without unwrapping. Do not chain more than two `Option` methods — use `if let` or `match` instead.
 
 ---
 
-## The Way of Code - Organization
+# Code Organization
 
-### On Modules
+Organize modules by responsibility, not by layer:
 
-**Split by logical grouping, not by layer.**
-
-Organize by *what the code does*, not by *what kind of thing it is*.
-
-```rust
-// Good: Grouped by purpose
-mod storage;     // All state persistence
-mod commands;    // CLI command handlers
-mod temporal;    // Recency scoring
-mod types;       // Core domain types
-
-// Bad: Grouped by abstraction
-mod models;      // Just data?
-mod services;    // What is a service?
-mod controllers; // Framework thinking
-mod utils;       // Junk drawer
+```
+storage/        # how data persists
+commands/       # what the program does
+memory/         # domain logic
+types.rs        # shared data definitions
 ```
 
-**One responsibility per module.** Storage does not do parsing. Network does not do storage. Keep boundaries clean.
+Avoid `models/services/controllers/utils` layering. These names describe architectural roles, not what the code does.
 
-**Flat over nested.** Prefer `storage.rs` over `storage/mod.rs` unless the module is large (500+ lines) and benefits from subdivision.
+Default visibility: `pub(crate)`. Expose only what must be public. A public interface is a long-term commitment — keep it minimal. Every public function is a promise to future callers.
 
-### On Public APIs
+Keep modules small enough to hold in your head. When a module grows large, look for a natural seam to split along. Split by responsibility, not by arbitrary size limits.
 
-**Most things are `pub(crate)`. `pub` is earned.**
+Prefer the standard library. Add external crates when they clearly reduce complexity or risk. Prefer widely used, well-maintained crates. Audit transitive dependencies — a crate that pulls in 50 sub-crates for a simple task is not simple.
 
-Expose one obvious path to use your code. Hide implementation details. A large public API is a maintenance burden and a promise you must keep.
-
-```rust
-// Minimal public surface
-pub fn load_state() -> Result<State> { /* ... */ }
-pub fn save_state(state: &State) -> Result<()> { /* ... */ }
-
-// Internal helpers stay private
-fn compress(data: &[u8]) -> Vec<u8> { /* ... */ }
-fn atomic_write(path: &Path, data: &[u8]) -> Result<()> { /* ... */ }
-```
-
-### On `main`
-
-**Keep `main` thin.** It wires dependencies and calls `run()`.
-
-```rust
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
-    }
-}
-
-fn run() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    let command = parse_command(&args)?;
-    execute_command(command)?;
-    Ok(())
-}
-```
+You must be willing to take on the responsibility of any dependency you add.
 
 ---
 
-## The Way of Progress - Performance and Iteration
+# Testing
 
-### On Performance
+Put unit tests in the same file as the code they test, inside a `#[cfg(test)]` module at the bottom:
 
-**Measure first. Optimize second.**
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-Do not optimize prematurely. Build it working. Then measure. Then optimize where it matters.
+    #[test]
+    fn score_zero_for_empty_input() {
+        assert_eq!(calculate_score(&Feature::default()), 0.0);
+    }
+}
+```
 
-**For Legend:** <5ms per operation is the requirement. Measure continuously. If a change slows things down, understand why before proceeding.
+Use `assert_eq!` for values, `assert!` for booleans. Name tests after the behavior they verify, not the function they call.
 
-**Use the right tool:**
-- Profiling: `cargo flamegraph`, `perf`
-- Benchmarking: `criterion`
-- Quick timing: `std::time::Instant`
+Put integration tests in `tests/` when you need to test the public API as an outside caller would. Keep test files focused — one file per area of behavior, not one file per source file.
+
+Pure functions are trivially testable. This is another reason to prefer them.
+
+---
+
+# Performance and Concurrency
+
+Do not optimize before [measuring](#how-to-measure). Focus on hot paths — most code does not need micro-optimization.
+
+Cache locality matters. Flat data in contiguous memory outperforms pointer-chasing through heap allocations. Prefer `Vec<T>` over `Vec<Box<T>>` when T is small.
+
+Use synchronous code by default. Introduce async only when real I/O concurrency benefits exist.
+
+For shared state: `Arc<T>`, `Arc<Mutex<T>>`. Ownership transfer is usually simpler than lifetime gymnastics.
+
+Pure functions are inherently thread-safe — prefer them over shared mutable state. The less mutable state exists, the fewer concurrency bugs are possible.
+
+## How to Measure
+
+Measure however you want, but be thorough. Here is one way that works well for most programs.
+
+**Whole program.** Use wall-clock time with `hyperfine` or a simple shell timer. Run the program end-to-end on realistic input. This is your ground truth — if total runtime is acceptable, stop.
+
+```bash
+hyperfine --warmup 3 './target/release/my_program input.dat'
+```
+
+**Isolate a piece.** Wrap the code in question with `std::time::Instant`:
 
 ```rust
 let start = Instant::now();
-let state = load_state()?;
+let result = do_expensive_work(&data);
 let elapsed = start.elapsed();
-
-if elapsed.as_millis() > 5 {
-    eprintln!("Warning: load_state took {}ms", elapsed.as_millis());
-}
+eprintln!("expensive_work: {elapsed:?}");
 ```
 
-**Inline judiciously.** The compiler usually knows better. Use `#[inline]` only after profiling proves the need.
+Print to stderr so it does not pollute output. This is fast to add, fast to remove, and tells you exactly where time goes. When you need statistical rigor or regression tracking, move the isolated piece into a `criterion` benchmark.
 
-**String types:**
-- `&str` - Borrowed, use for reading
-- `String` - Owned, use when you need to build/modify
-- `Cow<str>` - When you might borrow or own (rare, only when needed)
+**Find the hot path.** When you know something is slow but not where, use a profiler:
 
-Default to `&str` for parameters. Return `String` when you create new data.
-
-### On Dependencies
-
-**Minimize external crates.**
-
-Default to stdlib. Add a dependency only when it clearly reduces risk or effort.
-
-**Prefer boring crates:** Widely used, well-maintained, not magical.
-
-- **Good:** `serde`, `bincode`, `lz4`, `clap`
-- **Questionable:** Macro-heavy frameworks, niche crates, "clever" abstractions
-
-**Avoid macro DSLs** unless essential. Macros that generate code make debugging harder and hide control flow. Operator overloading is fine—it adds clarity (`+` for addition, `*` for deref). Macros that build mini-languages are not.
-
-### On Iteration
-
-**Progress in small steps.**
-
-1. Make it work
-2. Make it right
-3. Make it fast
-
-Do not skip step 1. A working solution tells you what the problem actually is. Premature abstraction is waste.
-
-**Run it. Test it. Measure it.**
-
-Every change should be testable immediately. If you cannot run the code and see the result, you are too far from reality.
-
----
-
-## The Way of Threads - Concurrency
-
-**Sync by default. Async when needed.**
-
-Use async only when:
-- Real I/O concurrency benefit exists
-- The complexity is justified
-
-For Legend: Everything is sync. No need for async—operations complete in <5ms.
-
-**For shared state:**
-- `Arc<Mutex<T>>` - Default for shared mutable state across threads
-- `Arc<T>` - For shared immutable state (clone once, share read-only)
-- `Mutex<T>` - For single-threaded shared mutation (rare)
-
-Do not fight the borrow checker with lifetimes across threads. Own the data with `Arc`.
-
-```rust
-use std::sync::{Arc, Mutex};
-
-let state = Arc::new(Mutex::new(State::default()));
-
-// Clone the Arc (cheap), share ownership
-let state_clone = state.clone();
-thread::spawn(move || {
-    let mut s = state_clone.lock().unwrap();
-    s.update();
-});
+```bash
+cargo flamegraph -- my_program input.dat
 ```
 
----
+Read the flamegraph top-down. Wide bars are where time is spent. Optimize those. Ignore everything else.
 
-## Red Flags
-
-Avoid these patterns unless the need is clear and proven:
-
-- Builder patterns for simple structs
-- Traits with complex generic bounds (`where` clauses spanning multiple lines)
-- Lifetimes that require diagrams
-- Nested `if let` or `match` pyramids (flatten with early returns)
-- Unwraps in production paths
-- "This will scale later" architecture (build for today's problem)
-- Macros that generate code (use functions)
-- Dependencies that bring in 50 transitive crates
-
----
-
-## The Litmus Test
-
-Before finalizing code, ask:
-
-**Can a tired engineer understand this in 60 seconds?**
-
-If no, simplify.
-
-**Is the public API minimal?**
-
-If no, hide more.
-
-**Are errors actionable?**
-
-If no, add context.
-
-**Did we avoid unnecessary abstraction?**
-
-If no, inline it.
-
-**Can we run it and measure it?**
-
-If no, we are lost.
-
----
-
-## For the AI Agent
-
-When generating R* code:
-
-1. **Smallest working solution first.** No architecture "just in case."
-2. **Explicit over implicit.** Explicit types, explicit errors, explicit control flow.
-3. **No builders unless proven.** Use simple constructors or public fields.
-4. **Clone pragmatically.** If it makes code clearer and cost is low, clone.
-5. **Explain tradeoffs briefly, then choose.** Sync vs async, borrow vs clone—state it, pick one, move on.
-6. **Measure, don't guess.** If performance matters, show how to measure.
-
-**On git commits:**
-- Do not add "Generated by Claude" or "Co-Authored-By: Claude" to commit messages
-- The README.md already discloses AI-generated code
-- Keep commits concise and technical
-
----
-
-## Summary
-
-There is no fixed way. There is the problem, and there are fundamentals.
-
-Master the basics. Favor simplicity. Reach for power only when the need is clear.
-
-Adapt to the terrain.
-
-This is R*.
+**The loop.** Measure whole program. If too slow, isolate pieces with `Instant`. If unclear, profile with flamegraph. Fix the widest bar. Measure the whole program again. Repeat until done.

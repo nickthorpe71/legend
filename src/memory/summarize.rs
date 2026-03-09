@@ -1,28 +1,10 @@
 /// Extractive summarization utilities.
 use crate::memory::ShortTermEntry;
+use crate::memory::keywords::{CODE_KEYWORDS, DECISION_KEYWORDS, ARCHITECTURE_KEYWORDS};
 
 const MAX_SUMMARY_LEN: usize = 200;
 const MAX_GROUP_SUMMARY_LEN: usize = 300;
 const CHUNK_TARGET_LEN: usize = 200;
-
-/// Decision-rationale keywords that boost sentence importance.
-const DECISION_KEYWORDS: &[&str] = &[
-    "because",
-    "chose",
-    "decided",
-    "instead",
-    "rather",
-    "reason",
-    "tradeoff",
-    "trade-off",
-    "over",
-    "prefer",
-    "picked",
-    "approach",
-    "why",
-    "so that",
-    "in order to",
-];
 
 /// Summarize a single text chunk (extractive — pick best sentence).
 /// Prioritizes sentences with code references and decision rationale.
@@ -33,7 +15,7 @@ pub fn summarize_single(text: &str) -> String {
     }
 
     let sentences: Vec<&str> = trimmed
-        .split(|c: char| c == '.' || c == '!' || c == '?' || c == '\n')
+        .split(['.', '!', '?', '\n'])
         .map(|s| s.trim())
         .filter(|s| s.len() > 10)
         .collect();
@@ -47,13 +29,15 @@ pub fn summarize_single(text: &str) -> String {
         .max_by_key(|s| {
             let lower = s.to_lowercase();
             let words = s.split_whitespace().count();
-            let has_code = s.contains("fn ") || s.contains("struct ") || s.contains("impl ");
+            let has_code = CODE_KEYWORDS.iter().any(|(kw, _, _)| s.contains(kw));
             let has_key = s.contains(':') || s.contains('=') || s.contains("TODO");
             let has_decision = DECISION_KEYWORDS.iter().any(|kw| lower.contains(kw));
+            let has_arch = ARCHITECTURE_KEYWORDS.iter().any(|kw| lower.contains(kw));
             words
                 + if has_code { 5 } else { 0 }
                 + if has_key { 3 } else { 0 }
                 + if has_decision { 8 } else { 0 }
+                + if has_arch { 4 } else { 0 }
         })
         .unwrap_or(&sentences[0]);
 
@@ -187,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_summarize_group_empty() {
-        let result = summarize_group(&[]);
+        let result = summarize_group(&[] as &[ShortTermEntry]);
         assert_eq!(result, "Consolidated memory");
     }
 
@@ -208,7 +192,7 @@ mod tests {
             density: 0.0,
             consolidated: false,
         };
-        let result = summarize_group(&[entry]);
+        let result = summarize_group(&[entry][..]);
         assert!(!result.is_empty());
         assert_ne!(result, "Consolidated memory");
     }
@@ -278,7 +262,7 @@ mod tests {
             density: 0.0,
             consolidated: false,
         };
-        let result = summarize_group(&[entry]);
+        let result = summarize_group(&[entry][..]);
         assert!(result.contains("Pre-computed summary"));
     }
 
@@ -315,5 +299,33 @@ mod tests {
             "Code reference sentence should be preferred, got: {}",
             summary
         );
+    }
+
+    #[test]
+    fn test_summarize_architecture_boost() {
+        let text = "I worked on the project for several hours. \
+                     The system architecture follows a 3-layer hierarchical model. \
+                     It was a sunny day outside today.";
+        let summary = summarize_single(text);
+        assert!(
+            summary.contains("architecture"),
+            "Architecture sentence should be boosted (+4), got: {}",
+            summary
+        );
+    }
+
+    #[test]
+    fn test_summarize_polyglot_code_boost() {
+        // Python boost
+        let py = "Some text. def handle_python(): return None. More text.";
+        assert!(summarize_single(py).contains("def handle_python"));
+
+        // Go boost
+        let go = "Intro. func main() { println(1) }. Outro.";
+        assert!(summarize_single(go).contains("func main"));
+
+        // TypeScript boost
+        let ts = "First. interface IData { id: number }. Last.";
+        assert!(summarize_single(ts).contains("interface IData"));
     }
 }

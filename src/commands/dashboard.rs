@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Launch the Legend dashboard.
@@ -55,7 +55,7 @@ pub fn handle_dashboard() -> Result<(), Box<dyn std::error::Error>> {
 /// Locate the dashboard executable.
 /// Checks: dashboard/target/x86_64-pc-windows-gnu/release, then debug.
 /// Falls back to native linux binary if not in WSL.
-fn find_dashboard_exe(project_dir: &PathBuf) -> Result<PathBuf, String> {
+fn find_dashboard_exe(project_dir: &Path) -> Result<PathBuf, String> {
     let candidates = if is_wsl() {
         vec![
             project_dir.join("dashboard/target/x86_64-pc-windows-gnu/release/legend-dashboard.exe"),
@@ -74,14 +74,12 @@ fn find_dashboard_exe(project_dir: &PathBuf) -> Result<PathBuf, String> {
         }
     }
 
-    Err(format!(
-        "Dashboard executable not found. Build it first:\n  cd dashboard && cargo build --release --target x86_64-pc-windows-gnu"
-    ))
+    Err("Dashboard executable not found. Build it first:\n  cd dashboard && cargo build --release --target x86_64-pc-windows-gnu".to_string())
 }
 
 /// Convert a Linux path to a Windows UNC path for WSL.
 /// `/home/user/project` → `\\wsl.localhost\<distro>\home\user\project`
-fn to_windows_path(linux_path: &PathBuf) -> String {
+fn to_windows_path(linux_path: &Path) -> String {
     if !is_wsl() {
         return linux_path.to_string_lossy().to_string();
     }

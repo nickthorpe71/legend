@@ -39,10 +39,15 @@ pub struct SelectedNode {
 // Constants
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 const REPULSION: f32 = 0.0;
+#[allow(dead_code)]
 const ATTRACTION: f32 = 0.0;
+#[allow(dead_code)]
 const DAMPING: f32 = 0.0;
+#[allow(dead_code)]
 const CENTER_GRAVITY: f32 = 0.0;
+#[allow(dead_code)]
 const MAX_SPEED: f32 = 0.0;
 const SPAWN_RADIUS: f32 = 20.0;
 
@@ -81,7 +86,7 @@ pub fn sync_graph_entities(
 
     for node in &data.graph_nodes {
         let color = node_color(node.weight, node.salience, &node.kind);
-        let size = node_size(node.weight);
+        let _size = node_size(node.weight);
 
         if let Some(&entity) = alive.get(&node.id) {
             // --- update existing node ---
@@ -129,6 +134,7 @@ pub fn sync_graph_entities(
 // Force-directed layout (runs every frame on LayoutState)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub fn force_layout(mut layout: ResMut<LayoutState>, data: Res<LegendData>, time: Res<Time>) {
     let dt = time.delta_secs().min(0.05);
     let ids: Vec<u64> = layout.positions.keys().copied().collect();
@@ -242,6 +248,7 @@ pub fn draw_edges(
 // Gentle pulsing animation on high-salience nodes
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub fn animate_nodes(
     mut query: Query<(&GraphNode3D, &mut Transform)>,
     data: Res<LegendData>,
@@ -327,7 +334,7 @@ pub fn node_click_detection(
             // behind camera
             continue;
         }
-        if best_hit.map_or(true, |(_, best_t)| t < best_t) {
+        if best_hit.is_none_or(|(_, best_t)| t < best_t) {
             best_hit = Some((id, t));
         }
     }
@@ -433,6 +440,7 @@ fn node_size(weight: f32) -> f32 {
     0.3 + weight.ln_1p() * 0.5
 }
 
+#[allow(dead_code)]
 fn random_position() -> Vec3 {
     use rand::Rng;
     let mut rng = rand::thread_rng();

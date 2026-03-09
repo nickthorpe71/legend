@@ -800,7 +800,7 @@ fn compute_session_quality() -> Option<SessionQuality> {
     let file = std::fs::File::open(EVENT_LOG_PATH).ok()?;
     let lines: Vec<String> = std::io::BufReader::new(file)
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .collect();
 
     // Find the timestamp of the last "start" event
@@ -1080,7 +1080,7 @@ fn ts_to_iso_date(ts: u64) -> String {
     let mut remaining = ts / 86400; // total days since epoch
     let mut year = 1970u64;
     loop {
-        let days_in_year = if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+        let days_in_year = if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) {
             366
         } else {
             365
@@ -1091,7 +1091,7 @@ fn ts_to_iso_date(ts: u64) -> String {
         remaining -= days_in_year;
         year += 1;
     }
-    let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let is_leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
     let month_days: &[u64] = if is_leap {
         &[31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     } else {

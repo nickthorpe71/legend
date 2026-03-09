@@ -1,5 +1,8 @@
 /// Entity extraction from text (code-aware + plain identifiers).
 use std::collections::HashMap;
+use crate::memory::keywords::{
+    ACTION_KEYWORDS, CODE_KEYWORDS, ENVIRONMENT_KEYWORDS, TOOL_KEYWORDS
+};
 
 pub struct ExtractedEntity {
     pub label: String,
@@ -34,38 +37,7 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
 
         // 2. Action patterns (Verbs at the start of lines or sentences)
-        let actions = [
-            ("fixed", "Action"),
-            ("fixing", "Action"),
-            ("refactored", "Action"),
-            ("refactoring", "Action"),
-            ("implemented", "Action"),
-            ("implementing", "Action"),
-            ("added", "Action"),
-            ("adding", "Action"),
-            ("removed", "Action"),
-            ("removing", "Action"),
-            ("tested", "Action"),
-            ("testing", "Action"),
-            ("debugged", "Action"),
-            ("debugging", "Action"),
-            ("optimized", "Action"),
-            ("migrated", "Action"),
-            ("migrating", "Action"),
-            ("deployed", "Action"),
-            ("deploying", "Action"),
-            ("validated", "Action"),
-            ("validating", "Action"),
-            ("investigated", "Action"),
-            ("investigating", "Action"),
-            ("documented", "Action"),
-            ("documenting", "Action"),
-            ("reverted", "Action"),
-            ("reverting", "Action"),
-            ("rolled back", "Action"),
-            ("rollback", "Action"),
-        ];
-        for (verb, kind) in actions {
+        for (verb, kind) in ACTION_KEYWORDS {
             if sentence_contains_phrase(&lower, verb) {
                 entities.push(ExtractedEntity {
                     label: verb.to_string(),
@@ -76,32 +48,7 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
 
         // 3. Environment patterns
-        let envs = [
-            "wsl",
-            "docker",
-            "production",
-            "staging",
-            "ubuntu",
-            "linux",
-            "windows",
-            "macos",
-            "s3",
-            "github",
-            "aws",
-            "localhost",
-            "browser",
-            "cli",
-            "kubernetes",
-            "k8s",
-            "gcp",
-            "azure",
-            "devcontainer",
-            "vm",
-            "ci",
-            "cd",
-            "github actions",
-        ];
-        for env in envs {
+        for env in ENVIRONMENT_KEYWORDS {
             if sentence_contains_phrase(&lower, env) {
                 // Find original casing if possible, or use the env string
                 entities.push(ExtractedEntity {
@@ -113,33 +60,7 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
 
         // 3b. High-signal technology/tool patterns (constrained dictionary)
-        let tools = [
-            "postgres",
-            "postgresql",
-            "redis",
-            "kafka",
-            "grpc",
-            "graphql",
-            "react",
-            "nextjs",
-            "tailwind",
-            "vite",
-            "webpack",
-            "jest",
-            "pytest",
-            "tokio",
-            "actix",
-            "axum",
-            "fastapi",
-            "django",
-            "flask",
-            "terraform",
-            "ansible",
-            "prometheus",
-            "grafana",
-            "nginx",
-        ];
-        for tool in tools {
+        for tool in TOOL_KEYWORDS {
             if sentence_contains_phrase(&lower, tool) {
                 entities.push(ExtractedEntity {
                     label: tool.to_string(),
@@ -150,27 +71,7 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
 
         // 4. Code patterns (Multi-language)
-        // Rust/Python/JS/Java/C++ keywords
-        let keywords = [
-            ("fn ", "Function", "defines"),
-            ("def ", "Function", "defines"),
-            ("function ", "Function", "defines"),
-            ("struct ", "Struct", "defines"),
-            ("class ", "Class", "defines"),
-            ("interface ", "Interface", "defines"),
-            ("trait ", "Trait", "defines"),
-            ("impl ", "Impl", "implements"),
-            ("mod ", "Module", "defines"),
-            ("module ", "Module", "defines"),
-            ("use ", "Import", "uses"),
-            ("import ", "Import", "uses"),
-            ("package ", "Package", "defines"),
-            ("export ", "Export", "defines"),
-            ("let ", "Symbol", "defines"),
-            ("var ", "Symbol", "defines"),
-            ("const ", "Symbol", "defines"),
-        ];
-        for (kw, kind, ctx) in keywords {
+        for (kw, kind, ctx) in CODE_KEYWORDS {
             try_extract(trimmed, kw, kind, ctx, &mut entities);
         }
 
@@ -256,6 +157,12 @@ fn extract_after_keyword(line: &str, keyword: &str) -> Option<String> {
         "readonly ",
     ];
     let mut current = rest.trim_start();
+    
+    // Skip leading quotes if present
+    if current.starts_with('\'') || current.starts_with('"') {
+        current = &current[1..];
+    }
+
     let mut changed = true;
     while changed {
         changed = false;
@@ -770,5 +677,36 @@ mod tests {
         assert!(labels.contains(&"production"), "env: {:?}", labels);
         assert!(labels.contains(&"docker"), "env: {:?}", labels);
         assert!(labels.contains(&"handle_request"), "fn: {:?}", labels);
+    }
+
+    #[test]
+    fn test_polyglot_extraction() {
+        // Go
+        let go = extract_entities("func processTask() { package main }");
+        let go_labels: Vec<&str> = go.iter().map(|e| e.label.as_str()).collect();
+        assert!(go_labels.contains(&"processTask"));
+        assert!(go_labels.contains(&"main"));
+
+        // TypeScript
+        let ts = extract_entities("interface UserData { export const version = 1 }");
+        let ts_labels: Vec<&str> = ts.iter().map(|e| e.label.as_str()).collect();
+        assert!(ts_labels.contains(&"UserData"));
+        assert!(ts_labels.contains(&"version"));
+
+        // PHP/Ruby
+        let web = extract_entities("require 'db_config.php'; module AuthModule {}");
+        let web_labels: Vec<&str> = web.iter().map(|e| e.label.as_str()).collect();
+        assert!(web_labels.contains(&"db_config.php"));
+        assert!(web_labels.contains(&"AuthModule"));
+    }
+
+    #[test]
+    fn test_identifier_splitting_edge_cases() {
+        // Test that we correctly handle mixed identifiers
+        let ids = extract_identifiers("v20_parser_API_Handler");
+        assert!(ids.contains(&"v20".to_string()));
+        assert!(ids.contains(&"parser".to_string()));
+        assert!(ids.contains(&"api".to_string()));
+        assert!(ids.contains(&"handler".to_string()));
     }
 }
