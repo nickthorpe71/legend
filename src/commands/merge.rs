@@ -1,7 +1,6 @@
 use crate::memory::{load_memory_from_path, save_memory_to_path};
-use crate::storage::{load_state_from_path, save_state_to_path};
 
-/// Git merge driver for Legend state files (.lz4 and events.jsonl).
+/// Git merge driver for Legend memory files (memory.lz4 and events.jsonl).
 ///
 /// Usage: legend git-merge-driver %O %A %B %P
 /// %O: Ancestor's version (base)
@@ -20,13 +19,7 @@ pub fn handle_git_merge_driver(args: &[String]) -> Result<(), Box<dyn std::error
 
     eprintln!("[LEGEND] Auto-merging conflicted state file: {}", filename);
 
-    if filename.ends_with("state.lz4") {
-        let mut ours = load_state_from_path(ours_path)?;
-        let theirs = load_state_from_path(theirs_path)?;
-
-        ours.merge(theirs);
-        save_state_to_path(&ours, ours_path)?;
-    } else if filename.ends_with("memory.lz4") {
+    if filename.ends_with("memory.lz4") {
         let mut ours = load_memory_from_path(ours_path)?;
         let theirs = load_memory_from_path(theirs_path)?;
 
@@ -35,7 +28,7 @@ pub fn handle_git_merge_driver(args: &[String]) -> Result<(), Box<dyn std::error
     } else if filename.ends_with("events.jsonl") {
         merge_jsonl_events(ancestor_path, ours_path, theirs_path)?;
     } else {
-        return Err(format!("Unknown file type for merge: {}", filename).into());
+        return Err(format!("Unsupported file type for merge: {}", filename).into());
     }
 
     Ok(())

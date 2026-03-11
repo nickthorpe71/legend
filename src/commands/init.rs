@@ -1,7 +1,5 @@
 use crate::commands::discover;
 use crate::memory::MemoryState;
-use crate::storage;
-use crate::types::{Feature, LegendState};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -30,12 +28,12 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let legend_dir = Path::new(".legend");
-    let first_init = !storage::is_initialized();
+    let first_init = !legend_dir.exists();
 
     if !first_init {
         println!("Legend already initialized in this directory");
         println!("  .legend/ directory exists");
-        println!("  Use 'legend show' to view current state");
+        println!("  Use 'legend memory start' to view current memory context");
 
         if discover_requested {
             println!("  Re-scanning project context...");
@@ -66,45 +64,15 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to create .legend directory: {}", e))?;
 
     let report = discover::run_discovery(Path::new(".")).ok();
-    let project_name = report
-        .as_ref()
-        .map(|r| r.metadata.name.clone())
-        .unwrap_or_else(detect_project_name);
 
-    let mut state = LegendState::new(project_name);
-
-    if let Some(r) = report {
-        let count = r.potential_features.len();
-        for suggested in r.potential_features {
-            let mut feature = Feature::new(
-                suggested.suggested_id,
-                suggested.suggested_name,
-                suggested.suggested_domain,
-                format!(
-                    "Auto-discovered from project structure ({} files)",
-                    suggested.files.len()
-                ),
-            );
-            feature.files_involved = suggested.files;
-            state.add_feature(feature);
-        }
-        if count > 0 {
-            println!(
-                "  Auto-discovered {} features from project structure",
-                count
-            );
-        }
-
+    if report.is_some() {
         // Run discovery automatically on first init
         println!("  First-time initialization: Ingesting high-signal context into memory...");
         let _ = discover::handle_discover(&["--apply".to_string()]);
     }
 
-    storage::save_state(&state)?;
-
     println!("✓ Initialized Legend");
     println!("  Created .legend/ directory");
-    println!("  Saved initial state to .legend/state.lz4");
 
     setup_git_merge_driver()?;
     setup_claude_hooks()?;
@@ -122,10 +90,10 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Set up Git merge driver for Legend state files (.lz4 and events.jsonl).
+/// Set up Git merge driver for Legend memory files.
 ///
 /// This tells Git to use 'legend git-merge-driver' to resolve conflicts
-/// in .legend/state.lz4, .legend/memory.lz4, and .legend/events.jsonl.
+/// in .legend/memory.lz4 and .legend/events.jsonl.
 fn setup_git_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
 
@@ -149,32 +117,33 @@ fn setup_git_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Add to .gitattributes
     let attr_lines: &[&str] = &[
-        ".legend/*.lz4 merge=legend",
+        ".legend/memory.lz4 merge=legend",
         ".legend/events.jsonl merge=legend",
     ];
     let attr_path = Path::new(".gitattributes");
 
-    if attr_path.exists() {
-        let content = fs::read_to_string(attr_path)?;
-        let mut added = false;
-        {
-            let mut f = fs::OpenOptions::new().append(true).open(attr_path)?;
-            use std::io::Write;
-            for line in attr_lines {
-                if !content.contains(line) {
-                    f.write_all(format!("{}\n", line).as_bytes())?;
-                    added = true;
-                }
-            }
-        }
-        if added {
-            println!("✓ Updated .gitattributes with Legend merge driver rules");
-        }
+    let existing = if attr_path.exists() {
+        fs::read_to_string(attr_path)?
     } else {
-        let content = attr_lines.join("\n") + "\n";
-        fs::write(attr_path, content)?;
-        println!("✓ Created .gitattributes with Legend merge driver");
+        String::new()
+    };
+    let mut kept: Vec<&str> = existing
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && trimmed != ".legend/*.lz4 merge=legend"
+                && trimmed != ".legend/state.lz4 merge=legend"
+                && trimmed != ".legend/memory.lz4 merge=legend"
+                && trimmed != ".legend/events.jsonl merge=legend"
+        })
+        .collect();
+    for line in attr_lines {
+        kept.push(line);
     }
+    let content = kept.join("\n") + "\n";
+    fs::write(attr_path, content)?;
+    println!("✓ Updated .gitattributes with Legend merge driver rules");
 
     Ok(())
 }
@@ -207,14 +176,6 @@ fn migrate_memory_store() {
             eprintln!("  Warning: failed to load memory store: {}", e);
         }
     }
-}
-
-/// Detect project name from the current directory name
-fn detect_project_name() -> String {
-    std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "My Project".to_string())
 }
 
 /// Generate or update CLAUDE.md with Legend usage instructions
@@ -675,8 +636,7 @@ fn has_legend_hooks(
                 if let Some(hooks) = hook_entry.get("hooks").and_then(|h| h.as_array()) {
                     for hook in hooks {
                         if let Some(hook_cmd) = hook.get("command").and_then(|c| c.as_str()) {
-                            if (hook_cmd.contains("legend get_state")
-                                || hook_cmd.contains("legend memory start")
+                            if (hook_cmd.contains("legend memory start")
                                 || hook_cmd.contains("legend memory query")
                                 || hook_cmd.contains("legend memory tick"))
                                 && hook_cmd.contains(cmd)
@@ -726,8 +686,7 @@ fn remove_any_legend_hooks(settings: &mut Value) -> bool {
                 hook_entries.retain(|entry| {
                     let entry_str = serde_json::to_string(entry).unwrap_or_default();
                     // If it contains these core strings, it's likely a Legend hook
-                    !(entry_str.contains("get_state")
-                        || entry_str.contains("memory start")
+                    !(entry_str.contains("memory start")
                         || entry_str.contains("memory query")
                         || entry_str.contains("memory tick"))
                 });
