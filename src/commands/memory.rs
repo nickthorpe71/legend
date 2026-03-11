@@ -85,7 +85,9 @@ fn truncate_text(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        // Find a valid char boundary at or before `max`
+        let end = s.floor_char_boundary(max);
+        format!("{}...", &s[..end])
     }
 }
 
@@ -1124,7 +1126,8 @@ fn append_to_architecture_md(tick_text: &str) {
 
     // Truncate tick text to 200 chars for the entry
     let summary = if tick_text.len() > 200 {
-        format!("{}…", &tick_text[..200])
+        let end = tick_text.floor_char_boundary(200);
+        format!("{}…", &tick_text[..end])
     } else {
         tick_text.to_string()
     };
