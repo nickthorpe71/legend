@@ -1,6 +1,4 @@
 use crate::memory::MemoryState;
-use crate::storage::{is_initialized, load_state, save_state};
-use crate::types::Feature;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -213,7 +211,7 @@ pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>
         eprintln!("High-signal files: {}", report.high_signal_files.len());
         eprintln!("Suggested features: {}", report.potential_features.len());
 
-        if !is_initialized() {
+        if !Path::new(".legend").exists() {
             eprintln!("\nTip: Run 'legend init' or 'legend discover --apply' to start tracking this project.");
         } else {
             eprintln!(
@@ -225,7 +223,7 @@ pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-/// Ingest high-signal context into Legend's memory and state.
+/// Ingest high-signal context into Legend's memory.
 fn onboard_project(
     root: &Path,
     report: &DiscoveryReport,
@@ -279,34 +277,6 @@ fn onboard_project(
     }
 
     memory.save()?;
-
-    // 3. Update LegendState if initialized
-    if is_initialized() {
-        let mut state = load_state()?;
-        state.project_name = report.metadata.name.clone();
-
-        for suggested in &report.potential_features {
-            // Only add if not already present
-            if !state
-                .features
-                .iter()
-                .any(|f| f.id == suggested.suggested_id)
-            {
-                let mut feature = Feature::new(
-                    suggested.suggested_id.clone(),
-                    suggested.suggested_name.clone(),
-                    suggested.suggested_domain.clone(),
-                    format!(
-                        "Auto-discovered from project structure ({} files)",
-                        suggested.files.len()
-                    ),
-                );
-                feature.files_involved = suggested.files.clone();
-                state.add_feature(feature);
-            }
-        }
-        save_state(&state)?;
-    }
 
     Ok(())
 }

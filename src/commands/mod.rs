@@ -1,12 +1,7 @@
 pub mod dashboard;
 pub mod dev;
 pub mod discover;
-pub mod get_state;
 pub mod init;
 pub mod llm;
 pub mod memory;
 pub mod merge;
-pub mod project;
-pub mod search;
-pub mod show;
-pub mod update;

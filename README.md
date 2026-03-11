@@ -1,6 +1,6 @@
 # Legend
 
-**Lightweight context memory for AI-assisted development.**
+**Lightweight long-term memory for AI-assisted development.**
 
 Legend gives AI coding assistants persistent memory across sessions. It automatically tracks decisions, discoveries, and progress so your agent never loses context.
 
