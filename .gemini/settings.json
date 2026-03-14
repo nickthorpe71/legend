@@ -44,5 +44,16 @@
         "matcher": "*"
       }
     ]
+  },
+  "mcpServers": {
+    "legend-memory": {
+      "args": [
+        "run",
+        "--quiet",
+        "--",
+        "mcp-serve"
+      ],
+      "command": "cargo"
+    }
   }
 }

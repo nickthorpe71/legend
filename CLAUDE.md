@@ -23,13 +23,13 @@ EOF
 You MUST tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
 
 ### 3. Before New Tasks (REQUIRED)
-Query for relevant context before diving into unfamiliar work:
+Query for relevant context BEFORE diving into unfamiliar work:
 ```bash
 cargo run --quiet -- memory query <<'EOF'
 topic you are about to work on
 EOF
 ```
-The top result is automatically reinforced — frequently useful memories rise naturally.
+**ALWAYS query before starting work on a new topic.** The top result is automatically reinforced — frequently useful memories rise naturally. Skipping this step means you lose access to prior decisions and context.
 
 ### 4. Session End (REQUIRED)
 Summarize what was accomplished:
@@ -73,11 +73,12 @@ cargo run --quiet -- dashboard
 
 **Tick frequency:** Aim for 3-8 ticks per session. After major decisions or substantial work.
 
+**You MUST query before:**
+- Starting work on a module or feature you haven't touched this session
+- Investigating a bug — query the error message or affected module
+- Making a design decision — check if a prior decision exists
+
 ## Understanding Start Output
 
 By default, `cargo run --quiet -- memory start` returns a high-signal Markdown summary designed for YOUR consumption. It contains the **LEGEND PROTOCOL (MANDATORY)** which you must follow.
-
-## Git and Legend Files
-
-The `.legend/` directory contains your persistent memory state (`memory.lz4`, `state.lz4`, `events.jsonl`, etc.). These files **should be committed to git** alongside the project. They are part of the project's context — not temporary or machine-specific. When committing project changes, include `.legend/` file changes in the same commit. Do not add `.legend/` to `.gitignore`.
 <!-- legend-end -->
