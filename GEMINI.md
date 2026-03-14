@@ -15,21 +15,28 @@ This returns the "MANDATORY PROTOCOL", stats, recent session log, top graph node
 ### 2. During Session (FREQUENTLY)
 After every significant action (writing code, making a decision, discovering something, completing a task), record it:
 ```bash
-cargo run --quiet -- memory tick "description of what just happened"
+cargo run --quiet -- memory tick <<'EOF'
+description of what just happened
+EOF
 ```
+**IMPORTANT:** Always use heredoc (`<<'EOF'`) for tick and query messages. This prevents bash from interpreting backticks, apostrophes, or special characters in your text.
 You MUST tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
 
 ### 3. Before New Tasks (REQUIRED)
-Query for relevant context before diving into unfamiliar work:
+Query for relevant context BEFORE diving into unfamiliar work:
 ```bash
-cargo run --quiet -- memory query "topic you're about to work on"
+cargo run --quiet -- memory query <<'EOF'
+topic you are about to work on
+EOF
 ```
-The top result is automatically reinforced — frequently useful memories rise naturally.
+**ALWAYS query before starting work on a new topic.** The top result is automatically reinforced — frequently useful memories rise naturally. Skipping this step means you lose access to prior decisions and context.
 
 ### 4. Session End (REQUIRED)
 Summarize what was accomplished:
 ```bash
-cargo run --quiet -- memory tick "Session summary: what was done, what's next, any blockers"
+cargo run --quiet -- memory tick <<'EOF'
+Session summary: what was done, what is next, any blockers
+EOF
 ```
 
 ## Memory Commands
@@ -37,8 +44,8 @@ cargo run --quiet -- memory tick "Session summary: what was done, what's next, a
 | Command | When to Use |
 |---------|-------------|
 | `cargo run --quiet -- memory start` | **Session start** — one call for full context |
-| `cargo run --quiet -- memory tick "<text>"` | Record decision, progress, discovery, blocker |
-| `cargo run --quiet -- memory query "<text>"` | Recall related context (auto-reinforces top result) |
+| `cargo run --quiet -- memory tick <<'EOF'`...`EOF` | Record decision, progress, discovery, blocker |
+| `cargo run --quiet -- memory query <<'EOF'`...`EOF` | Recall related context (auto-reinforces top result) |
 | `cargo run --quiet -- memory reinforce <signal> <id...>` | Explicit feedback: 1.0 = useful, -1.0 = irrelevant |
 | `cargo run --quiet -- memory stats` | Check storage usage |
 | `cargo run --quiet -- memory sessions [n]` | View chronological session log |
@@ -65,6 +72,11 @@ cargo run --quiet -- dashboard
 - **Rejected approaches**: "Decided against X because Y"
 
 **Tick frequency:** Aim for 3-8 ticks per session. After major decisions or substantial work.
+
+**You MUST query before:**
+- Starting work on a module or feature you haven't touched this session
+- Investigating a bug — query the error message or affected module
+- Making a design decision — check if a prior decision exists
 
 ## Understanding Start Output
 
