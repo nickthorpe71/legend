@@ -45,16 +45,22 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
         setup_git_merge_driver()?;
         setup_claude_hooks()?;
+        setup_claude_mcp()?;
         setup_claude_md()?;
         setup_codex_hooks()?;
+        setup_codex_mcp()?;
         setup_codex_md()?;
         setup_agents_md()?;
         setup_copilot_instructions()?;
+        setup_vscode_mcp()?;
         setup_zed_rules()?;
+        setup_zed_mcp()?;
         setup_gemini_styleguide()?;
         setup_gemini_md()?;
         setup_gemini_hooks()?;
+        add_mcp_to_gemini_settings()?;
         setup_cursor_rules()?;
+        setup_cursor_mcp()?;
 
         return Ok(());
     }
@@ -76,16 +82,22 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     setup_git_merge_driver()?;
     setup_claude_hooks()?;
+    setup_claude_mcp()?;
     setup_claude_md()?;
     setup_codex_hooks()?;
+    setup_codex_mcp()?;
     setup_codex_md()?;
     setup_agents_md()?;
     setup_copilot_instructions()?;
+    setup_vscode_mcp()?;
     setup_zed_rules()?;
+    setup_zed_mcp()?;
     setup_gemini_styleguide()?;
     setup_gemini_md()?;
     setup_gemini_hooks()?;
+    add_mcp_to_gemini_settings()?;
     setup_cursor_rules()?;
+    setup_cursor_mcp()?;
 
     Ok(())
 }
@@ -764,4 +776,176 @@ fn merge_legend_hooks(settings: &mut Value, hooks_config: LegendHooks) {
     {
         arr.push(hooks_config.stop_hook.clone());
     }
+}
+
+// ---------------------------------------------------------------------------
+// MCP config file generation
+// ---------------------------------------------------------------------------
+
+/// Get the Legend command split into (command, args) for MCP JSON configs.
+///
+/// Returns ("legend", ["mcp-serve"]) normally, or
+/// ("cargo", ["run", "--quiet", "--", "mcp-serve"]) in the Legend source dir.
+fn get_legend_mcp_command() -> (&'static str, Vec<&'static str>) {
+    let cmd = get_legend_command();
+    if cmd == "cargo run --quiet --" {
+        ("cargo", vec!["run", "--quiet", "--", "mcp-serve"])
+    } else {
+        ("legend", vec!["mcp-serve"])
+    }
+}
+
+/// Merge a key into a JSON object file, creating the file if it doesn't exist.
+/// If the file exists, merges the key at the top level (does not overwrite other keys).
+/// Idempotent: skips if the key already exists.
+fn merge_json_config(
+    path: &Path,
+    dir: Option<&Path>,
+    key: &str,
+    value: Value,
+    display_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if path.exists() {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", display_name, e))?;
+        let mut settings: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse {}: {}", display_name, e))?;
+
+        if settings.get(key).and_then(|v| v.get("legend-memory")).is_some() {
+            println!("  {} MCP already configured", display_name);
+            return Ok(());
+        }
+
+        // Merge: if key exists as object, insert into it; otherwise create it
+        if let Some(obj) = settings.get_mut(key).and_then(|v| v.as_object_mut()) {
+            obj.insert("legend-memory".to_string(), value);
+        } else {
+            settings[key] = json!({ "legend-memory": value });
+        }
+
+        let output = serde_json::to_string_pretty(&settings)?;
+        fs::write(path, output)
+            .map_err(|e| format!("Failed to write {}: {}", display_name, e))?;
+        println!("✓ Added Legend MCP to existing {}", display_name);
+    } else {
+        if let Some(d) = dir {
+            fs::create_dir_all(d)
+                .map_err(|e| format!("Failed to create {} directory: {}", d.display(), e))?;
+        }
+        let settings = json!({ key: { "legend-memory": value } });
+        let output = serde_json::to_string_pretty(&settings)?;
+        fs::write(path, output)
+            .map_err(|e| format!("Failed to write {}: {}", display_name, e))?;
+        println!("✓ Created {} with Legend MCP config", display_name);
+    }
+    Ok(())
+}
+
+/// Set up MCP config for Claude Code — .mcp.json
+fn setup_claude_mcp() -> Result<(), Box<dyn std::error::Error>> {
+    let (cmd, args) = get_legend_mcp_command();
+    let server = json!({ "command": cmd, "args": args });
+    merge_json_config(
+        Path::new(".mcp.json"),
+        None,
+        "mcpServers",
+        server,
+        ".mcp.json",
+    )
+}
+
+/// Set up MCP config for VS Code Copilot — .vscode/mcp.json
+fn setup_vscode_mcp() -> Result<(), Box<dyn std::error::Error>> {
+    let (cmd, args) = get_legend_mcp_command();
+    let server = json!({ "command": cmd, "args": args });
+    let vscode_dir = Path::new(".vscode");
+    merge_json_config(
+        &vscode_dir.join("mcp.json"),
+        Some(vscode_dir),
+        "servers",
+        server,
+        ".vscode/mcp.json",
+    )
+}
+
+/// Set up MCP config for Cursor — .cursor/mcp.json
+fn setup_cursor_mcp() -> Result<(), Box<dyn std::error::Error>> {
+    let (cmd, args) = get_legend_mcp_command();
+    let server = json!({ "command": cmd, "args": args });
+    let cursor_dir = Path::new(".cursor");
+    merge_json_config(
+        &cursor_dir.join("mcp.json"),
+        Some(cursor_dir),
+        "mcpServers",
+        server,
+        ".cursor/mcp.json",
+    )
+}
+
+/// Add MCP config to Gemini CLI — .gemini/settings.json
+/// Must run AFTER setup_gemini_hooks() which creates the file.
+fn add_mcp_to_gemini_settings() -> Result<(), Box<dyn std::error::Error>> {
+    let (cmd, args) = get_legend_mcp_command();
+    let server = json!({ "command": cmd, "args": args });
+    let gemini_dir = Path::new(".gemini");
+    merge_json_config(
+        &gemini_dir.join("settings.json"),
+        Some(gemini_dir),
+        "mcpServers",
+        server,
+        ".gemini/settings.json (MCP)",
+    )
+}
+
+/// Set up MCP config for Codex — .codex/config.toml
+fn setup_codex_mcp() -> Result<(), Box<dyn std::error::Error>> {
+    let codex_dir = Path::new(".codex");
+    let config_path = codex_dir.join("config.toml");
+    let (cmd, args) = get_legend_mcp_command();
+
+    let mcp_section = format!(
+        "\n[mcp_servers.legend-memory]\ncommand = \"{}\"\nargs = [{}]\n",
+        cmd,
+        args.iter()
+            .map(|a| format!("\"{}\"", a))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read .codex/config.toml: {}", e))?;
+
+        if content.contains("[mcp_servers.legend-memory]") {
+            println!("  .codex/config.toml MCP already configured");
+            return Ok(());
+        }
+
+        let updated = format!("{}{}", content.trim_end(), mcp_section);
+        fs::write(&config_path, updated)
+            .map_err(|e| format!("Failed to write .codex/config.toml: {}", e))?;
+        println!("✓ Added Legend MCP to existing .codex/config.toml");
+    } else {
+        fs::create_dir_all(codex_dir)
+            .map_err(|e| format!("Failed to create .codex directory: {}", e))?;
+        fs::write(&config_path, mcp_section.trim_start())
+            .map_err(|e| format!("Failed to write .codex/config.toml: {}", e))?;
+        println!("✓ Created .codex/config.toml with Legend MCP config");
+    }
+
+    Ok(())
+}
+
+/// Set up MCP config for Zed — .zed/settings.json
+fn setup_zed_mcp() -> Result<(), Box<dyn std::error::Error>> {
+    let (cmd, args) = get_legend_mcp_command();
+    let server = json!({ "command": cmd, "args": args });
+    let zed_dir = Path::new(".zed");
+    merge_json_config(
+        &zed_dir.join("settings.json"),
+        Some(zed_dir),
+        "context_servers",
+        server,
+        ".zed/settings.json",
+    )
 }

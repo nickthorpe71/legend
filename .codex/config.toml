@@ -1,0 +1,3 @@
+[mcp_servers.legend-memory]
+command = "cargo"
+args = ["run", "--quiet", "--", "mcp-serve"]
