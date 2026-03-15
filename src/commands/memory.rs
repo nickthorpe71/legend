@@ -81,7 +81,7 @@ pub struct StartEventData {
     pub session_log_entries: usize,
 }
 
-fn truncate_text(s: &str, max: usize) -> String {
+pub(crate) fn truncate_text(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
@@ -150,7 +150,7 @@ fn parse_tick_args(args: &[String]) -> Result<TickOptions, Box<dyn std::error::E
 }
 
 /// Detect known noise patterns that should be rejected before storage.
-fn is_noise_tick(text: &str) -> bool {
+pub(crate) fn is_noise_tick(text: &str) -> bool {
     let t = text.trim();
     // Empty or near-empty
     if t.len() < 10 {
@@ -597,7 +597,7 @@ fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
+pub(crate) fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
     let mut out = String::new();
     out.push_str("# Legend Session Start Context\n\n");
 
@@ -1113,7 +1113,7 @@ fn ts_to_iso_date(ts: u64) -> String {
 
 /// Append a summary line to ARCHITECTURE.md after an ARCHITECTURE-tagged tick.
 /// Creates ARCHITECTURE.md if it doesn't exist.
-fn append_to_architecture_md(tick_text: &str) {
+pub(crate) fn append_to_architecture_md(tick_text: &str) {
     use std::io::Write;
 
     let date = {
@@ -1167,7 +1167,7 @@ fn maybe_rotate_event_log() {
 /// Append a structured event to `.legend/events.jsonl` for dashboard streaming.
 /// Includes optional rich data payload for detailed observability.
 /// Automatically rotates the log when it exceeds EVENT_LOG_MAX_LINES.
-fn log_event_rich(cmd: &str, detail: &str, data: Option<EventData>) {
+pub(crate) fn log_event_rich(cmd: &str, detail: &str, data: Option<EventData>) {
     use std::io::Write;
 
     // Check for rotation before appending
@@ -1193,7 +1193,7 @@ fn log_event_rich(cmd: &str, detail: &str, data: Option<EventData>) {
 }
 
 /// Simple event logging without rich data (backwards compatible).
-fn log_event(cmd: &str, detail: &str) {
+pub(crate) fn log_event(cmd: &str, detail: &str) {
     log_event_rich(cmd, detail, None);
 }
 

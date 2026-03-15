@@ -1,0 +1,13 @@
+{
+  "context_servers": {
+    "legend-memory": {
+      "args": [
+        "run",
+        "--quiet",
+        "--",
+        "mcp-serve"
+      ],
+      "command": "cargo"
+    }
+  }
+}

@@ -25,6 +25,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "memory" => commands::memory::handle_memory(&args[2..])?,
         "llm" => commands::llm::handle_llm(&args[2..])?,
         "dev" => commands::dev::handle_dev(&args[2..])?,
+        "mcp-serve" => commands::mcp::handle_mcp_serve(&args[2..])?,
         "dashboard" => {
             // Check for --3d flag to launch Bevy dashboard
             if args.iter().any(|a| a == "--3d") {
@@ -55,6 +56,7 @@ fn print_help() {
     );
     println!("  discover [path]                 Scan project to suggest features and context");
     println!("  dashboard [--3d]               Launch TUI dashboard (--3d for Bevy 3D view)");
+    println!("  mcp-serve                       Run MCP stdio server for AI tool integration");
     println!("  init                            Initialize Legend in new project");
     println!("  help                            Show this help message");
 }
