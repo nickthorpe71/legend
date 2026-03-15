@@ -6,6 +6,7 @@ build/
 # Test artifacts
 tests/tmp/
 .test_*
+*.pending-snap
 
 # IDE and editor files
 .vscode/

@@ -5,8 +5,9 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 
 const MSGPACK_MAGIC: &[u8; 4] = b"LGND";
@@ -114,6 +115,35 @@ impl Harness {
             normalized = normalized.replace(name, "<TMPNAME>");
         }
         normalized
+    }
+
+    pub fn mcp_session(&self, messages: &[Value]) -> Vec<Value> {
+        self.mcp_session_in(self.path(), messages)
+    }
+
+    pub fn mcp_session_in(&self, cwd: &Path, messages: &[Value]) -> Vec<Value> {
+        let mut child = Command::new(&self.binary)
+            .args(["mcp-serve", "--cwd", cwd.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn mcp-serve");
+
+        let mut stdin = child.stdin.take().expect("open stdin");
+        for msg in messages {
+            let line = serde_json::to_string(msg).expect("serialize JSON-RPC message");
+            writeln!(stdin, "{}", line).expect("write to stdin");
+        }
+        drop(stdin); // close stdin to signal EOF
+
+        let output = child.wait_with_output().expect("wait for mcp-serve");
+        let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+        stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("parse JSON-RPC response"))
+            .collect()
     }
 
     fn decode_output(&self, output: Output) -> CmdOutput {
@@ -247,6 +277,15 @@ pub struct FixtureMemoryState<T> {
     last_synced_sha: Option<String>,
 }
 
+pub fn jsonrpc_request(id: u64, method: &str, params: Value) -> Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params
+    })
+}
+
 pub fn seed_basic_repo(harness: &Harness) {
     harness.write_file(
         "src/main.rs",
@@ -347,7 +386,7 @@ pub fn write_consolidation_fixture(harness: &Harness) {
                 id: 1,
                 text: "ARCHITECTURE: Query pipeline routes through graph lookup.".into(),
                 summary: "Query pipeline routes through graph lookup.".into(),
-                embedding: vec![1.0, 0.0, 0.0],
+                embedding: vec![0.95, 0.05, 0.0],
                 last_access: 10,
                 usage: 1,
                 salience: 0.8,
@@ -362,7 +401,7 @@ pub fn write_consolidation_fixture(harness: &Harness) {
                 id: 2,
                 text: "ARCHITECTURE: Query pipeline coordinates graph lookup.".into(),
                 summary: "Query pipeline coordinates graph lookup.".into(),
-                embedding: vec![1.0, 0.0, 0.0],
+                embedding: vec![0.93, 0.07, 0.0],
                 last_access: 11,
                 usage: 1,
                 salience: 0.7,

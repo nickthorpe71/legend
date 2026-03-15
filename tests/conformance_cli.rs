@@ -21,6 +21,7 @@ fn help_output_is_stable() {
           llm [signals|task|apply|...]    Policy-driven LLM task orchestration and validation
           discover [path]                 Scan project to suggest features and context
           dashboard [--3d]               Launch TUI dashboard (--3d for Bevy 3D view)
+          mcp-serve                       Run MCP stdio server for AI tool integration
           init                            Initialize Legend in new project
           help                            Show this help message
         "###
@@ -48,6 +49,11 @@ fn init_first_run_creates_expected_files_and_repeat_is_stable() {
         "CODEX.md",
         "AGENTS.md",
         "GEMINI.md",
+        ".mcp.json",
+        ".cursor/mcp.json",
+        ".codex/config.toml",
+        ".vscode/mcp.json",
+        ".zed/settings.json",
     ] {
         assert!(harness.exists(path), "expected {path} to exist");
     }
@@ -71,16 +77,22 @@ fn init_first_run_creates_expected_files_and_repeat_is_stable() {
         ✓ Configured local Git merge driver for Legend
         ✓ Updated .gitattributes with Legend merge driver rules
         ✓ Created .claude/settings.json with Legend hooks
+        ✓ Created .mcp.json with Legend MCP config
         ✓ Created CLAUDE.md with Legend instructions
         ✓ Created .codex/settings.json with Legend hooks
+        ✓ Created .codex/config.toml with Legend MCP config
         ✓ Created CODEX.md with Legend instructions
         ✓ Created AGENTS.md with Legend instructions
         ✓ Created .github/copilot-instructions.md with Legend instructions
+        ✓ Created .vscode/mcp.json with Legend MCP config
         ✓ Created .rules with Legend instructions
+        ✓ Created .zed/settings.json with Legend MCP config
         ✓ Created .gemini/styleguide.md with Legend instructions
         ✓ Created GEMINI.md with Legend instructions
         ✓ Created .gemini/settings.json with Legend hooks
+        ✓ Added Legend MCP to existing .gemini/settings.json (MCP)
         ✓ Created .cursorrules with Legend instructions
+        ✓ Created .cursor/mcp.json with Legend MCP config
         "###
     );
 
