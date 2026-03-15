@@ -343,3 +343,4 @@ score = salience × 0.4 + ln(1 + usage) × 0.3 + exp(-age × 0.002) × 0.3
 | `src/types.rs` | Feature tracking types (LegendState, Feature, FeatureStatus) |
 | `dashboard/` | Bevy 0.15 + bevy_egui 0.33 native 3D visualization app |
 - **2026-03-09** — ARCHITECTURE: commands/memory.rs handle_tick() now auto-appends to ARCHITECTURE.md when tick starts with ARCHITECTURE: prefix
+- **2026-03-15** — ARCHITECTURE: Thoroughly explored MCP server implementation in Legend. JSON-RPC 2.0 stdio loop with 6 tools (start, tick, query, task_get, task_set, stats). Config generation for 6 platforms: Claude .…
