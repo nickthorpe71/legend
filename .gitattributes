@@ -1,2 +1,3 @@
 .legend/memory.lz4 merge=legend
 .legend/events.jsonl merge=legend
+.legend/*.lz4 merge=legend

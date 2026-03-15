@@ -228,6 +228,7 @@ fn onboard_project(
     root: &Path,
     report: &DiscoveryReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    fs::create_dir_all(".legend")?;
     let mut memory = MemoryState::load_or_default()?;
 
     // 1. Ingest metadata
