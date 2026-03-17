@@ -1,5 +1,26 @@
+use crate::cli::{parse_args, CommandDef, FlagDef};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+pub static COMMAND: CommandDef = CommandDef {
+    name: "dashboard",
+    about: "Launch TUI dashboard (--3d for Bevy 3D view)",
+    usage: "legend dashboard [--3d]",
+    flags: &[
+        FlagDef { long: "--3d", short: None, about: "Launch Bevy 3D view instead of TUI", takes_value: false },
+    ],
+    positionals: &[],
+};
+
+/// Dispatch entry point used by the COMMANDS registry.
+pub fn handle_dashboard_dispatch(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = parse_args(args, &COMMAND);
+    if parsed.has("3d") {
+        handle_dashboard()
+    } else {
+        crate::tui::run_tui()
+    }
+}
 
 /// Launch the Legend dashboard.
 ///

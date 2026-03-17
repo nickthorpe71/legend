@@ -1,6 +1,15 @@
+use crate::cli::CommandDef;
 use crate::memory::extract::is_stopword;
 use crate::memory::MemoryState;
 use std::collections::HashSet;
+
+pub static COMMAND: CommandDef = CommandDef {
+    name: "dev",
+    about: "Developer-only debug commands",
+    usage: "legend dev <subcommand>",
+    flags: &[],
+    positionals: &[],
+};
 
 // ---------------------------------------------------------------------------
 // Dev-only commands — not exposed in user/LLM docs or `legend help`

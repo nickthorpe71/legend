@@ -1,21 +1,19 @@
 {
   "hooks": {
-    "AfterTool": [
-      {
-        "hooks": [
-          {
-            "command": "input=$(cat | tr -d '\\n'); tool=$(echo \"$input\" | sed -n 's/.*\"tool_name\": *\"\\([^\"]*\\)\".*/\\1/p'); status=\"success\"; if echo \"$input\" | grep -q '\"is_error\": *true'; then status=\"error\"; fi; if [ \"$status\" = \"success\" ] && echo \"$tool\" | grep -iqE \"write_file|replace|edit|modify|insert|delete|create|write_to_file|patch|Write|Edit|NotebookEdit\"; then file=$(echo \"$input\" | sed -n 's/.*\"file_path\": *\"\\([^\"]*\\)\".*/\\1/p'); if [ -z \"$file\" ]; then file=$(echo \"$input\" | sed -n 's/.*\"path\": *\"\\([^\"]*\\)\".*/\\1/p'); fi; if [ -z \"$file\" ]; then file=\"unknown file\"; fi; pending=$(cat \".legend/.pending_ticks\" 2>/dev/null || echo 0); pending=$((pending + 1)); echo \"$pending\" > \".legend/.pending_ticks\"; if [ \"$pending\" -ge 4 ]; then echo \"\\n🚨 CRITICAL [LEGEND] $pending un-ticked file edits! You modified '$file'.\"; elif [ \"$pending\" -ge 2 ]; then echo \"\\n⚠️  WARNING [LEGEND] $pending un-ticked file edits! You modified '$file'.\"; else echo \"\\n[LEGEND PROTOCOL] MANDATE: You modified '$file'.\"; fi; echo \"1. Tick the decision: cargo run --quiet -- memory tick 'Decision: changed $file -- [why]'\"; echo \"2. Also tick any significant discussion points: user preferences, architectural conclusions, discoveries.\"; echo \"3. If this changes architecture, update ARCHITECTURE.md or tick an architecture insight.\"; fi",
-            "type": "command"
-          }
-        ],
-        "matcher": "*"
-      }
-    ],
     "BeforeAgent": [
       {
         "hooks": [
           {
-            "command": "now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; cargo run --quiet -- memory start; else echo \"[LEGEND] Before answering: did the last exchange contain a significant decision, discovery, or user preference? If yes, tick it FIRST before responding: cargo run --quiet -- memory tick '...'\"; if [ -n \"$PROMPT\" ] && echo \"$PROMPT\" | grep -iqE \"^(implement|add|fix|create|refactor|build|write|update|change|delete|remove|migrate|convert|optimize|improve|develop|design|make|generate|test|setup|integrate|debug|solve|enable|disable|extend)\"; then echo \"[LEGEND] MANDATE: Task-starting prompt detected. Run: cargo run --quiet -- memory query \\\"<topic>\\\" BEFORE implementing.\"; fi; [ -n \"$PROMPT\" ] && cargo run --quiet -- memory query \"$PROMPT\" 2>/dev/null || true; fi",
+            "command": "echo \"[Legend] Tick decisions. Query before new tasks.\"",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      },
+      {
+        "hooks": [
+          {
+            "command": "echo \"[Legend] Tick decisions. Query before new tasks.\"",
             "type": "command"
           }
         ],
@@ -26,7 +24,16 @@
       {
         "hooks": [
           {
-            "command": "session_start=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); last_tick_ts=$(grep '\"cmd\":\"tick\"' .legend/events.jsonl 2>/dev/null | tail -1 | sed -n 's/.*\"ts\":\\([0-9]*\\).*/\\1/p'); if [ -z \"$last_tick_ts\" ] || [ \"$last_tick_ts\" -lt \"$session_start\" ]; then echo \"\\n🚨 CRITICAL [LEGEND]: No ticks this session! Record decisions before exiting: cargo run --quiet -- memory tick '...'\"; else changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$changed\" ]; then count=$(echo \"$changed\" | wc -l); echo \"\\n[LEGEND] $count file(s) changed. SUMMARY MANDATE: Record final decisions and next steps before exiting: cargo run --quiet -- memory tick '...' \"; fi; fi",
+            "command": "echo \"[Legend] Session ending. Tick final decisions and next steps.\"",
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      },
+      {
+        "hooks": [
+          {
+            "command": "echo \"[Legend] Session ending. Tick final decisions and next steps.\"",
             "type": "command"
           }
         ],
@@ -37,7 +44,7 @@
       {
         "hooks": [
           {
-            "command": "cargo run --quiet -- memory start && touch .legend/.session_active",
+            "command": "cargo run --quiet -- memory start",
             "type": "command"
           }
         ],

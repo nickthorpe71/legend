@@ -1,5 +1,5 @@
 /// N-gram embedding and vector similarity functions.
-use crate::memory::keywords::{ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, CODE_KEYWORDS, DECISION_KEYWORDS, PREFERENCE_KEYWORDS, TODO_KEYWORDS};
+use crate::memory::keyword_cache::KeywordCache;
 
 /// Compute an n-gram embedding vector of given dimension.
 ///
@@ -86,14 +86,14 @@ pub fn merge_embeddings(a: &[f32], b: &[f32]) -> Vec<f32> {
 }
 
 /// Compute salience score from text content heuristics.
-pub fn compute_salience(text: &str) -> f32 {
+pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
     let mut score: f32 = 0.0;
     let lowered = text.to_lowercase();
 
     // Decision language — highest importance
-    let decision_hits = DECISION_KEYWORDS
+    let decision_hits = kw.decision
         .iter()
-        .filter(|kw| lowered.contains(*kw))
+        .filter(|k| lowered.contains(k.as_str()))
         .count();
     if decision_hits >= 2 {
         score += 0.5;
@@ -110,30 +110,30 @@ pub fn compute_salience(text: &str) -> f32 {
     }
 
     // Bug/incident language — high importance
-    if BUG_KEYWORDS.iter().any(|kw| lowered.contains(kw)) {
+    if kw.bug.iter().any(|k| lowered.contains(k.as_str())) {
         score += 0.4;
     }
 
     // TODO/blocker language
-    if TODO_KEYWORDS.iter().any(|kw| lowered.contains(kw)) {
+    if kw.todo.iter().any(|k| lowered.contains(k.as_str())) {
         score += 0.3;
     }
 
     // Architecture/structural statements
-    if ARCHITECTURE_KEYWORDS.iter().any(|kw| lowered.contains(kw)) {
+    if kw.architecture.iter().any(|k| lowered.contains(k.as_str())) {
         score += 0.25;
     }
 
     // Preference/convention
-    if PREFERENCE_KEYWORDS.iter().any(|kw| lowered.contains(kw)) {
+    if kw.preference.iter().any(|k| lowered.contains(k.as_str())) {
         score += 0.3;
     }
 
     // Code references
     if text.contains("```")
-        || CODE_KEYWORDS
+        || kw.code
             .iter()
-            .any(|(kw, _, _): &(&str, &str, &str)| lowered.contains(kw.trim()))
+            .any(|(trigger, _, _)| lowered.contains(trigger.trim()))
     {
         score += 0.15;
     }
@@ -205,63 +205,67 @@ mod tests {
         assert_ne!(h1, fnv_hash(b"world"));
     }
 
+    fn kw() -> KeywordCache {
+        KeywordCache::default_from_static()
+    }
+
     #[test]
     fn test_compute_salience_code() {
-        assert!(compute_salience("fn main() { struct Foo {} }") > compute_salience("regular text"));
+        assert!(compute_salience("fn main() { struct Foo {} }", &kw()) > compute_salience("regular text", &kw()));
     }
 
     #[test]
     fn test_compute_salience_todo() {
-        assert!(compute_salience("TODO: fix bug") > compute_salience("no urgency here"));
+        assert!(compute_salience("TODO: fix bug", &kw()) > compute_salience("no urgency here", &kw()));
     }
 
     #[test]
     fn test_compute_salience_decision_language() {
-        let s = compute_salience("DECISION: Chose Tokio over async-std because broader ecosystem");
+        let s = compute_salience("DECISION: Chose Tokio over async-std because broader ecosystem", &kw());
         assert!(s >= 0.3, "decision text should score high, got {}", s);
     }
 
     #[test]
     fn test_compute_salience_decision_with_rationale_boost() {
-        let without = compute_salience("Decided to use Redis");
-        let with = compute_salience("Decided to use Redis because it has better pub/sub");
+        let without = compute_salience("Decided to use Redis", &kw());
+        let with = compute_salience("Decided to use Redis because it has better pub/sub", &kw());
         assert!(with > without, "rationale should boost: {} vs {}", with, without);
     }
 
     #[test]
     fn test_compute_salience_bug_language() {
-        let s = compute_salience("Bug: the server crashes on empty input");
+        let s = compute_salience("Bug: the server crashes on empty input", &kw());
         assert!(s >= 0.4, "bug text should score high, got {}", s);
     }
 
     #[test]
     fn test_compute_salience_blocker() {
-        let s = compute_salience("BLOCKER: blocked on API key provisioning");
+        let s = compute_salience("BLOCKER: blocked on API key provisioning", &kw());
         assert!(s >= 0.3, "blocker text should score high, got {}", s);
     }
 
     #[test]
     fn test_compute_salience_architecture() {
-        let s = compute_salience("The API layer interfaces with the schema module");
+        let s = compute_salience("The API layer interfaces with the schema module", &kw());
         assert!(s >= 0.25, "architecture text should score, got {}", s);
     }
 
     #[test]
     fn test_compute_salience_preference() {
-        let s = compute_salience("User prefers dark mode, always use minimal UI");
+        let s = compute_salience("User prefers dark mode, always use minimal UI", &kw());
         assert!(s >= 0.3, "preference text should score, got {}", s);
     }
 
     #[test]
     fn test_compute_salience_minimum_floor() {
-        let s = compute_salience("nothing special here at all");
+        let s = compute_salience("nothing special here at all", &kw());
         assert!(s >= 0.05, "floor should be 0.05, got {}", s);
     }
 
     #[test]
     fn test_compute_salience_capped_at_one() {
         // Pile on every keyword category
-        let s = compute_salience("DECISION: Chose X because crash bug regression BLOCKER TODO architecture API schema module user prefers convention fn main() {} ``` code ```");
+        let s = compute_salience("DECISION: Chose X because crash bug regression BLOCKER TODO architecture API schema module user prefers convention fn main() {} ``` code ```", &kw());
         assert!(s <= 1.0, "should cap at 1.0, got {}", s);
     }
 

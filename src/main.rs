@@ -1,6 +1,66 @@
+mod cli;
 mod commands;
 mod memory;
 mod tui;
+
+use cli::CommandDef;
+
+// ---------------------------------------------------------------------------
+// Top-level command registry
+// ---------------------------------------------------------------------------
+
+struct TopCommand {
+    def: &'static CommandDef,
+    usage_hint: &'static str,
+    handler: fn(&[String]) -> Result<(), Box<dyn std::error::Error>>,
+}
+
+static COMMANDS: &[TopCommand] = &[
+    TopCommand {
+        def: &commands::memory::COMMAND,
+        usage_hint: "memory [start|tick|query|...]",
+        handler: commands::memory::handle_memory,
+    },
+    TopCommand {
+        def: &commands::llm::COMMAND,
+        usage_hint: "llm [signals|task|apply|...]",
+        handler: commands::llm::handle_llm,
+    },
+    TopCommand {
+        def: &commands::discover::COMMAND,
+        usage_hint: "discover [path]",
+        handler: commands::discover::handle_discover,
+    },
+    TopCommand {
+        def: &commands::init::COMMAND,
+        usage_hint: "init",
+        handler: commands::init::handle_init,
+    },
+    TopCommand {
+        def: &commands::mcp::COMMAND,
+        usage_hint: "mcp-serve",
+        handler: commands::mcp::handle_mcp_serve,
+    },
+    TopCommand {
+        def: &commands::merge::COMMAND,
+        usage_hint: "git-merge-driver %O %A %B %P",
+        handler: commands::merge::handle_git_merge_driver,
+    },
+    TopCommand {
+        def: &commands::dashboard::COMMAND,
+        usage_hint: "dashboard [--3d]",
+        handler: commands::dashboard::handle_dashboard_dispatch,
+    },
+    TopCommand {
+        def: &commands::dev::COMMAND,
+        usage_hint: "dev <subcommand>",
+        handler: commands::dev::handle_dev,
+    },
+];
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 
 fn main() {
     if let Err(e) = run() {
@@ -18,45 +78,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     match args[1].as_str() {
-        "help" | "--help" | "-h" => print_help(),
-        "init" => commands::init::handle_init(&args[2..])?,
-        "discover" => commands::discover::handle_discover(&args[2..])?,
-        "git-merge-driver" => commands::merge::handle_git_merge_driver(&args[2..])?,
-        "memory" => commands::memory::handle_memory(&args[2..])?,
-        "llm" => commands::llm::handle_llm(&args[2..])?,
-        "dev" => commands::dev::handle_dev(&args[2..])?,
-        "mcp-serve" => commands::mcp::handle_mcp_serve(&args[2..])?,
-        "dashboard" => {
-            // Check for --3d flag to launch Bevy dashboard
-            if args.iter().any(|a| a == "--3d") {
-                commands::dashboard::handle_dashboard()?
-            } else {
-                tui::run_tui()?
-            }
-        }
-        unknown => {
-            eprintln!("Unknown command: {}", unknown);
+        "help" | "--help" | "-h" => {
             print_help();
-            std::process::exit(1);
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // Registry-based dispatch
+    for cmd in COMMANDS {
+        if cmd.def.name == args[1] {
+            return (cmd.handler)(&args[2..]);
         }
     }
 
-    Ok(())
+    eprintln!("Unknown command: {}", args[1]);
+    print_help();
+    std::process::exit(1);
 }
 
 fn print_help() {
-    println!("Legend - Lightweight context memory for AI-assisted development");
-    println!();
-    println!("Usage: legend <command> [options]");
-    println!();
-    println!("Commands:");
-    println!("  memory [start|tick|query|...]  Hierarchical memory (context, decisions, history)");
-    println!(
-        "  llm [signals|task|apply|...]    Policy-driven LLM task orchestration and validation"
-    );
-    println!("  discover [path]                 Scan project to suggest features and context");
-    println!("  dashboard [--3d]               Launch TUI dashboard (--3d for Bevy 3D view)");
-    println!("  mcp-serve                       Run MCP stdio server for AI tool integration");
-    println!("  init                            Initialize Legend in new project");
-    println!("  help                            Show this help message");
+    let help_entries: Vec<(&CommandDef, &str)> = COMMANDS
+        .iter()
+        .filter(|c| c.def.name != "dev" && c.def.name != "git-merge-driver")
+        .map(|c| (c.def, c.usage_hint))
+        .collect();
+
+    cli::print_top_level_help(&help_entries);
+    println!("  {:<30}{}", "help", "Show this help message");
 }

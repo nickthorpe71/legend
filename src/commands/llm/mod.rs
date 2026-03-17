@@ -1,97 +1,20 @@
-use crate::memory::{LlmEntity, MemoryState};
-use serde::{Deserialize, Serialize};
+mod helpers;
+
+use crate::cli::{parse_args, CommandDef, FlagDef};
+use crate::memory::MemoryState;
+use helpers::*;
 use serde_json::{json, Value};
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::io::{self, Read};
-use std::path::Path;
 
-const LLM_TASKS_PATH: &str = ".legend/llm_tasks.json";
-const LLM_TASKS_ARCHIVE_PATH: &str = ".legend/llm_tasks_archive.lz4";
-const MIN_ENTITY_TASK_CONFIDENCE: f32 = 0.65;
-const MAX_ENTITY_APPLY: usize = 50;
-const AUTO_MAX_PENDING_PER_KIND: usize = 3;
-const AUTO_MIN_TICK_GAP_PER_KIND: u64 = 5;
+pub use helpers::LlmAutoTriggerSummary;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum LlmTaskKind {
-    EntityExtract,
-    ClusterSummary,
-    QueryRerank,
-}
-
-impl LlmTaskKind {
-    fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "entity_extract" | "extract" => Some(Self::EntityExtract),
-            "cluster_summary" | "summary" => Some(Self::ClusterSummary),
-            "query_rerank" | "rerank" => Some(Self::QueryRerank),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum TaskStatus {
-    Pending,
-    Applied,
-    Rejected,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TaskRecommendation {
-    kind: String,
-    reason: String,
-    priority: u8,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SignalMetrics {
-    chars: usize,
-    words: usize,
-    entities: usize,
-    high_signal_entities: usize,
-    entity_density: f32,
-    high_signal_density: f32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SignalReport {
-    needs_llm: bool,
-    recommended_tasks: Vec<TaskRecommendation>,
-    metrics: SignalMetrics,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LlmTaskRecord {
-    id: String,
-    kind: LlmTaskKind,
-    status: TaskStatus,
-    created_ts: u64,
-    updated_ts: u64,
-    source: String,
-    trigger: SignalReport,
-    input: Value,
-    prompt: String,
-    json_schema: Value,
-    acceptance_rules: Value,
-    result: Option<Value>,
-    apply_summary: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    input_fingerprint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_tick: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmAutoTriggerSummary {
-    pub needs_llm: bool,
-    pub created_task_ids: Vec<String>,
-    pub recommended_kinds: Vec<String>,
-}
+pub static COMMAND: CommandDef = CommandDef {
+    name: "llm",
+    about: "Policy-driven LLM task orchestration and validation",
+    usage: "legend llm <subcommand> [options]",
+    flags: &[],
+    positionals: &[],
+};
 
 pub fn handle_llm(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
@@ -188,39 +111,25 @@ fn handle_task(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let kind = LlmTaskKind::parse(&args[0])
         .ok_or("Invalid task kind. Use one of: entity_extract, cluster_summary, query_rerank")?;
 
-    let mut input_json: Option<Value> = None;
-    let mut text_arg: Option<String> = None;
-    let mut source = "manual".to_string();
-    let mut i = 1usize;
-    let mut trailing: Vec<&str> = Vec::new();
+    static TASK_CMD: CommandDef = CommandDef {
+        name: "task",
+        about: "Create a typed LLM task payload",
+        usage: "legend llm task <kind> [--text <text>] [--input-json <json>] [--source <label>]",
+        flags: &[
+            FlagDef { long: "--input-json", short: None, about: "JSON input payload", takes_value: true },
+            FlagDef { long: "--text", short: None, about: "Text input", takes_value: true },
+            FlagDef { long: "--source", short: None, about: "Source label", takes_value: true },
+        ],
+        positionals: &[],
+    };
 
-    while i < args.len() {
-        match args[i].as_str() {
-            "--input-json" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("Missing value for --input-json".into());
-                }
-                input_json = Some(serde_json::from_str(&args[i])?);
-            }
-            "--text" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("Missing value for --text".into());
-                }
-                text_arg = Some(args[i].clone());
-            }
-            "--source" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("Missing value for --source".into());
-                }
-                source = args[i].clone();
-            }
-            other => trailing.push(other),
-        }
-        i += 1;
-    }
+    let parsed = parse_args(&args[1..], &TASK_CMD);
+    let input_json: Option<Value> = parsed
+        .get("input-json")
+        .map(|s| serde_json::from_str(s))
+        .transpose()?;
+    let text_arg = parsed.get("text").map(|s| s.to_string());
+    let source = parsed.get("source").unwrap_or("manual").to_string();
 
     let input = if let Some(v) = input_json {
         validate_task_input(&kind, &v)?;
@@ -228,8 +137,8 @@ fn handle_task(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let text = if let Some(t) = text_arg {
             t
-        } else if !trailing.is_empty() {
-            trailing.join(" ")
+        } else if !parsed.positional.is_empty() {
+            parsed.positional.join(" ")
         } else {
             read_stdin()?
         };
@@ -280,125 +189,30 @@ fn handle_task(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn create_task_record(
-    tasks: &mut Vec<LlmTaskRecord>,
-    kind: LlmTaskKind,
-    input: Value,
-    source: String,
-    trigger: SignalReport,
-    source_tick: Option<u64>,
-) -> String {
-    let schema = task_schema(&kind);
-    let acceptance_rules = acceptance_rules(&kind);
-    let prompt = task_prompt(&kind, &input, &schema, &acceptance_rules);
-    let now = now_ts();
-    let id = format!("llm_{}_{}", now, tasks.len() + 1);
-    let input_fingerprint = extract_text_from_input(&input).map(text_fingerprint);
-
-    tasks.push(LlmTaskRecord {
-        id: id.clone(),
-        kind,
-        status: TaskStatus::Pending,
-        created_ts: now,
-        updated_ts: now,
-        source,
-        trigger,
-        input,
-        prompt,
-        json_schema: schema,
-        acceptance_rules,
-        result: None,
-        apply_summary: None,
-        input_fingerprint,
-        source_tick,
-    });
-
-    id
-}
-
-fn should_enqueue_auto_task(
-    tasks: &[LlmTaskRecord],
-    kind: &LlmTaskKind,
-    fingerprint: &str,
-    source_tick: Option<u64>,
-) -> bool {
-    // 1) Near-duplicate dedupe: do not enqueue if same kind+fingerprint is already pending.
-    if tasks.iter().any(|t| {
-        t.status == TaskStatus::Pending
-            && t.kind == *kind
-            && t.input_fingerprint.as_deref() == Some(fingerprint)
-    }) {
-        return false;
-    }
-
-    // 2) Pending cap per kind for auto-trigger source.
-    let pending_same_kind = tasks
-        .iter()
-        .filter(|t| {
-            t.status == TaskStatus::Pending
-                && t.kind == *kind
-                && t.source.starts_with("memory_tick")
-        })
-        .count();
-    if pending_same_kind >= AUTO_MAX_PENDING_PER_KIND {
-        return false;
-    }
-
-    // 3) Tick-gap rate limit: max one auto-enqueue per kind every N ticks.
-    if let Some(now_tick) = source_tick {
-        let latest_same_kind_tick = tasks
-            .iter()
-            .filter(|t| t.kind == *kind && t.source.starts_with("memory_tick"))
-            .filter_map(|t| t.source_tick)
-            .max();
-        if let Some(prev_tick) = latest_same_kind_tick {
-            if now_tick.saturating_sub(prev_tick) < AUTO_MIN_TICK_GAP_PER_KIND {
-                return false;
-            }
-        }
-    }
-
-    true
-}
-
-fn extract_text_from_input(input: &Value) -> Option<&str> {
-    input.get("text").and_then(|v| v.as_str())
-}
-
-fn text_fingerprint(text: &str) -> String {
-    let normalized = text
-        .to_ascii_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let mut hasher = DefaultHasher::new();
-    normalized.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
 fn handle_apply(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("Usage: legend llm apply <task_id> [--result <json>]".into());
     }
 
-    let task_id = &args[0];
-    let mut result_json: Option<Value> = None;
+    static APPLY_CMD: CommandDef = CommandDef {
+        name: "apply",
+        about: "Validate and apply a model result",
+        usage: "legend llm apply <task_id> [--result <json>]",
+        flags: &[
+            FlagDef { long: "--result", short: None, about: "JSON result payload", takes_value: true },
+        ],
+        positionals: &[],
+    };
 
-    let mut i = 1usize;
-    while i < args.len() {
-        if args[i].as_str() == "--result" {
-            i += 1;
-            if i >= args.len() {
-                return Err("Missing value for --result".into());
-            }
-            result_json = Some(serde_json::from_str(&args[i])?);
-        }
-        i += 1;
-    }
+    let parsed = parse_args(args, &APPLY_CMD);
+    let task_id = parsed
+        .positional
+        .first()
+        .ok_or("Usage: legend llm apply <task_id> [--result <json>]")?;
+    let result_json: Option<Value> = parsed
+        .get("result")
+        .map(|s| serde_json::from_str(s))
+        .transpose()?;
 
     let result = if let Some(v) = result_json {
         v
@@ -504,10 +318,20 @@ fn handle_apply(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn handle_list(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut limit = 20usize;
-    if let Some(n) = args.first().and_then(|s| s.parse::<usize>().ok()) {
-        limit = n;
-    }
+    static LIST_CMD: CommandDef = CommandDef {
+        name: "list",
+        about: "Show recent LLM tasks",
+        usage: "legend llm list [limit]",
+        flags: &[],
+        positionals: &[],
+    };
+
+    let parsed = parse_args(args, &LIST_CMD);
+    let limit = parsed
+        .positional
+        .first()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(20);
 
     let tasks = load_tasks()?;
     let mut recent: Vec<&LlmTaskRecord> = tasks.iter().collect();
@@ -533,10 +357,19 @@ fn handle_list(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn handle_show(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.is_empty() {
-        return Err("Usage: legend llm show <task_id>".into());
-    }
-    let task_id = &args[0];
+    static SHOW_CMD: CommandDef = CommandDef {
+        name: "show",
+        about: "Show full task record",
+        usage: "legend llm show <task_id>",
+        flags: &[],
+        positionals: &[],
+    };
+
+    let parsed = parse_args(args, &SHOW_CMD);
+    let task_id = parsed
+        .positional
+        .first()
+        .ok_or("Usage: legend llm show <task_id>")?;
     let tasks = load_tasks()?;
     if let Some(task) = tasks.into_iter().find(|t| t.id == *task_id) {
         println!("{}", serde_json::to_string(&task)?);
@@ -551,19 +384,9 @@ fn handle_show(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_text_or_stdin(args: &[String]) -> Result<String, Box<dyn std::error::Error>> {
-    if !args.is_empty() {
-        Ok(args.join(" "))
-    } else {
-        read_stdin()
-    }
-}
-
-fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
-    Ok(input)
-}
+// ---------------------------------------------------------------------------
+// Signal analysis
+// ---------------------------------------------------------------------------
 
 fn analyze_input_for_llm(kind: &LlmTaskKind, input: &Value) -> SignalReport {
     match kind {
@@ -599,7 +422,8 @@ fn analyze_input_for_llm(kind: &LlmTaskKind, input: &Value) -> SignalReport {
 }
 
 fn analyze_text_for_llm(text: &str) -> SignalReport {
-    let entities = crate::memory::extract::extract_entities(text);
+    let kw = crate::memory::keyword_cache::KeywordCache::default_from_static();
+    let entities = crate::memory::extract::extract_entities(text, &kw);
     let chars = text.chars().count();
     let words = text.split_whitespace().count();
     let entity_count = entities.len();
@@ -670,363 +494,9 @@ fn analyze_text_for_llm(text: &str) -> SignalReport {
     }
 }
 
-fn validate_task_input(
-    kind: &LlmTaskKind,
-    input: &Value,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match kind {
-        LlmTaskKind::EntityExtract | LlmTaskKind::ClusterSummary => {
-            if input
-                .get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                return Err("Input JSON must include non-empty `text`".into());
-            }
-        }
-        LlmTaskKind::QueryRerank => {
-            if input
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                return Err("Input JSON must include non-empty `query`".into());
-            }
-            let candidates = input
-                .get("candidates")
-                .and_then(|v| v.as_array())
-                .ok_or("Input JSON must include `candidates` array")?;
-            if candidates.is_empty() {
-                return Err("`candidates` must not be empty".into());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn task_schema(kind: &LlmTaskKind) -> Value {
-    match kind {
-        LlmTaskKind::EntityExtract => json!({
-            "type": "object",
-            "required": ["confidence", "entities"],
-            "properties": {
-                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                "entities": {
-                    "type": "array",
-                    "maxItems": MAX_ENTITY_APPLY,
-                    "items": {
-                        "type": "object",
-                        "required": ["label", "kind", "context"],
-                        "properties": {
-                            "label": {"type": "string", "minLength": 2, "maxLength": 120},
-                            "kind": {"type": "string"},
-                            "context": {"type": "string", "enum": ["defines", "uses", "implements", "mentions", "performs"]},
-                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
-                        }
-                    }
-                }
-            }
-        }),
-        LlmTaskKind::ClusterSummary => json!({
-            "type": "object",
-            "required": ["confidence", "summary"],
-            "properties": {
-                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                "summary": {"type": "string", "minLength": 10, "maxLength": 320},
-                "decision_rationale": {"type": "string"},
-                "risks": {"type": "array", "items": {"type": "string"}}
-            }
-        }),
-        LlmTaskKind::QueryRerank => json!({
-            "type": "object",
-            "required": ["confidence", "ranked_ids"],
-            "properties": {
-                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                "ranked_ids": {"type": "array", "items": {"type": "integer"}},
-                "reasoning": {"type": "string"}
-            }
-        }),
-    }
-}
-
-fn acceptance_rules(kind: &LlmTaskKind) -> Value {
-    match kind {
-        LlmTaskKind::EntityExtract => json!({
-            "min_confidence": MIN_ENTITY_TASK_CONFIDENCE,
-            "max_entities": MAX_ENTITY_APPLY,
-            "drop_stopwords": true,
-            "drop_short_labels": true,
-            "drop_low_entity_confidence_below": 0.5,
-            "on_reject": "fallback_to_deterministic_extractor"
-        }),
-        LlmTaskKind::ClusterSummary => json!({
-            "min_confidence": 0.60,
-            "max_summary_chars": 320,
-            "on_reject": "fallback_to_extract_summarizer"
-        }),
-        LlmTaskKind::QueryRerank => json!({
-            "min_confidence": 0.60,
-            "must_include_ranked_ids": true,
-            "on_reject": "keep_original_ranking"
-        }),
-    }
-}
-
-fn task_prompt(kind: &LlmTaskKind, input: &Value, schema: &Value, rules: &Value) -> String {
-    match kind {
-        LlmTaskKind::EntityExtract => format!(
-            "You are augmenting a deterministic memory extractor. Return JSON only. Extract high-signal technical entities and relations from input text. Keep precision high.\\nInput: {}\\nSchema: {}\\nAcceptance rules: {}",
-            input,
-            schema,
-            rules
-        ),
-        LlmTaskKind::ClusterSummary => format!(
-            "You are generating a compact milestone summary for a memory cluster. Return JSON only. Prefer decision rationale and key outcomes.\\nInput: {}\\nSchema: {}\\nAcceptance rules: {}",
-            input,
-            schema,
-            rules
-        ),
-        LlmTaskKind::QueryRerank => format!(
-            "You are reranking retrieval candidates. Return JSON only. Rank by direct relevance and actionable specificity.\\nInput: {}\\nSchema: {}\\nAcceptance rules: {}",
-            input,
-            schema,
-            rules
-        ),
-    }
-}
-
-struct ValidationOutcome {
-    accepted: bool,
-    reason: String,
-    normalized_result: Value,
-    entities: Vec<LlmEntity>,
-    task_confidence: f32,
-}
-
-fn validate_result(
-    kind: &LlmTaskKind,
-    result: &Value,
-) -> Result<ValidationOutcome, Box<dyn std::error::Error>> {
-    let confidence = result
-        .get("confidence")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0)
-        .clamp(0.0, 1.0) as f32;
-
-    match kind {
-        LlmTaskKind::EntityExtract => {
-            let Some(items) = result.get("entities").and_then(|v| v.as_array()) else {
-                return Ok(ValidationOutcome {
-                    accepted: false,
-                    reason: "Missing `entities` array".to_string(),
-                    normalized_result: result.clone(),
-                    entities: Vec::new(),
-                    task_confidence: confidence,
-                });
-            };
-
-            if confidence < MIN_ENTITY_TASK_CONFIDENCE {
-                return Ok(ValidationOutcome {
-                    accepted: false,
-                    reason: format!(
-                        "Task confidence {:.2} below threshold {:.2}",
-                        confidence, MIN_ENTITY_TASK_CONFIDENCE
-                    ),
-                    normalized_result: result.clone(),
-                    entities: Vec::new(),
-                    task_confidence: confidence,
-                });
-            }
-
-            let mut entities = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-
-            for item in items.iter().take(MAX_ENTITY_APPLY) {
-                let label = item
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                if label.len() < 2 || label.len() > 120 {
-                    continue;
-                }
-                if crate::memory::extract::is_stopword(&label) {
-                    continue;
-                }
-
-                let kind = item
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Term")
-                    .to_string();
-                let context = item
-                    .get("context")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("mentions")
-                    .to_string();
-                let ent_conf = item
-                    .get("confidence")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(confidence as f64)
-                    .clamp(0.0, 1.0) as f32;
-                if ent_conf < 0.5 {
-                    continue;
-                }
-
-                let dedupe_key = label.to_ascii_lowercase();
-                if seen.insert(dedupe_key) {
-                    entities.push(LlmEntity {
-                        label,
-                        kind,
-                        context,
-                        confidence: ent_conf,
-                    });
-                }
-            }
-
-            let accepted = !entities.is_empty();
-            let reason = if accepted {
-                "Validated entity extraction".to_string()
-            } else {
-                "No valid entities after rule filtering".to_string()
-            };
-            let normalized_result = json!({
-                "confidence": confidence,
-                "entities": entities,
-            });
-
-            Ok(ValidationOutcome {
-                accepted,
-                reason,
-                normalized_result,
-                entities,
-                task_confidence: confidence,
-            })
-        }
-        LlmTaskKind::ClusterSummary => {
-            let summary = result
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            let accepted = confidence >= 0.60 && summary.len() >= 10 && summary.len() <= 320;
-            let reason = if accepted {
-                "Validated cluster summary".to_string()
-            } else {
-                "Cluster summary failed confidence/length checks".to_string()
-            };
-            Ok(ValidationOutcome {
-                accepted,
-                reason,
-                normalized_result: result.clone(),
-                entities: Vec::new(),
-                task_confidence: confidence,
-            })
-        }
-        LlmTaskKind::QueryRerank => {
-            let ranked_ids = result.get("ranked_ids").and_then(|v| v.as_array());
-            let accepted = confidence >= 0.60
-                && ranked_ids
-                    .map(|ids| !ids.is_empty() && ids.iter().all(|v| v.as_u64().is_some()))
-                    .unwrap_or(false);
-            let reason = if accepted {
-                "Validated query rerank output".to_string()
-            } else {
-                "Rerank failed confidence or ranked_ids validation".to_string()
-            };
-            Ok(ValidationOutcome {
-                accepted,
-                reason,
-                normalized_result: result.clone(),
-                entities: Vec::new(),
-                task_confidence: confidence,
-            })
-        }
-    }
-}
-
-fn load_tasks() -> Result<Vec<LlmTaskRecord>, Box<dyn std::error::Error>> {
-    if !Path::new(LLM_TASKS_PATH).exists() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(LLM_TASKS_PATH)?;
-    if content.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let tasks = serde_json::from_str::<Vec<LlmTaskRecord>>(&content)
-        .map_err(|e| format!("Failed to parse {}: {}", LLM_TASKS_PATH, e))?;
-    Ok(tasks
-        .into_iter()
-        .filter(|t| t.status == TaskStatus::Pending)
-        .collect())
-}
-
-fn save_tasks(tasks: &[LlmTaskRecord]) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(".legend")?;
-    let pending: Vec<&LlmTaskRecord> = tasks
-        .iter()
-        .filter(|t| t.status == TaskStatus::Pending)
-        .collect();
-    let content = serde_json::to_string_pretty(&pending)?;
-    std::fs::write(LLM_TASKS_PATH, content)?;
-    Ok(())
-}
-
-fn load_archived_tasks() -> Result<Vec<LlmTaskRecord>, Box<dyn std::error::Error>> {
-    if !Path::new(LLM_TASKS_ARCHIVE_PATH).exists() {
-        return Ok(Vec::new());
-    }
-    let compressed = std::fs::read(LLM_TASKS_ARCHIVE_PATH)?;
-    if compressed.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let decompressed = lz4::block::decompress(&compressed, None)
-        .map_err(|e| format!("Failed to decompress {}: {}", LLM_TASKS_ARCHIVE_PATH, e))?;
-    let text = String::from_utf8(decompressed)
-        .map_err(|e| format!("Invalid UTF-8 in {}: {}", LLM_TASKS_ARCHIVE_PATH, e))?;
-
-    let mut out = Vec::new();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let task: LlmTaskRecord = serde_json::from_str(line)
-            .map_err(|e| format!("Failed to parse archived task line: {}", e))?;
-        out.push(task);
-    }
-    Ok(out)
-}
-
-fn archive_tasks(tasks: &[LlmTaskRecord]) -> Result<(), Box<dyn std::error::Error>> {
-    if tasks.is_empty() {
-        return Ok(());
-    }
-
-    let mut archived = load_archived_tasks()?;
-    archived.extend(tasks.iter().cloned());
-
-    let mut text = String::new();
-    for task in archived {
-        text.push_str(&serde_json::to_string(&task)?);
-        text.push('\n');
-    }
-
-    std::fs::create_dir_all(".legend")?;
-    let compressed = lz4::block::compress(text.as_bytes(), None, true)
-        .map_err(|e| format!("Failed to compress archive: {}", e))?;
-    std::fs::write(LLM_TASKS_ARCHIVE_PATH, compressed)?;
-    Ok(())
-}
-
-fn now_ts() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+// ---------------------------------------------------------------------------
+// Help
+// ---------------------------------------------------------------------------
 
 fn print_llm_help() {
     println!("Legend LLM - policy-driven LLM augmentation workflow");
@@ -1044,6 +514,7 @@ fn print_llm_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_signal_report_low_density_recommends_entity_extract() {

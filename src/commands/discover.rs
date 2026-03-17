@@ -1,8 +1,21 @@
+use crate::cli::{parse_args, ArgDef, CommandDef, FlagDef};
 use crate::memory::MemoryState;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub static COMMAND: CommandDef = CommandDef {
+    name: "discover",
+    about: "Scan project to suggest features and context",
+    usage: "legend discover [path] [--apply]",
+    flags: &[
+        FlagDef { long: "--apply", short: None, about: "Ingest context into Legend memory", takes_value: false },
+    ],
+    positionals: &[
+        ArgDef { name: "PATH", about: "Project path to scan", required: false },
+    ],
+};
 
 #[derive(Serialize)]
 pub struct DiscoveryReport {
@@ -173,17 +186,19 @@ fn generate_tasks(
 }
 
 /// Handle the discover CLI command: JSON to stdout, summary to stderr.
+///
+/// NOTE: `legend discover` is deprecated. Use `legend init` instead, which
+/// includes discovery automatically on first init.
 pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut apply = false;
-    let mut path = PathBuf::from(".");
+    eprintln!("[Note: `legend discover` is deprecated. Use `legend init` which includes discovery automatically.]");
 
-    for arg in args {
-        if arg == "--apply" {
-            apply = true;
-        } else if !arg.starts_with('-') {
-            path = PathBuf::from(arg);
-        }
-    }
+    let parsed = parse_args(args, &COMMAND);
+    let apply = parsed.has("apply");
+    let path = parsed
+        .positional
+        .first()
+        .map(|s| PathBuf::from(s))
+        .unwrap_or_else(|| PathBuf::from("."));
 
     let report = run_discovery(&path)?;
 
