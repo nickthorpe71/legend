@@ -1,8 +1,21 @@
+use crate::cli::{parse_args, print_command_help, CommandDef, FlagDef};
 use crate::commands::discover;
 use crate::memory::MemoryState;
+use crate::memory::keywords;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
+
+pub static COMMAND: CommandDef = CommandDef {
+    name: "init",
+    about: "Initialize Legend in a new project",
+    usage: "legend init [--discover] [--help]",
+    flags: &[
+        FlagDef { long: "--discover", short: None, about: "Scan existing project to pre-fill memory context", takes_value: false },
+        FlagDef { long: "--help", short: Some('h'), about: "Show this help message", takes_value: false },
+    ],
+    positionals: &[],
+};
 
 const LEGEND_MARKER_START: &str = "<!-- legend-start -->";
 const LEGEND_MARKER_END: &str = "<!-- legend-end -->";
@@ -13,19 +26,14 @@ const LEGEND_MARKER_END: &str = "<!-- legend-end -->";
 /// agent hooks, and generates agent instruction files.
 /// Safe to run multiple times - won't error if directory already exists.
 pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut discover_requested = false;
-    for arg in args {
-        if arg == "--discover" {
-            discover_requested = true;
-        } else if arg == "--help" || arg == "-h" {
-            println!("Usage: legend init [options]");
-            println!();
-            println!("Options:");
-            println!("  --discover    Scan existing project to pre-fill memory context");
-            println!("  --help, -h    Show this help message");
-            return Ok(());
-        }
+    let parsed = parse_args(args, &COMMAND);
+
+    if parsed.has("help") {
+        print_command_help(&COMMAND);
+        return Ok(());
     }
+
+    let discover_requested = parsed.has("discover");
 
     let legend_dir = Path::new(".legend");
     let first_init = !legend_dir.exists();
@@ -42,6 +50,9 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
         // Migrate/refresh memory store to latest format
         migrate_memory_store();
+
+        // One-time keyword migration: if graph has no Keyword nodes yet, seed them
+        migrate_keywords_if_needed();
 
         setup_git_merge_driver()?;
         setup_claude_hooks()?;
@@ -75,6 +86,15 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         // Run discovery automatically on first init
         println!("  First-time initialization: Ingesting high-signal context into memory...");
         let _ = discover::handle_discover(&["--apply".to_string()]);
+    }
+
+    // Seed keywords based on project context
+    if let Some(ref report) = report {
+        seed_tier1_keywords(report);
+        print_tier2_prompt(report);
+    } else {
+        // No discovery report — seed universal keywords only
+        seed_universal_keywords();
     }
 
     println!("✓ Initialized Legend");
@@ -252,7 +272,7 @@ fn setup_gemini_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "Gemini CLI",
         "BeforeAgent",
         "SessionEnd",
-        Some("AfterTool"),
+        None,
         None,
     )
 }
@@ -273,86 +293,12 @@ fn generate_legend_instructions() -> String {
         r#"{LEGEND_MARKER_START}
 # SYSTEM_MANDATE: Legend — Your Long-Term Memory
 
-You MUST use the **Legend** hierarchical memory system to maintain context across sessions. **This is a technical requirement for this project.**
+You MUST use **Legend** to maintain context across sessions.
 
-## CRITICAL: Memory Workflow
-
-### 1. Session Start (REQUIRED)
-Run this FIRST before doing anything else in every new session:
-```bash
-{cmd} memory start
-```
-This returns the "MANDATORY PROTOCOL", stats, recent session log, top graph nodes, and relevant short-term memories. You MUST read this to understand prior work and decisions.
-
-### 2. During Session (FREQUENTLY)
-After every significant action (writing code, making a decision, discovering something, completing a task), record it:
-```bash
-{cmd} memory tick <<'EOF'
-description of what just happened
-EOF
-```
-**IMPORTANT:** Always use heredoc (`<<'EOF'`) for tick and query messages. This prevents bash from interpreting backticks, apostrophes, or special characters in your text.
-You MUST tick **decisions with rationale** ("Chose X over Y because Z"), not just progress.
-
-### 3. Before New Tasks (REQUIRED)
-Query for relevant context BEFORE diving into unfamiliar work:
-```bash
-{cmd} memory query <<'EOF'
-topic you are about to work on
-EOF
-```
-**ALWAYS query before starting work on a new topic.** The top result is automatically reinforced — frequently useful memories rise naturally. Skipping this step means you lose access to prior decisions and context.
-
-### 4. Session End (REQUIRED)
-Summarize what was accomplished:
-```bash
-{cmd} memory tick <<'EOF'
-Session summary: what was done, what is next, any blockers
-EOF
-```
-
-## Memory Commands
-
-| Command | When to Use |
-|---------|-------------|
-| `{cmd} memory start` | **Session start** — one call for full context |
-| `{cmd} memory tick <<'EOF'`...`EOF` | Record decision, progress, discovery, blocker |
-| `{cmd} memory query <<'EOF'`...`EOF` | Recall related context (auto-reinforces top result) |
-| `{cmd} memory reinforce <signal> <id...>` | Explicit feedback: 1.0 = useful, -1.0 = irrelevant |
-| `{cmd} memory stats` | Check storage usage |
-| `{cmd} memory sessions [n]` | View chronological session log |
-| `{cmd} memory consolidate` | Merge similar memories into long-term graph |
-
-## Dashboard
-
-Launch the live 3D memory visualization dashboard:
-```bash
-{cmd} dashboard
-```
-
-## When to Tick (Priority Context)
-
-**You MUST tick these:**
-- Decisions with rationale: "DECISION: Chose X over Y because Z"
-- Bug discoveries: "BUG: X fails when Y happens"
-- Architecture insights: "Module X communicates with Y via Z"
-- Blockers: "BLOCKER: Can't proceed until X is resolved"
-- User preferences: "User prefers X approach"
-- Completed features: "Implemented X in file Y"
-- **Discussion conclusions**: "Discussed X with user, agreed on Y approach"
-- **Discoveries without file changes**: "Found that X module does Y"
-- **Rejected approaches**: "Decided against X because Y"
-
-**Tick frequency:** Aim for 3-8 ticks per session. After major decisions or substantial work.
-
-**You MUST query before:**
-- Starting work on a module or feature you haven't touched this session
-- Investigating a bug — query the error message or affected module
-- Making a design decision — check if a prior decision exists
-
-## Understanding Start Output
-
-By default, `{cmd} memory start` returns a high-signal Markdown summary designed for YOUR consumption. It contains the **LEGEND PROTOCOL (MANDATORY)** which you must follow.
+## Essential Commands
+- **Session start:** `{cmd} memory start` — returns prior decisions, recent activity, and categorized memories.
+- **Record decisions:** `{cmd} memory tick <<'EOF'` ... `EOF` — tick decisions with rationale (DECISION:, BUG:, ARCHITECTURE:, BLOCKER: prefixes). Aim for 3-8 ticks per session.
+- **Recall context:** `{cmd} memory query <<'EOF'` ... `EOF` — query before starting new topics. Top result auto-reinforced.
 {LEGEND_MARKER_END}"#,
         LEGEND_MARKER_START = LEGEND_MARKER_START,
         LEGEND_MARKER_END = LEGEND_MARKER_END,
@@ -448,7 +394,7 @@ fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "Claude Code",
         "UserPromptSubmit",
         "Stop",
-        Some("PostToolUse"),
+        None,
         None,
     )
 }
@@ -460,7 +406,7 @@ fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "Codex",
         "UserPromptSubmit",
         "Stop",
-        Some("PostToolUse"),
+        None,
         None,
     )
 }
@@ -488,7 +434,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("{cmd} memory start && touch .legend/.session_active")
+            "command": format!("{cmd} memory start")
         }]
     });
 
@@ -496,38 +442,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!("now=$(date +%s); mtime=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); if [ ! -f \".legend/.session_active\" ] || [ $((now - mtime)) -gt 7200 ]; then touch \".legend/.session_active\"; {cmd} memory start; else echo \"[LEGEND] Before answering: did the last exchange contain a significant decision, discovery, or user preference? If yes, tick it FIRST before responding: {cmd} memory tick '...'\"; if [ -n \"$PROMPT\" ] && echo \"$PROMPT\" | grep -iqE \"^(implement|add|fix|create|refactor|build|write|update|change|delete|remove|migrate|convert|optimize|improve|develop|design|make|generate|test|setup|integrate|debug|solve|enable|disable|extend)\"; then echo \"[LEGEND] MANDATE: Task-starting prompt detected. Run: {cmd} memory query \\\"<topic>\\\" BEFORE implementing.\"; fi; [ -n \"$PROMPT\" ] && {cmd} memory query \"$PROMPT\" 2>/dev/null || true; fi")
-        }]
-    });
-
-    let legend_after_tool_hook = json!({
-        "matcher": "*",
-        "hooks": [{
-            "type": "command",
-            "command": format!(
-                "input=$(cat | tr -d '\\n'); \
-                 tool=$(echo \"$input\" | sed -n 's/.*\"tool_name\": *\"\\([^\"]*\\)\".*/\\1/p'); \
-                 status=\"success\"; \
-                 if echo \"$input\" | grep -q '\"is_error\": *true'; then status=\"error\"; fi; \
-                 if [ \"$status\" = \"success\" ] && echo \"$tool\" | grep -iqE \"write_file|replace|edit|modify|insert|delete|create|write_to_file|patch|Write|Edit|NotebookEdit\"; then \
-                   file=$(echo \"$input\" | sed -n 's/.*\"file_path\": *\"\\([^\"]*\\)\".*/\\1/p'); \
-                   if [ -z \"$file\" ]; then file=$(echo \"$input\" | sed -n 's/.*\"path\": *\"\\([^\"]*\\)\".*/\\1/p'); fi; \
-                   if [ -z \"$file\" ]; then file=\"unknown file\"; fi; \
-                   pending=$(cat \".legend/.pending_ticks\" 2>/dev/null || echo 0); \
-                   pending=$((pending + 1)); \
-                   echo \"$pending\" > \".legend/.pending_ticks\"; \
-                   if [ \"$pending\" -ge 4 ]; then \
-                     echo \"\\n🚨 CRITICAL [LEGEND] $pending un-ticked file edits! You modified '$file'.\"; \
-                   elif [ \"$pending\" -ge 2 ]; then \
-                     echo \"\\n⚠️  WARNING [LEGEND] $pending un-ticked file edits! You modified '$file'.\"; \
-                   else \
-                     echo \"\\n[LEGEND PROTOCOL] MANDATE: You modified '$file'.\"; \
-                   fi; \
-                   echo \"1. Tick the decision: {cmd} memory tick 'Decision: changed $file -- [why]'\"; \
-                   echo \"2. Also tick any significant discussion points: user preferences, architectural conclusions, discoveries.\"; \
-                   echo \"3. If this changes architecture, update ARCHITECTURE.md or tick an architecture insight.\"; \
-                 fi"
-            )
+            "command": "echo \"[Legend] Tick decisions. Query before new tasks.\""
         }]
     });
 
@@ -535,19 +450,7 @@ fn setup_agent_hooks(
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": format!(
-                "session_start=$(stat -c %Y \".legend/.session_active\" 2>/dev/null || echo 0); \
-                 last_tick_ts=$(grep '\"cmd\":\"tick\"' .legend/events.jsonl 2>/dev/null | tail -1 | sed -n 's/.*\"ts\":\\([0-9]*\\).*/\\1/p'); \
-                 if [ -z \"$last_tick_ts\" ] || [ \"$last_tick_ts\" -lt \"$session_start\" ]; then \
-                   echo \"\\n🚨 CRITICAL [LEGEND]: No ticks this session! Record decisions before exiting: {cmd} memory tick '...'\"; \
-                 else \
-                   changed=$(git diff --name-only 2>/dev/null | head -5); \
-                   if [ -n \"$changed\" ]; then \
-                     count=$(echo \"$changed\" | wc -l); \
-                     echo \"\\n[LEGEND] $count file(s) changed. SUMMARY MANDATE: Record final decisions and next steps before exiting: {cmd} memory tick '...' \"; \
-                   fi; \
-                 fi"
-            )
+            "command": "echo \"[Legend] Session ending. Tick final decisions and next steps.\""
         }]
     });
 
@@ -580,7 +483,6 @@ fn setup_agent_hooks(
                 session_hook: &legend_session_hook,
                 prompt_hook: &legend_prompt_hook,
                 stop_hook: &legend_stop_hook,
-                after_tool_hook: &legend_after_tool_hook,
                 prompt_event,
                 stop_event,
                 after_tool_event,
@@ -601,9 +503,6 @@ fn setup_agent_hooks(
 
         let mut hooks_map = serde_json::Map::new();
         hooks_map.insert("SessionStart".to_string(), json!([legend_session_hook]));
-        if let Some(evt) = after_tool_event {
-            hooks_map.insert(evt.to_string(), json!([legend_after_tool_hook]));
-        }
         hooks_map.insert(prompt_event.to_string(), json!([legend_prompt_hook]));
         hooks_map.insert(stop_event.to_string(), json!([legend_stop_hook]));
         let settings = json!({ "hooks": hooks_map });
@@ -723,9 +622,9 @@ struct LegendHooks<'a> {
     session_hook: &'a Value,
     prompt_hook: &'a Value,
     stop_hook: &'a Value,
-    after_tool_hook: &'a Value,
     prompt_event: &'a str,
     stop_event: &'a str,
+    #[allow(dead_code)]
     after_tool_event: Option<&'a str>,
 }
 
@@ -743,16 +642,6 @@ fn merge_legend_hooks(settings: &mut Value, hooks_config: LegendHooks) {
     }
     if let Some(arr) = hooks.get_mut("SessionStart").and_then(|s| s.as_array_mut()) {
         arr.push(hooks_config.session_hook.clone());
-    }
-
-    // Add after-tool hook if the agent supports it
-    if let Some(evt) = hooks_config.after_tool_event {
-        if hooks.get(evt).is_none() {
-            hooks[evt] = json!([]);
-        }
-        if let Some(arr) = hooks.get_mut(evt).and_then(|s| s.as_array_mut()) {
-            arr.push(hooks_config.after_tool_hook.clone());
-        }
     }
 
     // Add prompt hook (e.g. UserPromptSubmit or BeforeAgent)
@@ -948,4 +837,254 @@ fn setup_zed_mcp() -> Result<(), Box<dyn std::error::Error>> {
         server,
         ".zed/settings.json",
     )
+}
+
+// ---------------------------------------------------------------------------
+// Keyword Seeding
+// ---------------------------------------------------------------------------
+
+/// Language → code keywords mapping for tier-1 seeding.
+fn language_code_keywords(lang: &str) -> Vec<(&'static str, &'static str, &'static str)> {
+    match lang.to_lowercase().as_str() {
+        "rust" => vec![
+            ("fn ", "Function", "defines"),
+            ("struct ", "Struct", "defines"),
+            ("impl ", "Impl", "implements"),
+            ("trait ", "Trait", "defines"),
+            ("enum ", "Enum", "defines"),
+            ("mod ", "Module", "defines"),
+        ],
+        "python" => vec![
+            ("def ", "Function", "defines"),
+            ("class ", "Class", "defines"),
+        ],
+        "javascript" | "typescript" => vec![
+            ("function ", "Function", "defines"),
+            ("interface ", "Interface", "defines"),
+            ("export ", "Export", "defines"),
+            ("import ", "Import", "uses"),
+            ("const ", "Symbol", "defines"),
+            ("let ", "Symbol", "defines"),
+        ],
+        "go" => vec![
+            ("func ", "Function", "defines"),
+            ("package ", "Package", "defines"),
+        ],
+        "ruby" | "php" => vec![
+            ("module ", "Module", "defines"),
+            ("require ", "Import", "uses"),
+            ("class ", "Class", "defines"),
+            ("def ", "Function", "defines"),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Seed tier-1 keywords from discovery report (no LLM needed).
+///
+/// Seeds universal keywords (decision, bug, todo, etc.) from static arrays,
+/// plus language-specific code keywords based on detected languages.
+fn seed_tier1_keywords(report: &discover::DiscoveryReport) {
+    let mut memory = match MemoryState::load_or_default() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let mut count = 0;
+
+    // 1. Always seed universal classification keywords from static arrays
+    for kw in keywords::DECISION_KEYWORDS {
+        if memory.add_keyword_node("decision", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::BUG_KEYWORDS {
+        if memory.add_keyword_node("bug", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::TODO_KEYWORDS {
+        if memory.add_keyword_node("todo", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::PREFERENCE_KEYWORDS {
+        if memory.add_keyword_node("preference", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::ARCHITECTURE_KEYWORDS {
+        if memory.add_keyword_node("architecture", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for (verb, _kind) in keywords::ACTION_KEYWORDS {
+        if memory.add_keyword_node("action", verb, Vec::new()) {
+            count += 1;
+        }
+    }
+
+    // 2. Seed ENVIRONMENT_KEYWORDS as baseline
+    for kw in keywords::ENVIRONMENT_KEYWORDS {
+        if memory.add_keyword_node("environment", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+
+    // 3. Seed language-specific CODE_KEYWORDS based on detected languages
+    let detected_languages: Vec<String> = report
+        .languages
+        .iter()
+        .filter(|(_, &count)| count > 0)
+        .map(|(lang, _)| lang.clone())
+        .collect();
+
+    for lang in &detected_languages {
+        for (trigger, kind, ctx) in language_code_keywords(lang) {
+            let metadata = vec![
+                format!("entity_kind:{}", kind),
+                format!("entity_context:{}", ctx),
+            ];
+            if memory.add_keyword_node("code", trigger, metadata) {
+                count += 1;
+            }
+        }
+    }
+
+    // 4. Seed TOOL_KEYWORDS that match detected tech stack
+    let tech_lower: Vec<String> = report
+        .metadata
+        .tech_stack
+        .iter()
+        .map(|t| t.to_lowercase())
+        .collect();
+    for kw in keywords::TOOL_KEYWORDS {
+        if tech_lower.iter().any(|t| t.contains(kw)) {
+            if memory.add_keyword_node("tool", kw, Vec::new()) {
+                count += 1;
+            }
+        }
+    }
+
+    if count > 0 {
+        memory.rebuild_keyword_cache();
+        if let Err(e) = memory.save() {
+            eprintln!("  Warning: failed to save keyword seeds: {}", e);
+        } else {
+            println!("✓ Seeded {} keyword nodes into knowledge graph", count);
+        }
+    }
+}
+
+/// Seed only universal keywords (no discovery report available).
+fn seed_universal_keywords() {
+    let mut memory = match MemoryState::load_or_default() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let mut count = 0;
+    for kw in keywords::DECISION_KEYWORDS {
+        if memory.add_keyword_node("decision", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::BUG_KEYWORDS {
+        if memory.add_keyword_node("bug", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::TODO_KEYWORDS {
+        if memory.add_keyword_node("todo", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::PREFERENCE_KEYWORDS {
+        if memory.add_keyword_node("preference", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::ARCHITECTURE_KEYWORDS {
+        if memory.add_keyword_node("architecture", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+    for (verb, _kind) in keywords::ACTION_KEYWORDS {
+        if memory.add_keyword_node("action", verb, Vec::new()) {
+            count += 1;
+        }
+    }
+    for kw in keywords::ENVIRONMENT_KEYWORDS {
+        if memory.add_keyword_node("environment", kw, Vec::new()) {
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        memory.rebuild_keyword_cache();
+        if let Err(e) = memory.save() {
+            eprintln!("  Warning: failed to save keyword seeds: {}", e);
+        } else {
+            println!("✓ Seeded {} universal keyword nodes into knowledge graph", count);
+        }
+    }
+}
+
+/// Print a structured prompt for the LLM to enrich keywords via KEYWORD: ticks.
+fn print_tier2_prompt(report: &discover::DiscoveryReport) {
+    let detected_langs: Vec<&String> = report
+        .languages
+        .iter()
+        .filter(|(_, &count)| count > 0)
+        .map(|(lang, _)| lang)
+        .collect();
+
+    eprintln!();
+    eprintln!("## Keyword Enrichment (LLM-Assisted)");
+    eprintln!();
+    eprintln!(
+        "Legend has seeded base keywords for project '{}' ({}). To add domain-specific keywords,",
+        report.metadata.name,
+        detected_langs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+    );
+    eprintln!("use KEYWORD: directives in your ticks:");
+    eprintln!();
+    eprintln!("  legend memory tick \"KEYWORD:tool:<framework_name>\"");
+    eprintln!("  legend memory tick \"KEYWORD:architecture:<domain_term>\"");
+    eprintln!("  legend memory tick \"Added new framework KEYWORD:tool:bevy\"");
+    eprintln!();
+    eprintln!("Keywords are reinforced automatically when they appear in ticks.");
+}
+
+/// Check if graph has any Keyword nodes; if not, seed tier-1 universals.
+fn migrate_keywords_if_needed() {
+    let memory = match MemoryState::load_or_default() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let has_keywords = memory
+        .long_term
+        .nodes
+        .values()
+        .any(|n| n.kind == "Keyword");
+
+    if !has_keywords {
+        println!("  Migrating: seeding keyword nodes into knowledge graph...");
+        // Try with discovery report if available
+        if let Ok(report) = discover::run_discovery(Path::new(".")) {
+            seed_tier1_keywords(&report);
+        } else {
+            seed_universal_keywords();
+        }
+    }
+}
+
+/// Count keyword nodes in the graph.
+#[allow(dead_code)]
+pub fn count_keyword_nodes() -> usize {
+    match MemoryState::load_or_default() {
+        Ok(m) => m.long_term.nodes.values().filter(|n| n.kind == "Keyword").count(),
+        Err(_) => 0,
+    }
 }

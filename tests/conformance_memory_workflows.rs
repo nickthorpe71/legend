@@ -31,8 +31,7 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
     let dump = harness.output_json(&["memory", "dump"]);
 
     let normalized_start = harness.normalize(&start.stdout);
-    assert!(normalized_start.contains("# Legend Session Start Context"));
-    assert!(normalized_start.contains("## LEGEND PROTOCOL (MANDATORY)"));
+    assert!(normalized_start.contains("# Legend Memory Context"));
     assert!(normalized_start.contains("## Recent Activity"));
     assert!(normalized_start.contains("## Categorized Memories"));
     assert!(normalized_start.contains("DECISION: Chose graph index because it keeps lookups cheap."));

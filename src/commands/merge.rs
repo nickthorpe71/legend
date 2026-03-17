@@ -1,4 +1,13 @@
+use crate::cli::CommandDef;
 use crate::memory::{load_memory_from_path, save_memory_to_path};
+
+pub static COMMAND: CommandDef = CommandDef {
+    name: "git-merge-driver",
+    about: "Auto-merge Legend state files during git conflicts",
+    usage: "legend git-merge-driver %O %A %B %P",
+    flags: &[],
+    positionals: &[],
+};
 
 /// Git merge driver for Legend memory files (memory.lz4 and events.jsonl).
 ///

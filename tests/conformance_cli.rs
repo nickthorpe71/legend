@@ -17,13 +17,13 @@ fn help_output_is_stable() {
         Usage: legend <command> [options]
 
         Commands:
-          memory [start|tick|query|...]  Hierarchical memory (context, decisions, history)
-          llm [signals|task|apply|...]    Policy-driven LLM task orchestration and validation
-          discover [path]                 Scan project to suggest features and context
-          dashboard [--3d]               Launch TUI dashboard (--3d for Bevy 3D view)
-          mcp-serve                       Run MCP stdio server for AI tool integration
-          init                            Initialize Legend in new project
-          help                            Show this help message
+          memory [start|tick|query|...] Hierarchical memory (context, decisions, history)
+          llm [signals|task|apply|...]  Policy-driven LLM task orchestration and validation
+          discover [path]               Scan project to suggest features and context
+          init                          Initialize Legend in a new project
+          mcp-serve                     Run MCP stdio server for AI tool integration
+          dashboard [--3d]              Launch TUI dashboard (--3d for Bevy 3D view)
+          help                          Show this help message
         "###
     );
 }
@@ -72,6 +72,7 @@ fn init_first_run_creates_expected_files_and_repeat_is_stable() {
         1. Run 'legend memory start' to see the ingested context.
         2. Use 'legend memory query' to explore specific modules or features.
         3. If significant architectural details are missing, manually 'tick' them.
+        ✓ Seeded 116 keyword nodes into knowledge graph
         ✓ Initialized Legend
           Created .legend/ directory
         ✓ Configured local Git merge driver for Legend

@@ -1,6 +1,6 @@
 /// Extractive summarization utilities.
 use crate::memory::ShortTermEntry;
-use crate::memory::keywords::{CODE_KEYWORDS, DECISION_KEYWORDS, ARCHITECTURE_KEYWORDS};
+use crate::memory::keyword_cache::KeywordCache;
 
 const MAX_SUMMARY_LEN: usize = 200;
 const MAX_GROUP_SUMMARY_LEN: usize = 300;
@@ -8,7 +8,7 @@ const CHUNK_TARGET_LEN: usize = 200;
 
 /// Summarize a single text chunk (extractive — pick best sentence).
 /// Prioritizes sentences with code references and decision rationale.
-pub fn summarize_single(text: &str) -> String {
+pub fn summarize_single(text: &str, kw: &KeywordCache) -> String {
     let trimmed = text.trim();
     if trimmed.len() <= MAX_SUMMARY_LEN {
         return trimmed.to_string();
@@ -29,10 +29,10 @@ pub fn summarize_single(text: &str) -> String {
         .max_by_key(|s| {
             let lower = s.to_lowercase();
             let words = s.split_whitespace().count();
-            let has_code = CODE_KEYWORDS.iter().any(|(kw, _, _)| s.contains(kw));
+            let has_code = kw.code.iter().any(|(trigger, _, _)| s.contains(trigger.as_str()));
             let has_key = s.contains(':') || s.contains('=') || s.contains("TODO");
-            let has_decision = DECISION_KEYWORDS.iter().any(|kw| lower.contains(kw));
-            let has_arch = ARCHITECTURE_KEYWORDS.iter().any(|kw| lower.contains(kw));
+            let has_decision = kw.decision.iter().any(|k| lower.contains(k.as_str()));
+            let has_arch = kw.architecture.iter().any(|k| lower.contains(k.as_str()));
             words
                 + if has_code { 5 } else { 0 }
                 + if has_key { 3 } else { 0 }
@@ -49,12 +49,12 @@ pub fn summarize_single(text: &str) -> String {
 }
 
 /// Merge two texts and pick the best sentence.
-pub fn summarize_text(existing: &str, incoming: &str) -> String {
-    summarize_single(&format!("{} {}", existing, incoming))
+pub fn summarize_text(existing: &str, incoming: &str, kw: &KeywordCache) -> String {
+    summarize_single(&format!("{} {}", existing, incoming), kw)
 }
 
 /// Summarize a group of short-term entries (pick top 3 by salience+usage).
-pub fn summarize_group(group: &[ShortTermEntry]) -> String {
+pub fn summarize_group(group: &[ShortTermEntry], kw: &KeywordCache) -> String {
     let mut sorted: Vec<&ShortTermEntry> = group.iter().collect();
     sorted.sort_by(|a, b| {
         let score_a = a.salience + a.usage as f32 * 0.1;
@@ -68,7 +68,7 @@ pub fn summarize_group(group: &[ShortTermEntry]) -> String {
             combined.push_str(" | ");
         }
         let summary = if entry.summary.is_empty() {
-            summarize_single(&entry.text)
+            summarize_single(&entry.text, kw)
         } else {
             entry.summary.clone()
         };
@@ -115,15 +115,19 @@ pub fn chunk_text(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn kw() -> KeywordCache {
+        KeywordCache::default_from_static()
+    }
+
     #[test]
     fn test_summarize_single_short() {
-        assert_eq!(summarize_single("short text"), "short text");
+        assert_eq!(summarize_single("short text", &kw()), "short text");
     }
 
     #[test]
     fn test_summarize_single_long() {
         let text = "This is a long sentence about memory systems. fn handle_memory() is the main handler. It processes incoming ticks and queries. The system uses cosine similarity for matching.";
-        let summary = summarize_single(text);
+        let summary = summarize_single(text, &kw());
         assert!(summary.len() <= 200);
     }
 
@@ -149,7 +153,7 @@ mod tests {
         let text = "This module handles memory operations with buffers and caches. \
                      We chose cosine similarity over Euclidean distance because it is scale-invariant. \
                      The system also supports batch processing for throughput optimization.";
-        let summary = summarize_single(text);
+        let summary = summarize_single(text, &kw());
         assert!(
             summary.contains("chose") || summary.contains("because"),
             "Decision-rationale sentence should be selected, got: {}",
@@ -159,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_summarize_text_merges() {
-        let result = summarize_text("first part", "second part");
+        let result = summarize_text("first part", "second part", &kw());
         assert!(!result.is_empty());
         // Should contain content from at least one input
         assert!(
@@ -171,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_summarize_group_empty() {
-        let result = summarize_group(&[] as &[ShortTermEntry]);
+        let result = summarize_group(&[] as &[ShortTermEntry], &kw());
         assert_eq!(result, "Consolidated memory");
     }
 
@@ -192,7 +196,7 @@ mod tests {
             density: 0.0,
             consolidated: false,
         };
-        let result = summarize_group(&[entry][..]);
+        let result = summarize_group(&[entry][..], &kw());
         assert!(!result.is_empty());
         assert_ne!(result, "Consolidated memory");
     }
@@ -216,7 +220,7 @@ mod tests {
                 consolidated: false,
             })
             .collect();
-        let result = summarize_group(&entries);
+        let result = summarize_group(&entries, &kw());
         // Should contain content from highest-salience entries (3, 4)
         assert!(result.contains('|') || !result.is_empty());
         assert!(result.len() <= 300);
@@ -241,7 +245,7 @@ mod tests {
                 consolidated: false,
             })
             .collect();
-        let result = summarize_group(&entries);
+        let result = summarize_group(&entries, &kw());
         assert!(result.len() <= 300, "got len {}", result.len());
     }
 
@@ -262,7 +266,7 @@ mod tests {
             density: 0.0,
             consolidated: false,
         };
-        let result = summarize_group(&[entry][..]);
+        let result = summarize_group(&[entry][..], &kw());
         assert!(result.contains("Pre-computed summary"));
     }
 
@@ -285,7 +289,7 @@ mod tests {
     #[test]
     fn test_summarize_single_preserves_short() {
         let text = "Short decision text";
-        assert_eq!(summarize_single(text), text);
+        assert_eq!(summarize_single(text, &kw()), text);
     }
 
     #[test]
@@ -293,7 +297,7 @@ mod tests {
         let text = "We processed the data using standard operations. \
                      fn handle_memory() is the core entry point for all memory operations. \
                      Various configuration options are available for tuning performance.";
-        let summary = summarize_single(text);
+        let summary = summarize_single(text, &kw());
         assert!(
             summary.contains("fn handle_memory"),
             "Code reference sentence should be preferred, got: {}",
@@ -306,7 +310,7 @@ mod tests {
         let text = "I worked on the project for several hours. \
                      The system architecture follows a 3-layer hierarchical model. \
                      It was a sunny day outside today.";
-        let summary = summarize_single(text);
+        let summary = summarize_single(text, &kw());
         assert!(
             summary.contains("architecture"),
             "Architecture sentence should be boosted (+4), got: {}",
@@ -318,14 +322,14 @@ mod tests {
     fn test_summarize_polyglot_code_boost() {
         // Python boost
         let py = "Some text. def handle_python(): return None. More text.";
-        assert!(summarize_single(py).contains("def handle_python"));
+        assert!(summarize_single(py, &kw()).contains("def handle_python"));
 
         // Go boost
         let go = "Intro. func main() { println(1) }. Outro.";
-        assert!(summarize_single(go).contains("func main"));
+        assert!(summarize_single(go, &kw()).contains("func main"));
 
         // TypeScript boost
         let ts = "First. interface IData { id: number }. Last.";
-        assert!(summarize_single(ts).contains("interface IData"));
+        assert!(summarize_single(ts, &kw()).contains("interface IData"));
     }
 }

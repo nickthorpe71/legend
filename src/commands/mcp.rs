@@ -3,9 +3,20 @@ use super::memory::{
     log_event_rich, truncate_text, EventData, GraphHit, MatchedEntry, QueryEventData,
     StartEventData, TickEventData,
 };
+use crate::cli::{parse_args, CommandDef, FlagDef};
 use crate::memory::MemoryState;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
+
+pub static COMMAND: CommandDef = CommandDef {
+    name: "mcp-serve",
+    about: "Run MCP stdio server for AI tool integration",
+    usage: "legend mcp-serve [--cwd <path>]",
+    flags: &[
+        FlagDef { long: "--cwd", short: None, about: "Working directory", takes_value: true },
+    ],
+    positionals: &[],
+};
 
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
@@ -60,7 +71,7 @@ fn handle_tools_list(id: &Value) -> Value {
     let tools = json!([
         {
             "name": "legend_memory_start",
-            "description": "Start a Legend memory session. Returns categorized memories, recent activity, git sync status, and the mandatory protocol. Call this at the beginning of every session.",
+            "description": "Start session. Returns categorized memories and recent activity.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -74,7 +85,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_tick",
-            "description": "Record a memory tick — a decision, discovery, bug, architecture insight, blocker, or completed task. Prefix with DECISION:, BUG:, ARCHITECTURE:, BLOCKER: for auto-categorization. Call after every significant action.",
+            "description": "Record a decision/discovery/insight. Prefix: DECISION:, BUG:, ARCHITECTURE:, BLOCKER:",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -88,7 +99,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_query",
-            "description": "Query Legend memory for context on a topic. Returns related memories and graph nodes. Auto-reinforces the top result. Call before starting work on any new topic.",
+            "description": "Search memory for topic context. Auto-reinforces top result.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -102,7 +113,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_task_get",
-            "description": "Get the current task set in Legend memory.",
+            "description": "Get current task.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -111,7 +122,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_task_set",
-            "description": "Set the current task in Legend memory. Helps Legend track what you're working on.",
+            "description": "Set current task.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -125,7 +136,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_stats",
-            "description": "Show Legend memory statistics: entry counts, graph size, consolidation status, and current task.",
+            "description": "Memory statistics.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -459,15 +470,10 @@ fn mcp_main_loop() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Entry point for `legend mcp-serve`
 pub fn handle_mcp_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    // Parse optional --cwd flag
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--cwd" && i + 1 < args.len() {
-            std::env::set_current_dir(&args[i + 1])?;
-            i += 2;
-        } else {
-            i += 1;
-        }
+    let parsed = parse_args(args, &COMMAND);
+
+    if let Some(cwd) = parsed.get("cwd") {
+        std::env::set_current_dir(cwd)?;
     }
 
     mcp_main_loop()

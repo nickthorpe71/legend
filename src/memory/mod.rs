@@ -1,10 +1,12 @@
 pub mod embed;
 pub mod extract;
+pub mod keyword_cache;
 pub mod keywords;
 pub mod summarize;
 
 use embed::{compute_salience, cosine_similarity, embed_text, merge_embeddings};
 use extract::extract_entities;
+use keyword_cache::KeywordCache;
 use summarize::{chunk_text, summarize_group, summarize_single, summarize_text};
 
 use serde::{Deserialize, Serialize};
@@ -136,6 +138,9 @@ pub struct MemoryState {
     /// Last Git commit SHA processed by Legend.
     #[serde(default)]
     pub last_synced_sha: Option<String>,
+    /// Dynamic keyword cache populated from graph + static fallbacks.
+    #[serde(skip)]
+    pub keyword_cache: keyword_cache::KeywordCache,
 }
 
 impl Default for ShortTermEntry {
@@ -480,6 +485,7 @@ impl Default for MemoryState {
             ticks_since_consolidation: 0,
             last_retrieved_ids: Vec::new(),
             last_synced_sha: None,
+            keyword_cache: keyword_cache::KeywordCache::default_from_static(),
         }
     }
 }
@@ -525,48 +531,43 @@ impl MemoryCategory {
     }
 }
 
-use keywords::{
-    ACTION_KEYWORDS, ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, DECISION_KEYWORDS, PREFERENCE_KEYWORDS,
-    TODO_KEYWORDS,
-};
-
 /// Detect the primary category of a text based on keyword patterns.
-pub fn classify_text(text: &str) -> MemoryCategory {
+pub fn classify_text(text: &str, kw: &keyword_cache::KeywordCache) -> MemoryCategory {
     let lower = text.to_lowercase();
 
     // Decision patterns (highest priority)
-    let decision_score = DECISION_KEYWORDS
+    let decision_score = kw.decision
         .iter()
-        .filter(|kw| lower.contains(*kw))
+        .filter(|k| lower.contains(k.as_str()))
         .count();
     if decision_score >= 2 {
         return MemoryCategory::Decision;
     }
 
     // TODO patterns
-    if TODO_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    if kw.todo.iter().any(|k| lower.contains(k.as_str())) {
         return MemoryCategory::Todo;
     }
 
     // Preference patterns
-    if PREFERENCE_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    if kw.preference.iter().any(|k| lower.contains(k.as_str())) {
         return MemoryCategory::Preference;
     }
 
     // Architecture patterns
-    if ARCHITECTURE_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    if kw.architecture.iter().any(|k| lower.contains(k.as_str())) {
         return MemoryCategory::Architecture;
     }
 
     // Bug patterns
-    if BUG_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+    if kw.bug.iter().any(|k| lower.contains(k.as_str())) {
         return MemoryCategory::Bug;
     }
 
     // Progress patterns
-    if ACTION_KEYWORDS
+    if kw.action
         .iter()
-        .any(|(verb, _)| lower.contains(*verb))
+        .any(|(verb, _)| lower.contains(verb.as_str()))
     {
         return MemoryCategory::Progress;
     }
@@ -594,13 +595,19 @@ pub struct GitSyncInfo {
 impl MemoryState {
     pub fn load_or_default() -> Result<Self, Box<dyn std::error::Error>> {
         // Try to migrate corrupt backup first (old format without new fields)
-        if let Ok(Some(migrated)) = migrate_corrupt_backup() {
+        if let Ok(Some(mut migrated)) = migrate_corrupt_backup() {
+            migrated.keyword_cache =
+                keyword_cache::KeywordCache::from_graph(&migrated.long_term);
             return Ok(migrated);
         }
 
         if Path::new(MEMORY_FILE).exists() {
             match load_memory() {
-                Ok(state) => Ok(state),
+                Ok(mut state) => {
+                    state.keyword_cache =
+                        keyword_cache::KeywordCache::from_graph(&state.long_term);
+                    Ok(state)
+                }
                 Err(err) => {
                     let backup = format!("{}.corrupt", MEMORY_FILE);
                     // Only move to backup if one doesn't already exist, to avoid overwriting
@@ -738,6 +745,42 @@ impl MemoryState {
         self.long_term.index.insert(label.to_string(), id);
     }
 
+    /// Create or reinforce a keyword graph node with label `kw:<category>:<term>`.
+    /// Returns true if a new node was created (vs reinforcing existing).
+    pub fn add_keyword_node(&mut self, category: &str, term: &str, metadata: Vec<String>) -> bool {
+        let label = format!("kw:{}:{}", category, term);
+        if let Some(&existing_id) = self.long_term.index.get(&label) {
+            // Reinforce existing keyword node
+            if let Some(node) = self.long_term.nodes.get_mut(&existing_id) {
+                node.weight += 0.2;
+                node.last_seen = self.clock;
+            }
+            false
+        } else {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.long_term.nodes.insert(
+                id,
+                GraphNode {
+                    id,
+                    label: label.clone(),
+                    kind: "Keyword".to_string(),
+                    weight: 1.0,
+                    last_seen: self.clock,
+                    salience: 0.5,
+                    source_texts: metadata,
+                },
+            );
+            self.long_term.index.insert(label, id);
+            true
+        }
+    }
+
+    /// Rebuild the keyword cache from the current graph state.
+    pub fn rebuild_keyword_cache(&mut self) {
+        self.keyword_cache = keyword_cache::KeywordCache::from_graph(&self.long_term);
+    }
+
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         save_memory(self)
     }
@@ -797,7 +840,7 @@ impl MemoryState {
             self.push_immediate(&chunk);
 
             let embedding = embed_text(&chunk, self.config.embedding_dim);
-            let salience = compute_salience(&chunk);
+            let salience = compute_salience(&chunk, &self.keyword_cache);
             let refs = extract_memory_refs_from_text(&chunk);
 
             // --- Reconsolidation: check labile entries first ---
@@ -850,7 +893,7 @@ impl MemoryState {
                         entry.embedding = merge_embeddings(&entry.embedding, &embedding);
                         entry.usage = entry.usage.saturating_add(1);
                         entry.salience = (entry.salience + salience * 0.5).min(1.0);
-                        entry.summary = summarize_text(&entry.text, &chunk);
+                        entry.summary = summarize_text(&entry.text, &chunk, &self.keyword_cache);
                         entry.last_access = self.clock;
                         merge_memory_refs(&mut entry.refs, refs.clone());
                     }
@@ -929,7 +972,7 @@ impl MemoryState {
         // graph edges to surface related nodes the query text alone wouldn't match.
         let mut priming_seed_ids: Vec<u64> = Vec::new();
         for snippet in &snippets {
-            let entities = extract_entities(&snippet.text);
+            let entities = extract_entities(&snippet.text, &self.keyword_cache);
             for entity in &entities {
                 if let Some(&node_id) = self.long_term.index.get(&entity.label) {
                     priming_seed_ids.push(node_id);
@@ -1024,7 +1067,7 @@ impl MemoryState {
 
         let mut summaries = Vec::new();
         for group in groups.into_iter().filter(|g| g.len() > 1) {
-            let summary_text = summarize_group(&group);
+            let summary_text = summarize_group(&group, &self.keyword_cache);
             let salience = group
                 .iter()
                 .map(|e| e.salience)
@@ -1090,7 +1133,7 @@ impl MemoryState {
             // 2. Semantic Topic Extraction: find high-frequency entities in the group
             let mut entity_counts: HashMap<String, (usize, String)> = HashMap::new();
             for entry in &group {
-                let entities = crate::memory::extract::extract_entities(&entry.text);
+                let entities = crate::memory::extract::extract_entities(&entry.text, &self.keyword_cache);
                 for entity in entities {
                     let entry = entity_counts
                         .entry(entity.label.clone())
@@ -1322,7 +1365,7 @@ impl MemoryState {
         if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == target_id) {
             // Merge text: append new information
             let merged_text = format!("{} | {}", entry.text, text);
-            entry.summary = summarize_text(&entry.text, text);
+            entry.summary = summarize_text(&entry.text, text, &self.keyword_cache);
             entry.text = if merged_text.len() > 500 {
                 // If text is getting too long, use summary as text
                 entry.summary.clone()
@@ -1336,7 +1379,7 @@ impl MemoryState {
             entry.usage = entry.usage.saturating_add(1);
             entry.last_access = now;
             entry.reconsolidation_count += 1;
-            entry.density = calculate_density(&entry.text);
+            entry.density = calculate_density(&entry.text, &self.keyword_cache);
             // Re-stabilize: no longer labile
             entry.labile_until = 0;
             merge_memory_refs(&mut entry.refs, refs);
@@ -1388,7 +1431,7 @@ impl MemoryState {
             if let Some(oldest) = self.immediate.pop_front() {
                 // Background "digestion" of old working memory into STM
                 let embedding = embed_text(&oldest, self.config.embedding_dim);
-                let salience = compute_salience(&oldest) * 0.7; // Passive memories start with lower salience
+                let salience = compute_salience(&oldest, &self.keyword_cache) * 0.7; // Passive memories start with lower salience
                 let refs = extract_memory_refs_from_text(&oldest);
                 self.insert_short_term(&oldest, embedding, salience, refs);
             }
@@ -1428,7 +1471,7 @@ impl MemoryState {
         self.short_term.push(ShortTermEntry {
             id: self.next_id,
             text: text.to_string(),
-            summary: summarize_single(text),
+            summary: summarize_single(text, &self.keyword_cache),
             embedding,
             last_access: self.clock,
             usage: 1,
@@ -1437,7 +1480,7 @@ impl MemoryState {
             labile_until: 0,
             refs,
             gradient_sq_sum: 0.0,
-            density: calculate_density(text),
+            density: calculate_density(text, &self.keyword_cache),
             consolidated: false,
         });
         self.next_id += 1;
@@ -1501,7 +1544,7 @@ impl MemoryState {
 
     /// Extract entities from text and insert/update nodes and edges in the knowledge graph.
     fn update_graph(&mut self, text: &str, salience: f32) {
-        let entities = extract_entities(text);
+        let entities = extract_entities(text, &self.keyword_cache);
         if entities.is_empty() {
             return;
         }
@@ -1567,6 +1610,39 @@ impl MemoryState {
                 self.upsert_edge(node_ids[i], node_ids[j], edge_kind);
             }
         }
+
+        // Phase E: Hebbian reinforcement for keyword nodes.
+        // Scan text for matches against keyword graph nodes and boost their weight.
+        // Keywords that appear in useful ticks gain weight naturally; unused keywords
+        // decay below PRUNE_THRESHOLD and get cleaned up by existing pruning logic.
+        let text_lower = text.to_lowercase();
+        let keyword_node_ids: Vec<u64> = self
+            .long_term
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == "Keyword")
+            .map(|(&id, _)| id)
+            .collect();
+
+        for kw_id in keyword_node_ids {
+            let term = {
+                let node = &self.long_term.nodes[&kw_id];
+                // Extract term from label "kw:<category>:<term>"
+                node.label.splitn(3, ':').nth(2).unwrap_or("").to_string()
+            };
+            if !term.is_empty() && text_lower.contains(&term.to_lowercase()) {
+                if let Some(node) = self.long_term.nodes.get_mut(&kw_id) {
+                    node.weight = (node.weight + HEBBIAN_NODE_BOOST).min(HEBBIAN_NODE_CEILING);
+                    node.last_seen = self.clock;
+                }
+                // Reinforce edges between this keyword and other active nodes
+                for &other_id in &node_ids {
+                    if other_id != kw_id {
+                        self.upsert_edge(kw_id, other_id, "keyword-co-occurs");
+                    }
+                }
+            }
+        }
     }
 
     /// Insert a new edge or reinforce an existing one between two nodes.
@@ -1596,7 +1672,7 @@ impl MemoryState {
 
     /// Query the knowledge graph: match entities by label, then expand one hop.
     fn graph_lookup(&self, query: &str, limit: usize) -> Vec<GraphNodeSummary> {
-        let entities = extract_entities(query);
+        let entities = extract_entities(query, &self.keyword_cache);
         let mut results: Vec<GraphNodeSummary> = Vec::new();
         let mut seed_ids = Vec::new();
 
@@ -1976,7 +2052,7 @@ impl MemoryState {
         let mut preferences: Vec<serde_json::Value> = Vec::new();
 
         for entry in &self.short_term {
-            let category = classify_text(&entry.text);
+            let category = classify_text(&entry.text, &self.keyword_cache);
 
             // Build item based on compact mode
             let item = if compact {
@@ -2223,7 +2299,7 @@ impl MemoryState {
                 });
 
                 // Cascade into graph: boost/demote entities from this entry's text
-                let entities = extract_entities(&entry.text.clone());
+                let entities = extract_entities(&entry.text.clone(), &self.keyword_cache);
                 for entity in &entities {
                     if let Some(&node_id) = self.long_term.index.get(&entity.label) {
                         if let Some(node) = self.long_term.nodes.get_mut(&node_id) {
@@ -2388,6 +2464,7 @@ fn migrate_v4(v4: MemoryStateV4) -> MemoryState {
         ticks_since_consolidation: v4.ticks_since_consolidation,
         last_retrieved_ids: v4.last_retrieved_ids,
         last_synced_sha: v4.last_synced_sha,
+        keyword_cache: keyword_cache::KeywordCache::default(),
     }
 }
 
@@ -2549,6 +2626,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             ticks_since_consolidation: v3.ticks_since_consolidation,
             last_retrieved_ids: v3.last_retrieved_ids,
             last_synced_sha: v3.last_synced_sha,
+            keyword_cache: keyword_cache::KeywordCache::default(),
         }
     } else if let Ok(v2) = bincode::deserialize::<MemoryStateV2>(&serialized) {
         MemoryState {
@@ -2590,6 +2668,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             ticks_since_consolidation: v2.ticks_since_consolidation,
             last_retrieved_ids: Vec::new(),
             last_synced_sha: None,
+            keyword_cache: keyword_cache::KeywordCache::default(),
         }
     } else {
         match bincode::deserialize::<MemoryStateV1>(&serialized) {
@@ -2623,6 +2702,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                 ticks_since_consolidation: 0,
                 last_retrieved_ids: Vec::new(),
                 last_synced_sha: None,
+                keyword_cache: keyword_cache::KeywordCache::default(),
             },
             Err(_) => {
                 eprintln!("  Backup file is unrecoverable (no format matched). Archiving.");
@@ -2715,8 +2795,8 @@ fn safe_truncate(s: &str, max_len: usize) -> String {
     format!("{}…", &s[..end])
 }
 
-fn calculate_density(text: &str) -> f32 {
-    let entities = extract_entities(text);
+fn calculate_density(text: &str, kw: &KeywordCache) -> f32 {
+    let entities = extract_entities(text, kw);
     let mut score = 0.0;
     for entity in entities {
         score += match entity.kind.as_str() {
@@ -2732,6 +2812,10 @@ fn calculate_density(text: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn kw() -> KeywordCache {
+        KeywordCache::default_from_static()
+    }
 
     #[test]
     fn test_eviction_score_recent_high() {
@@ -3240,11 +3324,11 @@ mod tests {
     #[test]
     fn test_classify_text_decision() {
         assert_eq!(
-            classify_text("Chose PostgreSQL over MongoDB because it has better JOIN support"),
+            classify_text("Chose PostgreSQL over MongoDB because it has better JOIN support", &kw()),
             MemoryCategory::Decision
         );
         assert_eq!(
-            classify_text("We decided to use Rust instead of Go"),
+            classify_text("We decided to use Rust instead of Go", &kw()),
             MemoryCategory::Decision
         );
     }
@@ -3252,11 +3336,11 @@ mod tests {
     #[test]
     fn test_classify_text_bug() {
         assert_eq!(
-            classify_text("Bug: the parser crashes on empty input"),
+            classify_text("Bug: the parser crashes on empty input", &kw()),
             MemoryCategory::Bug
         );
         assert_eq!(
-            classify_text("Had to revert the migration due to data loss"),
+            classify_text("Had to revert the migration due to data loss", &kw()),
             MemoryCategory::Bug
         );
     }
@@ -3265,7 +3349,7 @@ mod tests {
     fn test_classify_priority_todo_wins_over_bug() {
         // "TODO: fix the bug" should be a TODO, not a BUG
         assert_eq!(
-            classify_text("TODO: fix the critical bug"),
+            classify_text("TODO: fix the critical bug", &kw()),
             MemoryCategory::Todo
         );
     }
@@ -3274,7 +3358,7 @@ mod tests {
     fn test_classify_priority_preference_wins_over_bug() {
         // "I prefer explicit error types" should be PREFERENCE, not BUG (even though 'error' is in BUG_KEYWORDS)
         assert_eq!(
-            classify_text("User prefers explicit error types over anyhow"),
+            classify_text("User prefers explicit error types over anyhow", &kw()),
             MemoryCategory::Preference
         );
     }
@@ -3283,15 +3367,15 @@ mod tests {
     fn test_classify_text_progress_polyglot() {
         // Test our new ACTION_KEYWORDS for progress
         assert_eq!(
-            classify_text("Finished the user login implementation"),
+            classify_text("Finished the user login implementation", &kw()),
             MemoryCategory::Progress
         );
         assert_eq!(
-            classify_text("Merged the feature branch into master"),
+            classify_text("Merged the feature branch into master", &kw()),
             MemoryCategory::Progress
         );
         assert_eq!(
-            classify_text("Shipped the new version to production"),
+            classify_text("Shipped the new version to production", &kw()),
             MemoryCategory::Progress
         );
     }
@@ -3299,11 +3383,11 @@ mod tests {
     #[test]
     fn test_classify_text_todo() {
         assert_eq!(
-            classify_text("TODO: implement proper error handling"),
+            classify_text("TODO: implement proper error handling", &kw()),
             MemoryCategory::Todo
         );
         assert_eq!(
-            classify_text("Blocked on the API team providing the endpoint"),
+            classify_text("Blocked on the API team providing the endpoint", &kw()),
             MemoryCategory::Todo
         );
     }
@@ -3311,7 +3395,7 @@ mod tests {
     #[test]
     fn test_classify_text_architecture() {
         assert_eq!(
-            classify_text("The authentication module uses JWT tokens via middleware"),
+            classify_text("The authentication module uses JWT tokens via middleware", &kw()),
             MemoryCategory::Architecture
         );
     }
@@ -3319,7 +3403,7 @@ mod tests {
     #[test]
     fn test_classify_text_preference() {
         assert_eq!(
-            classify_text("User prefers snake_case for all variable names"),
+            classify_text("User prefers snake_case for all variable names", &kw()),
             MemoryCategory::Preference
         );
     }
@@ -3327,8 +3411,8 @@ mod tests {
     #[test]
     fn test_importance_scoring_decisions_higher() {
         let decision_salience =
-            compute_salience("Chose bincode over JSON because it is faster for serialization");
-        let generic_salience = compute_salience("updated some files in the project");
+            compute_salience("Chose bincode over JSON because it is faster for serialization", &kw());
+        let generic_salience = compute_salience("updated some files in the project", &kw());
         assert!(
             decision_salience > generic_salience,
             "decisions should score higher: {} vs {}",
@@ -3340,8 +3424,8 @@ mod tests {
     #[test]
     fn test_importance_scoring_bugs_higher() {
         let bug_salience =
-            compute_salience("Bug: the parser crashes on empty input and causes a panic");
-        let generic_salience = compute_salience("updated some files in the project");
+            compute_salience("Bug: the parser crashes on empty input and causes a panic", &kw());
+        let generic_salience = compute_salience("updated some files in the project", &kw());
         assert!(
             bug_salience > generic_salience,
             "bugs should score higher: {} vs {}",
@@ -3734,7 +3818,7 @@ mod tests {
             state.insert_short_term(
                 text,
                 embed_text(text, dim),
-                compute_salience(text),
+                compute_salience(text, &kw()),
                 Vec::new(),
             );
         }
@@ -3762,7 +3846,7 @@ mod tests {
             state.insert_short_term(
                 text,
                 embed_text(text, dim),
-                compute_salience(text),
+                compute_salience(text, &kw()),
                 Vec::new(),
             );
         }
@@ -3796,7 +3880,7 @@ mod tests {
             state.insert_short_term(
                 text,
                 embed_text(text, dim),
-                compute_salience(text),
+                compute_salience(text, &kw()),
                 Vec::new(),
             );
         }
@@ -3831,7 +3915,7 @@ mod tests {
             state.insert_short_term(
                 &text,
                 embed_text(&text, dim),
-                compute_salience(&text),
+                compute_salience(&text, &kw()),
                 Vec::new(),
             );
         }
@@ -3864,7 +3948,7 @@ mod tests {
             state.insert_short_term(
                 text,
                 embed_text(text, dim),
-                compute_salience(text),
+                compute_salience(text, &kw()),
                 Vec::new(),
             );
         }

@@ -1,8 +1,6 @@
 /// Entity extraction from text (code-aware + plain identifiers).
 use std::collections::HashMap;
-use crate::memory::keywords::{
-    ACTION_KEYWORDS, CODE_KEYWORDS, ENVIRONMENT_KEYWORDS, TOOL_KEYWORDS
-};
+use crate::memory::keyword_cache::KeywordCache;
 
 pub struct ExtractedEntity {
     pub label: String,
@@ -12,7 +10,7 @@ pub struct ExtractedEntity {
 }
 
 /// Extract entities from text — multi-pass: code keywords, paths, actions, environments, and identifiers.
-pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
+pub fn extract_entities(text: &str, kw: &KeywordCache) -> Vec<ExtractedEntity> {
     let mut entities = Vec::new();
 
     for line in text.lines() {
@@ -37,7 +35,7 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
 
         // 2. Action patterns (Verbs at the start of lines or sentences)
-        for (verb, kind) in ACTION_KEYWORDS {
+        for (verb, kind) in &kw.action {
             if sentence_contains_phrase(&lower, verb) {
                 entities.push(ExtractedEntity {
                     label: verb.to_string(),
@@ -48,9 +46,8 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
 
         // 3. Environment patterns
-        for env in ENVIRONMENT_KEYWORDS {
+        for env in &kw.environment {
             if sentence_contains_phrase(&lower, env) {
-                // Find original casing if possible, or use the env string
                 entities.push(ExtractedEntity {
                     label: env.to_string(),
                     kind: "Environment".to_string(),
@@ -60,7 +57,7 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
 
         // 3b. High-signal technology/tool patterns (constrained dictionary)
-        for tool in TOOL_KEYWORDS {
+        for tool in &kw.tool {
             if sentence_contains_phrase(&lower, tool) {
                 entities.push(ExtractedEntity {
                     label: tool.to_string(),
@@ -71,8 +68,8 @@ pub fn extract_entities(text: &str) -> Vec<ExtractedEntity> {
         }
 
         // 4. Code patterns (Multi-language)
-        for (kw, kind, ctx) in CODE_KEYWORDS {
-            try_extract(trimmed, kw, kind, ctx, &mut entities);
+        for (trigger, kind, ctx) in &kw.code {
+            try_extract(trimmed, trigger, kind, ctx, &mut entities);
         }
 
         // 5. Language-agnostic patterns (assignment, decoration)
@@ -408,9 +405,13 @@ fn infer_kind(label: &str) -> String {
 mod tests {
     use super::*;
 
+    fn kw() -> KeywordCache {
+        KeywordCache::default_from_static()
+    }
+
     #[test]
     fn test_extract_entities_rust_code() {
-        let entities = extract_entities("fn handle_memory() { struct MemoryState {} }");
+        let entities = extract_entities("fn handle_memory() { struct MemoryState {} }", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"handle_memory"), "got: {:?}", labels);
         assert!(labels.contains(&"MemoryState"), "got: {:?}", labels);
@@ -418,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_extract_entities_python() {
-        let entities = extract_entities("def process_data(): class DataProcessor:");
+        let entities = extract_entities("def process_data(): class DataProcessor:", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"process_data"), "got: {:?}", labels);
         assert!(labels.contains(&"DataProcessor"), "got: {:?}", labels);
@@ -451,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_extract_actions() {
-        let entities = extract_entities("Fixed the bug in storage. Refactored the TUI.");
+        let entities = extract_entities("Fixed the bug in storage. Refactored the TUI.", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"fixed"));
         assert!(labels.contains(&"refactored"));
@@ -463,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_extract_environments() {
-        let entities = extract_entities("This issue only happens on wsl and docker.");
+        let entities = extract_entities("This issue only happens on wsl and docker.", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"wsl"));
         assert!(labels.contains(&"docker"));
@@ -477,6 +478,7 @@ mod tests {
     fn test_extract_expanded_actions_and_envs() {
         let entities = extract_entities(
             "Investigating deploy failures in kubernetes. We rolled back in production.",
+            &kw(),
         );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"investigating"), "got: {:?}", labels);
@@ -489,6 +491,7 @@ mod tests {
     fn test_extract_tools_dictionary() {
         let entities = extract_entities(
             "We moved services to graphql + redis and added prometheus dashboards.",
+            &kw(),
         );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"graphql"), "got: {:?}", labels);
@@ -502,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_extract_assignment_pattern() {
-        let entities = extract_entities("my_config_value = 42");
+        let entities = extract_entities("my_config_value = 42", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"my_config_value"));
         assert_eq!(
@@ -517,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_extract_decorator_pattern() {
-        let entities = extract_entities("@Component class MyUI {}");
+        let entities = extract_entities("@Component class MyUI {}", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"Component"));
         assert_eq!(
@@ -533,7 +536,7 @@ mod tests {
     #[test]
     fn test_multi_language_keywords() {
         let entities =
-            extract_entities("interface IService {}; package com.legend; export const X = 1;");
+            extract_entities("interface IService {}; package com.legend; export const X = 1;", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"IService"));
         assert!(labels.contains(&"com.legend"));
@@ -614,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_extract_entities_file_path() {
-        let entities = extract_entities("Modified src/commands/memory.rs for the fix");
+        let entities = extract_entities("Modified src/commands/memory.rs for the fix", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(
             labels.contains(&"src/commands/memory.rs"),
@@ -627,7 +630,7 @@ mod tests {
 
     #[test]
     fn test_extract_entities_multiple_code_keywords() {
-        let entities = extract_entities("fn main() { struct Config {} impl Config {} }");
+        let entities = extract_entities("fn main() { struct Config {} impl Config {} }", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"main"), "got: {:?}", labels);
         assert!(labels.contains(&"Config"), "got: {:?}", labels);
@@ -635,20 +638,20 @@ mod tests {
 
     #[test]
     fn test_extract_entities_deduplicates() {
-        let entities = extract_entities("fn Config { struct Config; class Config }");
+        let entities = extract_entities("fn Config { struct Config; class Config }", &kw());
         let config_count = entities.iter().filter(|e| e.label == "Config").count();
         assert_eq!(config_count, 1, "Should deduplicate: {:?}", entities.iter().map(|e| &e.label).collect::<Vec<_>>());
     }
 
     #[test]
     fn test_extract_entities_empty_input() {
-        let entities = extract_entities("");
+        let entities = extract_entities("", &kw());
         assert!(entities.is_empty());
     }
 
     #[test]
     fn test_extract_entities_trait_and_impl() {
-        let entities = extract_entities("trait Serializable {} impl Serializable for Config {}");
+        let entities = extract_entities("trait Serializable {} impl Serializable for Config {}", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"Serializable"), "got: {:?}", labels);
         assert!(labels.contains(&"Config"), "got: {:?}", labels);
@@ -656,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_extract_entities_import_use() {
-        let entities = extract_entities("use std::collections::HashMap;");
+        let entities = extract_entities("use std::collections::HashMap;", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         // The `use` keyword extraction parses the next token; `::` splits into parts
         assert!(
@@ -669,7 +672,8 @@ mod tests {
     #[test]
     fn test_extract_entities_mixed_content() {
         let entities = extract_entities(
-            "Fixed bug in src/parser.rs. Deployed to production using docker. fn handle_request() handles the main API flow."
+            "Fixed bug in src/parser.rs. Deployed to production using docker. fn handle_request() handles the main API flow.",
+            &kw(),
         );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"src/parser.rs"), "file path: {:?}", labels);
@@ -682,19 +686,19 @@ mod tests {
     #[test]
     fn test_polyglot_extraction() {
         // Go
-        let go = extract_entities("func processTask() { package main }");
+        let go = extract_entities("func processTask() { package main }", &kw());
         let go_labels: Vec<&str> = go.iter().map(|e| e.label.as_str()).collect();
         assert!(go_labels.contains(&"processTask"));
         assert!(go_labels.contains(&"main"));
 
         // TypeScript
-        let ts = extract_entities("interface UserData { export const version = 1 }");
+        let ts = extract_entities("interface UserData { export const version = 1 }", &kw());
         let ts_labels: Vec<&str> = ts.iter().map(|e| e.label.as_str()).collect();
         assert!(ts_labels.contains(&"UserData"));
         assert!(ts_labels.contains(&"version"));
 
         // PHP/Ruby
-        let web = extract_entities("require 'db_config.php'; module AuthModule {}");
+        let web = extract_entities("require 'db_config.php'; module AuthModule {}", &kw());
         let web_labels: Vec<&str> = web.iter().map(|e| e.label.as_str()).collect();
         assert!(web_labels.contains(&"db_config.php"));
         assert!(web_labels.contains(&"AuthModule"));
