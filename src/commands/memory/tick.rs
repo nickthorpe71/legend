@@ -1,19 +1,8 @@
 use super::event_log::*;
 use super::helpers::*;
-use crate::cli::{parse_args, CommandDef, FlagDef};
+use crate::cli::{parse_args, CommandDef};
 use crate::commands::llm::{auto_trigger_for_text, LlmAutoTriggerSummary};
 use crate::memory::{MemoryState, TickResult};
-
-static TICK_CMD: CommandDef = CommandDef {
-    name: "tick",
-    about: "Record a memory (decision, progress, discovery)",
-    usage: "legend memory tick [--blocker] [--passive] <text>",
-    flags: &[
-        FlagDef { long: "--blocker", short: Some('b'), about: "Mark as blocker", takes_value: false },
-        FlagDef { long: "--passive", short: Some('p'), about: "Passive observation", takes_value: false },
-    ],
-    positionals: &[],
-};
 
 struct TickOptions {
     text: String,
@@ -21,8 +10,8 @@ struct TickOptions {
     is_passive: bool,
 }
 
-fn parse_tick_args(args: &[String]) -> Result<TickOptions, Box<dyn std::error::Error>> {
-    let parsed = parse_args(args, &TICK_CMD);
+fn parse_tick_args(args: &[String], def: &CommandDef) -> Result<TickOptions, Box<dyn std::error::Error>> {
+    let parsed = parse_args(args, def);
 
     let text = if parsed.positional.is_empty() {
         read_stdin()?
@@ -37,8 +26,8 @@ fn parse_tick_args(args: &[String]) -> Result<TickOptions, Box<dyn std::error::E
     })
 }
 
-pub(super) fn handle_tick(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let opts = parse_tick_args(args)?;
+pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = parse_tick_args(args, def)?;
 
     if opts.text.trim().is_empty() {
         return Err("No input provided for tick".into());
@@ -207,11 +196,24 @@ fn print_tick_result(result: &TickResult, llm_trigger: Option<LlmAutoTriggerSumm
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::FlagDef;
+
+    static TEST_TICK_DEF: CommandDef = CommandDef {
+        name: "tick",
+        about: "Record a memory",
+        usage: "legend memory tick [--blocker] [--passive] <text>",
+        flags: &[
+            FlagDef { long: "--blocker", short: Some('b'), about: "Mark as blocker", takes_value: false },
+            FlagDef { long: "--passive", short: Some('p'), about: "Passive observation", takes_value: false },
+        ],
+        positionals: &[],
+        children: &[],
+    };
 
     #[test]
     fn test_parse_tick_args_simple_text() {
         let args = vec!["hello".to_string(), "world".to_string()];
-        let opts = parse_tick_args(&args).unwrap();
+        let opts = parse_tick_args(&args, &TEST_TICK_DEF).unwrap();
         assert_eq!(opts.text, "hello world");
         assert!(!opts.is_blocker);
         assert!(!opts.is_passive);
@@ -220,7 +222,7 @@ mod tests {
     #[test]
     fn test_parse_tick_args_blocker_flag() {
         let args = vec!["--blocker".to_string(), "can't".to_string(), "proceed".to_string()];
-        let opts = parse_tick_args(&args).unwrap();
+        let opts = parse_tick_args(&args, &TEST_TICK_DEF).unwrap();
         assert!(opts.is_blocker);
         assert_eq!(opts.text, "can't proceed");
     }
@@ -228,7 +230,7 @@ mod tests {
     #[test]
     fn test_parse_tick_args_passive_flag() {
         let args = vec!["--passive".to_string(), "observed".to_string(), "event".to_string()];
-        let opts = parse_tick_args(&args).unwrap();
+        let opts = parse_tick_args(&args, &TEST_TICK_DEF).unwrap();
         assert!(opts.is_passive);
         assert_eq!(opts.text, "observed event");
     }
@@ -236,7 +238,7 @@ mod tests {
     #[test]
     fn test_parse_tick_args_short_flags() {
         let args = vec!["-b".to_string(), "stuck".to_string()];
-        let opts = parse_tick_args(&args).unwrap();
+        let opts = parse_tick_args(&args, &TEST_TICK_DEF).unwrap();
         assert!(opts.is_blocker);
     }
 }

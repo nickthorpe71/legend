@@ -1,17 +1,7 @@
 use super::event_log::*;
 use super::helpers::truncate_text;
-use crate::cli::{parse_args, CommandDef, FlagDef};
+use crate::cli::{parse_args, CommandDef};
 use crate::memory::{MemoryContext, MemoryState};
-
-static QUERY_CMD: CommandDef = CommandDef {
-    name: "query",
-    about: "Query memory (auto-reinforces top result)",
-    usage: "legend memory query [--reasons] <text>",
-    flags: &[
-        FlagDef { long: "--reasons", short: Some('r'), about: "Include retrieval reasoning", takes_value: false },
-    ],
-    positionals: &[],
-};
 
 #[derive(Default)]
 struct QueryOptions {
@@ -19,8 +9,8 @@ struct QueryOptions {
     show_reasons: bool,
 }
 
-fn parse_query_args(args: &[String]) -> Result<QueryOptions, Box<dyn std::error::Error>> {
-    let parsed = parse_args(args, &QUERY_CMD);
+fn parse_query_args(args: &[String], def: &CommandDef) -> Result<QueryOptions, Box<dyn std::error::Error>> {
+    let parsed = parse_args(args, def);
 
     if parsed.positional.is_empty() {
         return Err("Provide a query string".into());
@@ -32,8 +22,8 @@ fn parse_query_args(args: &[String]) -> Result<QueryOptions, Box<dyn std::error:
     })
 }
 
-pub(super) fn handle_query(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let opts = parse_query_args(args)?;
+pub(super) fn handle_query(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = parse_query_args(args, def)?;
 
     let mut memory = MemoryState::load_or_default()?;
     let context = memory.retrieve_context(opts.query.trim());
@@ -150,11 +140,23 @@ fn print_context(context: MemoryContext) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::FlagDef;
+
+    static TEST_QUERY_DEF: CommandDef = CommandDef {
+        name: "query",
+        about: "Query memory",
+        usage: "legend memory query [--reasons] <text>",
+        flags: &[
+            FlagDef { long: "--reasons", short: Some('r'), about: "Include retrieval reasoning", takes_value: false },
+        ],
+        positionals: &[],
+        children: &[],
+    };
 
     #[test]
     fn test_parse_query_args_simple() {
         let args = vec!["memory".to_string(), "system".to_string()];
-        let opts = parse_query_args(&args).unwrap();
+        let opts = parse_query_args(&args, &TEST_QUERY_DEF).unwrap();
         assert_eq!(opts.query, "memory system");
         assert!(!opts.show_reasons);
     }
@@ -162,7 +164,7 @@ mod tests {
     #[test]
     fn test_parse_query_args_reasons_flag() {
         let args = vec!["--reasons".to_string(), "test".to_string()];
-        let opts = parse_query_args(&args).unwrap();
+        let opts = parse_query_args(&args, &TEST_QUERY_DEF).unwrap();
         assert!(opts.show_reasons);
         assert_eq!(opts.query, "test");
     }
@@ -170,13 +172,13 @@ mod tests {
     #[test]
     fn test_parse_query_args_short_reasons() {
         let args = vec!["-r".to_string(), "query".to_string()];
-        let opts = parse_query_args(&args).unwrap();
+        let opts = parse_query_args(&args, &TEST_QUERY_DEF).unwrap();
         assert!(opts.show_reasons);
     }
 
     #[test]
     fn test_parse_query_args_empty_rejects() {
         let args: Vec<String> = vec![];
-        assert!(parse_query_args(&args).is_err());
+        assert!(parse_query_args(&args, &TEST_QUERY_DEF).is_err());
     }
 }

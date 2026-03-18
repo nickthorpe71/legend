@@ -10,6 +10,7 @@ pub struct CommandDef {
     pub usage: &'static str,
     pub flags: &'static [FlagDef],
     pub positionals: &'static [ArgDef],
+    pub children: &'static [&'static CommandDef],
 }
 
 pub struct FlagDef {
@@ -249,6 +250,7 @@ mod tests {
             about: "Input text",
             required: false,
         }],
+        children: &[],
     };
 
     #[test]

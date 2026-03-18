@@ -1,21 +1,7 @@
 use super::event_log::*;
-use crate::cli::{parse_args, CommandDef, FlagDef};
+use crate::cli::{parse_args, CommandDef};
 use crate::memory::MemoryState;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-static START_CMD: CommandDef = CommandDef {
-    name: "start",
-    about: "Session start: context + categorized in one call",
-    usage: "legend memory start [options] [query]",
-    flags: &[
-        FlagDef { long: "--compact", short: Some('c'), about: "Compact output", takes_value: false },
-        FlagDef { long: "--json", short: Some('j'), about: "JSON output", takes_value: false },
-        FlagDef { long: "--tokens", short: Some('t'), about: "Show token overhead", takes_value: false },
-        FlagDef { long: "--category", short: None, about: "Filter by category", takes_value: true },
-        FlagDef { long: "--query", short: Some('q'), about: "Query string", takes_value: true },
-    ],
-    positionals: &[],
-};
 
 #[derive(Default)]
 struct StartOptions {
@@ -26,8 +12,8 @@ struct StartOptions {
     query: Option<String>,
 }
 
-fn parse_start_args(args: &[String]) -> StartOptions {
-    let parsed = parse_args(args, &START_CMD);
+fn parse_start_args(args: &[String], def: &CommandDef) -> StartOptions {
+    let parsed = parse_args(args, def);
 
     let query = parsed.get("query").map(|s| s.to_string()).or_else(|| {
         if parsed.positional.is_empty() {
@@ -96,8 +82,8 @@ fn refresh_version_cache_background() {
 /// Session log capacity warning threshold (90% of SESSION_LOG_CAPACITY=100)
 const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
 
-pub(super) fn handle_start(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let opts = parse_start_args(args);
+pub(super) fn handle_start(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = parse_start_args(args, def);
     let mut memory = MemoryState::load_or_default()?;
     let mut summary = memory.build_start_summary_with_options(
         opts.compact,
@@ -297,11 +283,27 @@ fn print_token_overhead(output: &str, session_count: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::FlagDef;
+
+    static TEST_START_DEF: CommandDef = CommandDef {
+        name: "start",
+        about: "Session start",
+        usage: "legend memory start [options] [query]",
+        flags: &[
+            FlagDef { long: "--compact", short: Some('c'), about: "Compact output", takes_value: false },
+            FlagDef { long: "--json", short: Some('j'), about: "JSON output", takes_value: false },
+            FlagDef { long: "--tokens", short: Some('t'), about: "Show token overhead", takes_value: false },
+            FlagDef { long: "--category", short: None, about: "Filter by category", takes_value: true },
+            FlagDef { long: "--query", short: Some('q'), about: "Query string", takes_value: true },
+        ],
+        positionals: &[],
+        children: &[],
+    };
 
     #[test]
     fn test_parse_start_args_defaults() {
         let args: Vec<String> = vec![];
-        let opts = parse_start_args(&args);
+        let opts = parse_start_args(&args, &TEST_START_DEF);
         assert!(!opts.compact);
         assert!(!opts.json);
         assert!(!opts.tokens);
@@ -312,36 +314,36 @@ mod tests {
     #[test]
     fn test_parse_start_args_compact() {
         let args = vec!["--compact".to_string()];
-        assert!(parse_start_args(&args).compact);
+        assert!(parse_start_args(&args, &TEST_START_DEF).compact);
         let args = vec!["-c".to_string()];
-        assert!(parse_start_args(&args).compact);
+        assert!(parse_start_args(&args, &TEST_START_DEF).compact);
     }
 
     #[test]
     fn test_parse_start_args_category_space() {
         let args = vec!["--category".to_string(), "bugs".to_string()];
-        let opts = parse_start_args(&args);
+        let opts = parse_start_args(&args, &TEST_START_DEF);
         assert_eq!(opts.category, Some("bugs".to_string()));
     }
 
     #[test]
     fn test_parse_start_args_category_equals() {
         let args = vec!["--category=architecture".to_string()];
-        let opts = parse_start_args(&args);
+        let opts = parse_start_args(&args, &TEST_START_DEF);
         assert_eq!(opts.category, Some("architecture".to_string()));
     }
 
     #[test]
     fn test_parse_start_args_query_equals() {
         let args = vec!["--query=memory system".to_string()];
-        let opts = parse_start_args(&args);
+        let opts = parse_start_args(&args, &TEST_START_DEF);
         assert_eq!(opts.query, Some("memory system".to_string()));
     }
 
     #[test]
     fn test_parse_start_args_json_and_tokens() {
         let args = vec!["--json".to_string(), "--tokens".to_string()];
-        let opts = parse_start_args(&args);
+        let opts = parse_start_args(&args, &TEST_START_DEF);
         assert!(opts.json);
         assert!(opts.tokens);
     }
@@ -349,7 +351,7 @@ mod tests {
     #[test]
     fn test_parse_start_args_positional_query() {
         let args = vec!["some".to_string(), "topic".to_string()];
-        let opts = parse_start_args(&args);
+        let opts = parse_start_args(&args, &TEST_START_DEF);
         assert_eq!(opts.query, Some("some topic".to_string()));
     }
 

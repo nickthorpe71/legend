@@ -1,21 +1,10 @@
-use crate::cli::{parse_args, print_command_help, CommandDef, FlagDef};
+use crate::cli::{parse_args, print_command_help, CommandDef};
 use crate::commands::discover;
 use crate::memory::MemoryState;
 use crate::memory::keywords;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
-
-pub static COMMAND: CommandDef = CommandDef {
-    name: "init",
-    about: "Initialize Legend in a new project",
-    usage: "legend init [--discover] [--help]",
-    flags: &[
-        FlagDef { long: "--discover", short: None, about: "Scan existing project to pre-fill memory context", takes_value: false },
-        FlagDef { long: "--help", short: Some('h'), about: "Show this help message", takes_value: false },
-    ],
-    positionals: &[],
-};
 
 const LEGEND_MARKER_START: &str = "<!-- legend-start -->";
 const LEGEND_MARKER_END: &str = "<!-- legend-end -->";
@@ -25,11 +14,11 @@ const LEGEND_MARKER_END: &str = "<!-- legend-end -->";
 /// Creates `.legend/` directory, auto-discovers features, sets up
 /// agent hooks, and generates agent instruction files.
 /// Safe to run multiple times - won't error if directory already exists.
-pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let parsed = parse_args(args, &COMMAND);
+pub fn handle_init(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = parse_args(args, def);
 
     if parsed.has("help") {
-        print_command_help(&COMMAND);
+        print_command_help(def);
         return Ok(());
     }
 
@@ -45,7 +34,10 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
         if discover_requested {
             println!("  Re-scanning project context...");
-            let _ = discover::handle_discover(&["--apply".to_string()]);
+            if let Ok(report) = discover::run_discovery(Path::new(".")) {
+                let _ = discover::onboard_project(Path::new("."), &report);
+                println!("✓ Project onboarding complete. High-signal context ingested into Legend.");
+            }
         }
 
         // Migrate/refresh memory store to latest format
@@ -82,10 +74,15 @@ pub fn handle_init(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     let report = discover::run_discovery(Path::new(".")).ok();
 
-    if report.is_some() {
+    if let Some(ref report) = report {
         // Run discovery automatically on first init
         println!("  First-time initialization: Ingesting high-signal context into memory...");
-        let _ = discover::handle_discover(&["--apply".to_string()]);
+        let _ = discover::onboard_project(Path::new("."), report);
+        println!("✓ Project onboarding complete. High-signal context ingested into Legend.");
+        println!("\nNext Steps for AI Agent:");
+        println!("1. Run 'legend memory start' to see the ingested context.");
+        println!("2. Use 'legend memory query' to explore specific modules or features.");
+        println!("3. If significant architectural details are missing, manually 'tick' them.");
     }
 
     // Seed keywords based on project context

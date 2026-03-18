@@ -10,8 +10,6 @@ mod stats;
 mod task;
 mod tick;
 
-use crate::cli::CommandDef;
-
 // ---------------------------------------------------------------------------
 // Public re-exports (keeps mcp.rs and other consumers working unchanged)
 // ---------------------------------------------------------------------------
@@ -24,36 +22,27 @@ pub use helpers::{append_to_architecture_md, is_noise_tick, truncate_text};
 pub use start::format_start_summary_markdown;
 
 // ---------------------------------------------------------------------------
-// Command definition
-// ---------------------------------------------------------------------------
-
-pub static COMMAND: CommandDef = CommandDef {
-    name: "memory",
-    about: "Hierarchical memory (context, decisions, history)",
-    usage: "legend memory <subcommand> [options]",
-    flags: &[],
-    positionals: &[],
-};
-
-// ---------------------------------------------------------------------------
 // Subcommand dispatch
 // ---------------------------------------------------------------------------
 
-pub fn handle_memory(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_memory(args: &[String], def: &crate::cli::CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         print_memory_help();
         return Ok(());
     }
 
-    match args[0].as_str() {
-        "tick" => tick::handle_tick(&args[1..]),
-        "query" => query::handle_query(&args[1..]),
-        "start" => start::handle_start(&args[1..]),
+    let sub = args[0].as_str();
+    let child_def = def.children.iter().find(|c| c.name == sub);
+
+    match sub {
+        "tick" => tick::handle_tick(&args[1..], child_def.expect("tick def")),
+        "query" => query::handle_query(&args[1..], child_def.expect("query def")),
+        "start" => start::handle_start(&args[1..], child_def.expect("start def")),
+        "sessions" => sessions::handle_sessions(&args[1..], child_def.expect("sessions def")),
         "stats" => stats::handle_stats(),
         "reset" => simple::handle_reset(),
         "consolidate" => consolidate::handle_consolidate(),
         "context" => simple::handle_context(),
-        "sessions" => sessions::handle_sessions(&args[1..]),
         "reinforce" => reinforce::handle_reinforce(&args[1..]),
         "dump" => simple::handle_dump(),
         "task" => task::handle_task(&args[1..]),
