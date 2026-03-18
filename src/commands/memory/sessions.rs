@@ -1,23 +1,13 @@
-use crate::cli::{parse_args, CommandDef, FlagDef};
+use crate::cli::{parse_args, CommandDef};
 use crate::memory::MemoryState;
-
-static SESSIONS_CMD: CommandDef = CommandDef {
-    name: "sessions",
-    about: "Show session log entries",
-    usage: "legend memory sessions [--all] [count]",
-    flags: &[
-        FlagDef { long: "--all", short: Some('a'), about: "Include empty entries", takes_value: false },
-    ],
-    positionals: &[],
-};
 
 struct SessionsOptions {
     count: usize,
     show_all: bool,
 }
 
-fn parse_sessions_args(args: &[String]) -> SessionsOptions {
-    let parsed = parse_args(args, &SESSIONS_CMD);
+fn parse_sessions_args(args: &[String], def: &CommandDef) -> SessionsOptions {
+    let parsed = parse_args(args, def);
 
     let count = parsed
         .positional
@@ -31,8 +21,8 @@ fn parse_sessions_args(args: &[String]) -> SessionsOptions {
     }
 }
 
-pub(super) fn handle_sessions(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let opts = parse_sessions_args(args);
+pub(super) fn handle_sessions(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = parse_sessions_args(args, def);
 
     let memory = MemoryState::load_or_default()?;
     let recent = memory.recent_sessions(opts.count);

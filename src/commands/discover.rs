@@ -1,21 +1,9 @@
-use crate::cli::{parse_args, ArgDef, CommandDef, FlagDef};
+use crate::cli::{parse_args, CommandDef};
 use crate::memory::MemoryState;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-pub static COMMAND: CommandDef = CommandDef {
-    name: "discover",
-    about: "Scan project to suggest features and context",
-    usage: "legend discover [path] [--apply]",
-    flags: &[
-        FlagDef { long: "--apply", short: None, about: "Ingest context into Legend memory", takes_value: false },
-    ],
-    positionals: &[
-        ArgDef { name: "PATH", about: "Project path to scan", required: false },
-    ],
-};
 
 #[derive(Serialize)]
 pub struct DiscoveryReport {
@@ -189,10 +177,10 @@ fn generate_tasks(
 ///
 /// NOTE: `legend discover` is deprecated. Use `legend init` instead, which
 /// includes discovery automatically on first init.
-pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_discover(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[Note: `legend discover` is deprecated. Use `legend init` which includes discovery automatically.]");
 
-    let parsed = parse_args(args, &COMMAND);
+    let parsed = parse_args(args, def);
     let apply = parsed.has("apply");
     let path = parsed
         .positional
@@ -239,7 +227,7 @@ pub fn handle_discover(args: &[String]) -> Result<(), Box<dyn std::error::Error>
 }
 
 /// Ingest high-signal context into Legend's memory.
-fn onboard_project(
+pub(crate) fn onboard_project(
     root: &Path,
     report: &DiscoveryReport,
 ) -> Result<(), Box<dyn std::error::Error>> {

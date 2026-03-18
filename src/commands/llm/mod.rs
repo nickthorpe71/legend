@@ -1,6 +1,6 @@
 mod helpers;
 
-use crate::cli::{parse_args, CommandDef, FlagDef};
+use crate::cli::{parse_args, CommandDef};
 use crate::memory::MemoryState;
 use helpers::*;
 use serde_json::{json, Value};
@@ -8,26 +8,21 @@ use std::cmp::Ordering;
 
 pub use helpers::LlmAutoTriggerSummary;
 
-pub static COMMAND: CommandDef = CommandDef {
-    name: "llm",
-    about: "Policy-driven LLM task orchestration and validation",
-    usage: "legend llm <subcommand> [options]",
-    flags: &[],
-    positionals: &[],
-};
-
-pub fn handle_llm(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_llm(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         print_llm_help();
         return Ok(());
     }
 
-    match args[0].as_str() {
+    let sub = args[0].as_str();
+    let child_def = def.children.iter().find(|c| c.name == sub);
+
+    match sub {
         "signals" => handle_signals(&args[1..]),
-        "task" => handle_task(&args[1..]),
-        "apply" => handle_apply(&args[1..]),
-        "list" => handle_list(&args[1..]),
-        "show" => handle_show(&args[1..]),
+        "task" => handle_task(&args[1..], child_def.expect("task def")),
+        "apply" => handle_apply(&args[1..], child_def.expect("apply def")),
+        "list" => handle_list(&args[1..], child_def.expect("list def")),
+        "show" => handle_show(&args[1..], child_def.expect("show def")),
         _ => {
             print_llm_help();
             Ok(())
@@ -103,7 +98,7 @@ fn handle_signals(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_task(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_task(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("Usage: legend llm task <entity_extract|cluster_summary|query_rerank> [--text <text> | --input-json <json>] [--source <label>]".into());
     }
@@ -111,19 +106,7 @@ fn handle_task(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let kind = LlmTaskKind::parse(&args[0])
         .ok_or("Invalid task kind. Use one of: entity_extract, cluster_summary, query_rerank")?;
 
-    static TASK_CMD: CommandDef = CommandDef {
-        name: "task",
-        about: "Create a typed LLM task payload",
-        usage: "legend llm task <kind> [--text <text>] [--input-json <json>] [--source <label>]",
-        flags: &[
-            FlagDef { long: "--input-json", short: None, about: "JSON input payload", takes_value: true },
-            FlagDef { long: "--text", short: None, about: "Text input", takes_value: true },
-            FlagDef { long: "--source", short: None, about: "Source label", takes_value: true },
-        ],
-        positionals: &[],
-    };
-
-    let parsed = parse_args(&args[1..], &TASK_CMD);
+    let parsed = parse_args(&args[1..], def);
     let input_json: Option<Value> = parsed
         .get("input-json")
         .map(|s| serde_json::from_str(s))
@@ -189,22 +172,12 @@ fn handle_task(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_apply(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_apply(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         return Err("Usage: legend llm apply <task_id> [--result <json>]".into());
     }
 
-    static APPLY_CMD: CommandDef = CommandDef {
-        name: "apply",
-        about: "Validate and apply a model result",
-        usage: "legend llm apply <task_id> [--result <json>]",
-        flags: &[
-            FlagDef { long: "--result", short: None, about: "JSON result payload", takes_value: true },
-        ],
-        positionals: &[],
-    };
-
-    let parsed = parse_args(args, &APPLY_CMD);
+    let parsed = parse_args(args, def);
     let task_id = parsed
         .positional
         .first()
@@ -317,16 +290,8 @@ fn handle_apply(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_list(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    static LIST_CMD: CommandDef = CommandDef {
-        name: "list",
-        about: "Show recent LLM tasks",
-        usage: "legend llm list [limit]",
-        flags: &[],
-        positionals: &[],
-    };
-
-    let parsed = parse_args(args, &LIST_CMD);
+fn handle_list(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = parse_args(args, def);
     let limit = parsed
         .positional
         .first()
@@ -356,16 +321,8 @@ fn handle_list(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_show(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    static SHOW_CMD: CommandDef = CommandDef {
-        name: "show",
-        about: "Show full task record",
-        usage: "legend llm show <task_id>",
-        flags: &[],
-        positionals: &[],
-    };
-
-    let parsed = parse_args(args, &SHOW_CMD);
+fn handle_show(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = parse_args(args, def);
     let task_id = parsed
         .positional
         .first()

@@ -1,21 +1,12 @@
-use crate::cli::CommandDef;
 use crate::memory::extract::is_stopword;
 use crate::memory::MemoryState;
 use std::collections::HashSet;
-
-pub static COMMAND: CommandDef = CommandDef {
-    name: "dev",
-    about: "Developer-only debug commands",
-    usage: "legend dev <subcommand>",
-    flags: &[],
-    positionals: &[],
-};
 
 // ---------------------------------------------------------------------------
 // Dev-only commands — not exposed in user/LLM docs or `legend help`
 // ---------------------------------------------------------------------------
 
-pub fn handle_dev(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_dev(args: &[String], _def: &crate::cli::CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     match args.first().map(|s| s.as_str()) {
         Some("prune-noise") => handle_prune_noise(),
         _ => {

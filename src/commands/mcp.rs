@@ -3,20 +3,10 @@ use super::memory::{
     log_event_rich, truncate_text, EventData, GraphHit, MatchedEntry, QueryEventData,
     StartEventData, TickEventData,
 };
-use crate::cli::{parse_args, CommandDef, FlagDef};
+use crate::cli::{parse_args, CommandDef};
 use crate::memory::MemoryState;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
-
-pub static COMMAND: CommandDef = CommandDef {
-    name: "mcp-serve",
-    about: "Run MCP stdio server for AI tool integration",
-    usage: "legend mcp-serve [--cwd <path>]",
-    flags: &[
-        FlagDef { long: "--cwd", short: None, about: "Working directory", takes_value: true },
-    ],
-    positionals: &[],
-};
 
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
@@ -469,8 +459,8 @@ fn mcp_main_loop() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Entry point for `legend mcp-serve`
-pub fn handle_mcp_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let parsed = parse_args(args, &COMMAND);
+pub fn handle_mcp_serve(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed = parse_args(args, def);
 
     if let Some(cwd) = parsed.get("cwd") {
         std::env::set_current_dir(cwd)?;
