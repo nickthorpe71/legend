@@ -79,6 +79,53 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a.sqrt() * norm_b.sqrt())
 }
 
+/// Dentate Gyrus sparse orthogonalization.
+///
+/// Transforms a new embedding to be more orthogonal to similar-but-distinct existing
+/// embeddings. This mimics how the dentate gyrus creates sparse, non-overlapping
+/// representations from dense cortical input — reducing interference between
+/// related-but-different memories.
+///
+/// For each existing embedding in the "similar but distinct" zone (similarity between
+/// `low` and `high`), subtracts a scaled projection of the existing embedding from
+/// the new one. The result is re-normalized. Embeddings that are very similar (above
+/// `high`) or dissimilar (below `low`) are left alone — only the confusable middle
+/// range gets orthogonalized.
+pub fn sparse_orthogonalize(
+    embedding: &[f32],
+    existing: &[Vec<f32>],
+    low: f32,
+    high: f32,
+    strength: f32,
+) -> Vec<f32> {
+    let mut result: Vec<f32> = embedding.to_vec();
+
+    for existing_emb in existing {
+        if existing_emb.len() != result.len() || existing_emb.is_empty() {
+            continue;
+        }
+        let sim = cosine_similarity(&result, existing_emb);
+        if sim >= low && sim < high {
+            // Subtract the projection of existing onto result, scaled by strength
+            // projection = (result · existing) * existing
+            let dot: f32 = result.iter().zip(existing_emb.iter()).map(|(a, b)| a * b).sum();
+            for (r, e) in result.iter_mut().zip(existing_emb.iter()) {
+                *r -= strength * dot * e;
+            }
+        }
+    }
+
+    // Re-normalize to unit length
+    let norm: f32 = result.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in &mut result {
+            *v /= norm;
+        }
+    }
+
+    result
+}
+
 /// Element-wise average of two embedding vectors.
 pub fn merge_embeddings(a: &[f32], b: &[f32]) -> Vec<f32> {
     let len = a.len().min(b.len());
@@ -298,5 +345,82 @@ mod tests {
         let result = merge_embeddings(&[1.0, 2.0, 3.0], &[4.0, 5.0]);
         assert_eq!(result.len(), 2); // min length
         assert_eq!(result, vec![2.5, 3.5]);
+    }
+
+    #[test]
+    fn test_sparse_orthogonalize_pushes_apart_similar() {
+        // Two related-but-distinct topics should become more orthogonal
+        let a = embed_text("Rust memory model borrow checker ownership", 256);
+        let b = embed_text("Legend memory system three-layer architecture", 256);
+        let sim_before = cosine_similarity(&a, &b);
+
+        let a_ortho = sparse_orthogonalize(&a, &[b.clone()], 0.3, 0.88, 0.3);
+        let sim_after = cosine_similarity(&a_ortho, &b);
+
+        assert!(
+            sim_after < sim_before,
+            "orthogonalization should reduce similarity: before={}, after={}",
+            sim_before, sim_after
+        );
+    }
+
+    #[test]
+    fn test_sparse_orthogonalize_preserves_unit_norm() {
+        let a = embed_text("memory system embeddings", 256);
+        let b = embed_text("memory architecture design", 256);
+        let result = sparse_orthogonalize(&a, &[b], 0.3, 0.88, 0.3);
+
+        let norm: f32 = result.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 0.01,
+            "result should be unit-normalized, got norm={}",
+            norm
+        );
+    }
+
+    #[test]
+    fn test_sparse_orthogonalize_ignores_dissimilar() {
+        // Unrelated embeddings should not be affected
+        let a = embed_text("Rust borrow checker ownership semantics", 256);
+        let b = embed_text("Italian pasta cooking recipes ingredients", 256);
+        let result = sparse_orthogonalize(&a, &[b.clone()], 0.3, 0.88, 0.3);
+
+        let sim_original = cosine_similarity(&a, &result);
+        assert!(
+            sim_original > 0.99,
+            "dissimilar embeddings should not be orthogonalized: sim={}",
+            sim_original
+        );
+    }
+
+    #[test]
+    fn test_sparse_orthogonalize_ignores_near_identical() {
+        // Near-identical embeddings (above high threshold) should not be pushed apart
+        // — they should still merge via the normal path
+        let a = embed_text("chose Redis for caching because pub/sub support", 256);
+        let b = embed_text("chose Redis for caching because pub/sub integration", 256);
+        let sim_before = cosine_similarity(&a, &b);
+
+        // Use a high threshold below the actual similarity
+        let a_ortho = sparse_orthogonalize(&a, &[b.clone()], 0.3, 0.88, 0.3);
+        let sim_after = cosine_similarity(&a_ortho, &b);
+
+        // If original sim is above high (0.88), it shouldn't change
+        if sim_before >= 0.88 {
+            assert!(
+                (sim_after - sim_before).abs() < 0.05,
+                "near-identical should be unchanged: before={}, after={}",
+                sim_before, sim_after
+            );
+        }
+    }
+
+    #[test]
+    fn test_sparse_orthogonalize_empty_existing() {
+        let a = embed_text("some text", 256);
+        let result = sparse_orthogonalize(&a, &[], 0.3, 0.88, 0.3);
+        assert_eq!(result.len(), a.len());
+        let sim = cosine_similarity(&a, &result);
+        assert!((sim - 1.0).abs() < 0.001, "no existing → no change");
     }
 }

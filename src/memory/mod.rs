@@ -4,7 +4,7 @@ pub mod keyword_cache;
 pub mod keywords;
 pub mod summarize;
 
-use embed::{compute_salience, cosine_similarity, embed_text, merge_embeddings};
+use embed::{compute_salience, cosine_similarity, embed_text, merge_embeddings, sparse_orthogonalize};
 use extract::extract_entities;
 use keyword_cache::KeywordCache;
 use summarize::{chunk_text, summarize_group, summarize_single, summarize_text};
@@ -864,9 +864,20 @@ impl MemoryState {
         let mut result_similarity: Option<f32> = None;
 
         for chunk in chunk_text(text) {
-            let embedding = embed_text(&chunk, self.config.embedding_dim);
+            let raw_embedding = embed_text(&chunk, self.config.embedding_dim);
             let salience = compute_salience(&chunk, &self.keyword_cache);
             let refs = extract_memory_refs_from_text(&chunk);
+
+            // Dentate Gyrus sparse orthogonalization: push the new embedding away from
+            // similar-but-distinct existing L2 embeddings to reduce interference.
+            let existing_embeddings: Vec<Vec<f32>> = self.short_term.iter().map(|e| e.embedding.clone()).collect();
+            let embedding = sparse_orthogonalize(
+                &raw_embedding,
+                &existing_embeddings,
+                self.config.theta_low,    // low: only orthogonalize in the confusable zone
+                self.config.theta_high,   // high: near-identical entries should still merge
+                0.3,                      // strength: moderate push-away
+            );
 
             // Always push into working memory (L1)
             let wm_id = self.push_working_memory(&chunk, &embedding, salience);
@@ -3152,6 +3163,37 @@ mod tests {
             state.short_term.len() >= 2,
             "similar-but-distinct topics should be kept separate (dentate gyrus pattern separation), got {}",
             state.short_term.len()
+        );
+    }
+
+    #[test]
+    fn test_orthogonalization_reduces_embedding_overlap_in_l2() {
+        // Dentate Gyrus: after orthogonalization, L2 embeddings for related-but-distinct
+        // entries should be less similar than their raw n-gram embeddings would be.
+        let mut state = MemoryState::default();
+        state.tick("DECISION: Rust memory model borrow checker ownership semantics");
+        state.tick("DECISION: Legend memory system three-layer architecture design patterns");
+
+        assert!(
+            state.short_term.len() >= 2,
+            "should have 2 separate L2 entries, got {}",
+            state.short_term.len()
+        );
+
+        // The stored L2 embeddings should be more orthogonal than raw embeddings
+        let raw_a = embed_text("DECISION: Rust memory model borrow checker ownership semantics", state.config.embedding_dim);
+        let raw_b = embed_text("DECISION: Legend memory system three-layer architecture design patterns", state.config.embedding_dim);
+        let raw_sim = cosine_similarity(&raw_a, &raw_b);
+
+        let stored_sim = cosine_similarity(
+            &state.short_term[0].embedding,
+            &state.short_term[1].embedding,
+        );
+
+        assert!(
+            stored_sim < raw_sim,
+            "stored embeddings should be more orthogonal than raw: stored={}, raw={}",
+            stored_sim, raw_sim
         );
     }
 
