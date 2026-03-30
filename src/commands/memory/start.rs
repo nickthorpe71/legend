@@ -118,6 +118,9 @@ pub(super) fn handle_start(args: &[String], def: &CommandDef) -> Result<(), Box<
         }
     }
 
+    // Flush working memory: promote qualifying entries to L2, then clear L1
+    memory.flush_working_memory();
+
     let event_data = EventData::Start(StartEventData {
         clock: memory.clock,
         short_term_count: memory.short_term.len(),

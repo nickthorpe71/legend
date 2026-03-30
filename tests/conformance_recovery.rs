@@ -14,7 +14,7 @@ fn corrupt_store_is_backed_up_and_falls_back_to_empty_state() {
 
     let output = harness.cmd_ok(&["memory", "stats"]);
 
-    assert!(output.stdout.contains("Immediate buffer: 0"));
+    assert!(output.stdout.contains("Working memory (L1): 0"));
     assert!(output.stdout.contains("Short-term entries: 0"));
     assert!(output.stderr.contains("Warning: failed to load memory store"));
     assert!(output.stderr.contains("Backup saved to .legend/memory.lz4.corrupt"));
@@ -47,7 +47,8 @@ fn msgpack_fixture_missing_new_fields_loads_without_data_loss() {
 
     let dump = harness.output_json(&["memory", "dump"]);
     assert_eq!(dump["clock"], 100);
-    assert_eq!(dump["immediate"][0], "hello");
+    // Old `immediate` field is discarded during migration; working_memory starts empty
+    assert!(dump["working_memory"].as_array().unwrap().is_empty());
 
     let short_term = dump["short_term"].as_array().expect("short_term array");
     assert_eq!(short_term.len(), 1);

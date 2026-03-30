@@ -119,7 +119,7 @@ fn stats_and_sessions_reflect_recent_activity() {
     let normalized_sessions = harness.normalize(&sessions.stdout);
 
     assert!(stats.stdout.contains("Memory stats:"));
-    assert!(stats.stdout.contains("Immediate buffer:"));
+    assert!(stats.stdout.contains("Working memory (L1):"));
     assert!(stats.stdout.contains("Short-term entries:"));
     assert!(stats.stdout.contains("Session quality (current session):"));
     assert!(stats.stdout.contains("Meaningful ticks: 2 (100%)"));
