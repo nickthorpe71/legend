@@ -36,8 +36,11 @@ const NODE_WEIGHT_BASE: f32 = 0.2;
 const PRUNE_THRESHOLD: f32 = 0.1;
 const PRUNE_USAGE_WEIGHT: f32 = 0.05;
 const PRUNE_AGE_WEIGHT: f32 = 0.001;
-/// Minimum word-overlap ratio required to merge (prevents unrelated entries collapsing).
-const MERGE_WORD_OVERLAP_THRESHOLD: f32 = 0.3;
+/// Minimum word-overlap Jaccard ratio required to merge (prevents unrelated entries collapsing).
+/// Dentate Gyrus pattern separation: the hippocampus actively separates overlapping patterns
+/// to prevent interference. This threshold, combined with theta_low, ensures that entries
+/// sharing vocabulary but describing distinct topics remain as separate episodic traces.
+const MERGE_WORD_OVERLAP_THRESHOLD: f32 = 0.4;
 /// Maximum number of session log entries to keep.
 const SESSION_LOG_CAPACITY: usize = 100;
 /// How much a reinforcement signal scales graph node weight adjustment.
@@ -100,8 +103,11 @@ pub struct MemoryConfig {
     /// Dimensionality of n-gram embedding vectors.
     pub embedding_dim: usize,
     /// Similarity above this → reinforce existing entry (no new insert).
+    /// CA3 pattern completion: near-identical cues recall the same memory trace.
     pub theta_high: f32,
-    /// Similarity above this but below theta_high → merge embeddings.
+    /// Similarity above this but below theta_high → merge embeddings (EMA blend).
+    /// Dentate Gyrus pattern separation: raised to 0.72 to prevent similar-but-distinct
+    /// topics from collapsing. Only genuinely overlapping memories should merge.
     pub theta_low: f32,
 }
 
@@ -111,8 +117,8 @@ impl Default for MemoryConfig {
             immediate_capacity: 10,
             short_term_capacity: 1024,
             embedding_dim: 256,
-            theta_high: 0.92,
-            theta_low: 0.55,
+            theta_high: 0.88,
+            theta_low: 0.72,
         }
     }
 }
@@ -3131,6 +3137,34 @@ mod tests {
         assert!(
             state.short_term.len() >= 2,
             "unrelated ticks should create separate entries, got {}",
+            state.short_term.len()
+        );
+    }
+
+    #[test]
+    fn test_pattern_separation_preserves_similar_but_distinct() {
+        // Dentate Gyrus pattern separation: topics sharing vocabulary ("memory")
+        // but describing different subjects must remain as separate episodic traces.
+        let mut state = MemoryState::default();
+        state.tick("DECISION: Rust memory model borrow checker ownership semantics");
+        state.tick("DECISION: Legend memory system three-layer architecture design");
+        assert!(
+            state.short_term.len() >= 2,
+            "similar-but-distinct topics should be kept separate (dentate gyrus pattern separation), got {}",
+            state.short_term.len()
+        );
+    }
+
+    #[test]
+    fn test_near_identical_entries_still_merge() {
+        // CA3 pattern completion: near-identical cues should recall the same trace.
+        let mut state = MemoryState::default();
+        state.tick("DECISION: Chose Redis for caching because it has better pub/sub support");
+        state.tick("DECISION: Chose Redis for caching because it has better pub/sub integration");
+        assert_eq!(
+            state.short_term.len(),
+            1,
+            "near-identical entries should merge, got {}",
             state.short_term.len()
         );
     }
