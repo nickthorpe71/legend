@@ -282,7 +282,7 @@ fn dump_command_returns_full_state() {
         dump["session_log"].is_array(),
         "dump should include session_log"
     );
-    assert!(dump["immediate"].is_array(), "dump should include immediate");
+    assert!(dump["working_memory"].is_array(), "dump should include working_memory");
 }
 
 #[test]

@@ -70,6 +70,19 @@ pub(super) fn handle_query(args: &[String], def: &CommandDef) -> Result<(), Box<
 }
 
 fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
+    let working_memory_with_reasons: Vec<serde_json::Value> = context
+        .working_memory
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "text": m.text,
+                "similarity": (m.similarity * 1000.0).round() / 1000.0,
+                "reason": "matched in working memory (L1), rehearsal incremented",
+            })
+        })
+        .collect();
+
     let short_term_with_reasons: Vec<serde_json::Value> = context
         .short_term
         .iter()
@@ -115,6 +128,7 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
         .collect();
 
     let result = serde_json::json!({
+        "working_memory": working_memory_with_reasons,
         "short_term": short_term_with_reasons,
         "long_term": long_term_with_reasons,
         "primed_via_edges": primed_count,
@@ -126,10 +140,12 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
 }
 
 fn print_context(context: MemoryContext) {
+    let working_memory: Vec<&str> = context.working_memory.iter().map(|m| m.text.as_str()).collect();
     let memories: Vec<&str> = context.short_term.iter().map(|m| m.text.as_str()).collect();
     let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
 
     let result = serde_json::json!({
+        "working_memory": working_memory,
         "memories": memories,
         "related_topics": related_topics,
     });

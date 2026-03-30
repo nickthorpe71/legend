@@ -4,7 +4,7 @@ use crate::memory::MemoryState;
 pub(super) fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
     let memory = MemoryState::load_or_default()?;
     println!("Memory stats:");
-    println!("  Immediate buffer: {}", memory.immediate.len());
+    println!("  Working memory (L1): {}", memory.working_memory.len());
     println!("  Short-term entries: {}", memory.short_term.len());
     println!("  Long-term nodes: {}", memory.long_term.nodes.len());
     println!("  Long-term edges: {}", memory.long_term.edges.len());

@@ -101,8 +101,8 @@ fn git_merge_driver_merges_memory_state_from_both_sides() {
             },
             FixtureShortTermEntry {
                 id: 2,
-                text: "theirs memory entry".into(),
-                summary: "theirs memory entry".into(),
+                text: "DECISION: theirs memory entry".into(),
+                summary: "DECISION: theirs memory entry".into(),
                 embedding: vec![0.3, 0.2, 0.1],
                 last_access: 2,
                 usage: 1,
@@ -122,7 +122,7 @@ fn git_merge_driver_merges_memory_state_from_both_sides() {
             },
             FixtureSessionEntry {
                 timestamp: 2,
-                text: "theirs memory entry".into(),
+                text: "DECISION: theirs memory entry".into(),
             },
         ],
     );
@@ -149,6 +149,6 @@ fn git_merge_driver_merges_memory_state_from_both_sides() {
     assert!(
         short_term
             .iter()
-            .any(|entry| entry["text"] == "theirs memory entry")
+            .any(|entry| entry["text"].as_str().unwrap_or("").contains("theirs memory entry"))
     );
 }

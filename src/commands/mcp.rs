@@ -180,6 +180,9 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
         }
     }
 
+    // Flush working memory: promote qualifying entries to L2, then clear L1
+    memory.flush_working_memory();
+
     // Log event
     let event_data = EventData::Start(StartEventData {
         clock: memory.clock,
@@ -307,10 +310,12 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
     });
     log_event_rich("query", topic, Some(event_data));
 
+    let working_memory: Vec<&str> = context.working_memory.iter().map(|m| m.text.as_str()).collect();
     let memories: Vec<&str> = context.short_term.iter().map(|m| m.text.as_str()).collect();
     let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
 
     let result = json!({
+        "working_memory": working_memory,
         "memories": memories,
         "related_topics": related_topics,
     });
@@ -348,7 +353,7 @@ fn tool_memory_stats() -> Result<String, String> {
     let memory = MemoryState::load_or_default().map_err(|e| e.to_string())?;
 
     let mut out = String::new();
-    out.push_str(&format!("Immediate buffer: {}\n", memory.immediate.len()));
+    out.push_str(&format!("Working memory (L1): {}\n", memory.working_memory.len()));
     out.push_str(&format!("Short-term entries: {}\n", memory.short_term.len()));
     out.push_str(&format!(
         "Long-term nodes: {}\n",

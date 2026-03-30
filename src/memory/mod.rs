@@ -54,6 +54,10 @@ const AUTO_REINFORCE_SCALE: f32 = 0.03;
 const RECONSOLIDATION_THRESHOLD: f32 = 0.35;
 /// Minimum cosine similarity for a query result to be returned (noise floor).
 const MIN_QUERY_SIMILARITY: f32 = 0.15;
+/// Minimum salience for a working memory entry to be promoted to L2 (short-term).
+/// Decision keywords: 0.3+ → PROMOTES, Bug/blocker: 0.4+ → PROMOTES,
+/// Architecture: 0.25 → PROMOTES (at threshold), Plain text: 0.05 → STAYS IN L1.
+const PROMOTION_SALIENCE_THRESHOLD: f32 = 0.25;
 /// Bonus added per non-stopword query keyword found in an entry's text.
 const KEYWORD_MATCH_BONUS: f32 = 0.05;
 /// Maximum total keyword bonus that can be applied.
@@ -89,7 +93,7 @@ const GRAPH_NORM_INTERVAL: u64 = 5;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
-    /// Max items in the immediate (FIFO) buffer.
+    /// Max items in working memory (neuroscience-aligned ~7±2).
     pub immediate_capacity: usize,
     /// Max entries in the short-term vector store.
     pub short_term_capacity: usize,
@@ -104,7 +108,7 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            immediate_capacity: 256,
+            immediate_capacity: 10,
             short_term_capacity: 1024,
             embedding_dim: 256,
             theta_high: 0.92,
@@ -113,12 +117,12 @@ impl Default for MemoryConfig {
     }
 }
 
-/// Three-layer memory: immediate FIFO buffer, short-term vector store, long-term knowledge graph.
+/// Three-layer memory: working memory buffer, short-term vector store, long-term knowledge graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryState {
     pub config: MemoryConfig,
-    pub immediate: VecDeque<String>,
+    pub working_memory: Vec<WorkingMemoryEntry>,
     pub short_term: Vec<ShortTermEntry>,
     pub long_term: GraphMemory,
     pub clock: u64,
@@ -208,6 +212,19 @@ pub struct MemoryRef {
     /// Short snippet for re-anchoring when lines drift.
     #[serde(default)]
     pub snippet: String,
+}
+
+/// A working memory entry — limited capacity, queried first, gates L2 encoding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkingMemoryEntry {
+    pub id: u64,
+    pub text: String,
+    pub embedding: Vec<f32>,
+    pub salience: f32,
+    pub tick_created: u64,
+    pub rehearsal_count: u32,
+    /// Prevents double-insertion into L2 when attention gate already promoted.
+    pub promoted: bool,
 }
 
 const MAX_REFS_PER_ENTRY: usize = 8;
@@ -388,6 +405,9 @@ pub struct SessionEntry {
 pub struct MemoryContext {
     pub short_term: Vec<MemorySnippet>,
     pub long_term: Vec<GraphNodeSummary>,
+    /// Matches from working memory (L1), scanned before L2.
+    #[serde(default)]
+    pub working_memory: Vec<MemorySnippet>,
 }
 
 /// Result of a tick operation, providing feedback on what action was taken.
@@ -475,7 +495,7 @@ impl Default for MemoryState {
     fn default() -> Self {
         Self {
             config: MemoryConfig::default(),
-            immediate: VecDeque::new(),
+            working_memory: Vec::new(),
             short_term: Vec::new(),
             long_term: GraphMemory::default(),
             clock: 0,
@@ -828,6 +848,7 @@ impl MemoryState {
         let mut last_context = MemoryContext {
             short_term: Vec::new(),
             long_term: Vec::new(),
+            working_memory: Vec::new(),
         };
 
         // Track the action taken (priority: created > reconsolidated > merged)
@@ -837,87 +858,106 @@ impl MemoryState {
         let mut result_similarity: Option<f32> = None;
 
         for chunk in chunk_text(text) {
-            self.push_immediate(&chunk);
-
             let embedding = embed_text(&chunk, self.config.embedding_dim);
             let salience = compute_salience(&chunk, &self.keyword_cache);
             let refs = extract_memory_refs_from_text(&chunk);
 
-            // --- Reconsolidation: check labile entries first ---
-            // If a recently-retrieved memory is labile and the new text is related,
-            // update that memory in-place instead of creating a duplicate.
-            if let Some(reconsolidated_id) =
-                self.try_reconsolidate(&chunk, &embedding, salience, refs.clone())
-            {
-                // Update graph with the new text context
-                self.update_graph(&chunk, salience);
+            // Always push into working memory (L1)
+            let wm_id = self.push_working_memory(&chunk, &embedding, salience);
+
+            // --- Attention gate: only high-salience ticks promote to L2 ---
+            if salience >= PROMOTION_SALIENCE_THRESHOLD {
+                // --- Reconsolidation: check labile entries first ---
+                // If a recently-retrieved memory is labile and the new text is related,
+                // update that memory in-place instead of creating a duplicate.
+                if let Some(reconsolidated_id) =
+                    self.try_reconsolidate(&chunk, &embedding, salience, refs.clone())
+                {
+                    // Update graph with the new text context
+                    self.update_graph(&chunk, salience);
+                    last_context = self.retrieve_context(&chunk);
+                    // Mark L1 entry as promoted
+                    if let Some(wm_entry) = self.working_memory.iter_mut().find(|e| e.id == wm_id) {
+                        wm_entry.promoted = true;
+                    }
+                    // Track reconsolidation
+                    result_action = "reconsolidated".to_string();
+                    result_entry_id = reconsolidated_id;
+                    result_matched = Some(reconsolidated_id);
+                    continue;
+                }
+
+                // --- Normal path: match/merge/insert ---
+                let (best_id, best_sim) = self.find_best_match(&embedding);
+
+                // Diversity gate: even at high similarity, if word overlap is low the
+                // texts are semantically distinct and should not be merged.
+                let diversity_pass = if best_sim >= self.config.theta_low {
+                    self.short_term
+                        .iter()
+                        .find(|e| e.id == best_id)
+                        .map(|e| word_overlap(&e.text, &chunk) >= MERGE_WORD_OVERLAP_THRESHOLD)
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
+                match best_sim {
+                    s if s >= self.config.theta_high && diversity_pass => {
+                        if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == best_id) {
+                            entry.usage = entry.usage.saturating_add(2);
+                            entry.salience = (entry.salience + salience).min(1.0);
+                            entry.last_access = self.clock;
+                            merge_memory_refs(&mut entry.refs, refs.clone());
+                        }
+                        // Track merge (high similarity)
+                        result_action = "merged".to_string();
+                        result_entry_id = best_id;
+                        result_matched = Some(best_id);
+                        result_similarity = Some(best_sim);
+                    }
+                    s if s >= self.config.theta_low && diversity_pass => {
+                        if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == best_id) {
+                            entry.embedding = merge_embeddings(&entry.embedding, &embedding);
+                            entry.usage = entry.usage.saturating_add(1);
+                            entry.salience = (entry.salience + salience * 0.5).min(1.0);
+                            entry.summary = summarize_text(&entry.text, &chunk, &self.keyword_cache);
+                            entry.last_access = self.clock;
+                            merge_memory_refs(&mut entry.refs, refs.clone());
+                        }
+                        self.update_graph(&chunk, salience);
+                        // Track merge (low similarity)
+                        result_action = "merged".to_string();
+                        result_entry_id = best_id;
+                        result_matched = Some(best_id);
+                        result_similarity = Some(best_sim);
+                    }
+                    _ => {
+                        self.insert_short_term(&chunk, embedding, salience, refs);
+                        self.update_graph(&chunk, salience);
+                        // Track creation - get the ID of the newly inserted entry
+                        if let Some(entry) = self.short_term.last() {
+                            result_action = "created".to_string();
+                            result_entry_id = entry.id;
+                            result_matched = None;
+                            result_similarity = None;
+                        }
+                    }
+                }
+
+                // Mark L1 entry as promoted
+                if let Some(wm_entry) = self.working_memory.iter_mut().find(|e| e.id == wm_id) {
+                    wm_entry.promoted = true;
+                }
+
                 last_context = self.retrieve_context(&chunk);
-                // Track reconsolidation
-                result_action = "reconsolidated".to_string();
-                result_entry_id = reconsolidated_id;
-                result_matched = Some(reconsolidated_id);
-                continue;
-            }
-
-            // --- Normal path: match/merge/insert ---
-            let (best_id, best_sim) = self.find_best_match(&embedding);
-
-            // Diversity gate: even at high similarity, if word overlap is low the
-            // texts are semantically distinct and should not be merged.
-            let diversity_pass = if best_sim >= self.config.theta_low {
-                self.short_term
-                    .iter()
-                    .find(|e| e.id == best_id)
-                    .map(|e| word_overlap(&e.text, &chunk) >= MERGE_WORD_OVERLAP_THRESHOLD)
-                    .unwrap_or(false)
             } else {
-                false
-            };
-
-            match best_sim {
-                s if s >= self.config.theta_high && diversity_pass => {
-                    if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == best_id) {
-                        entry.usage = entry.usage.saturating_add(2);
-                        entry.salience = (entry.salience + salience).min(1.0);
-                        entry.last_access = self.clock;
-                        merge_memory_refs(&mut entry.refs, refs.clone());
-                    }
-                    // Track merge (high similarity)
-                    result_action = "merged".to_string();
-                    result_entry_id = best_id;
-                    result_matched = Some(best_id);
-                    result_similarity = Some(best_sim);
-                }
-                s if s >= self.config.theta_low && diversity_pass => {
-                    if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == best_id) {
-                        entry.embedding = merge_embeddings(&entry.embedding, &embedding);
-                        entry.usage = entry.usage.saturating_add(1);
-                        entry.salience = (entry.salience + salience * 0.5).min(1.0);
-                        entry.summary = summarize_text(&entry.text, &chunk, &self.keyword_cache);
-                        entry.last_access = self.clock;
-                        merge_memory_refs(&mut entry.refs, refs.clone());
-                    }
-                    self.update_graph(&chunk, salience);
-                    // Track merge (low similarity)
-                    result_action = "merged".to_string();
-                    result_entry_id = best_id;
-                    result_matched = Some(best_id);
-                    result_similarity = Some(best_sim);
-                }
-                _ => {
-                    self.insert_short_term(&chunk, embedding, salience, refs);
-                    self.update_graph(&chunk, salience);
-                    // Track creation - get the ID of the newly inserted entry
-                    if let Some(entry) = self.short_term.last() {
-                        result_action = "created".to_string();
-                        result_entry_id = entry.id;
-                        result_matched = None;
-                        result_similarity = None;
-                    }
-                }
+                // Low-salience: stays in working memory only, skip L2 insertion
+                result_action = "working_memory_only".to_string();
+                result_entry_id = wm_id;
+                result_matched = None;
+                result_similarity = None;
             }
-
-            last_context = self.retrieve_context(&chunk);
         }
 
         self.prune_short_term();
@@ -940,6 +980,36 @@ impl MemoryState {
         self.apply_decay();
 
         let embedding = embed_text(query, self.config.embedding_dim);
+
+        // --- Scan working memory (L1) first ---
+        let query_lower = query.to_lowercase();
+        let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+        let mut wm_snippets: Vec<MemorySnippet> = Vec::new();
+        for wm_entry in &mut self.working_memory {
+            let sim = cosine_similarity(&wm_entry.embedding, &embedding);
+            // Keyword bonus matching (same as L2)
+            let entry_lower = wm_entry.text.to_lowercase();
+            let keyword_bonus: f32 = query_words
+                .iter()
+                .filter(|w| w.len() > 3 && entry_lower.contains(**w))
+                .count() as f32
+                * KEYWORD_MATCH_BONUS;
+            let effective_sim = (sim + keyword_bonus.min(KEYWORD_MATCH_BONUS_CAP)).min(1.0);
+
+            if effective_sim >= MIN_QUERY_SIMILARITY {
+                wm_entry.rehearsal_count += 1;
+                wm_snippets.push(MemorySnippet {
+                    id: wm_entry.id,
+                    text: wm_entry.text.clone(),
+                    similarity: effective_sim,
+                    refs: Vec::new(),
+                });
+            }
+        }
+        wm_snippets.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+        wm_snippets.truncate(5);
+
+        // --- L2 retrieval ---
         let mut snippets = self.top_k_similar(&embedding, 5, query);
 
         for snippet in &mut snippets {
@@ -1031,6 +1101,7 @@ impl MemoryState {
         MemoryContext {
             short_term: snippets,
             long_term,
+            working_memory: wm_snippets,
         }
     }
 
@@ -1400,6 +1471,24 @@ impl MemoryState {
         }
     }
 
+    /// Flush working memory on session boundary.
+    /// Every remaining entry is evaluated for L2 promotion before clearing.
+    /// Entries that pass the gate (high salience or rehearsed) get promoted to L2.
+    /// Entries that don't pass are discarded — nothing is silently lost.
+    pub fn flush_working_memory(&mut self) {
+        let entries: Vec<WorkingMemoryEntry> = self.working_memory.drain(..).collect();
+        for entry in entries {
+            if !entry.promoted
+                && (entry.salience >= PROMOTION_SALIENCE_THRESHOLD
+                    || entry.rehearsal_count >= 1)
+            {
+                let refs = extract_memory_refs_from_text(&entry.text);
+                self.insert_short_term(&entry.text, entry.embedding, entry.salience, refs);
+                self.update_graph(&entry.text, entry.salience);
+            }
+        }
+    }
+
     /// Hebbian reinforcement: co-retrieved nodes strengthen shared edges.
     fn hebbian_reinforce(&mut self, co_retrieved_ids: &[u64]) {
         if co_retrieved_ids.len() < 2 {
@@ -1422,20 +1511,37 @@ impl MemoryState {
         }
     }
 
-    /// Append text to the FIFO immediate buffer.
-    /// When the buffer overflows, the oldest entry is automatically "digested"
-    /// (summarized, embedded, and moved) into short-term memory.
-    fn push_immediate(&mut self, text: &str) {
-        self.immediate.push_back(text.to_string());
-        if self.immediate.len() > self.config.immediate_capacity {
-            if let Some(oldest) = self.immediate.pop_front() {
-                // Background "digestion" of old working memory into STM
-                let embedding = embed_text(&oldest, self.config.embedding_dim);
-                let salience = compute_salience(&oldest, &self.keyword_cache) * 0.7; // Passive memories start with lower salience
-                let refs = extract_memory_refs_from_text(&oldest);
-                self.insert_short_term(&oldest, embedding, salience, refs);
+    /// Push an entry into working memory (L1).
+    /// When at capacity, the oldest entry is displaced and evaluated for L2 promotion.
+    /// Displaced entries with high salience or rehearsal are promoted to short-term (L2).
+    fn push_working_memory(&mut self, text: &str, embedding: &[f32], salience: f32) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        // Displace oldest if at capacity
+        if self.working_memory.len() >= self.config.immediate_capacity {
+            let displaced = self.working_memory.remove(0);
+            // Promotion gate: displaced entry gets L2 if high salience or rehearsed
+            if !displaced.promoted
+                && (displaced.salience >= PROMOTION_SALIENCE_THRESHOLD
+                    || displaced.rehearsal_count >= 1)
+            {
+                let refs = extract_memory_refs_from_text(&displaced.text);
+                self.insert_short_term(&displaced.text, displaced.embedding, displaced.salience, refs);
+                self.update_graph(&displaced.text, displaced.salience);
             }
         }
+
+        self.working_memory.push(WorkingMemoryEntry {
+            id,
+            text: text.to_string(),
+            embedding: embedding.to_vec(),
+            salience,
+            tick_created: self.clock,
+            rehearsal_count: 0,
+            promoted: false,
+        });
+        id
     }
 
     /// Insert a new short-term entry, evicting the lowest-scoring entry if at capacity.
@@ -1990,7 +2096,7 @@ impl MemoryState {
         serde_json::json!({
             "current_task": self.current_task,
             "stats": {
-                "immediate_buffer": self.immediate.len(),
+                "working_memory": self.working_memory.len(),
                 "short_term_entries": self.short_term.len(),
                 "long_term_nodes": self.long_term.nodes.len(),
                 "long_term_edges": self.long_term.edges.len(),
@@ -2224,7 +2330,19 @@ impl MemoryState {
             })
             .collect();
 
-        let immediate: Vec<&str> = self.immediate.iter().map(|s| s.as_str()).collect();
+        let working_memory: Vec<serde_json::Value> = self
+            .working_memory
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.id, "text": e.text,
+                    "salience": (e.salience * 1000.0).round() / 1000.0,
+                    "tick_created": e.tick_created,
+                    "rehearsal_count": e.rehearsal_count,
+                    "promoted": e.promoted,
+                })
+            })
+            .collect();
         let sessions: Vec<serde_json::Value> = self
             .session_log
             .iter()
@@ -2233,7 +2351,7 @@ impl MemoryState {
 
         serde_json::json!({
             "clock": self.clock,
-            "immediate": immediate,
+            "working_memory": working_memory,
             "short_term": short_term,
             "graph": { "nodes": nodes, "edges": edges },
             "session_log": sessions,
@@ -2379,6 +2497,12 @@ pub fn load_memory_from_path<P: AsRef<Path>>(path: P) -> Result<MemoryState, Box
         return Ok(state);
     }
 
+    // Fall back to V5 (pre-working-memory, has immediate: VecDeque<String>)
+    if let Ok(v5) = bincode::deserialize::<MemoryStateV5>(&decompressed) {
+        eprintln!("Migrating memory from pre-working-memory bincode format...");
+        return Ok(migrate_v5(v5));
+    }
+
     // Fall back to V4 (pre-consolidated field, has gradient_sq_sum + density)
     if let Ok(v4) = bincode::deserialize::<MemoryStateV4>(&decompressed) {
         eprintln!("Migrating memory from v0.3.4 bincode format...");
@@ -2386,6 +2510,45 @@ pub fn load_memory_from_path<P: AsRef<Path>>(path: P) -> Result<MemoryState, Box
     }
 
     Err("Failed to deserialize memory: no known format matched".into())
+}
+
+/// MemoryState before working_memory rework (had `immediate: VecDeque<String>`).
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+struct MemoryStateV5 {
+    pub config: MemoryConfig,
+    pub immediate: VecDeque<String>,
+    pub short_term: Vec<ShortTermEntry>,
+    pub long_term: GraphMemory,
+    pub clock: u64,
+    pub next_id: u64,
+    #[serde(default)]
+    pub session_log: Vec<SessionEntry>,
+    #[serde(default)]
+    pub current_task: Option<String>,
+    #[serde(default)]
+    pub ticks_since_consolidation: u32,
+    #[serde(default)]
+    pub last_retrieved_ids: Vec<u64>,
+    #[serde(default)]
+    pub last_synced_sha: Option<String>,
+}
+
+fn migrate_v5(v5: MemoryStateV5) -> MemoryState {
+    MemoryState {
+        config: v5.config,
+        working_memory: Vec::new(), // discard old FIFO L1 contents
+        short_term: v5.short_term,
+        long_term: v5.long_term,
+        clock: v5.clock,
+        next_id: v5.next_id,
+        session_log: v5.session_log,
+        current_task: v5.current_task,
+        ticks_since_consolidation: v5.ticks_since_consolidation,
+        last_retrieved_ids: v5.last_retrieved_ids,
+        last_synced_sha: v5.last_synced_sha,
+        keyword_cache: keyword_cache::KeywordCache::default(),
+    }
 }
 
 /// ShortTermEntry before `consolidated` was added (v0.3.4 format).
@@ -2414,6 +2577,7 @@ struct ShortTermEntryV4 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct MemoryStateV4 {
     pub config: MemoryConfig,
     pub immediate: VecDeque<String>,
@@ -2436,7 +2600,7 @@ struct MemoryStateV4 {
 fn migrate_v4(v4: MemoryStateV4) -> MemoryState {
     MemoryState {
         config: v4.config,
-        immediate: v4.immediate,
+        working_memory: Vec::new(), // discard old FIFO L1 contents
         short_term: v4
             .short_term
             .into_iter()
@@ -2527,6 +2691,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
     }
 
     #[derive(Debug, Clone, Deserialize)]
+    #[allow(dead_code)]
     struct MemoryStateV3 {
         pub config: MemoryConfig,
         pub immediate: VecDeque<String>,
@@ -2548,6 +2713,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
 
     // MemoryState with current_task/ticks_since_consolidation but before last_retrieved_ids.
     #[derive(Debug, Clone, Deserialize)]
+    #[allow(dead_code)]
     struct MemoryStateV2 {
         pub config: MemoryConfig,
         pub immediate: VecDeque<String>,
@@ -2565,6 +2731,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
 
     // MemoryState before current_task/ticks_since_consolidation were added.
     #[derive(Debug, Clone, Deserialize)]
+    #[allow(dead_code)]
     struct MemoryStateV1 {
         pub config: MemoryConfig,
         pub immediate: VecDeque<String>,
@@ -2590,15 +2757,17 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
         }
     };
 
-    // Try msgpack first, then bincode V4, V3, V2, V1.
+    // Try msgpack first, then bincode V5, V4, V3, V2, V1.
     let new_state = if serialized.len() >= 5 && &serialized[..4] == MSGPACK_MAGIC {
         rmp_serde::from_slice::<MemoryState>(&serialized[5..])?
+    } else if let Ok(v5) = bincode::deserialize::<MemoryStateV5>(&serialized) {
+        migrate_v5(v5)
     } else if let Ok(v4) = bincode::deserialize::<MemoryStateV4>(&serialized) {
         migrate_v4(v4)
     } else if let Ok(v3) = bincode::deserialize::<MemoryStateV3>(&serialized) {
         MemoryState {
             config: v3.config,
-            immediate: v3.immediate,
+            working_memory: Vec::new(),
             short_term: v3
                 .short_term
                 .into_iter()
@@ -2631,7 +2800,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
     } else if let Ok(v2) = bincode::deserialize::<MemoryStateV2>(&serialized) {
         MemoryState {
             config: v2.config,
-            immediate: v2.immediate,
+            working_memory: Vec::new(),
             short_term: v2
                 .short_term
                 .into_iter()
@@ -2674,7 +2843,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
         match bincode::deserialize::<MemoryStateV1>(&serialized) {
             Ok(old) => MemoryState {
                 config: old.config,
-                immediate: old.immediate,
+                working_memory: Vec::new(),
                 short_term: old
                     .short_term
                     .into_iter()
@@ -2856,8 +3025,8 @@ mod tests {
     fn test_tick_adds_entry() {
         let mut state = MemoryState::default();
         state.tick("hello world test entry");
-        assert!(!state.short_term.is_empty());
-        assert!(!state.immediate.is_empty());
+        // Entry goes to working memory; may or may not promote to L2 depending on salience
+        assert!(!state.working_memory.is_empty() || !state.short_term.is_empty());
     }
 
     #[test]
@@ -2886,9 +3055,9 @@ mod tests {
     #[test]
     fn test_consolidate() {
         let mut state = MemoryState::default();
-        state.tick("embedding quality improvement using n-grams");
-        state.tick("embedding quality improvement using trigrams");
-        state.tick("completely different topic about cooking recipes");
+        state.tick("DECISION: embedding quality improvement using n-grams");
+        state.tick("DECISION: embedding quality improvement using trigrams");
+        state.tick("DECISION: completely different topic about cooking recipes");
         let summaries = state.consolidate();
         assert!(!state.short_term.is_empty() || !summaries.is_empty());
     }
@@ -2924,7 +3093,7 @@ mod tests {
     #[test]
     fn test_decay_reduces_weights() {
         let mut state = MemoryState::default();
-        state.tick("initial entry with some content");
+        state.tick("DECISION: initial entry with some content for decay testing");
         let initial_salience = state.short_term[0].salience;
         state.clock += 100;
         state.apply_decay();
@@ -2957,8 +3126,8 @@ mod tests {
     #[test]
     fn test_diversity_prevents_merge_of_unrelated() {
         let mut state = MemoryState::default();
-        state.tick("the embedding system uses vector similarity for matching");
-        state.tick("cooking recipes require fresh ingredients and seasoning");
+        state.tick("DECISION: the embedding system uses vector similarity for matching");
+        state.tick("DECISION: cooking recipes require fresh ingredients and seasoning");
         assert!(
             state.short_term.len() >= 2,
             "unrelated ticks should create separate entries, got {}",
@@ -3181,7 +3350,7 @@ mod tests {
     #[test]
     fn test_auto_reinforce_on_query() {
         let mut state = MemoryState::default();
-        state.tick("the cosine similarity algorithm compares vector embeddings");
+        state.tick("DECISION: the cosine similarity algorithm compares vector embeddings");
         let salience_before = state.short_term[0].salience;
 
         // Query something related — top result should get a passive boost
@@ -3199,7 +3368,7 @@ mod tests {
     #[test]
     fn test_tick_captures_line_references() {
         let mut state = MemoryState::default();
-        state.tick("See legend/src/memory/mod.rs#L120-145 for the new refs logic.");
+        state.tick("DECISION: See legend/src/memory/mod.rs#L120-145 for the new refs logic.");
         assert!(!state.short_term.is_empty());
 
         let entry = &state.short_term[0];
@@ -3217,7 +3386,7 @@ mod tests {
     #[test]
     fn test_retrieve_context_returns_refs() {
         let mut state = MemoryState::default();
-        state.tick("Ref: legend/src/memory/mod.rs#L200-210 tracks MemorySnippet changes.");
+        state.tick("DECISION: Ref: legend/src/memory/mod.rs#L200-210 tracks MemorySnippet changes.");
         let ctx = state.retrieve_context("MemorySnippet refs");
         assert!(!ctx.short_term.is_empty());
 
@@ -3270,8 +3439,8 @@ mod tests {
     #[test]
     fn test_reconsolidation_updates_existing() {
         let mut state = MemoryState::default();
-        // Create initial memory
-        state.tick("the database uses PostgreSQL for persistence");
+        // Create initial memory (DECISION: prefix ensures L2 promotion)
+        state.tick("DECISION: the database uses PostgreSQL for persistence");
         assert_eq!(state.short_term.len(), 1);
         let original_id = state.short_term[0].id;
 
@@ -3283,7 +3452,7 @@ mod tests {
         );
 
         // Tick with related but new information — should reconsolidate
-        state.tick("the database PostgreSQL schema has users and sessions tables");
+        state.tick("DECISION: the database PostgreSQL schema has users and sessions tables");
         // Should still have the original entry (reconsolidated, not duplicated)
         let reconsolidated = state.short_term.iter().find(|e| e.id == original_id);
         if let Some(entry) = reconsolidated {
@@ -3303,7 +3472,7 @@ mod tests {
     #[test]
     fn test_labile_expires() {
         let mut state = MemoryState::default();
-        state.tick("test entry for labile expiration");
+        state.tick("DECISION: test entry for labile expiration");
         let id = state.short_term[0].id;
 
         // Query to make labile
@@ -3649,9 +3818,9 @@ mod tests {
     #[test]
     fn test_top_k_keeps_relevant_results() {
         let mut state = MemoryState::default();
-        state.tick("MML syntax reference: use #tempo 120 for tempo");
-        state.tick("MML note commands: cdefgab with octave modifiers");
-        state.tick("unrelated window rendering pipeline");
+        state.tick("DECISION: MML syntax reference: use #tempo 120 for tempo");
+        state.tick("DECISION: MML note commands: cdefgab with octave modifiers");
+        state.tick("DECISION: unrelated window rendering pipeline");
         let ctx = state.retrieve_context("MML syntax");
         // Should have at least one result (the MML entries)
         assert!(
@@ -3681,8 +3850,8 @@ mod tests {
     #[test]
     fn test_graph_lookup_no_match_returns_empty() {
         let mut state = MemoryState::default();
-        // Add some graph nodes via tick
-        state.tick("fn process_data() in src/main.rs");
+        // Add some graph nodes via tick (DECISION: ensures L2 promotion + graph update)
+        state.tick("DECISION: fn process_data() in src/main.rs");
         assert!(!state.long_term.nodes.is_empty());
         // Query with entities that don't match any graph node
         let results = state.graph_lookup("xylophone_function zamboni_module", 10);
@@ -3719,8 +3888,8 @@ mod tests {
     #[test]
     fn test_keyword_bonus_boosts_matching_entry() {
         let mut state = MemoryState::default();
-        state.tick("MML syntax reference: tempo and note commands");
-        state.tick("unrelated rendering pipeline for sprites");
+        state.tick("DECISION: MML syntax reference: tempo and note commands");
+        state.tick("DECISION: unrelated rendering pipeline for sprites");
         let embedding = embed_text("MML syntax", state.config.embedding_dim);
         let results = state.top_k_similar(&embedding, 5, "MML syntax");
         assert!(!results.is_empty());
@@ -3734,8 +3903,8 @@ mod tests {
     #[test]
     fn test_keyword_bonus_capped() {
         let mut state = MemoryState::default();
-        // Entry with many matching keywords
-        state.tick("alpha bravo charlie delta echo foxtrot golf hotel");
+        // Entry with many matching keywords (DECISION: ensures L2 promotion)
+        state.tick("DECISION: alpha bravo charlie delta echo foxtrot golf hotel");
         let embedding = embed_text(
             "alpha bravo charlie delta echo foxtrot golf hotel",
             state.config.embedding_dim,
@@ -3979,7 +4148,7 @@ mod tests {
     #[test]
     fn test_consolidated_defaults_false() {
         let mut state = MemoryState::default();
-        state.tick("some new memory entry");
+        state.tick("DECISION: some new memory entry for testing");
         let entry = state.short_term.last().unwrap();
         assert!(
             !entry.consolidated,
@@ -3990,7 +4159,7 @@ mod tests {
     #[test]
     fn test_unconsolidated_entries_still_appear() {
         let mut state = MemoryState::default();
-        state.tick("unique standalone MML note commands reference guide");
+        state.tick("DECISION: unique standalone MML note commands reference guide");
         // No consolidation — entry should appear in results
         let ctx = state.retrieve_context("MML note commands");
         assert!(
@@ -4319,11 +4488,10 @@ mod tests {
         // Load with current MemoryState (which has `consolidated` field)
         let loaded = load_memory_from_path(&path).expect("must not fail!");
 
-        // ALL data must be preserved
+        // ALL data must be preserved (except old immediate which is discarded)
         assert_eq!(loaded.clock, 100);
         assert_eq!(loaded.next_id, 3);
-        assert_eq!(loaded.immediate.len(), 1);
-        assert_eq!(loaded.immediate[0], "hello");
+        assert!(loaded.working_memory.is_empty(), "old immediate discarded, working_memory starts empty");
         assert_eq!(loaded.short_term.len(), 2);
         assert_eq!(loaded.short_term[0].id, 1);
         assert_eq!(loaded.short_term[0].text, "important memory");
@@ -4340,5 +4508,223 @@ mod tests {
         assert_eq!(loaded.last_synced_sha, Some("deadbeef".into()));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- Working memory (L1) tests ----
+
+    #[test]
+    fn test_working_memory_capacity_limit() {
+        let mut state = MemoryState::default();
+        // Default capacity is 10; push 12 entries
+        for i in 0..12 {
+            state.tick(&format!("low signal entry number {}", i));
+        }
+        assert!(
+            state.working_memory.len() <= state.config.immediate_capacity,
+            "working memory should not exceed capacity: {} > {}",
+            state.working_memory.len(),
+            state.config.immediate_capacity
+        );
+    }
+
+    #[test]
+    fn test_low_salience_stays_l1_only() {
+        let mut state = MemoryState::default();
+        let st_before = state.short_term.len();
+        state.tick("just a random thought about nothing in particular");
+        // Low-salience: should NOT promote to L2
+        assert_eq!(
+            state.short_term.len(),
+            st_before,
+            "low-salience tick should not create L2 entry"
+        );
+        assert!(
+            !state.working_memory.is_empty(),
+            "low-salience tick should be in working memory"
+        );
+    }
+
+    #[test]
+    fn test_high_salience_promotes_to_l2() {
+        let mut state = MemoryState::default();
+        state.tick("DECISION: chose Rust over Go because of safety guarantees");
+        assert!(
+            !state.short_term.is_empty(),
+            "high-salience tick should promote to L2"
+        );
+        // Should also be in working memory
+        assert!(
+            !state.working_memory.is_empty(),
+            "promoted tick should also remain in working memory"
+        );
+        // The WM entry should be marked as promoted
+        assert!(
+            state.working_memory.last().unwrap().promoted,
+            "promoted WM entry should have promoted=true"
+        );
+    }
+
+    #[test]
+    fn test_query_scans_working_memory() {
+        let mut state = MemoryState::default();
+        // Tick something low-salience that stays in L1 only
+        state.tick("the parser handles empty input strings gracefully");
+        assert!(state.short_term.is_empty(), "should stay L1 only");
+
+        // Query should find it in working_memory results
+        let ctx = state.retrieve_context("parser empty input");
+        assert!(
+            !ctx.working_memory.is_empty(),
+            "query should scan working memory and find L1-only entries"
+        );
+    }
+
+    #[test]
+    fn test_query_increments_rehearsal_count() {
+        let mut state = MemoryState::default();
+        // Use low-salience text that stays L1 only (no retrieve_context called)
+        state.tick("the purple elephant danced on silver moonbeams last tuesday");
+        assert!(!state.working_memory.is_empty());
+        let initial_rehearsal = state.working_memory[0].rehearsal_count;
+
+        // Query to trigger rehearsal
+        state.retrieve_context("purple elephant silver moonbeams");
+        // Check rehearsal was incremented
+        let entry = state.working_memory.iter().find(|e| e.text.contains("purple"));
+        assert!(
+            entry.is_some() && entry.unwrap().rehearsal_count > initial_rehearsal,
+            "query should increment rehearsal_count on matched WM entries"
+        );
+    }
+
+    #[test]
+    fn test_rehearsed_entry_promotes_on_displacement() {
+        let mut state = MemoryState::default();
+        let embedding = embed_text("rehearsed entry test", state.config.embedding_dim);
+
+        // Manually push a low-salience entry with rehearsal_count >= 1
+        state.working_memory.push(WorkingMemoryEntry {
+            id: 900,
+            text: "rehearsed entry test content".to_string(),
+            embedding: embedding.clone(),
+            salience: 0.05, // below threshold
+            tick_created: state.clock,
+            rehearsal_count: 1, // rehearsed via query
+            promoted: false,
+        });
+        let st_before = state.short_term.len();
+
+        // Fill to capacity + 1 to force displacement of index 0
+        for _ in 0..state.config.immediate_capacity {
+            let emb = embed_text("filler", state.config.embedding_dim);
+            state.push_working_memory("filler entry", &emb, 0.01);
+        }
+
+        // The rehearsed entry should have been promoted to L2 on displacement
+        assert!(
+            state.short_term.len() > st_before,
+            "rehearsed entry should promote to L2 when displaced: before={}, after={}",
+            st_before,
+            state.short_term.len()
+        );
+    }
+
+    #[test]
+    fn test_flush_promotes_qualifying_entries() {
+        let mut state = MemoryState::default();
+        // Add a high-salience entry that wasn't promoted by tick (simulate by pushing directly)
+        state.working_memory.push(WorkingMemoryEntry {
+            id: 999,
+            text: "important decision about architecture".to_string(),
+            embedding: embed_text("important decision about architecture", state.config.embedding_dim),
+            salience: 0.5, // above PROMOTION_SALIENCE_THRESHOLD
+            tick_created: state.clock,
+            rehearsal_count: 0,
+            promoted: false,
+        });
+        let st_before = state.short_term.len();
+
+        state.flush_working_memory();
+
+        assert!(state.working_memory.is_empty(), "flush should clear working memory");
+        assert!(
+            state.short_term.len() > st_before,
+            "flush should promote high-salience entries to L2"
+        );
+    }
+
+    #[test]
+    fn test_flush_discards_low_signal_unrehearsed() {
+        let mut state = MemoryState::default();
+        // Add a low-salience unrehearsed entry
+        state.working_memory.push(WorkingMemoryEntry {
+            id: 998,
+            text: "just some noise that nobody cares about".to_string(),
+            embedding: embed_text("just some noise", state.config.embedding_dim),
+            salience: 0.05, // below threshold
+            tick_created: state.clock,
+            rehearsal_count: 0,
+            promoted: false,
+        });
+        let st_before = state.short_term.len();
+
+        state.flush_working_memory();
+
+        assert!(state.working_memory.is_empty(), "flush should clear working memory");
+        assert_eq!(
+            state.short_term.len(),
+            st_before,
+            "flush should NOT promote low-salience unrehearsed entries"
+        );
+    }
+
+    #[test]
+    fn test_flush_skips_already_promoted() {
+        let mut state = MemoryState::default();
+        // Add an entry already marked as promoted
+        state.working_memory.push(WorkingMemoryEntry {
+            id: 997,
+            text: "already promoted entry".to_string(),
+            embedding: embed_text("already promoted", state.config.embedding_dim),
+            salience: 0.8,
+            tick_created: state.clock,
+            rehearsal_count: 5,
+            promoted: true, // already promoted
+        });
+        let st_before = state.short_term.len();
+
+        state.flush_working_memory();
+
+        assert_eq!(
+            state.short_term.len(),
+            st_before,
+            "flush should NOT double-promote already-promoted entries"
+        );
+    }
+
+    #[test]
+    fn test_v5_migration_discards_immediate() {
+        let v5 = MemoryStateV5 {
+            config: MemoryConfig::default(),
+            immediate: VecDeque::from(["old1".to_string(), "old2".to_string()]),
+            short_term: vec![ShortTermEntry {
+                id: 10,
+                text: "preserved entry".to_string(),
+                ..ShortTermEntry::default()
+            }],
+            long_term: GraphMemory::default(),
+            clock: 50,
+            next_id: 11,
+            session_log: vec![],
+            current_task: None,
+            ticks_since_consolidation: 0,
+            last_retrieved_ids: vec![],
+            last_synced_sha: None,
+        };
+        let migrated = migrate_v5(v5);
+        assert!(migrated.working_memory.is_empty(), "V5 migration should discard old immediate");
+        assert_eq!(migrated.short_term.len(), 1);
+        assert_eq!(migrated.short_term[0].text, "preserved entry");
+        assert_eq!(migrated.clock, 50);
     }
 }
