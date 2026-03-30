@@ -1,10 +1,12 @@
+pub mod dentate_gyrus;
 pub mod embed;
 pub mod extract;
 pub mod keyword_cache;
 pub mod keywords;
 pub mod summarize;
 
-use embed::{compute_salience, cosine_similarity, embed_text, merge_embeddings, sparse_orthogonalize};
+use dentate_gyrus::{diversity_pass, sparse_orthogonalize, word_overlap, MERGE_WORD_OVERLAP_THRESHOLD};
+use embed::{compute_salience, cosine_similarity, embed_text, merge_embeddings};
 use extract::extract_entities;
 use keyword_cache::KeywordCache;
 use summarize::{chunk_text, summarize_group, summarize_single, summarize_text};
@@ -36,11 +38,6 @@ const NODE_WEIGHT_BASE: f32 = 0.2;
 const PRUNE_THRESHOLD: f32 = 0.1;
 const PRUNE_USAGE_WEIGHT: f32 = 0.05;
 const PRUNE_AGE_WEIGHT: f32 = 0.001;
-/// Minimum word-overlap Jaccard ratio required to merge (prevents unrelated entries collapsing).
-/// Dentate Gyrus pattern separation: the hippocampus actively separates overlapping patterns
-/// to prevent interference. This threshold, combined with theta_low, ensures that entries
-/// sharing vocabulary but describing distinct topics remain as separate episodic traces.
-const MERGE_WORD_OVERLAP_THRESHOLD: f32 = 0.4;
 /// Maximum number of session log entries to keep.
 const SESSION_LOG_CAPACITY: usize = 100;
 /// How much a reinforcement signal scales graph node weight adjustment.
@@ -908,19 +905,20 @@ impl MemoryState {
                 let (best_id, best_sim) = self.find_best_match(&embedding);
 
                 // Diversity gate: even at high similarity, if word overlap is low the
-                // texts are semantically distinct and should not be merged.
-                let diversity_pass = if best_sim >= self.config.theta_low {
+                // Dentate Gyrus diversity gate: even at high similarity, if word overlap is
+                // low the texts are semantically distinct and should not be merged.
+                let diversity_ok = if best_sim >= self.config.theta_low {
                     self.short_term
                         .iter()
                         .find(|e| e.id == best_id)
-                        .map(|e| word_overlap(&e.text, &chunk) >= MERGE_WORD_OVERLAP_THRESHOLD)
+                        .map(|e| diversity_pass(&e.text, &chunk))
                         .unwrap_or(false)
                 } else {
                     false
                 };
 
                 match best_sim {
-                    s if s >= self.config.theta_high && diversity_pass => {
+                    s if s >= self.config.theta_high && diversity_ok => {
                         if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == best_id) {
                             entry.usage = entry.usage.saturating_add(2);
                             entry.salience = (entry.salience + salience).min(1.0);
@@ -933,7 +931,7 @@ impl MemoryState {
                         result_matched = Some(best_id);
                         result_similarity = Some(best_sim);
                     }
-                    s if s >= self.config.theta_low && diversity_pass => {
+                    s if s >= self.config.theta_low && diversity_ok => {
                         if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == best_id) {
                             entry.embedding = merge_embeddings(&entry.embedding, &embedding);
                             entry.usage = entry.usage.saturating_add(1);
@@ -2459,26 +2457,6 @@ impl MemoryState {
 
 /// Compute the word-overlap ratio between two texts.
 /// Returns the Jaccard coefficient of their lowercased word sets.
-fn word_overlap(a: &str, b: &str) -> f32 {
-    use std::collections::HashSet;
-    let set_a: HashSet<&str> = a
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|w| w.len() > 1)
-        .collect();
-    let set_b: HashSet<&str> = b
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|w| w.len() > 1)
-        .collect();
-    if set_a.is_empty() || set_b.is_empty() {
-        return 0.0;
-    }
-    let intersection = set_a.intersection(&set_b).count() as f32;
-    let union = set_a.union(&set_b).count() as f32;
-    intersection / union
-}
-
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
@@ -3209,16 +3187,6 @@ mod tests {
             "near-identical entries should merge, got {}",
             state.short_term.len()
         );
-    }
-
-    #[test]
-    fn test_word_overlap_identical() {
-        assert!((word_overlap("hello world", "hello world") - 1.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_word_overlap_disjoint() {
-        assert!(word_overlap("apples oranges bananas", "cars trucks bikes") < 0.01);
     }
 
     #[test]

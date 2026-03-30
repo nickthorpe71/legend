@@ -255,38 +255,57 @@ In pruning: consolidated L2 entries whose Summary node has a valid embedding get
 
 ---
 
-## Change 9: Neuroscience Terminology Alignment
+## Change 9: Brain-Region Module Structure
 
-**Problem**: Code uses generic terms. Should use standard neuroscience terminology for self-documenting code.
+**Problem**: `mod.rs` is a 4700+ line monolith. The codebase should be organized by brain region so each module is a distinct neural subsystem with clear inputs/outputs.
 
-**Files**: `src/memory/mod.rs`
+**Files**: `src/memory/mod.rs` → split into brain-region modules
 
-**Changes** (pure rename/doc pass, no behavioral changes):
+**Changes**:
 
-Constants:
+Extract from `mod.rs` into dedicated modules:
+- `src/memory/dentate_gyrus.rs` — **DONE** (pattern separation, orthogonalization, diversity gating)
+- `src/memory/amygdala.rs` — emotional valence computation (from `embed.rs` after Change 2)
+- `src/memory/hippocampus.rs` — L2 episodic store: `ShortTermEntry`, `insert_short_term`, `find_best_match`, `top_k_similar`, `try_reconsolidate`, labile window logic, reconsolidation
+- `src/memory/neocortex.rs` — L3 graph: `GraphMemory`, `GraphNode`, `GraphEdge`, `update_graph`, `graph_lookup`, `spreading_activation`, `hebbian_reinforce`, consolidation
+- `src/memory/prefrontal.rs` — L1 working memory: `WorkingMemoryEntry`, `push_working_memory`, `flush_working_memory`, attention gate
+- `src/memory/basal_ganglia.rs` — procedural/habit learning: `reinforce()`, AdaGrad, contrastive descent
+
+Rename constants:
 - `PROMOTION_SALIENCE_THRESHOLD` → `ATTENTION_GATE_THRESHOLD`
 - `LABILE_WINDOW` → `RECONSOLIDATION_WINDOW`
 - `SHORT_TERM_DECAY_RATE` → `HIPPOCAMPAL_DECAY_RATE`
 - `LONG_TERM_DECAY_RATE` → `NEOCORTICAL_DECAY_RATE`
 
-Doc comments on structs:
-- L2 `short_term` → "Hippocampal episodic store"
-- L3 `long_term` → "Neocortical semantic memory graph"
-- `consolidate()` → "Systems consolidation (hippocampus → neocortex transfer)"
-- `try_reconsolidate()` → "Memory reconsolidation — labile retrieval window"
+`mod.rs` becomes a thin orchestrator that imports from brain-region modules and wires them together (like the thalamus routing signals between regions).
 
-Module-level doc comment mapping architecture to brain regions.
+**Tests**: All tests pass unchanged (behavioral no-op, pure restructure).
 
-**Tests**: All 510+ tests pass unchanged (behavioral no-op). Grep for old names to verify full replacement.
+**Value**: Codebase reads as a cognitive architecture document. Each future change lands in the obvious module.
 
-**Value**: Codebase reads as a cognitive architecture document.
+---
+
+## Change 10: Neuroscience Terminology Alignment
+
+**Problem**: After module split, add doc comments and rename remaining generic terms.
+
+**Files**: All brain-region modules
+
+**Changes** (pure doc/rename pass, no behavioral changes):
+
+Module-level doc comments mapping each file to its brain region and function.
+Remaining constant renames that weren't handled in Change 9.
+
+**Tests**: All tests pass unchanged.
+
+**Value**: Final polish — code is fully self-documenting as a cognitive architecture.
 
 ---
 
 ## Execution Order
 
 ```
-1. Pattern Separation     ← highest value, no deps
+1. Pattern Separation     ← DONE (+ dentate_gyrus.rs module)
 2. Emotional Tagging      ← no deps
 3. Forgetting Curve       ← no deps
 4. Spreading Activation   ← no deps, unlocks 5/6
@@ -294,10 +313,11 @@ Module-level doc comment mapping architecture to brain regions.
 6. Pattern Completion     ← depends on 4
 7. Synaptic Encoding      ← benefits from 4
 8. Systems Consolidation  ← benefits from 5/6/7
-9. Terminology            ← always last
+9. Brain-Region Modules   ← after all behavioral changes settle
+10. Terminology           ← always last
 ```
 
-Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes settle. Change 9 is always last.
+Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Changes 9-10 are structural/doc cleanup, always last.
 
 ## Migration
 
