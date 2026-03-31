@@ -5,13 +5,13 @@
 The L1 working memory rework is complete (510 tests passing). Legend now has a 3-layer architecture:
 - **L1 (Prefrontal Cortex)**: `Vec<WorkingMemoryEntry>`, capacity 10, attention-gated, rehearsal tracking
 - **L2 (Hippocampus)**: `Vec<ShortTermEntry>`, capacity 1024, reconsolidation, labile windows
-- **L3 (Neocortex)**: `GraphMemory` (HashMap nodes + Vec edges), Hebbian learning, 1-hop priming
+- **L3 (Neocortex)**: `GraphMemory` (HashMap nodes + Vec edges), Hebbian learning, multi-hop spreading activation
 
 The user wants to improve query result quality and align more closely with neuroscience. Each change below is independently testable and committable. Ordered by dependency and value.
 
 ---
 
-## Change 1: Pattern Separation (Dentate Gyrus)
+## Change 1: Pattern Separation (Dentate Gyrus) — DONE
 
 **Problem**: `theta_low=0.55` merges similar-but-distinct memories. "Rust memory model" and "Legend memory system" collapse because they share "memory."
 
@@ -32,7 +32,7 @@ The user wants to improve query result quality and align more closely with neuro
 
 ---
 
-## Change 2: Emotional Tagging (Amygdala)
+## Change 2: Emotional Tagging (Amygdala) — DONE
 
 **Problem**: `compute_salience` conflates urgency, importance, and emotional weight into one score. No separate emotional dimension that persists independently and resists decay.
 
@@ -67,7 +67,7 @@ In `mod.rs`:
 
 ---
 
-## Change 3: Ebbinghaus Forgetting Curve + Spaced Repetition
+## Change 3: Ebbinghaus Forgetting Curve + Spaced Repetition — DONE
 
 **Problem**: Flat exponential decay (`salience *= exp(-age * rate)`) doesn't model how spaced retrieval strengthens retention.
 
@@ -92,7 +92,7 @@ In `mod.rs`:
 
 ---
 
-## Change 4: Multi-Hop Spreading Activation
+## Change 4: Multi-Hop Spreading Activation — DONE
 
 **Problem**: Only 1-hop graph walk in `graph_lookup` and associative priming. Indirect associations never surface.
 
@@ -372,7 +372,7 @@ Remaining constant renames that weren't handled in Change 9.
 1. Pattern Separation        ← DONE (+ dentate_gyrus.rs module)
 2. Emotional Tagging         ← DONE (+ amygdala.rs module, 568 tests passing)
 3. Forgetting Curve          ← DONE (stability + spaced repetition, 578 tests passing)
-4. Spreading Activation      ← no deps, unlocks 5/6
+4. Spreading Activation      ← DONE
 5. SWR Replay                ← benefits from 4
 6. Pattern Completion        ← depends on 4
 7. Synaptic Encoding         ← benefits from 4
