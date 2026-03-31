@@ -87,6 +87,11 @@ const GRAPH_WEIGHT_TARGET_MAX: f32 = 2.0;
 /// Ticks between graph weight normalization passes.
 const GRAPH_NORM_INTERVAL: u64 = 5;
 
+/// Spreading activation: activation decays by this factor per hop.
+const SPREADING_ACTIVATION_DECAY: f32 = 0.5;
+/// Maximum hops for spreading activation in graph_lookup.
+const SPREADING_ACTIVATION_MAX_HOPS: usize = 3;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1090,9 +1095,9 @@ impl MemoryState {
 
         let mut long_term = self.graph_lookup(query, 12);
 
-        // --- Associative priming ---
-        // From the retrieved short-term entries, extract entities and follow
-        // graph edges to surface related nodes the query text alone wouldn't match.
+        // --- Associative priming (2-hop spreading activation) ---
+        // From the retrieved short-term entries, extract entities and spread
+        // activation through the graph to surface indirectly related nodes.
         let mut priming_seed_ids: Vec<u64> = Vec::new();
         for snippet in &snippets {
             let entities = extract_entities(&snippet.text, &self.keyword_cache);
@@ -1109,38 +1114,23 @@ impl MemoryState {
         priming_seed_ids.sort();
         priming_seed_ids.dedup();
 
-        // Follow edges from priming seeds (1-hop) to surface associated nodes
-        let existing_ids: std::collections::HashSet<u64> = long_term.iter().map(|n| n.id).collect();
+        let existing_ids: HashSet<u64> = long_term.iter().map(|n| n.id).collect();
+        let activated = self.spreading_activation(&priming_seed_ids, 2, 0.4);
         let mut primed_nodes: Vec<GraphNodeSummary> = Vec::new();
-        for edge in &self.long_term.edges {
-            let neighbor_id = if priming_seed_ids.contains(&edge.from)
-                && !existing_ids.contains(&edge.to)
-            {
-                Some(edge.to)
-            } else if priming_seed_ids.contains(&edge.to) && !existing_ids.contains(&edge.from) {
-                Some(edge.from)
-            } else {
-                None
-            };
-            if let Some(nid) = neighbor_id {
+        for (nid, activation) in activated {
+            if !existing_ids.contains(&nid) {
                 if let Some(node) = self.long_term.nodes.get(&nid) {
-                    // Only include if edge is strong enough to be meaningful
-                    if edge.weight >= 0.15 {
-                        primed_nodes.push(GraphNodeSummary {
-                            id: node.id,
-                            label: node.label.clone(),
-                            kind: node.kind.clone(),
-                            weight: node.weight * 0.7, // discount primed results slightly
-                            edge_type: Some(edge.kind.clone()),
-                            source_texts: node.source_texts.clone(),
-                        });
-                    }
+                    primed_nodes.push(GraphNodeSummary {
+                        id: node.id,
+                        label: node.label.clone(),
+                        kind: node.kind.clone(),
+                        weight: node.weight * 0.7 * activation,
+                        edge_type: Some("primed".to_string()),
+                        source_texts: node.source_texts.clone(),
+                    });
                 }
             }
         }
-        // Deduplicate primed nodes
-        let mut seen_ids: std::collections::HashSet<u64> = existing_ids;
-        primed_nodes.retain(|n| seen_ids.insert(n.id));
         long_term.extend(primed_nodes);
 
         // Re-sort by weight and cap
@@ -1836,7 +1826,77 @@ impl MemoryState {
         }
     }
 
-    /// Query the knowledge graph: match entities by label, then expand one hop.
+    /// Multi-hop spreading activation (CA3 recurrent network model).
+    ///
+    /// BFS-style outward spread from seed nodes. Each hop's activation decays by
+    /// `decay_factor`, modeling how neural activation attenuates across synapses.
+    /// Returns (node_id, activation) pairs sorted by activation descending.
+    fn spreading_activation(
+        &self,
+        seed_ids: &[u64],
+        max_hops: usize,
+        decay_factor: f32,
+    ) -> Vec<(u64, f32)> {
+        let mut activations: HashMap<u64, f32> = HashMap::new();
+        let mut visited: HashSet<u64> = HashSet::new();
+
+        // Seeds start with activation 1.0
+        let mut frontier: Vec<(u64, f32)> = Vec::new();
+        for &id in seed_ids {
+            activations.insert(id, 1.0);
+            visited.insert(id);
+            frontier.push((id, 1.0));
+        }
+
+        for hop in 0..max_hops {
+            let mut next_frontier: Vec<(u64, f32)> = Vec::new();
+            let hop_decay = decay_factor.powi(hop as i32 + 1);
+
+            for &(node_id, parent_activation) in &frontier {
+                for edge in &self.long_term.edges {
+                    let neighbor_id = if edge.from == node_id {
+                        Some(edge.to)
+                    } else if edge.to == node_id {
+                        Some(edge.from)
+                    } else {
+                        None
+                    };
+
+                    if let Some(nid) = neighbor_id {
+                        if !visited.contains(&nid)
+                            && self.long_term.nodes.contains_key(&nid)
+                        {
+                            let activation = parent_activation * edge.weight * hop_decay;
+                            let entry = activations.entry(nid).or_insert(0.0);
+                            if activation > *entry {
+                                *entry = activation;
+                            }
+                            if visited.insert(nid) {
+                                next_frontier.push((nid, activation));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if next_frontier.is_empty() {
+                break;
+            }
+            frontier = next_frontier;
+        }
+
+        // Remove seeds from results — caller already has them
+        for &id in seed_ids {
+            activations.remove(&id);
+        }
+
+        let mut results: Vec<(u64, f32)> = activations.into_iter().collect();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results
+    }
+
+    /// Query the knowledge graph: match entities by label, then expand via
+    /// spreading activation (multi-hop).
     fn graph_lookup(&self, query: &str, limit: usize) -> Vec<GraphNodeSummary> {
         let entities = extract_entities(query, &self.keyword_cache);
         let mut results: Vec<GraphNodeSummary> = Vec::new();
@@ -1858,27 +1918,23 @@ impl MemoryState {
             }
         }
 
+        // Multi-hop spreading activation from seed nodes
         if !seed_ids.is_empty() {
-            for edge in &self.long_term.edges {
-                let neighbor_id = if seed_ids.contains(&edge.from) {
-                    Some(edge.to)
-                } else if seed_ids.contains(&edge.to) {
-                    Some(edge.from)
-                } else {
-                    None
-                };
-
-                if let Some(nid) = neighbor_id {
-                    if let Some(node) = self.long_term.nodes.get(&nid) {
-                        results.push(GraphNodeSummary {
-                            id: node.id,
-                            label: node.label.clone(),
-                            kind: node.kind.clone(),
-                            weight: node.weight + edge.weight,
-                            edge_type: Some(edge.kind.clone()),
-                            source_texts: node.source_texts.clone(),
-                        });
-                    }
+            let activated = self.spreading_activation(
+                &seed_ids,
+                SPREADING_ACTIVATION_MAX_HOPS,
+                SPREADING_ACTIVATION_DECAY,
+            );
+            for (nid, activation) in activated {
+                if let Some(node) = self.long_term.nodes.get(&nid) {
+                    results.push(GraphNodeSummary {
+                        id: node.id,
+                        label: node.label.clone(),
+                        kind: node.kind.clone(),
+                        weight: node.weight + activation,
+                        edge_type: Some("activated".to_string()),
+                        source_texts: node.source_texts.clone(),
+                    });
                 }
             }
         }
@@ -5142,5 +5198,165 @@ mod tests {
         assert_eq!(migrated.short_term.len(), 1);
         assert_eq!(migrated.short_term[0].text, "preserved entry");
         assert_eq!(migrated.clock, 50);
+    }
+
+    // --- Spreading activation tests (Change 4) ---
+
+    /// Helper to insert a test graph node and return its ID.
+    fn insert_test_node(state: &mut MemoryState, id: u64, label: &str) {
+        state.long_term.nodes.insert(id, GraphNode {
+            id, label: label.into(), kind: "Entity".into(),
+            weight: 1.0, salience: 0.5, source_texts: vec![],
+            last_seen: 0,
+        });
+        state.long_term.index.insert(label.into(), id);
+    }
+
+    #[test]
+    fn test_spreading_activation_two_hop_chain() {
+        // Build A -> B -> C chain
+        let mut state = MemoryState::default();
+        let (a_id, b_id, c_id) = (100, 101, 102);
+        insert_test_node(&mut state, a_id, "NodeA");
+        insert_test_node(&mut state, b_id, "NodeB");
+        insert_test_node(&mut state, c_id, "NodeC");
+
+        // A -> B (weight 0.8), B -> C (weight 0.6)
+        state.long_term.edges.push(GraphEdge {
+            from: a_id, to: b_id, weight: 0.8,
+            kind: "related".into(), last_seen: 0,
+        });
+        state.long_term.edges.push(GraphEdge {
+            from: b_id, to: c_id, weight: 0.6,
+            kind: "related".into(), last_seen: 0,
+        });
+
+        let results = state.spreading_activation(&[a_id], 3, 0.5);
+        let b_activation = results.iter().find(|(id, _)| *id == b_id);
+        let c_activation = results.iter().find(|(id, _)| *id == c_id);
+
+        assert!(b_activation.is_some(), "B should be activated from A");
+        assert!(c_activation.is_some(), "C should be activated from A via B");
+
+        let b_val = b_activation.unwrap().1;
+        let c_val = c_activation.unwrap().1;
+        assert!(
+            b_val > c_val,
+            "hop-1 activation ({}) should exceed hop-2 ({})",
+            b_val, c_val
+        );
+    }
+
+    #[test]
+    fn test_spreading_activation_cycle_prevention() {
+        // Build A <-> B cycle
+        let mut state = MemoryState::default();
+        let (a_id, b_id) = (200, 201);
+        insert_test_node(&mut state, a_id, "CycleA");
+        insert_test_node(&mut state, b_id, "CycleB");
+
+        // Bidirectional edges
+        state.long_term.edges.push(GraphEdge {
+            from: a_id, to: b_id, weight: 1.0,
+            kind: "related".into(), last_seen: 0,
+        });
+        state.long_term.edges.push(GraphEdge {
+            from: b_id, to: a_id, weight: 1.0,
+            kind: "related".into(), last_seen: 0,
+        });
+
+        // Should not infinite loop — visited set prevents re-expansion
+        let results = state.spreading_activation(&[a_id], 5, 0.5);
+        assert_eq!(results.len(), 1, "only B should appear (A is seed)");
+        assert_eq!(results[0].0, b_id);
+    }
+
+    #[test]
+    fn test_spreading_activation_three_hop_progressive_decay() {
+        // A -> B -> C -> D
+        let mut state = MemoryState::default();
+        let ids: Vec<u64> = vec![300, 301, 302, 303];
+        for (i, label) in ["HopA", "HopB", "HopC", "HopD"].iter().enumerate() {
+            insert_test_node(&mut state, ids[i], label);
+        }
+
+        // All edges weight 1.0 to isolate the decay factor
+        for i in 0..3 {
+            state.long_term.edges.push(GraphEdge {
+                from: ids[i], to: ids[i + 1], weight: 1.0,
+                kind: "related".into(), last_seen: 0,
+            });
+        }
+
+        let results = state.spreading_activation(&[ids[0]], 3, 0.5);
+        let activations: HashMap<u64, f32> = results.into_iter().collect();
+
+        let b = activations.get(&ids[1]).copied().unwrap_or(0.0);
+        let c = activations.get(&ids[2]).copied().unwrap_or(0.0);
+        let d = activations.get(&ids[3]).copied().unwrap_or(0.0);
+
+        assert!(b > c, "B ({}) > C ({})", b, c);
+        assert!(c > d, "C ({}) > D ({})", c, d);
+        assert!(d > 0.0, "D should still have some activation");
+    }
+
+    #[test]
+    fn test_spreading_activation_empty_seeds() {
+        let state = MemoryState::default();
+        let results = state.spreading_activation(&[], 3, 0.5);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_graph_lookup_uses_multi_hop() {
+        // Build TestMultiA -> TestMultiB -> TestMultiC, query should find C via 2 hops
+        let mut state = MemoryState::default();
+        let ids: Vec<u64> = vec![400, 401, 402];
+        for (i, label) in ["TestMultiA", "TestMultiB", "TestMultiC"].iter().enumerate() {
+            insert_test_node(&mut state, ids[i], label);
+        }
+
+        state.long_term.edges.push(GraphEdge {
+            from: ids[0], to: ids[1], weight: 0.8,
+            kind: "related".into(), last_seen: 0,
+        });
+        state.long_term.edges.push(GraphEdge {
+            from: ids[1], to: ids[2], weight: 0.6,
+            kind: "related".into(), last_seen: 0,
+        });
+
+        let results = state.graph_lookup("TestMultiA", 20);
+        let labels: Vec<&str> = results.iter().map(|r| r.label.as_str()).collect();
+
+        assert!(labels.contains(&"TestMultiA"), "seed should be in results");
+        assert!(labels.contains(&"TestMultiB"), "hop-1 neighbor should be in results");
+        assert!(
+            labels.contains(&"TestMultiC"),
+            "hop-2 neighbor should be in results via spreading activation, got: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_spreading_activation_respects_max_hops() {
+        // A -> B -> C -> D, but max_hops=1 — should only reach B
+        let mut state = MemoryState::default();
+        let ids: Vec<u64> = vec![500, 501, 502, 503];
+        for (i, label) in ["LimA", "LimB", "LimC", "LimD"].iter().enumerate() {
+            insert_test_node(&mut state, ids[i], label);
+        }
+        for i in 0..3 {
+            state.long_term.edges.push(GraphEdge {
+                from: ids[i], to: ids[i + 1], weight: 1.0,
+                kind: "related".into(), last_seen: 0,
+            });
+        }
+
+        let results = state.spreading_activation(&[ids[0]], 1, 0.5);
+        let result_ids: Vec<u64> = results.iter().map(|(id, _)| *id).collect();
+
+        assert!(result_ids.contains(&ids[1]), "hop-1 should be reachable");
+        assert!(!result_ids.contains(&ids[2]), "hop-2 should NOT be reachable with max_hops=1");
+        assert!(!result_ids.contains(&ids[3]), "hop-3 should NOT be reachable with max_hops=1");
     }
 }
