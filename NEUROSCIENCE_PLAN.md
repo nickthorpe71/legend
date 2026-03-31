@@ -255,7 +255,71 @@ In pruning: consolidated L2 entries whose Summary node has a valid embedding get
 
 ---
 
-## Change 9: Brain-Region Module Structure
+## Change 9: Dynamic Keyword Bootstrapping (Workspace-Adaptive Lexicon)
+
+**Problem**: The keyword system relies heavily on hardcoded static arrays in `keywords.rs` — all software-engineering-centric. If Legend is used on a non-coding project (game design, writing, research), the keyword cache is filled with irrelevant terms like `fn `, `struct `, `pytest` while missing domain-specific vocabulary entirely. The `seed_tier1_keywords` function during `init` only seeds the static arrays + detected languages/tools; it never scans actual project content.
+
+**Files**: `src/commands/init.rs`, `src/memory/keyword_cache.rs`, new `src/memory/keyword_bootstrap.rs`
+
+**Current state**:
+- `seed_tier1_keywords(report)`: seeds static keyword arrays + language-specific code keywords + matching tool keywords from tech_stack
+- `seed_universal_keywords()`: seeds only static arrays (when no discovery report)
+- `KeywordCache::from_graph()`: builds cache from graph `kw:*` nodes, falls back to static arrays per empty category
+- `print_tier2_prompt()`: prints a manual KEYWORD: directive hint to stderr (rarely seen)
+
+**Changes**:
+
+### Phase A: Content-Driven Keyword Extraction
+In new `src/memory/keyword_bootstrap.rs`:
+```rust
+pub fn bootstrap_keywords_from_workspace(report: &DiscoveryReport, memory: &mut MemoryState) -> usize
+```
+1. Read high-signal files from `report.high_signal_files` (README, docs, manifests, entry points)
+2. Extract recurring nouns/phrases using lightweight NLP heuristics:
+   - Term frequency across documents (TF threshold to filter noise)
+   - Capitalized multi-word phrases (proper nouns → likely domain entities)
+   - Heading text from markdown files (## headings = architecture/feature names)
+   - Dependency names from manifests (Cargo.toml, package.json, requirements.txt, etc.)
+   - Config key names from config files (.env.example, settings files)
+3. Classify extracted terms into categories using context heuristics:
+   - Terms from dependency manifests → `tool`
+   - Terms from README headings / feature descriptions → `architecture`
+   - Terms from CI/deployment configs → `environment`
+   - Recurring capitalized terms in code → `code` (with entity_kind/context metadata)
+   - Domain nouns that don't fit other categories → new `domain` category
+4. Seed as `kw:<category>:<term>` graph nodes with source_text metadata for traceability
+
+### Phase B: Domain Category
+Add new `domain` keyword category to `keywords.rs`, `KeywordCache`, `keyword_cache.rs`:
+- `DOMAIN_KEYWORDS: &[&str]` — initially empty (purely graph-driven)
+- `KeywordCache.domain: Vec<String>` — populated from graph only
+- Used in `compute_salience` and `compute_emotional_valence` as a neutral-weight signal
+- Allows Legend to learn project-specific vocabulary: game design terms, biology terms, etc.
+
+### Phase C: Incremental Learning During Ticks
+In `tick_impl`, after entity extraction:
+- If an extracted entity appears 3+ times across L2 entries but isn't in the keyword cache → auto-promote to a `kw:domain:<term>` graph node
+- Threshold-based self-expansion: the keyword system grows as the user works
+
+### Phase D: Workspace Re-scan Command
+Add `legend memory rescan` command:
+- Re-runs workspace discovery + bootstrap
+- Merges new keywords without removing user-added ones
+- Useful after major project changes (new dependencies, restructuring)
+
+**Tests**:
+- Bootstrap from a fixture workspace with README.md + Cargo.toml → extracts project name, dependencies as tool keywords, README headings as architecture keywords
+- Bootstrap from a non-code project (markdown-only workspace) → extracts domain keywords from headings and recurring terms
+- Incremental learning: tick the same entity 3+ times → auto-promoted to domain keyword
+- `rescan` merges without duplicating existing keywords
+- Empty workspace → falls back to static arrays gracefully
+- Existing keyword_cache tests still pass
+
+**Value**: Legend becomes genuinely workspace-adaptive. A game designer gets keywords like "sprite", "tilemap", "collision"; a researcher gets "hypothesis", "methodology", "dataset". The hardcoded software keywords serve as a reasonable fallback but are no longer the ceiling.
+
+---
+
+## Change 10: Brain-Region Module Structure
 
 **Problem**: `mod.rs` is a 4700+ line monolith. The codebase should be organized by brain region so each module is a distinct neural subsystem with clear inputs/outputs.
 
@@ -285,7 +349,7 @@ Rename constants:
 
 ---
 
-## Change 10: Neuroscience Terminology Alignment
+## Change 11: Neuroscience Terminology Alignment
 
 **Problem**: After module split, add doc comments and rename remaining generic terms.
 
@@ -305,19 +369,20 @@ Remaining constant renames that weren't handled in Change 9.
 ## Execution Order
 
 ```
-1. Pattern Separation     ← DONE (+ dentate_gyrus.rs module)
-2. Emotional Tagging      ← DONE (+ amygdala.rs module, 568 tests passing)
-3. Forgetting Curve       ← no deps
-4. Spreading Activation   ← no deps, unlocks 5/6
-5. SWR Replay             ← benefits from 4
-6. Pattern Completion     ← depends on 4
-7. Synaptic Encoding      ← benefits from 4
-8. Systems Consolidation  ← benefits from 5/6/7
-9. Brain-Region Modules   ← after all behavioral changes settle
-10. Terminology           ← always last
+1. Pattern Separation        ← DONE (+ dentate_gyrus.rs module)
+2. Emotional Tagging         ← DONE (+ amygdala.rs module, 568 tests passing)
+3. Forgetting Curve          ← no deps
+4. Spreading Activation      ← no deps, unlocks 5/6
+5. SWR Replay                ← benefits from 4
+6. Pattern Completion        ← depends on 4
+7. Synaptic Encoding         ← benefits from 4
+8. Systems Consolidation     ← benefits from 5/6/7
+9. Dynamic Keyword Bootstrap ← no deps, benefits from init/discover
+10. Brain-Region Modules     ← after all behavioral changes settle
+11. Terminology              ← always last
 ```
 
-Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Changes 9-10 are structural/doc cleanup, always last.
+Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Change 9 (keyword bootstrap) can be done at any point but benefits from having the emotional valence keywords (Change 2) and architecture settled. Changes 10-11 are structural/doc cleanup, always last.
 
 ## Migration
 
