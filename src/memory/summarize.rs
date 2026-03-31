@@ -195,6 +195,7 @@ mod tests {
             gradient_sq_sum: 0.0,
             density: 0.0,
             consolidated: false,
+            emotional_valence: 0.0,
         };
         let result = summarize_group(&[entry][..], &kw());
         assert!(!result.is_empty());
@@ -218,6 +219,7 @@ mod tests {
                 gradient_sq_sum: 0.0,
                 density: 0.0,
                 consolidated: false,
+                emotional_valence: 0.0,
             })
             .collect();
         let result = summarize_group(&entries, &kw());
@@ -243,6 +245,7 @@ mod tests {
                 gradient_sq_sum: 0.0,
                 density: 0.0,
                 consolidated: false,
+                emotional_valence: 0.0,
             })
             .collect();
         let result = summarize_group(&entries, &kw());
@@ -265,6 +268,7 @@ mod tests {
             gradient_sq_sum: 0.0,
             density: 0.0,
             consolidated: false,
+            emotional_valence: 0.0,
         };
         let result = summarize_group(&[entry][..], &kw());
         assert!(result.contains("Pre-computed summary"));

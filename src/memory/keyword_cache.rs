@@ -6,7 +6,8 @@
 
 use super::keywords::{
     ACTION_KEYWORDS, ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, CODE_KEYWORDS, DECISION_KEYWORDS,
-    ENVIRONMENT_KEYWORDS, PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS,
+    ENVIRONMENT_KEYWORDS, NEGATIVE_VALENCE_KEYWORDS, POSITIVE_VALENCE_KEYWORDS,
+    PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS, URGENCY_KEYWORDS,
 };
 use super::GraphMemory;
 
@@ -23,6 +24,12 @@ pub struct KeywordCache {
     pub bug: Vec<String>,
     pub todo: Vec<String>,
     pub preference: Vec<String>,
+    /// Amygdala negative valence: (keyword, weight) for threat detection.
+    pub negative_valence: Vec<(String, f32)>,
+    /// Amygdala positive valence: (keyword, weight) for reward detection.
+    pub positive_valence: Vec<(String, f32)>,
+    /// Urgency keywords that amplify emotional magnitude.
+    pub urgency: Vec<String>,
 }
 
 impl Default for KeywordCache {
@@ -50,6 +57,15 @@ impl KeywordCache {
             bug: BUG_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             todo: TODO_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             preference: PREFERENCE_KEYWORDS.iter().map(|s| s.to_string()).collect(),
+            negative_valence: NEGATIVE_VALENCE_KEYWORDS
+                .iter()
+                .map(|(kw, w)| (kw.to_string(), *w))
+                .collect(),
+            positive_valence: POSITIVE_VALENCE_KEYWORDS
+                .iter()
+                .map(|(kw, w)| (kw.to_string(), *w))
+                .collect(),
+            urgency: URGENCY_KEYWORDS.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -67,6 +83,9 @@ impl KeywordCache {
             bug: Vec::new(),
             todo: Vec::new(),
             preference: Vec::new(),
+            negative_valence: Vec::new(),
+            positive_valence: Vec::new(),
+            urgency: Vec::new(),
         };
 
         for node in graph.nodes.values() {
@@ -88,6 +107,15 @@ impl KeywordCache {
                     "bug" => cache.bug.push(term.to_string()),
                     "todo" => cache.todo.push(term.to_string()),
                     "preference" => cache.preference.push(term.to_string()),
+                    "negative_valence" => {
+                        let weight = parse_valence_weight(&node.source_texts, -0.4);
+                        cache.negative_valence.push((term.to_string(), weight));
+                    }
+                    "positive_valence" => {
+                        let weight = parse_valence_weight(&node.source_texts, 0.4);
+                        cache.positive_valence.push((term.to_string(), weight));
+                    }
+                    "urgency" => cache.urgency.push(term.to_string()),
                     _ => {} // Unknown category, skip
                 }
             }
@@ -132,6 +160,21 @@ impl KeywordCache {
         if self.preference.is_empty() {
             self.preference = PREFERENCE_KEYWORDS.iter().map(|s| s.to_string()).collect();
         }
+        if self.negative_valence.is_empty() {
+            self.negative_valence = NEGATIVE_VALENCE_KEYWORDS
+                .iter()
+                .map(|(kw, w)| (kw.to_string(), *w))
+                .collect();
+        }
+        if self.positive_valence.is_empty() {
+            self.positive_valence = POSITIVE_VALENCE_KEYWORDS
+                .iter()
+                .map(|(kw, w)| (kw.to_string(), *w))
+                .collect();
+        }
+        if self.urgency.is_empty() {
+            self.urgency = URGENCY_KEYWORDS.iter().map(|s| s.to_string()).collect();
+        }
     }
 }
 
@@ -164,6 +207,19 @@ fn parse_code_metadata(source_texts: &[String]) -> (String, String) {
     (kind, context)
 }
 
+/// Parse valence weight from source_texts.
+/// Looks for `weight:X` entry; returns `default` if not found.
+fn parse_valence_weight(source_texts: &[String], default: f32) -> f32 {
+    for text in source_texts {
+        if let Some(w) = text.strip_prefix("weight:") {
+            if let Ok(val) = w.parse::<f32>() {
+                return val.clamp(-1.0, 1.0);
+            }
+        }
+    }
+    default
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +236,9 @@ mod tests {
         assert!(!cache.bug.is_empty());
         assert!(!cache.todo.is_empty());
         assert!(!cache.preference.is_empty());
+        assert!(!cache.negative_valence.is_empty());
+        assert!(!cache.positive_valence.is_empty());
+        assert!(!cache.urgency.is_empty());
     }
 
     #[test]
@@ -315,5 +374,77 @@ mod tests {
         let cache = KeywordCache::from_graph(&graph);
         // All categories should fall back to static defaults
         assert_eq!(cache.decision.len(), DECISION_KEYWORDS.len());
+    }
+
+    #[test]
+    fn test_parse_valence_weight() {
+        assert_eq!(parse_valence_weight(&["weight:-0.6".to_string()], -0.4), -0.6);
+        assert_eq!(parse_valence_weight(&["weight:0.8".to_string()], 0.4), 0.8);
+        assert_eq!(parse_valence_weight(&[], -0.4), -0.4);
+        assert_eq!(parse_valence_weight(&["no_weight".to_string()], 0.4), 0.4);
+        // Clamped to [-1, 1]
+        assert_eq!(parse_valence_weight(&["weight:5.0".to_string()], 0.0), 1.0);
+        assert_eq!(parse_valence_weight(&["weight:-5.0".to_string()], 0.0), -1.0);
+    }
+
+    #[test]
+    fn test_valence_graph_nodes() {
+        let mut graph = GraphMemory::default();
+        graph.nodes.insert(
+            1,
+            GraphNode {
+                id: 1,
+                label: "kw:negative_valence:meltdown".to_string(),
+                kind: "Keyword".to_string(),
+                weight: 1.0,
+                last_seen: 10,
+                salience: 0.5,
+                source_texts: vec!["weight:-0.7".to_string()],
+            },
+        );
+        graph.nodes.insert(
+            2,
+            GraphNode {
+                id: 2,
+                label: "kw:positive_valence:breakthrough".to_string(),
+                kind: "Keyword".to_string(),
+                weight: 1.0,
+                last_seen: 10,
+                salience: 0.5,
+                source_texts: vec!["weight:0.6".to_string()],
+            },
+        );
+        graph.nodes.insert(
+            3,
+            GraphNode {
+                id: 3,
+                label: "kw:urgency:showstopper".to_string(),
+                kind: "Keyword".to_string(),
+                weight: 1.0,
+                last_seen: 10,
+                salience: 0.5,
+                source_texts: vec![],
+            },
+        );
+
+        let cache = KeywordCache::from_graph(&graph);
+        // Graph entries populate the categories (no static fallback)
+        assert_eq!(cache.negative_valence.len(), 1);
+        assert_eq!(cache.negative_valence[0].0, "meltdown");
+        assert_eq!(cache.negative_valence[0].1, -0.7);
+        assert_eq!(cache.positive_valence.len(), 1);
+        assert_eq!(cache.positive_valence[0].0, "breakthrough");
+        assert_eq!(cache.positive_valence[0].1, 0.6);
+        assert_eq!(cache.urgency.len(), 1);
+        assert!(cache.urgency.contains(&"showstopper".to_string()));
+    }
+
+    #[test]
+    fn test_empty_graph_valence_fallbacks() {
+        let graph = GraphMemory::default();
+        let cache = KeywordCache::from_graph(&graph);
+        assert_eq!(cache.negative_valence.len(), NEGATIVE_VALENCE_KEYWORDS.len());
+        assert_eq!(cache.positive_valence.len(), POSITIVE_VALENCE_KEYWORDS.len());
+        assert_eq!(cache.urgency.len(), URGENCY_KEYWORDS.len());
     }
 }

@@ -1,3 +1,4 @@
+pub mod amygdala;
 pub mod dentate_gyrus;
 pub mod embed;
 pub mod extract;
@@ -5,6 +6,7 @@ pub mod keyword_cache;
 pub mod keywords;
 pub mod summarize;
 
+use amygdala::compute_emotional_valence;
 use dentate_gyrus::{diversity_pass, sparse_orthogonalize, word_overlap, MERGE_WORD_OVERLAP_THRESHOLD};
 use embed::{compute_salience, cosine_similarity, embed_text, merge_embeddings};
 use extract::extract_entities;
@@ -166,6 +168,7 @@ impl Default for ShortTermEntry {
             gradient_sq_sum: 0.0,
             density: 0.0,
             consolidated: false,
+            emotional_valence: 0.0,
         }
     }
 }
@@ -203,6 +206,10 @@ pub struct ShortTermEntry {
     /// Consolidated entries are filtered from query results to avoid redundancy.
     #[serde(default)]
     pub consolidated: bool,
+    /// Amygdala emotional valence: negative = threat, positive = reward.
+    /// Decays at half the hippocampal rate, modeling emotional persistence.
+    #[serde(default)]
+    pub emotional_valence: f32,
 }
 
 /// A source reference to a file region for this memory.
@@ -228,6 +235,8 @@ pub struct WorkingMemoryEntry {
     pub rehearsal_count: u32,
     /// Prevents double-insertion into L2 when attention gate already promoted.
     pub promoted: bool,
+    /// Amygdala emotional valence carried from encoding.
+    pub emotional_valence: f32,
 }
 
 const MAX_REFS_PER_ENTRY: usize = 8;
@@ -863,6 +872,7 @@ impl MemoryState {
         for chunk in chunk_text(text) {
             let raw_embedding = embed_text(&chunk, self.config.embedding_dim);
             let salience = compute_salience(&chunk, &self.keyword_cache);
+            let emotional_valence = compute_emotional_valence(&chunk, &self.keyword_cache);
             let refs = extract_memory_refs_from_text(&chunk);
 
             // Dentate Gyrus sparse orthogonalization: push the new embedding away from
@@ -877,7 +887,7 @@ impl MemoryState {
             );
 
             // Always push into working memory (L1)
-            let wm_id = self.push_working_memory(&chunk, &embedding, salience);
+            let wm_id = self.push_working_memory(&chunk, &embedding, salience, emotional_valence);
 
             // --- Attention gate: only high-salience ticks promote to L2 ---
             if salience >= PROMOTION_SALIENCE_THRESHOLD {
@@ -948,7 +958,7 @@ impl MemoryState {
                         result_similarity = Some(best_sim);
                     }
                     _ => {
-                        self.insert_short_term(&chunk, embedding, salience, refs);
+                        self.insert_short_term(&chunk, embedding, salience, refs, emotional_valence);
                         self.update_graph(&chunk, salience);
                         // Track creation - get the ID of the newly inserted entry
                         if let Some(entry) = self.short_term.last() {
@@ -1498,7 +1508,7 @@ impl MemoryState {
                     || entry.rehearsal_count >= 1)
             {
                 let refs = extract_memory_refs_from_text(&entry.text);
-                self.insert_short_term(&entry.text, entry.embedding, entry.salience, refs);
+                self.insert_short_term(&entry.text, entry.embedding, entry.salience, refs, entry.emotional_valence);
                 self.update_graph(&entry.text, entry.salience);
             }
         }
@@ -1529,7 +1539,7 @@ impl MemoryState {
     /// Push an entry into working memory (L1).
     /// When at capacity, the oldest entry is displaced and evaluated for L2 promotion.
     /// Displaced entries with high salience or rehearsal are promoted to short-term (L2).
-    fn push_working_memory(&mut self, text: &str, embedding: &[f32], salience: f32) -> u64 {
+    fn push_working_memory(&mut self, text: &str, embedding: &[f32], salience: f32, emotional_valence: f32) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -1542,7 +1552,7 @@ impl MemoryState {
                     || displaced.rehearsal_count >= 1)
             {
                 let refs = extract_memory_refs_from_text(&displaced.text);
-                self.insert_short_term(&displaced.text, displaced.embedding, displaced.salience, refs);
+                self.insert_short_term(&displaced.text, displaced.embedding, displaced.salience, refs, displaced.emotional_valence);
                 self.update_graph(&displaced.text, displaced.salience);
             }
         }
@@ -1555,6 +1565,7 @@ impl MemoryState {
             tick_created: self.clock,
             rehearsal_count: 0,
             promoted: false,
+            emotional_valence,
         });
         id
     }
@@ -1566,6 +1577,7 @@ impl MemoryState {
         embedding: Vec<f32>,
         salience: f32,
         refs: Vec<MemoryRef>,
+        emotional_valence: f32,
     ) {
         if self.short_term.len() >= self.config.short_term_capacity {
             let now = self.clock;
@@ -1603,6 +1615,7 @@ impl MemoryState {
             gradient_sq_sum: 0.0,
             density: calculate_density(text, &self.keyword_cache),
             consolidated: false,
+            emotional_valence,
         });
         self.next_id += 1;
     }
@@ -1649,10 +1662,12 @@ impl MemoryState {
                 } else {
                     0.0
                 };
+                // Amygdala boost: emotionally charged memories surface more readily
+                let emotional_boost = e.emotional_valence.abs() * 0.05;
                 MemorySnippet {
                     id: e.id,
                     text: e.text.clone(),
-                    similarity: cosine + keyword_bonus,
+                    similarity: cosine + keyword_bonus + emotional_boost,
                     refs: e.refs.clone(),
                 }
             })
@@ -1935,9 +1950,13 @@ impl MemoryState {
             let density_factor = (1.0 + entry.density * 0.1).min(2.0);
             let effective_decay_rate = SHORT_TERM_DECAY_RATE / density_factor;
 
-            let decay =
-                (-(now.saturating_sub(entry.last_access) as f32) * effective_decay_rate).exp();
+            let age = now.saturating_sub(entry.last_access) as f32;
+            let decay = (-age * effective_decay_rate).exp();
             entry.salience *= decay;
+
+            // Amygdala: emotional valence decays at half rate (emotional memories persist longer)
+            let emotional_decay = (-age * effective_decay_rate * 0.5).exp();
+            entry.emotional_valence *= emotional_decay;
         }
         for node in self.long_term.nodes.values_mut() {
             let decay = (-(now.saturating_sub(node.last_seen) as f32) * LONG_TERM_DECAY_RATE).exp();
@@ -2337,6 +2356,7 @@ impl MemoryState {
                 serde_json::json!({
                     "id": e.id, "text": e.text, "summary": e.summary,
                     "salience": (e.salience * 1000.0).round() / 1000.0,
+                    "emotional_valence": (e.emotional_valence * 1000.0).round() / 1000.0,
                     "usage": e.usage, "last_access": e.last_access,
                     "reconsolidation_count": e.reconsolidation_count,
                     "labile": e.labile_until >= self.clock,
@@ -2352,6 +2372,7 @@ impl MemoryState {
                 serde_json::json!({
                     "id": e.id, "text": e.text,
                     "salience": (e.salience * 1000.0).round() / 1000.0,
+                    "emotional_valence": (e.emotional_valence * 1000.0).round() / 1000.0,
                     "tick_created": e.tick_created,
                     "rehearsal_count": e.rehearsal_count,
                     "promoted": e.promoted,
@@ -2507,13 +2528,39 @@ pub fn load_memory_from_path<P: AsRef<Path>>(path: P) -> Result<MemoryState, Box
     Err("Failed to deserialize memory: no known format matched".into())
 }
 
+/// ShortTermEntry before emotional_valence was added (pre-v0.3.10).
+#[derive(Debug, Clone, Deserialize)]
+struct ShortTermEntryV5 {
+    pub id: u64,
+    pub text: String,
+    #[serde(default)]
+    pub summary: String,
+    pub embedding: Vec<f32>,
+    pub last_access: u64,
+    pub usage: u32,
+    #[serde(default)]
+    pub salience: f32,
+    #[serde(default)]
+    pub reconsolidation_count: u32,
+    #[serde(default)]
+    pub labile_until: u64,
+    #[serde(default)]
+    pub refs: Vec<MemoryRef>,
+    #[serde(default)]
+    pub gradient_sq_sum: f32,
+    #[serde(default)]
+    pub density: f32,
+    #[serde(default)]
+    pub consolidated: bool,
+}
+
 /// MemoryState before working_memory rework (had `immediate: VecDeque<String>`).
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 struct MemoryStateV5 {
     pub config: MemoryConfig,
     pub immediate: VecDeque<String>,
-    pub short_term: Vec<ShortTermEntry>,
+    pub short_term: Vec<ShortTermEntryV5>,
     pub long_term: GraphMemory,
     pub clock: u64,
     pub next_id: u64,
@@ -2533,7 +2580,26 @@ fn migrate_v5(v5: MemoryStateV5) -> MemoryState {
     MemoryState {
         config: v5.config,
         working_memory: Vec::new(), // discard old FIFO L1 contents
-        short_term: v5.short_term,
+        short_term: v5
+            .short_term
+            .into_iter()
+            .map(|e| ShortTermEntry {
+                id: e.id,
+                text: e.text,
+                summary: e.summary,
+                embedding: e.embedding,
+                last_access: e.last_access,
+                usage: e.usage,
+                salience: e.salience,
+                reconsolidation_count: e.reconsolidation_count,
+                labile_until: e.labile_until,
+                refs: e.refs,
+                gradient_sq_sum: e.gradient_sq_sum,
+                density: e.density,
+                consolidated: e.consolidated,
+                emotional_valence: 0.0,
+            })
+            .collect(),
         long_term: v5.long_term,
         clock: v5.clock,
         next_id: v5.next_id,
@@ -2613,6 +2679,7 @@ fn migrate_v4(v4: MemoryStateV4) -> MemoryState {
                 gradient_sq_sum: e.gradient_sq_sum,
                 density: e.density,
                 consolidated: false,
+                emotional_valence: 0.0,
             })
             .collect(),
         long_term: v4.long_term,
@@ -2780,6 +2847,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                     gradient_sq_sum: 0.0,
                     density: 0.0,
                     consolidated: false,
+                    emotional_valence: 0.0,
                 })
                 .collect(),
             long_term: v3.long_term,
@@ -2822,6 +2890,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                     gradient_sq_sum: 0.0,
                     density: 0.0,
                     consolidated: false,
+                    emotional_valence: 0.0,
                 })
                 .collect(),
             long_term: v2.long_term,
@@ -2856,6 +2925,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                         gradient_sq_sum: 0.0,
                         density: 0.0,
                         consolidated: false,
+                        emotional_valence: 0.0,
                     })
                     .collect(),
                 long_term: old.long_term,
@@ -2941,7 +3011,9 @@ fn eviction_score(entry: &ShortTermEntry, now: u64) -> f32 {
     let age = now.saturating_sub(entry.last_access) as f32;
     let recency = (-age * EVICTION_DECAY_RATE).exp();
     let usage = (entry.usage as f32).ln_1p();
-    entry.salience * 0.4 + usage * 0.3 + recency * 0.3
+    // Amygdala: emotionally charged memories resist eviction
+    let emotional_resistance = entry.emotional_valence.abs() * 0.15;
+    entry.salience * 0.4 + usage * 0.3 + recency * 0.3 + emotional_resistance
 }
 
 // ---------------------------------------------------------------------------
@@ -2997,6 +3069,7 @@ mod tests {
             gradient_sq_sum: 0.0,
             density: 0.0,
             consolidated: false,
+            emotional_valence: 0.0,
         };
         let old = ShortTermEntry {
             id: 2,
@@ -3012,6 +3085,7 @@ mod tests {
             gradient_sq_sum: 0.0,
             density: 0.0,
             consolidated: false,
+            emotional_valence: 0.0,
         };
         assert!(eviction_score(&recent, 100) > eviction_score(&old, 100));
     }
@@ -3187,6 +3261,105 @@ mod tests {
             "near-identical entries should merge, got {}",
             state.short_term.len()
         );
+    }
+
+    // ---- Amygdala: emotional tagging integration tests ----
+
+    #[test]
+    fn test_emotional_valence_stored_on_tick() {
+        let mut state = MemoryState::default();
+        state.tick("BUG: server crashes on null input with a panic");
+        let entry = state
+            .short_term
+            .iter()
+            .find(|e| e.text.contains("BUG:"))
+            .expect("bug entry should exist in L2");
+        assert!(
+            entry.emotional_valence < -0.3,
+            "bug entry should have negative valence, got {}",
+            entry.emotional_valence
+        );
+    }
+
+    #[test]
+    fn test_positive_valence_on_tick() {
+        let mut state = MemoryState::default();
+        // Use text with decision keywords to ensure L2 promotion + positive valence
+        state.tick("DECISION: Shipped v2.0 successfully because the approach was validated");
+        let entry = state
+            .short_term
+            .iter()
+            .find(|e| e.text.contains("Shipped"))
+            .expect("shipped entry should exist in L2");
+        assert!(
+            entry.emotional_valence > 0.0,
+            "shipped entry should have positive valence, got {}",
+            entry.emotional_valence
+        );
+    }
+
+    #[test]
+    fn test_emotional_valence_decays_slower_than_salience() {
+        let mut state = MemoryState::default();
+        state.tick("BUG: critical panic in the authentication module");
+        let initial_valence = state.short_term[0].emotional_valence;
+        let initial_salience = state.short_term[0].salience;
+
+        // Advance clock significantly
+        state.clock += 100;
+        state.apply_decay();
+
+        let decayed_valence = state.short_term[0].emotional_valence;
+        let decayed_salience = state.short_term[0].salience;
+
+        // Both should have decayed
+        assert!(decayed_valence.abs() < initial_valence.abs());
+        assert!(decayed_salience < initial_salience);
+
+        // Valence should retain more of its original magnitude (half-rate decay)
+        let valence_retention = decayed_valence.abs() / initial_valence.abs();
+        let salience_retention = decayed_salience / initial_salience;
+        assert!(
+            valence_retention > salience_retention,
+            "valence should decay slower: valence_retention={} vs salience_retention={}",
+            valence_retention,
+            salience_retention
+        );
+    }
+
+    #[test]
+    fn test_emotional_entries_resist_eviction() {
+        // An emotionally charged entry should score higher than a neutral one
+        // with the same salience/usage/recency
+        let emotional = ShortTermEntry {
+            id: 1,
+            text: "bug report".into(),
+            summary: "bug".into(),
+            emotional_valence: -0.6,
+            ..ShortTermEntry::default()
+        };
+        let neutral = ShortTermEntry {
+            id: 2,
+            text: "some docs".into(),
+            summary: "docs".into(),
+            emotional_valence: 0.0,
+            ..ShortTermEntry::default()
+        };
+        assert!(
+            eviction_score(&emotional, 0) > eviction_score(&neutral, 0),
+            "emotional entry should resist eviction"
+        );
+    }
+
+    #[test]
+    fn test_emotional_valence_in_dump() {
+        let mut state = MemoryState::default();
+        state.tick("BUG: data corruption found in production database");
+        let dump = state.build_dump();
+        let short_term = dump["short_term"].as_array().unwrap();
+        assert!(!short_term.is_empty());
+        let valence = short_term[0]["emotional_valence"].as_f64().unwrap();
+        assert!(valence < 0.0, "bug entry valence should be negative in dump, got {}", valence);
     }
 
     #[test]
@@ -3381,6 +3554,7 @@ mod tests {
             gradient_sq_sum: 0.0,
             density: 0.0,
             consolidated: false,
+            emotional_valence: 0.0,
         });
         // Advance clock far enough for pruning to kick in
         state.clock = 500;
@@ -4033,6 +4207,7 @@ mod tests {
                 embed_text(text, dim),
                 compute_salience(text, &kw()),
                 Vec::new(),
+                0.0,
             );
         }
         // Lower theta_low so these group together
@@ -4061,6 +4236,7 @@ mod tests {
                 embed_text(text, dim),
                 compute_salience(text, &kw()),
                 Vec::new(),
+                0.0,
             );
         }
         let _summaries2 = state.consolidate();
@@ -4095,6 +4271,7 @@ mod tests {
                 embed_text(text, dim),
                 compute_salience(text, &kw()),
                 Vec::new(),
+                0.0,
             );
         }
         state.config.theta_low = 0.3;
@@ -4130,6 +4307,7 @@ mod tests {
                 embed_text(&text, dim),
                 compute_salience(&text, &kw()),
                 Vec::new(),
+                0.0,
             );
         }
         state.consolidate();
@@ -4163,6 +4341,7 @@ mod tests {
                 embed_text(text, dim),
                 compute_salience(text, &kw()),
                 Vec::new(),
+                0.0,
             );
         }
         state.config.theta_low = 0.3;
@@ -4655,13 +4834,14 @@ mod tests {
             tick_created: state.clock,
             rehearsal_count: 1, // rehearsed via query
             promoted: false,
+            emotional_valence: 0.0,
         });
         let st_before = state.short_term.len();
 
         // Fill to capacity + 1 to force displacement of index 0
         for _ in 0..state.config.immediate_capacity {
             let emb = embed_text("filler", state.config.embedding_dim);
-            state.push_working_memory("filler entry", &emb, 0.01);
+            state.push_working_memory("filler entry", &emb, 0.01, 0.0);
         }
 
         // The rehearsed entry should have been promoted to L2 on displacement
@@ -4685,6 +4865,7 @@ mod tests {
             tick_created: state.clock,
             rehearsal_count: 0,
             promoted: false,
+            emotional_valence: 0.0,
         });
         let st_before = state.short_term.len();
 
@@ -4709,6 +4890,7 @@ mod tests {
             tick_created: state.clock,
             rehearsal_count: 0,
             promoted: false,
+            emotional_valence: 0.0,
         });
         let st_before = state.short_term.len();
 
@@ -4734,6 +4916,7 @@ mod tests {
             tick_created: state.clock,
             rehearsal_count: 5,
             promoted: true, // already promoted
+            emotional_valence: 0.0,
         });
         let st_before = state.short_term.len();
 
@@ -4751,10 +4934,20 @@ mod tests {
         let v5 = MemoryStateV5 {
             config: MemoryConfig::default(),
             immediate: VecDeque::from(["old1".to_string(), "old2".to_string()]),
-            short_term: vec![ShortTermEntry {
+            short_term: vec![ShortTermEntryV5 {
                 id: 10,
                 text: "preserved entry".to_string(),
-                ..ShortTermEntry::default()
+                summary: String::new(),
+                embedding: Vec::new(),
+                last_access: 0,
+                usage: 0,
+                salience: 0.0,
+                reconsolidation_count: 0,
+                labile_until: 0,
+                refs: Vec::new(),
+                gradient_sq_sum: 0.0,
+                density: 0.0,
+                consolidated: false,
             }],
             long_term: GraphMemory::default(),
             clock: 50,
