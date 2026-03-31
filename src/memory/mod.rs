@@ -169,6 +169,8 @@ impl Default for ShortTermEntry {
             density: 0.0,
             consolidated: false,
             emotional_valence: 0.0,
+            stability: 1.0,
+            last_retrieval_interval: 0,
         }
     }
 }
@@ -210,6 +212,19 @@ pub struct ShortTermEntry {
     /// Decays at half the hippocampal rate, modeling emotional persistence.
     #[serde(default)]
     pub emotional_valence: f32,
+    /// Ebbinghaus stability: how resistant this memory is to decay.
+    /// Starts at 1.0, grows with spaced retrieval (capped at 10.0).
+    /// Higher stability → slower forgetting curve.
+    #[serde(default = "default_stability")]
+    pub stability: f32,
+    /// Clock interval between the two most recent retrievals.
+    /// Used to detect spaced vs massed retrieval patterns.
+    #[serde(default)]
+    pub last_retrieval_interval: u64,
+}
+
+fn default_stability() -> f32 {
+    1.0
 }
 
 /// A source reference to a file region for this memory.
@@ -1039,6 +1054,19 @@ impl MemoryState {
 
         for snippet in &mut snippets {
             if let Some(entry) = self.short_term.iter_mut().find(|e| e.id == snippet.id) {
+                // Ebbinghaus spaced repetition: update stability based on retrieval interval
+                let interval = self.clock.saturating_sub(entry.last_access);
+                if interval > 0 && entry.last_retrieval_interval > 0 {
+                    if interval > entry.last_retrieval_interval {
+                        // Spaced retrieval: increasing intervals strengthen stability
+                        entry.stability = (entry.stability * 1.3).min(10.0);
+                    } else {
+                        // Massed/cramming: diminishing returns
+                        entry.stability = (entry.stability * 1.05).min(10.0);
+                    }
+                }
+                entry.last_retrieval_interval = interval;
+
                 entry.last_access = self.clock;
                 entry.usage = entry.usage.saturating_add(1);
                 // Mark labile: this entry can be reconsolidated by the next tick
@@ -1616,6 +1644,8 @@ impl MemoryState {
             density: calculate_density(text, &self.keyword_cache),
             consolidated: false,
             emotional_valence,
+            stability: 1.0,
+            last_retrieval_interval: 0,
         });
         self.next_id += 1;
     }
@@ -1948,7 +1978,10 @@ impl MemoryState {
         for entry in &mut self.short_term {
             // Semantic density reduces decay rate. High-density entries (many symbols/paths) persist longer.
             let density_factor = (1.0 + entry.density * 0.1).min(2.0);
-            let effective_decay_rate = SHORT_TERM_DECAY_RATE / density_factor;
+            let base_decay_rate = SHORT_TERM_DECAY_RATE / density_factor;
+
+            // Ebbinghaus: stability slows the forgetting curve. Higher stability → slower decay.
+            let effective_decay_rate = base_decay_rate / entry.stability;
 
             let age = now.saturating_sub(entry.last_access) as f32;
             let decay = (-age * effective_decay_rate).exp();
@@ -2598,6 +2631,8 @@ fn migrate_v5(v5: MemoryStateV5) -> MemoryState {
                 density: e.density,
                 consolidated: e.consolidated,
                 emotional_valence: 0.0,
+                stability: 1.0,
+                last_retrieval_interval: 0,
             })
             .collect(),
         long_term: v5.long_term,
@@ -2680,6 +2715,8 @@ fn migrate_v4(v4: MemoryStateV4) -> MemoryState {
                 density: e.density,
                 consolidated: false,
                 emotional_valence: 0.0,
+                stability: 1.0,
+                last_retrieval_interval: 0,
             })
             .collect(),
         long_term: v4.long_term,
@@ -2848,6 +2885,8 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                     density: 0.0,
                     consolidated: false,
                     emotional_valence: 0.0,
+                    stability: 1.0,
+                    last_retrieval_interval: 0,
                 })
                 .collect(),
             long_term: v3.long_term,
@@ -2891,6 +2930,8 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                     density: 0.0,
                     consolidated: false,
                     emotional_valence: 0.0,
+                    stability: 1.0,
+                    last_retrieval_interval: 0,
                 })
                 .collect(),
             long_term: v2.long_term,
@@ -2926,6 +2967,8 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                         density: 0.0,
                         consolidated: false,
                         emotional_valence: 0.0,
+                        stability: 1.0,
+                        last_retrieval_interval: 0,
                     })
                     .collect(),
                 long_term: old.long_term,
@@ -3070,6 +3113,8 @@ mod tests {
             density: 0.0,
             consolidated: false,
             emotional_valence: 0.0,
+            stability: 1.0,
+            last_retrieval_interval: 0,
         };
         let old = ShortTermEntry {
             id: 2,
@@ -3086,6 +3131,8 @@ mod tests {
             density: 0.0,
             consolidated: false,
             emotional_valence: 0.0,
+            stability: 1.0,
+            last_retrieval_interval: 0,
         };
         assert!(eviction_score(&recent, 100) > eviction_score(&old, 100));
     }
@@ -3362,6 +3409,136 @@ mod tests {
         assert!(valence < 0.0, "bug entry valence should be negative in dump, got {}", valence);
     }
 
+    // ---- Ebbinghaus: spaced repetition + forgetting curve tests ----
+
+    #[test]
+    fn test_spaced_retrieval_increases_stability() {
+        let mut state = MemoryState::default();
+        state.tick("DECISION: Chose Redis for caching because of pub/sub support");
+
+        // Retrieve at increasing intervals: 5, 10, 20, 40
+        let intervals = [5, 10, 20, 40];
+        for interval in &intervals {
+            state.clock += interval;
+            state.retrieve_context("Redis caching");
+        }
+
+        let stability = state.short_term[0].stability;
+        assert!(
+            stability > 1.5,
+            "spaced retrieval should increase stability significantly, got {}",
+            stability
+        );
+    }
+
+    #[test]
+    fn test_massed_retrieval_increases_stability_slowly() {
+        let mut state = MemoryState::default();
+        state.tick("DECISION: Chose Redis for caching because of pub/sub support");
+
+        // Retrieve at constant short intervals: 1, 1, 1, 1
+        for _ in 0..4 {
+            state.clock += 1;
+            state.retrieve_context("Redis caching");
+        }
+
+        let massed_stability = state.short_term[0].stability;
+
+        // Compare with spaced retrieval
+        let mut state2 = MemoryState::default();
+        state2.tick("DECISION: Chose Redis for caching because of pub/sub support");
+        let intervals = [5, 10, 20, 40];
+        for interval in &intervals {
+            state2.clock += interval;
+            state2.retrieve_context("Redis caching");
+        }
+        let spaced_stability = state2.short_term[0].stability;
+
+        assert!(
+            spaced_stability > massed_stability,
+            "spaced retrieval should build more stability than massed: spaced={} vs massed={}",
+            spaced_stability,
+            massed_stability
+        );
+    }
+
+    #[test]
+    fn test_high_stability_resists_decay() {
+        let mut state = MemoryState::default();
+        state.tick("DECISION: Chose Redis for caching because of pub/sub support");
+
+        // Build up stability through spaced retrieval
+        let intervals = [5, 10, 20, 40];
+        for interval in &intervals {
+            state.clock += interval;
+            state.retrieve_context("Redis caching");
+        }
+        let high_stability_salience = state.short_term[0].salience;
+
+        // Now create a fresh entry with default stability
+        state.tick("DECISION: Chose Postgres because of JSONB support");
+
+        // Both entries decay for 200 ticks
+        state.clock += 200;
+        state.apply_decay();
+
+        let stable_entry = state
+            .short_term
+            .iter()
+            .find(|e| e.text.contains("Redis"))
+            .expect("Redis entry");
+        let fresh_entry = state
+            .short_term
+            .iter()
+            .find(|e| e.text.contains("Postgres"))
+            .expect("Postgres entry");
+
+        // The high-stability entry should retain more of its salience
+        let stable_retention = stable_entry.salience / high_stability_salience;
+        let fresh_retention = if fresh_entry.salience > 0.0 {
+            fresh_entry.salience / 1.0 // approximate initial salience
+        } else {
+            0.0
+        };
+
+        assert!(
+            stable_retention > fresh_retention,
+            "high-stability entry should retain more salience: stable={} vs fresh={}",
+            stable_retention,
+            fresh_retention
+        );
+    }
+
+    #[test]
+    fn test_stability_defaults_to_one() {
+        let mut state = MemoryState::default();
+        state.tick("DECISION: some initial decision for testing baseline stability");
+        assert_eq!(
+            state.short_term[0].stability, 1.0,
+            "new entries should have stability=1.0 after first tick"
+        );
+    }
+
+    #[test]
+    fn test_stability_capped_at_ten() {
+        let mut state = MemoryState::default();
+        state.tick("DECISION: Chose Redis for caching because of pub/sub support");
+
+        // Many spaced retrievals to push stability toward the cap
+        let mut interval = 5;
+        for _ in 0..20 {
+            state.clock += interval;
+            state.retrieve_context("Redis caching");
+            interval += 5; // increasing intervals
+        }
+
+        assert!(
+            state.short_term[0].stability <= 10.0,
+            "stability should be capped at 10.0, got {}",
+            state.short_term[0].stability
+        );
+    }
+
     #[test]
     fn test_build_context_summary() {
         let mut state = MemoryState::default();
@@ -3555,6 +3732,8 @@ mod tests {
             density: 0.0,
             consolidated: false,
             emotional_valence: 0.0,
+            stability: 1.0,
+            last_retrieval_interval: 0,
         });
         // Advance clock far enough for pruning to kick in
         state.clock = 500;
