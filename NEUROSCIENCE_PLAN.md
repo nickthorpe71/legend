@@ -130,7 +130,7 @@ Replace the inline 1-hop priming loop (lines ~1062-1087) with `spreading_activat
 
 ---
 
-## Change 5: Sharp-Wave Ripple Replay Consolidation
+## Change 5: Sharp-Wave Ripple Replay Consolidation — DONE
 
 **Problem**: Consolidation just clusters by cosine similarity. No replay of temporal co-occurrence patterns.
 
@@ -373,7 +373,7 @@ Remaining constant renames that weren't handled in Change 9.
 2. Emotional Tagging         ← DONE (+ amygdala.rs module, 568 tests passing)
 3. Forgetting Curve          ← DONE (stability + spaced repetition, 578 tests passing)
 4. Spreading Activation      ← DONE
-5. SWR Replay                ← benefits from 4
+5. SWR Replay                ← DONE
 6. Pattern Completion        ← depends on 4
 7. Synaptic Encoding         ← benefits from 4
 8. Systems Consolidation     ← benefits from 5/6/7

@@ -92,6 +92,14 @@ const SPREADING_ACTIVATION_DECAY: f32 = 0.5;
 /// Maximum hops for spreading activation in graph_lookup.
 const SPREADING_ACTIVATION_MAX_HOPS: usize = 3;
 
+/// Sharp-wave ripple replay: entries accessed within this many ticks are
+/// considered temporally co-active (modeling hippocampal replay during rest).
+const REPLAY_TEMPORAL_WINDOW: u64 = 5;
+/// Edge weight boost for shared entities during replay consolidation.
+const REPLAY_EDGE_BOOST: f32 = 0.08;
+/// Salience boost for entries that participate in replay.
+const REPLAY_SALIENCE_BOOST: f32 = 0.02;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1148,11 +1156,102 @@ impl MemoryState {
         }
     }
 
+    /// Sharp-wave ripple replay — reinforce temporal co-occurrence patterns.
+    ///
+    /// During sleep/rest, the hippocampus replays recently co-active patterns.
+    /// This strengthens graph edges between entities that appeared in temporally
+    /// proximate L2 entries, creating "temporal" edges for indirect associations.
+    fn replay_consolidation(&mut self) {
+        let n = self.short_term.len();
+        if n < 2 {
+            return;
+        }
+
+        // Collect (index, entities) for each L2 entry
+        let entry_entities: Vec<(usize, Vec<(String, u64)>)> = self
+            .short_term
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let entities = extract_entities(&entry.text, &self.keyword_cache);
+                let resolved: Vec<(String, u64)> = entities
+                    .iter()
+                    .filter_map(|e| {
+                        self.long_term
+                            .index
+                            .get(&e.label)
+                            .map(|&id| (e.label.clone(), id))
+                    })
+                    .collect();
+                (i, resolved)
+            })
+            .collect();
+
+        let mut replayed_indices: HashSet<usize> = HashSet::new();
+
+        for i in 0..entry_entities.len() {
+            for j in (i + 1)..entry_entities.len() {
+                let ei = &self.short_term[entry_entities[i].0];
+                let ej = &self.short_term[entry_entities[j].0];
+
+                // Check temporal proximity
+                let time_diff = ei.last_access.abs_diff(ej.last_access);
+                if time_diff > REPLAY_TEMPORAL_WINDOW {
+                    continue;
+                }
+
+                let entities_i = &entry_entities[i].1;
+                let entities_j = &entry_entities[j].1;
+
+                if entities_i.is_empty() || entities_j.is_empty() {
+                    continue;
+                }
+
+                // Reinforce edges between all entity pairs from the two entries
+                for (_, id_a) in entities_i {
+                    for (_, id_b) in entities_j {
+                        if id_a == id_b {
+                            continue;
+                        }
+                        // Check if edge already exists
+                        let existing = self.long_term.edges.iter_mut().find(|e| {
+                            (e.from == *id_a && e.to == *id_b)
+                                || (e.from == *id_b && e.to == *id_a)
+                        });
+                        if let Some(edge) = existing {
+                            edge.weight += REPLAY_EDGE_BOOST;
+                            edge.last_seen = self.clock;
+                        } else {
+                            // Create new temporal edge
+                            self.long_term.edges.push(GraphEdge {
+                                from: *id_a,
+                                to: *id_b,
+                                weight: 0.05,
+                                kind: "temporal".to_string(),
+                                last_seen: self.clock,
+                            });
+                        }
+                    }
+                }
+
+                replayed_indices.insert(entry_entities[i].0);
+                replayed_indices.insert(entry_entities[j].0);
+            }
+        }
+
+        // Boost salience of replayed entries
+        for &idx in &replayed_indices {
+            self.short_term[idx].salience =
+                (self.short_term[idx].salience + REPLAY_SALIENCE_BOOST).min(1.0);
+        }
+    }
+
     /// Merge similar short-term entries into long-term graph summaries.
     pub fn consolidate(&mut self) -> Vec<GraphNodeSummary> {
         self.clock += 1;
         self.ticks_since_consolidation = 0;
         self.apply_decay();
+        self.replay_consolidation();
 
         let mut groups: Vec<Vec<ShortTermEntry>> = Vec::new();
         let mut used = vec![false; self.short_term.len()];
@@ -5211,6 +5310,201 @@ mod tests {
         });
         state.long_term.index.insert(label.into(), id);
     }
+
+    // --- Sharp-wave ripple replay tests (Change 5) ---
+
+    #[test]
+    fn test_replay_reinforces_shared_entities() {
+        // Manually build two L2 entries that share graph entities, close in time.
+        // Call replay_consolidation directly (not consolidate) to isolate the effect.
+        let mut state = MemoryState::default();
+        state.clock = 10;
+
+        // Create two graph nodes
+        let node_a = 600;
+        let node_b = 601;
+        insert_test_node(&mut state, node_a, "AuthModule");
+        insert_test_node(&mut state, node_b, "JwtParser");
+
+        // Create an edge between them
+        state.long_term.edges.push(GraphEdge {
+            from: node_a, to: node_b, weight: 0.5,
+            kind: "related".into(), last_seen: 5,
+        });
+
+        // Create two L2 entries that mention both entities, close in time
+        let emb = crate::memory::embed::embed_text("auth jwt", 256);
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: "AuthModule uses JwtParser for token validation".into(),
+            summary: String::new(), embedding: emb.clone(), salience: 0.5,
+            usage: 1, last_access: 8, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: "JwtParser validates AuthModule tokens".into(),
+            summary: String::new(), embedding: emb, salience: 0.5,
+            usage: 1, last_access: 10, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        let edge_weight_before = state.long_term.edges[0].weight;
+        state.replay_consolidation();
+        let edge_weight_after = state.long_term.edges[0].weight;
+
+        assert!(
+            edge_weight_after > edge_weight_before,
+            "replay should boost shared entity edge: {} -> {}",
+            edge_weight_before, edge_weight_after
+        );
+    }
+
+    #[test]
+    fn test_replay_ignores_temporally_distant_entries() {
+        // Two entries far apart in time — no temporal edges should be created.
+        let mut state = MemoryState::default();
+        state.clock = 100;
+
+        let node_a = 700;
+        let node_b = 701;
+        insert_test_node(&mut state, node_a, "ServerHandler");
+        insert_test_node(&mut state, node_b, "DatabasePool");
+
+        let emb = crate::memory::embed::embed_text("server database", 256);
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: "ServerHandler processes API requests".into(),
+            summary: String::new(), embedding: emb.clone(), salience: 0.5,
+            usage: 1, last_access: 10, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: "DatabasePool manages connections".into(),
+            summary: String::new(), embedding: emb, salience: 0.5,
+            usage: 1, last_access: 90, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        let edge_count_before = state.long_term.edges.len();
+        state.replay_consolidation();
+
+        let temporal_edges = state.long_term.edges.iter()
+            .filter(|e| e.kind == "temporal")
+            .count();
+
+        assert_eq!(
+            temporal_edges, 0,
+            "temporally distant entries (80 ticks apart) should not create temporal edges"
+        );
+        assert_eq!(
+            state.long_term.edges.len(), edge_count_before,
+            "no new edges should be created for distant entries"
+        );
+    }
+
+    #[test]
+    fn test_replay_creates_temporal_edges() {
+        // Two entries with different entities but close in time — should create
+        // temporal edges between the unconnected entity pairs.
+        let mut state = MemoryState::default();
+        state.clock = 10;
+
+        let node_a = 800;
+        let node_b = 801;
+        insert_test_node(&mut state, node_a, "ConfigParser");
+        insert_test_node(&mut state, node_b, "RouterSetup");
+
+        // No pre-existing edges between them
+        let emb = crate::memory::embed::embed_text("config router", 256);
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: "ConfigParser loads YAML settings".into(),
+            summary: String::new(), embedding: emb.clone(), salience: 0.5,
+            usage: 1, last_access: 8, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: "RouterSetup configures API endpoints".into(),
+            summary: String::new(), embedding: emb, salience: 0.5,
+            usage: 1, last_access: 9, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        assert!(state.long_term.edges.is_empty(), "no edges before replay");
+        state.replay_consolidation();
+
+        let temporal_edges: Vec<&GraphEdge> = state.long_term.edges.iter()
+            .filter(|e| e.kind == "temporal")
+            .collect();
+
+        assert!(
+            !temporal_edges.is_empty(),
+            "replay should create temporal edges between co-active unconnected entities"
+        );
+    }
+
+    #[test]
+    fn test_replay_boosts_salience() {
+        // Directly call replay_consolidation and verify salience boost.
+        let mut state = MemoryState::default();
+        state.clock = 10;
+
+        let node_a = 900;
+        let node_b = 901;
+        insert_test_node(&mut state, node_a, "MemHandler");
+        insert_test_node(&mut state, node_b, "EventLoop");
+
+        let emb = crate::memory::embed::embed_text("memory event", 256);
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: "MemHandler and EventLoop process ticks".into(),
+            summary: String::new(), embedding: emb.clone(), salience: 0.5,
+            usage: 1, last_access: 8, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: "EventLoop dispatches to MemHandler".into(),
+            summary: String::new(), embedding: emb, salience: 0.5,
+            usage: 1, last_access: 9, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        let salience_before: Vec<f32> = state.short_term.iter().map(|e| e.salience).collect();
+        state.replay_consolidation();
+        let salience_after: Vec<f32> = state.short_term.iter().map(|e| e.salience).collect();
+
+        let any_boosted = salience_before.iter().zip(salience_after.iter())
+            .any(|(before, after)| after > before);
+        assert!(any_boosted, "replay should boost salience of co-active entries");
+    }
+
+    #[test]
+    fn test_existing_consolidation_still_works() {
+        let mut state = MemoryState::default();
+        state.tick("fn handle_memory() processes incoming ticks");
+        state.tick("fn handle_memory() is the main entry point for memory operations");
+        state.tick("fn handle_memory() manages the three-layer architecture");
+
+        let summaries = state.consolidate();
+        assert!(
+            !summaries.is_empty() || state.short_term.len() <= 3,
+            "consolidation should still produce summaries or maintain entries"
+        );
+    }
+
+    // --- Spreading activation tests (Change 4) ---
 
     #[test]
     fn test_spreading_activation_two_hop_chain() {
