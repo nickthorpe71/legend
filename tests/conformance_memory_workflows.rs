@@ -45,14 +45,15 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
     });
     insta::assert_json_snapshot!(
         query_projection,
-        @r###"
-        {
-          "memories": [
-            "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming."
-          ],
-          "related_topics_len": 15
-        }
-        "###
+        @r#"
+    {
+      "memories": [
+        "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming.",
+        "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
+      ],
+      "related_topics_len": 15
+    }
+    "#
     );
 
     let recent_sessions = context["recent_sessions"].as_array().expect("recent_sessions array");

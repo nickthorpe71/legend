@@ -306,7 +306,7 @@ Remaining constant renames that weren't handled in Change 9.
 
 ```
 1. Pattern Separation     ← DONE (+ dentate_gyrus.rs module)
-2. Emotional Tagging      ← no deps
+2. Emotional Tagging      ← DONE (+ amygdala.rs module, 568 tests passing)
 3. Forgetting Curve       ← no deps
 4. Spreading Activation   ← no deps, unlocks 5/6
 5. SWR Replay             ← benefits from 4
