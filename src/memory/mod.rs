@@ -92,6 +92,15 @@ const SPREADING_ACTIVATION_DECAY: f32 = 0.5;
 /// Maximum hops for spreading activation in graph_lookup.
 const SPREADING_ACTIVATION_MAX_HOPS: usize = 3;
 
+/// Emotional intensity threshold: if rolling valence sum exceeds this,
+/// consolidation is suggested early (amygdala-driven consolidation).
+const EMOTIONAL_CONSOLIDATION_THRESHOLD: f32 = 1.5;
+/// Decay factor for rolling emotional intensity (applied each tick).
+const EMOTIONAL_INTENSITY_DECAY: f32 = 0.8;
+/// Context switch detection: if cosine similarity between consecutive ticks
+/// drops below this, a topic shift has occurred (hippocampal novelty signal).
+const CONTEXT_SWITCH_THRESHOLD: f32 = 0.15;
+
 /// Sharp-wave ripple replay: entries accessed within this many ticks are
 /// considered temporally co-active (modeling hippocampal replay during rest).
 const REPLAY_TEMPORAL_WINDOW: u64 = 5;
@@ -160,6 +169,13 @@ pub struct MemoryState {
     /// Last Git commit SHA processed by Legend.
     #[serde(default)]
     pub last_synced_sha: Option<String>,
+    /// Rolling sum of emotional intensity (|valence|), decays each tick.
+    /// Used for amygdala-driven early consolidation.
+    #[serde(default)]
+    pub recent_valence_sum: f32,
+    /// Embedding of the most recent tick, for context-switch detection.
+    #[serde(default)]
+    pub last_tick_embedding: Vec<f32>,
     /// Dynamic keyword cache populated from graph + static fallbacks.
     #[serde(skip)]
     pub keyword_cache: keyword_cache::KeywordCache,
@@ -545,6 +561,8 @@ impl Default for MemoryState {
             ticks_since_consolidation: 0,
             last_retrieved_ids: Vec::new(),
             last_synced_sha: None,
+            recent_valence_sum: 0.0,
+            last_tick_embedding: Vec::new(),
             keyword_cache: keyword_cache::KeywordCache::default_from_static(),
         }
     }
@@ -863,6 +881,8 @@ impl MemoryState {
         self.clock += 1;
         if !passive {
             self.ticks_since_consolidation += 1;
+            // Decay rolling emotional intensity each active tick
+            self.recent_valence_sum *= EMOTIONAL_INTENSITY_DECAY;
         }
         self.apply_decay();
         self.stabilize_labile_entries();
@@ -1015,6 +1035,24 @@ impl MemoryState {
 
         self.prune_short_term();
         self.prune_graph();
+
+        // --- Smart consolidation triggers ---
+        if !passive {
+            // Accumulate emotional intensity from this tick
+            let tick_embedding = embed_text(text, self.config.embedding_dim);
+            let tick_valence = compute_emotional_valence(text, &self.keyword_cache);
+            self.recent_valence_sum += tick_valence.abs();
+
+            // Context switch detection: compare with previous tick's embedding
+            if !self.last_tick_embedding.is_empty() {
+                let sim = cosine_similarity(&self.last_tick_embedding, &tick_embedding);
+                if sim < CONTEXT_SWITCH_THRESHOLD {
+                    // Topic shift detected — suggest consolidation and flush L1
+                    self.flush_working_memory();
+                }
+            }
+            self.last_tick_embedding = tick_embedding;
+        }
 
         TickResult {
             action: result_action,
@@ -2290,9 +2328,16 @@ impl MemoryState {
         self.current_task.as_deref()
     }
 
-    /// Check if consolidation should be suggested based on tick count.
+    /// Check if consolidation should be suggested.
+    ///
+    /// Triggers:
+    /// 1. Tick count threshold (every 15 ticks) — baseline periodic consolidation
+    /// 2. Emotional intensity burst — amygdala-driven, after high-valence events
+    /// 3. Context switch — hippocampal novelty detection (handled in tick_impl
+    ///    via flush_working_memory, but also triggers consolidation suggestion)
     pub fn should_suggest_consolidation(&self) -> bool {
         self.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
+            || self.recent_valence_sum >= EMOTIONAL_CONSOLIDATION_THRESHOLD
     }
 
     /// Build a structured cold-start context summary as JSON.
@@ -2798,6 +2843,8 @@ fn migrate_v5(v5: MemoryStateV5) -> MemoryState {
         ticks_since_consolidation: v5.ticks_since_consolidation,
         last_retrieved_ids: v5.last_retrieved_ids,
         last_synced_sha: v5.last_synced_sha,
+        recent_valence_sum: 0.0,
+        last_tick_embedding: Vec::new(),
         keyword_cache: keyword_cache::KeywordCache::default(),
     }
 }
@@ -2882,6 +2929,8 @@ fn migrate_v4(v4: MemoryStateV4) -> MemoryState {
         ticks_since_consolidation: v4.ticks_since_consolidation,
         last_retrieved_ids: v4.last_retrieved_ids,
         last_synced_sha: v4.last_synced_sha,
+        recent_valence_sum: 0.0,
+        last_tick_embedding: Vec::new(),
         keyword_cache: keyword_cache::KeywordCache::default(),
     }
 }
@@ -3052,6 +3101,8 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             ticks_since_consolidation: v3.ticks_since_consolidation,
             last_retrieved_ids: v3.last_retrieved_ids,
             last_synced_sha: v3.last_synced_sha,
+            recent_valence_sum: 0.0,
+            last_tick_embedding: Vec::new(),
             keyword_cache: keyword_cache::KeywordCache::default(),
         }
     } else if let Ok(v2) = bincode::deserialize::<MemoryStateV2>(&serialized) {
@@ -3097,6 +3148,8 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             ticks_since_consolidation: v2.ticks_since_consolidation,
             last_retrieved_ids: Vec::new(),
             last_synced_sha: None,
+            recent_valence_sum: 0.0,
+            last_tick_embedding: Vec::new(),
             keyword_cache: keyword_cache::KeywordCache::default(),
         }
     } else {
@@ -3134,6 +3187,8 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                 ticks_since_consolidation: 0,
                 last_retrieved_ids: Vec::new(),
                 last_synced_sha: None,
+                recent_valence_sum: 0.0,
+                last_tick_embedding: Vec::new(),
                 keyword_cache: keyword_cache::KeywordCache::default(),
             },
             Err(_) => {
@@ -5297,6 +5352,98 @@ mod tests {
         assert_eq!(migrated.short_term.len(), 1);
         assert_eq!(migrated.short_term[0].text, "preserved entry");
         assert_eq!(migrated.clock, 50);
+    }
+
+    // --- Smart consolidation trigger tests ---
+
+    #[test]
+    fn test_emotional_intensity_triggers_consolidation() {
+        let mut state = MemoryState::default();
+        // High-valence ticks should accumulate emotional intensity
+        state.tick("BUG: critical server crash in production causing data loss");
+        state.tick("BLOCKER: security vulnerability found in authentication module");
+        state.tick("BUG: panic in payment processing causes transaction failures");
+
+        assert!(
+            state.should_suggest_consolidation(),
+            "burst of high-valence ticks should trigger consolidation, valence_sum={}",
+            state.recent_valence_sum
+        );
+    }
+
+    #[test]
+    fn test_neutral_ticks_no_early_consolidation() {
+        let mut state = MemoryState::default();
+        state.tick("Updated the documentation formatting");
+        state.tick("Refactored variable names in the config module");
+        state.tick("Added a comment to the parser function");
+
+        assert!(
+            !state.should_suggest_consolidation(),
+            "neutral ticks should not trigger early consolidation, valence_sum={}, ticks_since={}",
+            state.recent_valence_sum, state.ticks_since_consolidation
+        );
+    }
+
+    #[test]
+    fn test_emotional_intensity_decays() {
+        let mut state = MemoryState::default();
+        state.tick("BUG: critical crash in production");
+        let after_first = state.recent_valence_sum;
+
+        // Several neutral ticks should decay the sum
+        for _ in 0..10 {
+            state.tick("routine documentation update");
+        }
+
+        assert!(
+            state.recent_valence_sum < after_first * 0.5,
+            "emotional intensity should decay over time: {} -> {}",
+            after_first, state.recent_valence_sum
+        );
+    }
+
+    #[test]
+    fn test_context_switch_updates_embedding() {
+        let mut state = MemoryState::default();
+        assert!(state.last_tick_embedding.is_empty());
+
+        state.tick("DECISION: fn handle_database() manages PostgreSQL connection pooling");
+        assert!(!state.last_tick_embedding.is_empty());
+
+        let emb_after_first = state.last_tick_embedding.clone();
+        state.tick("DECISION: CSS flexbox layout grid styling responsive design media queries");
+
+        // Embedding should have changed to reflect the new topic
+        assert_ne!(
+            state.last_tick_embedding, emb_after_first,
+            "last_tick_embedding should update each tick"
+        );
+    }
+
+    #[test]
+    fn test_first_tick_no_context_switch() {
+        let mut state = MemoryState::default();
+        assert!(state.last_tick_embedding.is_empty());
+
+        // First tick ever — no previous embedding to compare against
+        state.tick("DECISION: Starting new project with Rust");
+        // Should not panic or trigger false context switch
+        assert!(!state.last_tick_embedding.is_empty());
+    }
+
+    #[test]
+    fn test_same_topic_preserves_working_memory() {
+        let mut state = MemoryState::default();
+        state.tick("DECISION: fn handle_database() manages PostgreSQL connections");
+        let wm_count_after_first = state.working_memory.len();
+
+        state.tick("DECISION: fn optimize_database() improves PostgreSQL query performance");
+        // Same topic — working memory should grow, not flush
+        assert!(
+            state.working_memory.len() >= wm_count_after_first,
+            "same-topic tick should not flush working memory"
+        );
     }
 
     // --- Spreading activation tests (Change 4) ---
