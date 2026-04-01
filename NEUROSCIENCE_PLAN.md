@@ -162,7 +162,7 @@ const REPLAY_SALIENCE_BOOST: f32 = 0.02;
 
 ---
 
-## Change 6: Pattern Completion (CA3 Recall)
+## Change 6: Pattern Completion (CA3 Recall) — DONE
 
 **Problem**: Partial/vague queries return weak results because cosine similarity alone doesn't reconstruct full memories from fragments.
 
@@ -413,6 +413,37 @@ Track topic coherence in `tick_impl`:
 
 ---
 
+## Change 14: Neural Network Feasibility Review
+
+**Problem**: The current system uses a graph with entity nodes and edge weights as the substrate for spreading activation, pattern completion, Hebbian learning, and associative recall. While effective and debuggable, real brain regions (CA3, CA1, entorhinal cortex) use actual recurrent neural networks — attractor dynamics, weight matrices, and iterative convergence. Some subsystems may produce better results as small neural nets.
+
+**Scope**: This is a research/evaluation change, not a code change. After all behavioral changes (1-13) are settled and the system has real usage data, systematically review each component and assess whether replacing the graph-based implementation with a small neural network would improve quality.
+
+**Components to evaluate**:
+
+1. **CA3 Pattern Completion** (Change 6) — Currently graph-based spreading activation. Could be a Hopfield network / modern continuous Hopfield net. Depends heavily on embedding quality — bag-of-words embeddings may produce shallow attractor basins. Most viable if Legend moves to LLM-generated embeddings.
+
+2. **Dentate Gyrus Pattern Separation** (Change 1) — Currently threshold + sparse orthogonalization. Could be a competitive learning network that learns to maximally separate similar inputs. Would need training signal (when do two memories collide in practice?).
+
+3. **Entorhinal Cortex Encoding** — Currently `embed_text` (bag-of-words hash). A learned encoder (even a tiny single-layer net trained on the user's corpus) could produce higher-quality embeddings that better capture semantic relationships specific to the workspace.
+
+4. **Hebbian Learning** — Currently additive weight updates on edges. Could be replaced with a proper Hebbian/Oja rule operating on a weight matrix, with built-in normalization and competition.
+
+5. **Salience/Attention Gating** — Currently keyword-based scoring. Could be a small classifier trained on which memories the user actually retrieves (implicit labels from usage patterns).
+
+**Evaluation criteria for each**:
+- Does the neural net approach measurably improve retrieval quality?
+- What's the capacity vs interference tradeoff?
+- Is it debuggable enough for a developer tool?
+- What's the storage/compute overhead?
+- Does it require training data the system naturally produces?
+
+**Output**: A decision document per component: keep graph-based, switch to neural net, or hybrid approach. Implement the winners as follow-up changes.
+
+**Value**: Ensures Legend's architecture evolves toward genuine neural computation where it helps, while keeping graph-based implementations where they're sufficient. Avoids premature complexity.
+
+---
+
 ## Execution Order
 
 ```
@@ -421,7 +452,7 @@ Track topic coherence in `tick_impl`:
 3. Forgetting Curve              ← DONE (stability + spaced repetition, 578 tests passing)
 4. Spreading Activation          ← DONE (multi-hop BFS, 590 tests passing)
 5. SWR Replay                    ← DONE (temporal co-occurrence, 600 tests passing)
-6. Pattern Completion            ← depends on 4
+6. Pattern Completion            ← DONE (CA3 autoassociative recall, 622 tests)
 7. Synaptic Encoding             ← benefits from 4
 8. Systems Consolidation         ← benefits from 5/6/7
 9. Dynamic Keyword Bootstrap     ← no deps, benefits from init/discover
@@ -429,9 +460,10 @@ Track topic coherence in `tick_impl`:
 11. Terminology                  ← always last
 12. Emotional Consolidation      ← DONE (amygdala-driven, 605 tests passing)
 13. Context Switch Consolidation ← DONE (novelty detection, 605 tests passing)
+14. Neural Net Feasibility Review ← after all behavioral changes, with usage data
 ```
 
-Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Change 9 (keyword bootstrap) can be done at any point but benefits from having the emotional valence keywords (Change 2) and architecture settled. Changes 10-11 are structural/doc cleanup, always last. Changes 12-13 are smart consolidation triggers — can be done any time after the SWR replay foundation (Change 5) is in place.
+Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Change 9 (keyword bootstrap) can be done at any point but benefits from having the emotional valence keywords (Change 2) and architecture settled. Changes 10-11 are structural/doc cleanup, always last. Changes 12-13 are smart consolidation triggers — can be done any time after the SWR replay foundation (Change 5) is in place. Change 14 is a research review — always after all behavioral and structural changes are settled.
 
 ## Migration
 
