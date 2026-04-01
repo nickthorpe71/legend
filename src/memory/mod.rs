@@ -107,6 +107,20 @@ const PATTERN_COMPLETION_MIN_RESULTS: usize = 3;
 /// Minimum top-result similarity before pattern completion activates.
 const PATTERN_COMPLETION_SIM_THRESHOLD: f32 = 0.5;
 
+/// Systems consolidation: only groups with average salience above this
+/// threshold get full neocortical encoding (centroid embedding + rich text).
+/// Models how the hippocampus selectively flags important memories for cortical transfer.
+const SYSTEMS_CONSOLIDATION_SALIENCE_THRESHOLD: f32 = 0.4;
+/// Maximum length of full_text stored on consolidated Summary nodes.
+const SUMMARY_FULL_TEXT_MAX_LEN: usize = 500;
+/// Minimum cosine similarity for L3 Summary node retrieval.
+const SUMMARY_RETRIEVAL_MIN_SIM: f32 = 0.3;
+/// Maximum number of L3 Summary results to include in retrieval.
+const SUMMARY_RETRIEVAL_MAX_RESULTS: usize = 3;
+/// Eviction score reduction for consolidated L2 entries whose Summary node
+/// has a valid embedding (L3 can serve their role).
+const CONSOLIDATED_EVICTION_REDUCTION: f32 = 0.2;
+
 /// Sharp-wave ripple replay: entries accessed within this many ticks are
 /// considered temporally co-active (modeling hippocampal replay during rest).
 const REPLAY_TEMPORAL_WINDOW: u64 = 5;
@@ -851,6 +865,8 @@ impl MemoryState {
                 last_seen: self.clock,
                 salience,
                 source_texts: Vec::new(),
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
         self.long_term.index.insert(label.to_string(), id);
@@ -880,6 +896,8 @@ impl MemoryState {
                     last_seen: self.clock,
                     salience: 0.5,
                     source_texts: metadata,
+                    embedding: Vec::new(),
+                    full_text: None,
                 },
             );
             self.long_term.index.insert(label, id);
@@ -1240,6 +1258,42 @@ impl MemoryState {
             }
         }
 
+        // --- L3 systems consolidation retrieval (neocortical independence) ---
+        // Scan Summary nodes that have centroid embeddings for direct similarity
+        // matching. This surfaces old consolidated memories whose L2 entries may
+        // have been evicted, making them independently queryable via neocortex.
+        {
+            let existing_ids: HashSet<u64> = snippets.iter().map(|s| s.id).collect();
+            let mut summary_hits: Vec<MemorySnippet> = self
+                .long_term
+                .nodes
+                .values()
+                .filter(|n| n.kind == "Summary" && !n.embedding.is_empty())
+                .filter_map(|n| {
+                    let sim = cosine_similarity(&n.embedding, &embedding);
+                    if sim >= SUMMARY_RETRIEVAL_MIN_SIM && !existing_ids.contains(&n.id) {
+                        let text = n
+                            .full_text
+                            .as_deref()
+                            .unwrap_or(&n.label)
+                            .to_string();
+                        Some(MemorySnippet {
+                            id: n.id,
+                            text,
+                            similarity: sim * 0.85, // slight discount vs direct L2 matches
+                            refs: Vec::new(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            summary_hits.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+            summary_hits.truncate(SUMMARY_RETRIEVAL_MAX_RESULTS);
+            snippets.extend(summary_hits);
+            snippets.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+        }
+
         // --- CA3 pattern completion ---
         // If direct retrieval is sparse or weak, use graph to complete partial cues.
         let top_sim = snippets.first().map(|s| s.similarity).unwrap_or(0.0);
@@ -1463,6 +1517,61 @@ impl MemoryState {
                 .max(0.4);
             let source_texts: Vec<String> = group.iter().map(|e| e.text.clone()).collect();
 
+            // Systems consolidation: compute centroid embedding and rich text
+            // for high-salience groups (hippocampus flags important memories
+            // for full neocortical encoding).
+            let avg_salience =
+                group.iter().map(|e| e.salience).sum::<f32>() / group.len() as f32;
+            let (centroid_embedding, full_text) =
+                if avg_salience >= SYSTEMS_CONSOLIDATION_SALIENCE_THRESHOLD {
+                    // Centroid = average of group embeddings, renormalized
+                    let dim = group[0].embedding.len();
+                    let mut centroid = vec![0.0f32; dim];
+                    let valid_count = group
+                        .iter()
+                        .filter(|e| e.embedding.len() == dim && !e.embedding.is_empty())
+                        .count();
+                    if valid_count > 0 {
+                        for entry in &group {
+                            if entry.embedding.len() == dim {
+                                for (i, v) in entry.embedding.iter().enumerate() {
+                                    centroid[i] += v;
+                                }
+                            }
+                        }
+                        let n = valid_count as f32;
+                        for v in &mut centroid {
+                            *v /= n;
+                        }
+                        // Renormalize to unit length
+                        let norm: f32 = centroid.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        if norm > 0.0 {
+                            for v in &mut centroid {
+                                *v /= norm;
+                            }
+                        }
+                    }
+
+                    // Rich text: concatenate source texts up to max length
+                    let mut rich = String::new();
+                    for st in &source_texts {
+                        if !rich.is_empty() {
+                            rich.push_str(" | ");
+                        }
+                        rich.push_str(st.trim());
+                        if rich.len() >= SUMMARY_FULL_TEXT_MAX_LEN {
+                            break;
+                        }
+                    }
+                    if rich.len() > SUMMARY_FULL_TEXT_MAX_LEN {
+                        rich = safe_truncate(&rich, SUMMARY_FULL_TEXT_MAX_LEN);
+                    }
+
+                    (centroid, Some(rich))
+                } else {
+                    (Vec::new(), None)
+                };
+
             // 1. Dedup: check for existing Summary node with exact label or high word overlap
             let existing_summary_id = self
                 .long_term
@@ -1494,6 +1603,13 @@ impl MemoryState {
                         }
                     }
                     node.source_texts.truncate(20);
+                    // Systems consolidation: update neocortical encoding
+                    if !centroid_embedding.is_empty() {
+                        node.embedding = centroid_embedding.clone();
+                    }
+                    if full_text.is_some() {
+                        node.full_text = full_text.clone();
+                    }
                 }
                 eid
             } else {
@@ -1512,6 +1628,8 @@ impl MemoryState {
                         last_seen: self.clock,
                         salience,
                         source_texts: capped_sources,
+                        embedding: centroid_embedding.clone(),
+                        full_text: full_text.clone(),
                     },
                 );
                 self.long_term.index.insert(summary_text.clone(), id);
@@ -1553,6 +1671,8 @@ impl MemoryState {
                                 last_seen: self.clock,
                                 salience: 0.5,
                                 source_texts: Vec::new(),
+                                embedding: Vec::new(),
+                                full_text: None,
                             },
                         );
                         self.long_term.index.insert(label.clone(), id);
@@ -1652,6 +1772,8 @@ impl MemoryState {
                         last_seen: now,
                         salience: task_confidence.clamp(0.0, 1.0),
                         source_texts: Vec::new(),
+                        embedding: Vec::new(),
+                        full_text: None,
                     },
                 );
                 self.long_term.index.insert(label.to_string(), id);
@@ -1876,14 +1998,32 @@ impl MemoryState {
     ) {
         if self.short_term.len() >= self.config.short_term_capacity {
             let now = self.clock;
+            // Systems consolidation: consolidated entries whose Summary node
+            // has a valid embedding in L3 get reduced eviction resistance,
+            // since the neocortex can independently serve their role.
+            let has_embedded_summary = |entry: &ShortTermEntry| -> bool {
+                entry.consolidated
+                    && self
+                        .long_term
+                        .nodes
+                        .values()
+                        .any(|n| n.kind == "Summary" && !n.embedding.is_empty()
+                            && n.source_texts.iter().any(|st| st == &entry.text))
+            };
             if let Some(idx) = self
                 .short_term
                 .iter()
                 .enumerate()
                 .min_by(|(_, a), (_, b)| {
-                    eviction_score(a, now)
-                        .partial_cmp(&eviction_score(b, now))
-                        .unwrap()
+                    let mut score_a = eviction_score(a, now);
+                    let mut score_b = eviction_score(b, now);
+                    if has_embedded_summary(a) {
+                        score_a -= CONSOLIDATED_EVICTION_REDUCTION;
+                    }
+                    if has_embedded_summary(b) {
+                        score_b -= CONSOLIDATED_EVICTION_REDUCTION;
+                    }
+                    score_a.partial_cmp(&score_b).unwrap()
                 })
                 .map(|(i, _)| i)
             {
@@ -2001,6 +2141,8 @@ impl MemoryState {
                         last_seen: self.clock,
                         salience,
                         source_texts: Vec::new(),
+                        embedding: Vec::new(),
+                        full_text: None,
                     },
                 );
                 self.long_term.index.insert(entity.label.clone(), id);
@@ -2442,6 +2584,8 @@ impl MemoryState {
                         last_seen: self.clock,
                         salience: 0.8,
                         source_texts: Vec::new(),
+                        embedding: Vec::new(),
+                        full_text: None,
                     },
                 );
                 self.long_term.index.insert(label.to_string(), id);
@@ -4014,6 +4158,8 @@ mod tests {
                 last_seen: 0,
                 salience: 0.0,
                 source_texts: Vec::new(),
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
         state.long_term.index.insert("weak_node".to_string(), id);
@@ -4030,6 +4176,8 @@ mod tests {
                 last_seen: state.clock,
                 salience: 0.5,
                 source_texts: Vec::new(),
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
         state.long_term.index.insert("strong_node".to_string(), id2);
@@ -4082,6 +4230,8 @@ mod tests {
                     last_seen: state.clock,
                     salience: 0.1,
                     source_texts: Vec::new(),
+                    embedding: Vec::new(),
+                    full_text: None,
                 },
             );
             state.long_term.index.insert(format!("node_{}", i), id);
@@ -5759,7 +5909,7 @@ mod tests {
             id: cfg_id, label: "ConfigLoader".into(), kind: "Entity".into(),
             weight: 1.0, salience: 0.5,
             source_texts: vec!["ConfigLoader reads settings".into()],
-            last_seen: 0,
+            last_seen: 0, embedding: Vec::new(), full_text: None,
         });
         state.long_term.index.insert("ConfigLoader".into(), cfg_id);
 
@@ -5767,7 +5917,7 @@ mod tests {
             id: jwt_id, label: "JwtSecret".into(), kind: "Entity".into(),
             weight: 1.0, salience: 0.5,
             source_texts: vec!["JwtSecret stores token signing keys".into()],
-            last_seen: 0,
+            last_seen: 0, embedding: Vec::new(), full_text: None,
         });
         state.long_term.index.insert("JwtSecret".into(), jwt_id);
 
@@ -5843,7 +5993,7 @@ mod tests {
             id: cfg_id, label: "ConfigLoader".into(), kind: "Entity".into(),
             weight: 1.0, salience: 0.5,
             source_texts: vec!["ConfigLoader reads YAML settings files".into()],
-            last_seen: 0,
+            last_seen: 0, embedding: Vec::new(), full_text: None,
         });
         state.long_term.index.insert("ConfigLoader".into(), cfg_id);
 
@@ -5851,7 +6001,7 @@ mod tests {
             id: db_id, label: "DatabasePool".into(), kind: "Entity".into(),
             weight: 1.0, salience: 0.5,
             source_texts: vec!["DatabasePool manages connection pooling".into()],
-            last_seen: 0,
+            last_seen: 0, embedding: Vec::new(), full_text: None,
         });
         state.long_term.index.insert("DatabasePool".into(), db_id);
 
@@ -5908,7 +6058,7 @@ mod tests {
             id: node_id, label: "SkipConsolidated".into(), kind: "Entity".into(),
             weight: 1.0, salience: 0.5,
             source_texts: vec!["SkipConsolidated test entry".into()],
-            last_seen: 0,
+            last_seen: 0, embedding: Vec::new(), full_text: None,
         });
         state.long_term.index.insert("SkipConsolidated".into(), node_id);
 
@@ -6030,7 +6180,7 @@ mod tests {
         state.long_term.nodes.insert(id, GraphNode {
             id, label: label.into(), kind: "Entity".into(),
             weight: 1.0, salience: 0.5, source_texts: vec![],
-            last_seen: 0,
+            last_seen: 0, embedding: Vec::new(), full_text: None,
         });
         state.long_term.index.insert(label.into(), id);
     }
@@ -6394,5 +6544,266 @@ mod tests {
         assert!(result_ids.contains(&ids[1]), "hop-1 should be reachable");
         assert!(!result_ids.contains(&ids[2]), "hop-2 should NOT be reachable with max_hops=1");
         assert!(!result_ids.contains(&ids[3]), "hop-3 should NOT be reachable with max_hops=1");
+    }
+
+    // --- Systems consolidation tests (Change 8) ---
+
+    #[test]
+    fn test_consolidation_produces_summary_with_centroid_embedding() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+
+        // Insert two very similar L2 entries with high salience
+        // (must exceed theta_low=0.72 cosine similarity for clustering)
+        let shared = "Rust borrow checker ownership rules for memory safety in systems programming";
+        let text1 = format!("{} and lifetimes", shared);
+        let text2 = format!("{} and references", shared);
+        let emb1 = embed_text(&text1, dim);
+        let emb2 = embed_text(&text2, dim);
+
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: text1.clone(),
+            summary: String::new(), embedding: emb1, salience: 0.8,
+            usage: 0, last_access: 0, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: text2.clone(),
+            summary: String::new(), embedding: emb2, salience: 0.7,
+            usage: 0, last_access: 0, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        let summaries = state.consolidate();
+        assert!(!summaries.is_empty(), "should produce at least one summary");
+
+        // Find the Summary node and verify it has an embedding
+        let summary_node = state.long_term.nodes.values()
+            .find(|n| n.kind == "Summary")
+            .expect("should have a Summary node");
+
+        assert!(!summary_node.embedding.is_empty(),
+            "high-salience group should get centroid embedding");
+        assert_eq!(summary_node.embedding.len(), dim);
+
+        // Verify embedding is normalized (unit length)
+        let norm: f32 = summary_node.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.01, "centroid should be unit-normalized, got {}", norm);
+    }
+
+    #[test]
+    fn test_consolidation_produces_full_text() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+
+        let emb1 = embed_text("Database migration strategy for PostgreSQL", dim);
+        let emb2 = embed_text("Database migration rollback for PostgreSQL", dim);
+
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: "Database migration strategy for PostgreSQL".into(),
+            summary: String::new(), embedding: emb1, salience: 0.6,
+            usage: 0, last_access: 0, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: "Database migration rollback for PostgreSQL".into(),
+            summary: String::new(), embedding: emb2, salience: 0.6,
+            usage: 0, last_access: 0, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        state.consolidate();
+
+        let summary_node = state.long_term.nodes.values()
+            .find(|n| n.kind == "Summary")
+            .expect("should have Summary node");
+
+        assert!(summary_node.full_text.is_some(),
+            "high-salience group should get full_text");
+        let ft = summary_node.full_text.as_ref().unwrap();
+        assert!(ft.len() <= 500, "full_text should be capped at 500 chars, got {}", ft.len());
+        // Should contain content from source entries
+        assert!(ft.contains("Database") || ft.contains("migration"),
+            "full_text should contain source content, got: {}", ft);
+    }
+
+    #[test]
+    fn test_low_salience_group_no_embedding() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+
+        // Two similar entries but with very low salience
+        let emb1 = embed_text("trivial formatting update to docs", dim);
+        let emb2 = embed_text("trivial formatting change to docs", dim);
+
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: "trivial formatting update to docs".into(),
+            summary: String::new(), embedding: emb1, salience: 0.1,
+            usage: 0, last_access: 0, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: "trivial formatting change to docs".into(),
+            summary: String::new(), embedding: emb2, salience: 0.1,
+            usage: 0, last_access: 0, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        state.consolidate();
+
+        let summary_node = state.long_term.nodes.values()
+            .find(|n| n.kind == "Summary");
+
+        if let Some(node) = summary_node {
+            assert!(node.embedding.is_empty(),
+                "low-salience group should NOT get centroid embedding");
+            assert!(node.full_text.is_none(),
+                "low-salience group should NOT get full_text");
+        }
+    }
+
+    #[test]
+    fn test_l3_summary_retrieval_finds_consolidated_memory() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+
+        // Manually insert a Summary node with a centroid embedding
+        let summary_emb = embed_text("Rust memory safety borrow checker", dim);
+        let summary_id = 2000;
+        state.long_term.nodes.insert(summary_id, GraphNode {
+            id: summary_id,
+            label: "Rust borrow checker summary".into(),
+            kind: "Summary".into(),
+            weight: 1.5,
+            last_seen: 10,
+            salience: 0.7,
+            source_texts: vec!["Rust borrow checker ownership rules".into()],
+            embedding: summary_emb,
+            full_text: Some("Rust borrow checker ownership and lifetime rules".into()),
+        });
+        state.long_term.index.insert("Rust borrow checker summary".into(), summary_id);
+
+        // Query something similar — no L2 entries exist, so L3 should surface it
+        let ctx = state.retrieve_context("Rust borrow checker rules");
+
+        // Should find the Summary node in short_term results (merged in)
+        let found = ctx.short_term.iter().any(|s| s.id == summary_id);
+        assert!(found,
+            "L3 Summary with embedding should be retrievable. Got: {:?}",
+            ctx.short_term.iter().map(|s| (&s.text, s.similarity)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_centroid_cosine_similar_to_members() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+
+        let text1 = "Authentication JWT token validation middleware";
+        let text2 = "Authentication JWT token signing middleware";
+        let emb1 = embed_text(text1, dim);
+        let emb2 = embed_text(text2, dim);
+
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: text1.into(),
+            summary: String::new(), embedding: emb1.clone(), salience: 0.8,
+            usage: 0, last_access: 0, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: text2.into(),
+            summary: String::new(), embedding: emb2.clone(), salience: 0.8,
+            usage: 0, last_access: 0, reconsolidation_count: 0,
+            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
+            density: 0.0, consolidated: false, emotional_valence: 0.0,
+            stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        state.consolidate();
+
+        let summary_node = state.long_term.nodes.values()
+            .find(|n| n.kind == "Summary" && !n.embedding.is_empty())
+            .expect("should have Summary with embedding");
+
+        // Centroid should be similar to both members
+        let sim1 = cosine_similarity(&summary_node.embedding, &emb1);
+        let sim2 = cosine_similarity(&summary_node.embedding, &emb2);
+
+        assert!(sim1 > 0.5, "centroid should be similar to member 1, got {}", sim1);
+        assert!(sim2 > 0.5, "centroid should be similar to member 2, got {}", sim2);
+    }
+
+    #[test]
+    fn test_consolidated_entry_easier_to_evict() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+
+        // Capacity 2: already have 2 entries, inserting a 3rd triggers eviction
+        state.config.short_term_capacity = 2;
+        state.next_id = 100; // avoid ID collision with manually inserted entries
+
+        // Insert a Summary node with embedding that backs entry 1
+        let summary_emb = embed_text("Consolidated topic alpha details", dim);
+        let summary_id = 3000;
+        state.long_term.nodes.insert(summary_id, GraphNode {
+            id: summary_id,
+            label: "Alpha summary".into(),
+            kind: "Summary".into(),
+            weight: 1.5,
+            last_seen: 10,
+            salience: 0.7,
+            source_texts: vec!["Consolidated topic alpha details".into()],
+            embedding: summary_emb,
+            full_text: Some("Alpha topic details".into()),
+        });
+
+        // Two entries with identical scores — only the consolidated flag differs
+        state.short_term.push(ShortTermEntry {
+            id: 1, text: "Consolidated topic alpha details".into(),
+            summary: String::new(), embedding: embed_text("Consolidated topic alpha details", dim),
+            salience: 0.5, usage: 1, last_access: 0,
+            reconsolidation_count: 0, labile_until: 0, refs: vec![],
+            gradient_sq_sum: 0.0, density: 0.0,
+            consolidated: true, // backed by L3 with embedding
+            emotional_valence: 0.0, stability: 1.0, last_retrieval_interval: 0,
+        });
+        state.short_term.push(ShortTermEntry {
+            id: 2, text: "Unconsolidated topic beta details".into(),
+            summary: String::new(), embedding: embed_text("Unconsolidated topic beta details", dim),
+            salience: 0.5, usage: 1, last_access: 0,
+            reconsolidation_count: 0, labile_until: 0, refs: vec![],
+            gradient_sq_sum: 0.0, density: 0.0,
+            consolidated: false,
+            emotional_valence: 0.0, stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        // Directly call insert_short_term to trigger eviction
+        state.insert_short_term(
+            "New entry forcing eviction",
+            embed_text("New entry forcing eviction", dim),
+            0.5,
+            vec![],
+            0.0,
+        );
+
+        // The consolidated entry should have been evicted (lower effective score)
+        let remaining_ids: Vec<u64> = state.short_term.iter().map(|e| e.id).collect();
+        assert!(!remaining_ids.contains(&1),
+            "consolidated entry backed by L3 should be evicted first, remaining: {:?}", remaining_ids);
+        assert!(remaining_ids.contains(&2),
+            "unconsolidated entry should survive");
     }
 }
