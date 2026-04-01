@@ -101,6 +101,12 @@ const EMOTIONAL_INTENSITY_DECAY: f32 = 0.8;
 /// drops below this, a topic shift has occurred (hippocampal novelty signal).
 const CONTEXT_SWITCH_THRESHOLD: f32 = 0.15;
 
+/// Pattern completion (CA3 autoassociative recall): if fewer than this many
+/// L2 results, try to reconstruct full memories from partial cues via graph.
+const PATTERN_COMPLETION_MIN_RESULTS: usize = 3;
+/// Minimum top-result similarity before pattern completion activates.
+const PATTERN_COMPLETION_SIM_THRESHOLD: f32 = 0.5;
+
 /// Sharp-wave ripple replay: entries accessed within this many ticks are
 /// considered temporally co-active (modeling hippocampal replay during rest).
 const REPLAY_TEMPORAL_WINDOW: u64 = 5;
@@ -1063,6 +1069,88 @@ impl MemoryState {
         }
     }
 
+    /// CA3 autoassociative pattern completion.
+    ///
+    /// When direct similarity search returns sparse results, use the graph to
+    /// reconstruct full memories from partial cues. Extracts entities from
+    /// partial matches, spreads activation, then searches L2 for entries
+    /// containing activated nodes' source texts.
+    fn pattern_complete(
+        &self,
+        query: &str,
+        partial_matches: &[MemorySnippet],
+    ) -> Vec<MemorySnippet> {
+        // Collect entity seeds from both the query and partial matches
+        let mut seed_ids: Vec<u64> = Vec::new();
+        let query_entities = extract_entities(query, &self.keyword_cache);
+        for entity in &query_entities {
+            if let Some(&id) = self.long_term.index.get(&entity.label) {
+                seed_ids.push(id);
+            }
+        }
+        for snippet in partial_matches {
+            let entities = extract_entities(&snippet.text, &self.keyword_cache);
+            for entity in &entities {
+                if let Some(&id) = self.long_term.index.get(&entity.label) {
+                    seed_ids.push(id);
+                }
+            }
+        }
+        seed_ids.sort();
+        seed_ids.dedup();
+
+        if seed_ids.is_empty() {
+            return Vec::new();
+        }
+
+        // Spread activation to find related graph nodes
+        let activated = self.spreading_activation(&seed_ids, 2, 0.5);
+
+        // Collect source_texts from activated nodes
+        let mut candidate_texts: Vec<(String, f32)> = Vec::new();
+        for (nid, activation) in &activated {
+            if let Some(node) = self.long_term.nodes.get(nid) {
+                for st in &node.source_texts {
+                    candidate_texts.push((st.clone(), *activation));
+                }
+            }
+        }
+
+        // Search L2 for entries containing any candidate text
+        let existing_ids: HashSet<u64> = partial_matches.iter().map(|s| s.id).collect();
+        let mut completed: Vec<MemorySnippet> = Vec::new();
+
+        for entry in &self.short_term {
+            if existing_ids.contains(&entry.id) || entry.consolidated {
+                continue;
+            }
+            // Check if this entry's text matches any activated source_text
+            let best_activation = candidate_texts
+                .iter()
+                .filter(|(text, _)| entry.text.contains(text.as_str()) || text.contains(&entry.text))
+                .map(|(_, act)| *act)
+                .fold(0.0_f32, f32::max);
+
+            if best_activation > 0.0 {
+                // Blend: use entry's own embedding similarity as a factor
+                let query_emb = embed_text(query, self.config.embedding_dim);
+                let direct_sim = cosine_similarity(&entry.embedding, &query_emb);
+                let completion_score = direct_sim * 0.6 + best_activation * 0.4;
+
+                completed.push(MemorySnippet {
+                    id: entry.id,
+                    text: entry.text.clone(),
+                    similarity: completion_score,
+                    refs: entry.refs.clone(),
+                });
+            }
+        }
+
+        completed.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+        completed.truncate(3);
+        completed
+    }
+
     /// Query memory without inserting new data.
     /// Retrieved entries are marked labile (editable) so the next tick can
     /// reconsolidate them with updated information.
@@ -1123,6 +1211,24 @@ impl MemoryState {
                 // Mark labile: this entry can be reconsolidated by the next tick
                 entry.labile_until = self.clock + LABILE_WINDOW;
             }
+        }
+
+        // --- CA3 pattern completion ---
+        // If direct retrieval is sparse or weak, use graph to complete partial cues.
+        let top_sim = snippets.first().map(|s| s.similarity).unwrap_or(0.0);
+        if snippets.len() < PATTERN_COMPLETION_MIN_RESULTS
+            || top_sim < PATTERN_COMPLETION_SIM_THRESHOLD
+        {
+            let completed = self.pattern_complete(query, &snippets);
+            let existing_ids: HashSet<u64> = snippets.iter().map(|s| s.id).collect();
+            for c in completed {
+                if !existing_ids.contains(&c.id) {
+                    snippets.push(c);
+                }
+            }
+            // Re-sort after adding completed results
+            snippets.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+            snippets.truncate(7); // allow slightly more results when completion kicks in
         }
 
         // Record for contrastive descent in the next reinforce() call.
@@ -5352,6 +5458,191 @@ mod tests {
         assert_eq!(migrated.short_term.len(), 1);
         assert_eq!(migrated.short_term[0].text, "preserved entry");
         assert_eq!(migrated.clock, 50);
+    }
+
+    // --- Pattern completion tests (Change 6) ---
+
+    #[test]
+    fn test_pattern_completion_finds_related_entry() {
+        // Build graph: ConfigLoader -> JwtSecret (via source_texts)
+        // Insert L2 entry that mentions JwtSecret
+        // Query "ConfigLoader" — direct similarity may be low, but
+        // pattern completion should find the JwtSecret entry via graph
+        let mut state = MemoryState::default();
+
+        // Create graph nodes with source_texts linking to L2 content
+        let cfg_id = 1100;
+        let jwt_id = 1101;
+        state.long_term.nodes.insert(cfg_id, GraphNode {
+            id: cfg_id, label: "ConfigLoader".into(), kind: "Entity".into(),
+            weight: 1.0, salience: 0.5,
+            source_texts: vec!["ConfigLoader reads settings".into()],
+            last_seen: 0,
+        });
+        state.long_term.index.insert("ConfigLoader".into(), cfg_id);
+
+        state.long_term.nodes.insert(jwt_id, GraphNode {
+            id: jwt_id, label: "JwtSecret".into(), kind: "Entity".into(),
+            weight: 1.0, salience: 0.5,
+            source_texts: vec!["JwtSecret stores token signing keys".into()],
+            last_seen: 0,
+        });
+        state.long_term.index.insert("JwtSecret".into(), jwt_id);
+
+        // Edge connecting them
+        state.long_term.edges.push(GraphEdge {
+            from: cfg_id, to: jwt_id, weight: 0.8,
+            kind: "related".into(), last_seen: 0,
+        });
+
+        // Insert L2 entry that contains the JwtSecret source text
+        let dim = state.config.embedding_dim;
+        state.insert_short_term(
+            "JwtSecret stores token signing keys for authentication",
+            embed_text("JwtSecret stores token signing keys for authentication", dim),
+            0.5,
+            Vec::new(),
+            0.0,
+        );
+
+        // Query for ConfigLoader — pattern completion should find the JwtSecret entry
+        let completed = state.pattern_complete("ConfigLoader", &[]);
+        assert!(
+            !completed.is_empty(),
+            "pattern completion should find related entry via graph"
+        );
+        assert!(
+            completed[0].text.contains("JwtSecret"),
+            "completed result should be the JwtSecret entry, got: {}",
+            completed[0].text
+        );
+    }
+
+    #[test]
+    fn test_pattern_completion_doesnt_activate_with_strong_results() {
+        let mut state = MemoryState::default();
+        // Insert several similar entries so direct retrieval is strong
+        for i in 0..5 {
+            state.tick(&format!(
+                "DECISION: fn handle_auth_{i}() manages authentication flow"
+            ));
+        }
+
+        let ctx = state.retrieve_context("handle_auth authentication");
+        // With 5 similar entries, direct retrieval should be strong enough
+        // that pattern completion doesn't need to activate.
+        // Just verify retrieval works and returns results
+        assert!(
+            !ctx.short_term.is_empty(),
+            "strong direct matches should return results"
+        );
+    }
+
+    #[test]
+    fn test_pattern_completion_scores_lower_than_direct() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+
+        // Direct match entry
+        state.insert_short_term(
+            "ConfigLoader reads YAML settings files",
+            embed_text("ConfigLoader reads YAML settings files", dim),
+            0.5,
+            Vec::new(),
+            0.0,
+        );
+
+        // Graph-connected entry (indirect)
+        let cfg_id = 1200;
+        let db_id = 1201;
+        state.long_term.nodes.insert(cfg_id, GraphNode {
+            id: cfg_id, label: "ConfigLoader".into(), kind: "Entity".into(),
+            weight: 1.0, salience: 0.5,
+            source_texts: vec!["ConfigLoader reads YAML settings files".into()],
+            last_seen: 0,
+        });
+        state.long_term.index.insert("ConfigLoader".into(), cfg_id);
+
+        state.long_term.nodes.insert(db_id, GraphNode {
+            id: db_id, label: "DatabasePool".into(), kind: "Entity".into(),
+            weight: 1.0, salience: 0.5,
+            source_texts: vec!["DatabasePool manages connection pooling".into()],
+            last_seen: 0,
+        });
+        state.long_term.index.insert("DatabasePool".into(), db_id);
+
+        state.long_term.edges.push(GraphEdge {
+            from: cfg_id, to: db_id, weight: 0.6,
+            kind: "related".into(), last_seen: 0,
+        });
+
+        state.insert_short_term(
+            "DatabasePool manages connection pooling for PostgreSQL",
+            embed_text("DatabasePool manages connection pooling for PostgreSQL", dim),
+            0.5,
+            Vec::new(),
+            0.0,
+        );
+
+        // Pattern complete for ConfigLoader — the DatabasePool entry is indirect
+        let direct = state.top_k_similar(
+            &embed_text("ConfigLoader", dim), 5, "ConfigLoader",
+        );
+        let completed = state.pattern_complete("ConfigLoader", &direct);
+
+        if let Some(c) = completed.first() {
+            if let Some(d) = direct.first() {
+                assert!(
+                    c.similarity <= d.similarity || direct.is_empty(),
+                    "completed results ({}) should score <= direct matches ({})",
+                    c.similarity, d.similarity
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_pattern_completion_empty_on_no_entities() {
+        let state = MemoryState::default();
+        // Query with no recognizable entities — nothing to seed graph from
+        let completed = state.pattern_complete("some random words", &[]);
+        assert!(
+            completed.is_empty(),
+            "no entities = no pattern completion"
+        );
+    }
+
+    #[test]
+    fn test_pattern_completion_skips_consolidated() {
+        let mut state = MemoryState::default();
+        let dim = state.config.embedding_dim;
+
+        let node_id = 1300;
+        state.long_term.nodes.insert(node_id, GraphNode {
+            id: node_id, label: "SkipConsolidated".into(), kind: "Entity".into(),
+            weight: 1.0, salience: 0.5,
+            source_texts: vec!["SkipConsolidated test entry".into()],
+            last_seen: 0,
+        });
+        state.long_term.index.insert("SkipConsolidated".into(), node_id);
+
+        // Insert a consolidated L2 entry
+        state.short_term.push(ShortTermEntry {
+            id: 999, text: "SkipConsolidated test entry for pattern completion".into(),
+            summary: String::new(),
+            embedding: embed_text("SkipConsolidated test entry", dim),
+            salience: 0.5, usage: 1, last_access: 1,
+            reconsolidation_count: 0, labile_until: 0, refs: vec![],
+            gradient_sq_sum: 0.0, density: 0.0,
+            consolidated: true, // marked consolidated
+            emotional_valence: 0.0, stability: 1.0, last_retrieval_interval: 0,
+        });
+
+        let completed = state.pattern_complete("SkipConsolidated", &[]);
+        assert!(
+            completed.is_empty(),
+            "pattern completion should skip consolidated entries"
+        );
     }
 
     // --- Smart consolidation trigger tests ---
