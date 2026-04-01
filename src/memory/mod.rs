@@ -410,6 +410,8 @@ impl Default for GraphNode {
             last_seen: 0,
             salience: 0.0,
             source_texts: Vec::new(),
+            embedding: Vec::new(),
+            full_text: None,
         }
     }
 }
@@ -424,6 +426,11 @@ pub struct GraphNode {
     pub last_seen: u64,
     pub salience: f32,
     pub source_texts: Vec<String>,
+    /// Centroid embedding for direct similarity search (systems consolidation).
+    /// Populated on Summary nodes so they can be queried independently of L2.
+    pub embedding: Vec<f32>,
+    /// Richer summary text (up to 500 chars) for consolidated memories.
+    pub full_text: Option<String>,
 }
 
 impl Default for GraphEdge {
@@ -434,6 +441,10 @@ impl Default for GraphEdge {
             weight: 0.0,
             kind: "related".to_string(),
             last_seen: 0,
+            activation_count: 0,
+            stability: 1.0,
+            recent_interval_avg: 0.0,
+            historical_interval_avg: 0.0,
         }
     }
 }
@@ -448,6 +459,22 @@ pub struct GraphEdge {
     pub kind: String,
     /// Clock tick when this edge was last reinforced.
     pub last_seen: u64,
+    /// Number of times this edge has been reinforced (LTP history).
+    #[serde(default)]
+    pub activation_count: u32,
+    /// Spaced repetition stability — grows faster with increasing intervals.
+    #[serde(default = "default_edge_stability")]
+    pub stability: f32,
+    /// Fast-adapting EMA of reinforcement intervals (STP, α=0.5).
+    #[serde(default)]
+    pub recent_interval_avg: f32,
+    /// Slow-adapting EMA of reinforcement intervals (LTP, α=0.1).
+    #[serde(default)]
+    pub historical_interval_avg: f32,
+}
+
+fn default_edge_stability() -> f32 {
+    1.0
 }
 
 fn default_edge_kind() -> String {
@@ -1373,6 +1400,10 @@ impl MemoryState {
                                 weight: 0.05,
                                 kind: "temporal".to_string(),
                                 last_seen: self.clock,
+                                activation_count: 0,
+                                stability: 1.0,
+                                recent_interval_avg: 0.0,
+                                historical_interval_avg: 0.0,
                             });
                         }
                     }
@@ -1784,7 +1815,10 @@ impl MemoryState {
         let now = self.clock;
         for edge in &mut self.long_term.edges {
             if co_retrieved_ids.contains(&edge.from) && co_retrieved_ids.contains(&edge.to) {
-                edge.weight = (edge.weight + HEBBIAN_EDGE_BOOST).min(HEBBIAN_EDGE_CEILING);
+                // Logarithmic dampening: heavily-activated synapses saturate (LTP ceiling)
+                let dampened_boost = HEBBIAN_EDGE_BOOST
+                    / (1.0 + (edge.activation_count as f32 + 1.0).ln());
+                edge.weight = (edge.weight + dampened_boost).min(HEBBIAN_EDGE_CEILING);
                 edge.last_seen = now;
             }
         }
@@ -2053,6 +2087,32 @@ impl MemoryState {
             .iter_mut()
             .find(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
         {
+            // Synaptic plasticity: update dual-timescale interval tracking
+            let interval = now.saturating_sub(edge.last_seen) as f32;
+            if edge.activation_count > 0 && interval > 0.0 {
+                edge.recent_interval_avg = 0.5 * interval + 0.5 * edge.recent_interval_avg;
+                edge.historical_interval_avg =
+                    0.1 * interval + 0.9 * edge.historical_interval_avg;
+
+                // Spaced repetition: compare recent vs historical intervals
+                if edge.historical_interval_avg > 0.0 {
+                    let spacing_ratio =
+                        edge.recent_interval_avg / edge.historical_interval_avg;
+                    if spacing_ratio > 1.0 {
+                        // Intervals are growing → spaced reinforcement
+                        edge.stability = (edge.stability * 1.3).min(10.0);
+                    } else {
+                        // Intervals are shrinking or constant → cramming
+                        edge.stability = (edge.stability * 1.05).min(10.0);
+                    }
+                }
+            } else if edge.activation_count == 0 {
+                // First reinforcement: initialize both EMAs to this interval
+                edge.recent_interval_avg = interval;
+                edge.historical_interval_avg = interval;
+            }
+
+            edge.activation_count = edge.activation_count.saturating_add(1);
             edge.weight += EDGE_REINFORCE_DELTA;
             edge.last_seen = now;
             if edge.kind == "related" && kind != "related" {
@@ -2065,6 +2125,10 @@ impl MemoryState {
                 weight: EDGE_REINFORCE_DELTA,
                 kind: kind.to_string(),
                 last_seen: now,
+                activation_count: 0,
+                stability: 1.0,
+                recent_interval_avg: 0.0,
+                historical_interval_avg: 0.0,
             });
         }
     }
@@ -2109,7 +2173,10 @@ impl MemoryState {
                         if !visited.contains(&nid)
                             && self.long_term.nodes.contains_key(&nid)
                         {
-                            let activation = parent_activation * edge.weight * hop_decay;
+                            // Synaptic encoding: edges with high stability (spaced
+                            // reinforcement) propagate activation more effectively.
+                            let effective_weight = edge.weight * edge.stability.sqrt();
+                            let activation = parent_activation * effective_weight * hop_decay;
                             let entry = activations.entry(nid).or_insert(0.0);
                             if activation > *entry {
                                 *entry = activation;
@@ -3973,6 +4040,8 @@ mod tests {
             weight: 0.1,
             kind: "related".to_string(),
             last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
 
         state.clock = 100;
@@ -5460,6 +5529,219 @@ mod tests {
         assert_eq!(migrated.clock, 50);
     }
 
+    // --- Synaptic encoding tests (Change 7) ---
+
+    #[test]
+    fn test_activation_count_increments() {
+        let mut state = MemoryState::default();
+        // Tick twice with shared entities to create and reinforce an edge
+        state.tick("DECISION: fn handle_auth() uses struct Config for settings");
+        state.tick("DECISION: struct Config stores fn handle_auth() parameters");
+
+        // Find edges with activation_count > 0
+        let reinforced = state.long_term.edges.iter()
+            .filter(|e| e.activation_count > 0)
+            .count();
+        assert!(
+            reinforced > 0,
+            "some edges should have been reinforced (activation_count > 0)"
+        );
+    }
+
+    #[test]
+    fn test_spaced_reinforcement_builds_stability() {
+        let mut state = MemoryState::default();
+        let (a_id, b_id) = (1400, 1401);
+        insert_test_node(&mut state, a_id, "SpacedNodeA");
+        insert_test_node(&mut state, b_id, "SpacedNodeB");
+
+        // Create edge
+        state.long_term.edges.push(GraphEdge {
+            from: a_id, to: b_id, weight: 0.5,
+            kind: "related".into(), last_seen: 1,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
+        });
+
+        // Reinforce with increasing intervals (spaced): 5, 10, 20, 40
+        let intervals = [5u64, 10, 20, 40];
+        let mut clock = 1u64;
+        for interval in &intervals {
+            clock += interval;
+            state.clock = clock;
+            state.upsert_edge(a_id, b_id, "related");
+        }
+
+        let edge = state.long_term.edges.iter()
+            .find(|e| e.from == a_id && e.to == b_id)
+            .unwrap();
+
+        assert!(
+            edge.stability > 1.5,
+            "spaced reinforcement should build high stability, got {}",
+            edge.stability
+        );
+        assert_eq!(edge.activation_count, 4);
+    }
+
+    #[test]
+    fn test_massed_reinforcement_low_stability() {
+        let mut state = MemoryState::default();
+        let (a_id, b_id) = (1500, 1501);
+        insert_test_node(&mut state, a_id, "MassedNodeA");
+        insert_test_node(&mut state, b_id, "MassedNodeB");
+
+        state.long_term.edges.push(GraphEdge {
+            from: a_id, to: b_id, weight: 0.5,
+            kind: "related".into(), last_seen: 1,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
+        });
+
+        // Reinforce with constant intervals (cramming): 1, 1, 1, 1
+        let mut clock = 1u64;
+        for _ in 0..4 {
+            clock += 1;
+            state.clock = clock;
+            state.upsert_edge(a_id, b_id, "related");
+        }
+
+        let edge = state.long_term.edges.iter()
+            .find(|e| e.from == a_id && e.to == b_id)
+            .unwrap();
+
+        assert!(
+            edge.stability < 1.5,
+            "massed reinforcement should build low stability, got {}",
+            edge.stability
+        );
+    }
+
+    #[test]
+    fn test_spaced_beats_massed_stability() {
+        let mut state = MemoryState::default();
+
+        // Spaced edge
+        let (sa, sb) = (1600, 1601);
+        insert_test_node(&mut state, sa, "SpacedA");
+        insert_test_node(&mut state, sb, "SpacedB");
+        state.long_term.edges.push(GraphEdge {
+            from: sa, to: sb, weight: 0.5,
+            kind: "related".into(), last_seen: 1,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
+        });
+
+        // Massed edge
+        let (ma, mb) = (1602, 1603);
+        insert_test_node(&mut state, ma, "MassedA");
+        insert_test_node(&mut state, mb, "MassedB");
+        state.long_term.edges.push(GraphEdge {
+            from: ma, to: mb, weight: 0.5,
+            kind: "related".into(), last_seen: 1,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
+        });
+
+        // Spaced: intervals [5, 10, 20, 40]
+        let spaced_intervals = [5u64, 10, 20, 40];
+        let mut clock = 1u64;
+        for interval in &spaced_intervals {
+            clock += interval;
+            state.clock = clock;
+            state.upsert_edge(sa, sb, "related");
+        }
+
+        // Massed: intervals [1, 1, 1, 1] (same number of reinforcements)
+        let mut clock_m = 1u64;
+        for _ in 0..4 {
+            clock_m += 1;
+            state.clock = clock_m;
+            state.upsert_edge(ma, mb, "related");
+        }
+
+        let spaced_edge = state.long_term.edges.iter()
+            .find(|e| e.from == sa && e.to == sb).unwrap();
+        let massed_edge = state.long_term.edges.iter()
+            .find(|e| e.from == ma && e.to == mb).unwrap();
+
+        assert!(
+            spaced_edge.stability > massed_edge.stability,
+            "spaced ({}) should have higher stability than massed ({})",
+            spaced_edge.stability, massed_edge.stability
+        );
+    }
+
+    #[test]
+    fn test_hebbian_logarithmic_dampening() {
+        let mut state = MemoryState::default();
+        let (a_id, b_id) = (1700, 1701);
+        insert_test_node(&mut state, a_id, "HebbA");
+        insert_test_node(&mut state, b_id, "HebbB");
+
+        state.long_term.edges.push(GraphEdge {
+            from: a_id, to: b_id, weight: 0.5,
+            kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
+        });
+
+        // First Hebbian reinforce: activation_count=0 → full boost
+        state.clock = 1;
+        let weight_before = state.long_term.edges[0].weight;
+        state.hebbian_reinforce(&[a_id, b_id]);
+        let first_boost = state.long_term.edges[0].weight - weight_before;
+
+        // Set high activation_count to simulate heavily-used edge
+        state.long_term.edges[0].activation_count = 100;
+        let weight_before2 = state.long_term.edges[0].weight;
+        state.clock = 2;
+        state.hebbian_reinforce(&[a_id, b_id]);
+        let hundredth_boost = state.long_term.edges[0].weight - weight_before2;
+
+        assert!(
+            first_boost > hundredth_boost,
+            "first reinforce ({}) should boost more than 100th ({})",
+            first_boost, hundredth_boost
+        );
+    }
+
+    #[test]
+    fn test_stability_modulates_spreading_activation() {
+        let mut state = MemoryState::default();
+        // Two paths from A: A->B (high stability) and A->C (low stability)
+        let (a_id, b_id, c_id) = (1800, 1801, 1802);
+        insert_test_node(&mut state, a_id, "StabA");
+        insert_test_node(&mut state, b_id, "StabB");
+        insert_test_node(&mut state, c_id, "StabC");
+
+        // High stability edge A->B
+        state.long_term.edges.push(GraphEdge {
+            from: a_id, to: b_id, weight: 0.5,
+            kind: "related".into(), last_seen: 0,
+            activation_count: 10, stability: 5.0,
+            recent_interval_avg: 20.0, historical_interval_avg: 15.0,
+        });
+
+        // Low stability edge A->C (same weight)
+        state.long_term.edges.push(GraphEdge {
+            from: a_id, to: c_id, weight: 0.5,
+            kind: "related".into(), last_seen: 0,
+            activation_count: 10, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+
+        let results = state.spreading_activation(&[a_id], 1, 0.5);
+        let b_activation = results.iter().find(|(id, _)| *id == b_id).map(|(_, a)| *a).unwrap_or(0.0);
+        let c_activation = results.iter().find(|(id, _)| *id == c_id).map(|(_, a)| *a).unwrap_or(0.0);
+
+        assert!(
+            b_activation > c_activation,
+            "high-stability edge should propagate more: B={} vs C={}",
+            b_activation, c_activation
+        );
+    }
+
     // --- Pattern completion tests (Change 6) ---
 
     #[test]
@@ -5493,6 +5775,8 @@ mod tests {
         state.long_term.edges.push(GraphEdge {
             from: cfg_id, to: jwt_id, weight: 0.8,
             kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
 
         // Insert L2 entry that contains the JwtSecret source text
@@ -5574,6 +5858,8 @@ mod tests {
         state.long_term.edges.push(GraphEdge {
             from: cfg_id, to: db_id, weight: 0.6,
             kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
 
         state.insert_short_term(
@@ -5768,6 +6054,8 @@ mod tests {
         state.long_term.edges.push(GraphEdge {
             from: node_a, to: node_b, weight: 0.5,
             kind: "related".into(), last_seen: 5,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
 
         // Create two L2 entries that mention both entities, close in time
@@ -5957,10 +6245,14 @@ mod tests {
         state.long_term.edges.push(GraphEdge {
             from: a_id, to: b_id, weight: 0.8,
             kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
         state.long_term.edges.push(GraphEdge {
             from: b_id, to: c_id, weight: 0.6,
             kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
 
         let results = state.spreading_activation(&[a_id], 3, 0.5);
@@ -5991,10 +6283,14 @@ mod tests {
         state.long_term.edges.push(GraphEdge {
             from: a_id, to: b_id, weight: 1.0,
             kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
         state.long_term.edges.push(GraphEdge {
             from: b_id, to: a_id, weight: 1.0,
             kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
 
         // Should not infinite loop — visited set prevents re-expansion
@@ -6017,6 +6313,8 @@ mod tests {
             state.long_term.edges.push(GraphEdge {
                 from: ids[i], to: ids[i + 1], weight: 1.0,
                 kind: "related".into(), last_seen: 0,
+                activation_count: 0, stability: 1.0,
+                recent_interval_avg: 0.0, historical_interval_avg: 0.0,
             });
         }
 
@@ -6051,10 +6349,14 @@ mod tests {
         state.long_term.edges.push(GraphEdge {
             from: ids[0], to: ids[1], weight: 0.8,
             kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
         state.long_term.edges.push(GraphEdge {
             from: ids[1], to: ids[2], weight: 0.6,
             kind: "related".into(), last_seen: 0,
+            activation_count: 0, stability: 1.0,
+            recent_interval_avg: 0.0, historical_interval_avg: 0.0,
         });
 
         let results = state.graph_lookup("TestMultiA", 20);
@@ -6081,6 +6383,8 @@ mod tests {
             state.long_term.edges.push(GraphEdge {
                 from: ids[i], to: ids[i + 1], weight: 1.0,
                 kind: "related".into(), last_seen: 0,
+                activation_count: 0, stability: 1.0,
+                recent_interval_avg: 0.0, historical_interval_avg: 0.0,
             });
         }
 
