@@ -366,23 +366,72 @@ Remaining constant renames that weren't handled in Change 9.
 
 ---
 
+## Change 12: Emotional Intensity Consolidation Trigger (Amygdala-Driven) — DONE
+
+**Problem**: Consolidation fires on a fixed tick count (every 15). The brain consolidates more aggressively after emotionally significant events — a burst of bug reports or critical decisions should trigger consolidation sooner.
+
+**Files**: `src/memory/mod.rs`
+
+**Changes**:
+
+Track rolling emotional intensity in `tick_impl`:
+- Add `recent_valence_sum: f32` to `MemoryState` (`#[serde(default)]`)
+- In `tick_impl`: add `|emotional_valence|` to `recent_valence_sum`; decay sum each tick by `*= 0.8`
+- Add constant `EMOTIONAL_CONSOLIDATION_THRESHOLD: f32 = 1.5`
+- If `recent_valence_sum >= threshold` after a tick, set `consolidation_suggested = true` regardless of tick count
+
+**Tests**:
+- 3 high-valence ticks in a row → consolidation suggested (even though < 15 ticks)
+- 3 neutral ticks → no early suggestion
+- Rolling decay prevents stale accumulation
+
+**Value**: Bug storms and critical decisions trigger immediate consolidation, strengthening memory of important events. Routine ticks wait for the normal 15-tick cycle.
+
+---
+
+## Change 13: Context Switch Consolidation Trigger (Hippocampal Novelty Detection) — DONE
+
+**Problem**: When the user switches topics dramatically (from "database migrations" to "CSS styling"), the previous context should be consolidated before the new one overwrites working memory. The hippocampus detects novelty via pattern mismatch.
+
+**Files**: `src/memory/mod.rs`
+
+**Changes**:
+
+Track topic coherence in `tick_impl`:
+- Add `last_tick_embedding: Vec<f32>` to `MemoryState` (`#[serde(default)]`)
+- In `tick_impl`: compute cosine similarity between new tick's embedding and `last_tick_embedding`
+- Add constant `CONTEXT_SWITCH_THRESHOLD: f32 = 0.15` — if similarity drops below this, it's a topic shift
+- On context switch: set `consolidation_suggested = true` and optionally call `flush_working_memory()` to grade L1 entries from the old context
+- Update `last_tick_embedding` after each tick
+
+**Tests**:
+- Tick "database migration schema" then "CSS flexbox layout" → consolidation suggested
+- Tick "database migration schema" then "database index optimization" → no suggestion (same topic)
+- First tick ever (no previous embedding) → no suggestion
+
+**Value**: Natural "micro-nap" when switching tasks. Previous work session's memories are consolidated before the new topic floods working memory.
+
+---
+
 ## Execution Order
 
 ```
-1. Pattern Separation        ← DONE (+ dentate_gyrus.rs module)
-2. Emotional Tagging         ← DONE (+ amygdala.rs module, 568 tests passing)
-3. Forgetting Curve          ← DONE (stability + spaced repetition, 578 tests passing)
-4. Spreading Activation      ← DONE
-5. SWR Replay                ← DONE
-6. Pattern Completion        ← depends on 4
-7. Synaptic Encoding         ← benefits from 4
-8. Systems Consolidation     ← benefits from 5/6/7
-9. Dynamic Keyword Bootstrap ← no deps, benefits from init/discover
-10. Brain-Region Modules     ← after all behavioral changes settle
-11. Terminology              ← always last
+1. Pattern Separation            ← DONE (+ dentate_gyrus.rs module)
+2. Emotional Tagging             ← DONE (+ amygdala.rs module, 568 tests passing)
+3. Forgetting Curve              ← DONE (stability + spaced repetition, 578 tests passing)
+4. Spreading Activation          ← DONE (multi-hop BFS, 590 tests passing)
+5. SWR Replay                    ← DONE (temporal co-occurrence, 600 tests passing)
+6. Pattern Completion            ← depends on 4
+7. Synaptic Encoding             ← benefits from 4
+8. Systems Consolidation         ← benefits from 5/6/7
+9. Dynamic Keyword Bootstrap     ← no deps, benefits from init/discover
+10. Brain-Region Modules         ← after all behavioral changes settle
+11. Terminology                  ← always last
+12. Emotional Consolidation      ← DONE (amygdala-driven, 605 tests passing)
+13. Context Switch Consolidation ← DONE (novelty detection, 605 tests passing)
 ```
 
-Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Change 9 (keyword bootstrap) can be done at any point but benefits from having the emotional valence keywords (Change 2) and architecture settled. Changes 10-11 are structural/doc cleanup, always last.
+Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Change 9 (keyword bootstrap) can be done at any point but benefits from having the emotional valence keywords (Change 2) and architecture settled. Changes 10-11 are structural/doc cleanup, always last. Changes 12-13 are smart consolidation triggers — can be done any time after the SWR replay foundation (Change 5) is in place.
 
 ## Migration
 
