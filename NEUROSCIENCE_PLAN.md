@@ -194,7 +194,7 @@ Add constant: `const PATTERN_COMPLETION_MIN_RESULTS: usize = 3;`
 
 ---
 
-## Change 7: Enriched Synaptic Encoding on Edges
+## Change 7: Enriched Synaptic Encoding on Edges — DONE
 
 **Problem**: `GraphEdge` only has weight/kind/last_seen. No tracking of co-activation frequency or temporal patterns.
 
@@ -413,7 +413,7 @@ Track topic coherence in `tick_impl`:
 
 ---
 
-## Change 14: Neural Network Feasibility Review
+## Change 16: Neural Network Feasibility Review
 
 **Problem**: The current system uses a graph with entity nodes and edge weights as the substrate for spreading activation, pattern completion, Hebbian learning, and associative recall. While effective and debuggable, real brain regions (CA3, CA1, entorhinal cortex) use actual recurrent neural networks — attractor dynamics, weight matrices, and iterative convergence. Some subsystems may produce better results as small neural nets.
 
@@ -444,6 +444,62 @@ Track topic coherence in `tick_impl`:
 
 ---
 
+## Change 14: Structural Synaptic Plasticity (Multi-Edge Connections)
+
+**Problem**: Currently each node pair has a single edge with one weight. In the brain, Kandel (Nobel 2000, *Aplysia* studies) showed that learning physically grows new synaptic terminals between neurons — it's not just one connection getting stronger, it's structurally denser wiring. Our single edge collapses all contextual relationships into one weight. "Config" ↔ "JWT" connected via authentication AND token expiry are indistinguishable.
+
+**Brain analogy**: Structural plasticity — habituation retracts synaptic terminals, sensitization grows new ones. Multiple parallel synapses between the same neuron pair encode different facets of the relationship. Selective pruning of one synapse doesn't destroy the others.
+
+**Files**: `src/memory/mod.rs`
+
+**Depends on**: Change 15 (contextual queries make multi-edges useful)
+
+**Changes**:
+- Modify `upsert_edge` to match on `(from, to, kind)` instead of just `(from, to)` — allows multiple edges between the same pair with different kinds
+- When a new kind of relationship is discovered between an existing pair, create a new edge rather than upgrading the existing one's kind
+- Preserve kind-upgrade logic for genuinely hierarchical kinds (e.g., "related" → "contains")
+- Update `spreading_activation` to traverse all edges from a node (naturally works with multiple edges)
+- Update `prune_graph` edge pruning to handle multiple edges per pair
+- Each edge independently tracks its own activation_count, stability, and interval EMAs
+
+**Tests**:
+- Same node pair can have "contains" and "temporal" edges simultaneously
+- Reinforcing one edge doesn't affect the other's stability/activation_count
+- Pruning a low-weight edge between a pair preserves the other edge(s)
+- Spreading activation traverses all edges from a node
+- Existing edge behavior unchanged for single-kind pairs
+
+**Value**: Different contextual associations between concepts are preserved independently. A temporal work-session link can decay without destroying the structural "contains" relationship. Enables context-aware queries (Change 16).
+
+---
+
+## Change 15: Context-Aware Spreading Activation
+
+**Problem**: Spreading activation treats all edges equally regardless of kind. A query about "authentication" follows "temporal" edges (same work session) with the same weight as "contains" edges (structural code relationships). This dilutes results with irrelevant associations.
+
+**Brain analogy**: Different neurotransmitter systems (dopamine, serotonin, acetylcholine) modulate which neural pathways are active. Context biases which connections propagate — emotional context activates amygdala pathways, spatial context activates hippocampal place cells. The same neurons participate in different circuits depending on the active neuromodulatory state.
+
+**Files**: `src/memory/mod.rs`
+
+**Depends on**: Change 14 (multi-edge makes this meaningful)
+
+**Changes**:
+- Add optional `context_filter: Option<&[&str]>` parameter to `spreading_activation` — list of preferred edge kinds
+- When context_filter is set, preferred-kind edges get full weight, other kinds get a dampening factor (e.g., 0.3)
+- Infer context from query: extract entities, check their dominant edge kinds in the graph, use those as the context filter
+- Add `fn infer_query_context(&self, query: &str) -> Vec<String>` method
+- Wire into `retrieve_context`: pass inferred context to spreading activation and priming
+
+**Tests**:
+- Query about code ("fn handle_auth") preferentially follows "contains"/"represents" edges
+- Query about a work session preferentially follows "temporal" edges
+- Without context filter, behavior identical to current (backward compat)
+- Context inference extracts dominant edge kinds from query entities
+
+**Value**: Queries return more relevant results by following contextually appropriate graph pathways. "What did I work on yesterday?" follows temporal edges. "How does auth work?" follows structural edges.
+
+---
+
 ## Execution Order
 
 ```
@@ -453,14 +509,16 @@ Track topic coherence in `tick_impl`:
 4. Spreading Activation          ← DONE (multi-hop BFS, 590 tests passing)
 5. SWR Replay                    ← DONE (temporal co-occurrence, 600 tests passing)
 6. Pattern Completion            ← DONE (CA3 autoassociative recall, 622 tests)
-7. Synaptic Encoding             ← benefits from 4
+7. Synaptic Encoding             ← DONE (dual-timescale EMA, 634 tests passing)
 8. Systems Consolidation         ← benefits from 5/6/7
 9. Dynamic Keyword Bootstrap     ← no deps, benefits from init/discover
 10. Brain-Region Modules         ← after all behavioral changes settle
 11. Terminology                  ← always last
 12. Emotional Consolidation      ← DONE (amygdala-driven, 605 tests passing)
 13. Context Switch Consolidation ← DONE (novelty detection, 605 tests passing)
-14. Neural Net Feasibility Review ← after all behavioral changes, with usage data
+14. Structural Synaptic Plasticity ← depends on 7, unlocks 15
+15. Context-Aware Spreading Activation ← depends on 14
+16. Neural Net Feasibility Review ← after all behavioral changes, with usage data
 ```
 
 Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Change 9 (keyword bootstrap) can be done at any point but benefits from having the emotional valence keywords (Change 2) and architecture settled. Changes 10-11 are structural/doc cleanup, always last. Changes 12-13 are smart consolidation triggers — can be done any time after the SWR replay foundation (Change 5) is in place. Change 14 is a research review — always after all behavioral and structural changes are settled.
