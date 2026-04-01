@@ -263,6 +263,8 @@ mod tests {
                 last_seen: 10,
                 salience: 0.5,
                 source_texts: vec![],
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
         graph.nodes.insert(
@@ -275,6 +277,8 @@ mod tests {
                 last_seen: 10,
                 salience: 0.5,
                 source_texts: vec![],
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
 
@@ -300,6 +304,8 @@ mod tests {
                 last_seen: 10,
                 salience: 0.5,
                 source_texts: vec![],
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
 
@@ -330,6 +336,8 @@ mod tests {
                     "entity_kind:Function".to_string(),
                     "entity_context:defines".to_string(),
                 ],
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
 
@@ -368,6 +376,8 @@ mod tests {
                 last_seen: 10,
                 salience: 0.8,
                 source_texts: vec![],
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
 
@@ -400,6 +410,8 @@ mod tests {
                 last_seen: 10,
                 salience: 0.5,
                 source_texts: vec!["weight:-0.7".to_string()],
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
         graph.nodes.insert(
@@ -412,6 +424,8 @@ mod tests {
                 last_seen: 10,
                 salience: 0.5,
                 source_texts: vec!["weight:0.6".to_string()],
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
         graph.nodes.insert(
@@ -424,6 +438,8 @@ mod tests {
                 last_seen: 10,
                 salience: 0.5,
                 source_texts: vec![],
+                embedding: Vec::new(),
+                full_text: None,
             },
         );
 

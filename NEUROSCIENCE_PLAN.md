@@ -226,7 +226,7 @@ In `spreading_activation` (from Change 4): modulate by temporal_pattern: `effect
 
 ---
 
-## Change 8: Systems Consolidation (Hippocampal Independence)
+## Change 8: Systems Consolidation (Hippocampal Independence) — DONE
 
 **Problem**: Consolidated L2 entries get `consolidated=true` but L3 Summary nodes don't carry enough detail to replace them. Old memories become unretrievable.
 
@@ -510,7 +510,7 @@ Track topic coherence in `tick_impl`:
 5. SWR Replay                    ← DONE (temporal co-occurrence, 600 tests passing)
 6. Pattern Completion            ← DONE (CA3 autoassociative recall, 622 tests)
 7. Synaptic Encoding             ← DONE (dual-timescale EMA, 634 tests passing)
-8. Systems Consolidation         ← benefits from 5/6/7
+8. Systems Consolidation         ← DONE (centroid embeddings + L3 retrieval, 646 tests)
 9. Dynamic Keyword Bootstrap     ← no deps, benefits from init/discover
 10. Brain-Region Modules         ← after all behavioral changes settle
 11. Terminology                  ← always last
