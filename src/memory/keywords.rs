@@ -1,4 +1,15 @@
 /// Centralized semantic dictionaries for entity extraction and summarization.
+///
+/// Layer 1 (Innate): Domain-independent keyword lists that work across any project.
+/// These are like hardwired neural circuits — decision detection, threat signals,
+/// reward signals, urgency amplifiers. They function regardless of domain.
+///
+/// Domain-specific keywords (language syntax, tools, environments) are seeded
+/// via Layer 2 (workspace bootstrap) and Layer 3 (incremental discovery).
+
+/// Code syntax keywords — language-specific patterns that indicate definitions/usage.
+/// NOTE: These are seeded during workspace bootstrap (Layer 2) based on detected
+/// languages, NOT loaded as static defaults. Kept here as a reference catalog.
 pub const CODE_KEYWORDS: &[(&str, &str, &str)] = &[
     // Rust / C / C++
     ("fn ", "Function", "defines"),
@@ -25,158 +36,305 @@ pub const CODE_KEYWORDS: &[(&str, &str, &str)] = &[
     ("require ", "Import", "uses"),
 ];
 
+/// Decision-making language — domain-independent reasoning markers.
 pub const DECISION_KEYWORDS: &[&str] = &[
+    // Causal reasoning
     "because",
+    "reason",
+    "rationale",
+    "therefore",
+    "consequently",
+    "hence",
+    "thus",
+    "given that",
+    "in order to",
+    "so that",
+    "the reason",
+    "due to",
+    "as a result",
+    // Choice language
     "chose",
     "decided",
     "decision",
+    "opted",
+    "opted for",
+    "picked",
+    "selected",
+    "went with",
+    "settled on",
+    "committed to",
+    "we decided",
+    // Comparison/alternatives
     "instead",
     "rather",
-    "reason",
-    "rationale",
+    "over",
+    "alternatively",
+    "compared to",
+    "versus",
+    "vs",
     "tradeoff",
     "trade-off",
-    "over",
-    "picked",
-    "opted",
-    "went with",
-    "rejected",
+    "tradeoffs",
+    "pros and cons",
+    "weighed",
+    // Evaluation
     "approach",
+    "strategy",
+    "evaluated",
+    "considered",
+    "concluded",
+    "determined",
+    "assessed",
+    "analyzed",
+    // Rejection
+    "rejected",
+    "ruled out",
+    "discarded",
+    "abandoned",
+    "dropped",
+    "not worth",
+    "too complex",
 ];
 
+/// Action verbs — domain-independent progress markers.
 pub const ACTION_KEYWORDS: &[(&str, &str)] = &[
-    ("fixed", "Action"),
-    ("fixing", "Action"),
-    ("refactored", "Action"),
-    ("refactoring", "Action"),
+    // Building
     ("implemented", "Action"),
     ("implementing", "Action"),
     ("added", "Action"),
     ("adding", "Action"),
+    ("created", "Action"),
+    ("creating", "Action"),
+    ("built", "Action"),
+    ("building", "Action"),
+    ("designed", "Action"),
+    ("designing", "Action"),
+    ("developed", "Action"),
+    ("developing", "Action"),
+    ("wrote", "Action"),
+    ("writing", "Action"),
+    ("set up", "Action"),
+    ("configured", "Action"),
+    ("integrated", "Action"),
+    // Fixing
+    ("fixed", "Action"),
+    ("fixing", "Action"),
+    ("resolved", "Action"),
+    ("resolving", "Action"),
+    ("patched", "Action"),
+    ("addressed", "Action"),
+    ("corrected", "Action"),
+    // Modifying
+    ("refactored", "Action"),
+    ("refactoring", "Action"),
+    ("updated", "Action"),
+    ("updating", "Action"),
+    ("changed", "Action"),
+    ("modified", "Action"),
+    ("replaced", "Action"),
+    ("renamed", "Action"),
+    ("restructured", "Action"),
+    ("reorganized", "Action"),
+    ("consolidated", "Action"),
+    ("simplified", "Action"),
+    // Removing
     ("removed", "Action"),
     ("removing", "Action"),
+    ("deleted", "Action"),
+    ("cleaned up", "Action"),
+    ("pruned", "Action"),
+    ("deprecated", "Action"),
+    // Testing/validation
     ("tested", "Action"),
     ("testing", "Action"),
     ("debugged", "Action"),
     ("debugging", "Action"),
+    ("validated", "Action"),
+    ("validating", "Action"),
+    ("verified", "Action"),
+    ("profiled", "Action"),
+    ("benchmarked", "Action"),
+    // Optimization
     ("optimized", "Action"),
+    ("optimizing", "Action"),
+    ("improved", "Action"),
+    ("streamlined", "Action"),
+    // Movement/deployment
     ("migrated", "Action"),
     ("migrating", "Action"),
     ("deployed", "Action"),
     ("deploying", "Action"),
-    ("validated", "Action"),
-    ("validating", "Action"),
-    ("investigated", "Action"),
-    ("investigating", "Action"),
-    ("documented", "Action"),
-    ("documenting", "Action"),
     ("reverted", "Action"),
     ("reverting", "Action"),
     ("rolled back", "Action"),
     ("rollback", "Action"),
-    // Plain verbs for progress categorization
+    ("upgraded", "Action"),
+    ("downgraded", "Action"),
+    // Investigation
+    ("investigated", "Action"),
+    ("investigating", "Action"),
+    ("researched", "Action"),
+    ("explored", "Action"),
+    ("analyzed", "Action"),
+    ("diagnosed", "Action"),
+    // Documentation
+    ("documented", "Action"),
+    ("documenting", "Action"),
+    // Completion
     ("completed", "Action"),
     ("finished", "Action"),
-    ("built", "Action"),
     ("shipped", "Action"),
     ("merged", "Action"),
+    ("released", "Action"),
+    ("published", "Action"),
 ];
 
-pub const ENVIRONMENT_KEYWORDS: &[&str] = &[
-    "wsl",
-    "docker",
-    "production",
-    "staging",
-    "ubuntu",
-    "linux",
-    "windows",
-    "macos",
-    "s3",
-    "github",
-    "aws",
-    "localhost",
-    "browser",
-    "cli",
-    "kubernetes",
-    "k8s",
-    "gcp",
-    "azure",
-    "devcontainer",
-    "vm",
-    "ci",
-    "cd",
-    "github actions",
-];
-
-pub const TOOL_KEYWORDS: &[&str] = &[
-    "postgres",
-    "postgresql",
-    "redis",
-    "kafka",
-    "grpc",
-    "graphql",
-    "react",
-    "nextjs",
-    "tailwind",
-    "vite",
-    "webpack",
-    "jest",
-    "pytest",
-    "tokio",
-    "actix",
-    "axum",
-    "fastapi",
-    "django",
-    "flask",
-    "terraform",
-    "ansible",
-    "prometheus",
-    "grafana",
-    "nginx",
-];
-
+/// Architecture/design language — structural concepts that apply across domains.
 pub const ARCHITECTURE_KEYWORDS: &[&str] = &[
+    // Core structural concepts
     "architecture",
     "module",
     "component",
     "layer",
     "system",
+    "subsystem",
+    "service",
     "interface",
     "api",
     "schema",
-    "pipeline",
+    "model",
+    // Patterns & design
     "pattern",
-    "struct ",
-    "trait ",
-    "impl ",
+    "pipeline",
+    "middleware",
+    "handler",
+    "controller",
+    "registry",
+    "dispatcher",
+    "orchestrator",
+    "scheduler",
+    "facade",
+    "adapter",
+    "proxy",
+    "gateway",
+    "bridge",
+    "factory",
+    "singleton",
+    "observer",
+    "strategy",
+    // Boundaries & communication
+    "boundary",
+    "protocol",
+    "contract",
+    "endpoint",
+    "route",
+    "channel",
+    "queue",
+    "stream",
+    "event",
+    "message",
+    "signal",
+    // Data organization
+    "repository",
+    "store",
+    "cache",
+    "index",
+    "graph",
+    "tree",
+    "hierarchy",
+    "namespace",
+    "scope",
+    // Process & flow
+    "workflow",
+    "lifecycle",
+    "state machine",
+    "transition",
+    "hook",
+    "callback",
+    "plugin",
+    "extension",
 ];
 
+/// Bug/issue language — domain-independent problem indicators.
 pub const BUG_KEYWORDS: &[&str] = &[
+    // Direct bug references
     "bug",
+    "bug:",
+    "defect",
+    "glitch",
+    "fault",
+    // Breakage
     "broke",
     "broken",
-    "revert",
-    "reverted",
+    "breaking",
     "crash",
     "panic",
+    // Regression
     "regression",
+    "regressed",
+    "revert",
+    "reverted",
+    // Failure
     "fix",
     "hotfix",
     "incident",
     "error",
     "failure",
     "failed",
+    "failing",
+    // Quality issues
+    "anomaly",
+    "deviation",
+    "malfunction",
+    "degradation",
+    "inconsistency",
+    "flaky",
+    "unstable",
+    "unreliable",
+    "intermittent",
+    // Symptoms
+    "hang",
+    "hung",
+    "freeze",
+    "timeout",
+    "leak",
+    "overflow",
+    "corruption",
 ];
 
+/// Todo/task language — outstanding work markers.
 pub const TODO_KEYWORDS: &[&str] = &[
+    // Direct markers
     "todo",
     "fixme",
     "hack",
+    "xxx",
+    "temporary",
+    // Status
     "still need",
     "not yet",
     "remaining",
+    "outstanding",
+    "pending",
+    "incomplete",
+    "unfinished",
+    // Priority/tracking
     "blocker",
     "blocked",
+    "backlog",
+    "deferred",
+    "scheduled",
+    "planned",
+    "next step",
+    "follow-up",
+    "follow up",
+    // Needs
+    "needs work",
+    "needs review",
+    "needs testing",
+    "needs refactor",
+    "must fix",
+    "should fix",
 ];
 
 /// Negative emotional valence keywords — amygdala threat detection.
@@ -320,8 +478,11 @@ pub const URGENCY_KEYWORDS: &[&str] = &[
     "hotfix",
     "asap",
     "immediately",
+    "high priority",
+    "time-sensitive",
 ];
 
+/// Preference/convention language — user style and workflow markers.
 pub const PREFERENCE_KEYWORDS: &[&str] = &[
     "prefer",
     "preference",
@@ -329,25 +490,86 @@ pub const PREFERENCE_KEYWORDS: &[&str] = &[
     "user prefers",
     "style",
     "convention",
+    "standard",
+    "rule",
+    "guideline",
+    "policy",
     "always use",
     "never use",
+    "default to",
+    "should always",
+    "should never",
+    "must use",
+    "avoid",
 ];
+
+/// Environment keywords — deployment/infrastructure context.
+/// NOTE: Specific platform names (docker, kubernetes, aws, etc.) are seeded via
+/// Layer 2 (workspace bootstrap). These are domain-independent environment concepts.
+pub const ENVIRONMENT_KEYWORDS: &[&str] = &[
+    "production",
+    "staging",
+    "development",
+    "local",
+    "localhost",
+    "remote",
+    "ci",
+    "cd",
+    "pipeline",
+    "deployment",
+    "infrastructure",
+    "configuration",
+    "environment",
+    "runtime",
+    "server",
+    "client",
+    "browser",
+    "cli",
+    "vm",
+    "container",
+];
+
+/// Tool keywords — domain-independent. Specific tool names are seeded via Layer 2.
+/// This static list is intentionally empty; all tool keywords come from workspace
+/// bootstrap (Layer 2) based on detected dependencies and tech stack.
+pub const TOOL_KEYWORDS: &[&str] = &[];
+
+/// Domain keywords — initially empty. Populated entirely from graph nodes via
+/// Layer 2 (workspace bootstrap) and Layer 3 (incremental discovery).
+pub const DOMAIN_KEYWORDS: &[&str] = &[];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_dictionaries_not_empty() {
-        assert!(!CODE_KEYWORDS.is_empty());
+    fn test_domain_independent_lists_not_empty() {
         assert!(!DECISION_KEYWORDS.is_empty());
         assert!(!ACTION_KEYWORDS.is_empty());
-        assert!(!ENVIRONMENT_KEYWORDS.is_empty());
-        assert!(!TOOL_KEYWORDS.is_empty());
         assert!(!ARCHITECTURE_KEYWORDS.is_empty());
         assert!(!BUG_KEYWORDS.is_empty());
         assert!(!TODO_KEYWORDS.is_empty());
         assert!(!PREFERENCE_KEYWORDS.is_empty());
+        assert!(!ENVIRONMENT_KEYWORDS.is_empty());
+        assert!(!URGENCY_KEYWORDS.is_empty());
+    }
+
+    #[test]
+    fn test_code_keywords_are_reference_catalog() {
+        // Code keywords exist as a reference but are seeded via Layer 2
+        assert!(!CODE_KEYWORDS.is_empty());
+    }
+
+    #[test]
+    fn test_tool_keywords_empty_static() {
+        // Tools come from workspace bootstrap, not static
+        assert!(TOOL_KEYWORDS.is_empty());
+    }
+
+    #[test]
+    fn test_domain_keywords_empty_static() {
+        // Domain terms come from bootstrap + incremental discovery
+        assert!(DOMAIN_KEYWORDS.is_empty());
     }
 
     #[test]
@@ -356,7 +578,7 @@ mod tests {
             assert!(!kw.is_empty(), "Keyword cannot be empty");
             assert!(!kind.is_empty(), "Kind cannot be empty");
             assert!(!ctx.is_empty(), "Context cannot be empty");
-            // Most keywords should end with a space to avoid false positives like 'functional' matching 'fn'
+            // Most keywords should end with a space to avoid false positives
             if kw.len() <= 3 {
                 assert!(kw.ends_with(' '), "Short keyword '{}' must end with a space", kw);
             }
@@ -374,7 +596,7 @@ mod tests {
     #[test]
     fn test_no_duplicate_keywords_in_lists() {
         use std::collections::HashSet;
-        
+
         fn has_duplicates(list: &[&str]) -> bool {
             let mut seen = HashSet::new();
             for item in list {
@@ -388,5 +610,32 @@ mod tests {
         assert!(!has_duplicates(DECISION_KEYWORDS), "Duplicate in DECISION_KEYWORDS");
         assert!(!has_duplicates(ENVIRONMENT_KEYWORDS), "Duplicate in ENVIRONMENT_KEYWORDS");
         assert!(!has_duplicates(TODO_KEYWORDS), "Duplicate in TODO_KEYWORDS");
+        assert!(!has_duplicates(ARCHITECTURE_KEYWORDS), "Duplicate in ARCHITECTURE_KEYWORDS");
+        assert!(!has_duplicates(BUG_KEYWORDS), "Duplicate in BUG_KEYWORDS");
+        assert!(!has_duplicates(PREFERENCE_KEYWORDS), "Duplicate in PREFERENCE_KEYWORDS");
+        assert!(!has_duplicates(URGENCY_KEYWORDS), "Duplicate in URGENCY_KEYWORDS");
+    }
+
+    #[test]
+    fn test_environment_keywords_are_domain_independent() {
+        // No specific vendor/platform names in static list
+        for kw in ENVIRONMENT_KEYWORDS {
+            let lower = kw.to_lowercase();
+            assert!(
+                !["docker", "kubernetes", "k8s", "aws", "gcp", "azure",
+                  "github", "terraform", "ansible"].contains(&lower.as_str()),
+                "Domain-specific platform '{}' should not be in static ENVIRONMENT_KEYWORDS", kw
+            );
+        }
+    }
+
+    #[test]
+    fn test_valence_weights_in_range() {
+        for (kw, w) in NEGATIVE_VALENCE_KEYWORDS {
+            assert!(*w >= -1.0 && *w <= 0.0, "Negative valence '{}' weight {} out of range", kw, w);
+        }
+        for (kw, w) in POSITIVE_VALENCE_KEYWORDS {
+            assert!(*w >= 0.0 && *w <= 1.0, "Positive valence '{}' weight {} out of range", kw, w);
+        }
     }
 }

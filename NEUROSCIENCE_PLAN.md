@@ -255,67 +255,91 @@ In pruning: consolidated L2 entries whose Summary node has a valid embedding get
 
 ---
 
-## Change 9: Dynamic Keyword Bootstrapping (Workspace-Adaptive Lexicon)
+## Change 9: Three-Layer Adaptive Keyword System — DONE (702 tests)
 
-**Problem**: The keyword system relies heavily on hardcoded static arrays in `keywords.rs` — all software-engineering-centric. If Legend is used on a non-coding project (game design, writing, research), the keyword cache is filled with irrelevant terms like `fn `, `struct `, `pytest` while missing domain-specific vocabulary entirely. The `seed_tier1_keywords` function during `init` only seeds the static arrays + detected languages/tools; it never scans actual project content.
+**Problem**: The keyword system is hardcoded for software engineering. Domain-specific terms (tools, environments, code syntax) are mixed with domain-independent terms (decision markers, urgency signals). Non-code projects get irrelevant keywords while missing their domain vocabulary.
 
-**Files**: `src/commands/init.rs`, `src/memory/keyword_cache.rs`, new `src/memory/keyword_bootstrap.rs`
+**Brain analogy**: Layer 1 = innate reflexes (amygdala threat detection, reward circuits). Layer 2 = environmental imprinting (first exposure to workspace). Layer 3 = statistical language acquisition (terms learned through repeated exposure, like how infants learn word boundaries from transitional probabilities).
 
-**Current state**:
-- `seed_tier1_keywords(report)`: seeds static keyword arrays + language-specific code keywords + matching tool keywords from tech_stack
-- `seed_universal_keywords()`: seeds only static arrays (when no discovery report)
-- `KeywordCache::from_graph()`: builds cache from graph `kw:*` nodes, falls back to static arrays per empty category
-- `print_tier2_prompt()`: prints a manual KEYWORD: directive hint to stderr (rarely seen)
+### Sub-change 9A: Comprehensive Domain-Independent Static Keywords (Innate Layer) — DONE (656 tests)
+
+**Files**: `src/memory/keywords.rs`
 
 **Changes**:
-
-### Phase A: Content-Driven Keyword Extraction
-In new `src/memory/keyword_bootstrap.rs`:
-```rust
-pub fn bootstrap_keywords_from_workspace(report: &DiscoveryReport, memory: &mut MemoryState) -> usize
-```
-1. Read high-signal files from `report.high_signal_files` (README, docs, manifests, entry points)
-2. Extract recurring nouns/phrases using lightweight NLP heuristics:
-   - Term frequency across documents (TF threshold to filter noise)
-   - Capitalized multi-word phrases (proper nouns → likely domain entities)
-   - Heading text from markdown files (## headings = architecture/feature names)
-   - Dependency names from manifests (Cargo.toml, package.json, requirements.txt, etc.)
-   - Config key names from config files (.env.example, settings files)
-3. Classify extracted terms into categories using context heuristics:
-   - Terms from dependency manifests → `tool`
-   - Terms from README headings / feature descriptions → `architecture`
-   - Terms from CI/deployment configs → `environment`
-   - Recurring capitalized terms in code → `code` (with entity_kind/context metadata)
-   - Domain nouns that don't fit other categories → new `domain` category
-4. Seed as `kw:<category>:<term>` graph nodes with source_text metadata for traceability
-
-### Phase B: Domain Category
-Add new `domain` keyword category to `keywords.rs`, `KeywordCache`, `keyword_cache.rs`:
-- `DOMAIN_KEYWORDS: &[&str]` — initially empty (purely graph-driven)
-- `KeywordCache.domain: Vec<String>` — populated from graph only
-- Used in `compute_salience` and `compute_emotional_valence` as a neutral-weight signal
-- Allows Legend to learn project-specific vocabulary: game design terms, biology terms, etc.
-
-### Phase C: Incremental Learning During Ticks
-In `tick_impl`, after entity extraction:
-- If an extracted entity appears 3+ times across L2 entries but isn't in the keyword cache → auto-promote to a `kw:domain:<term>` graph node
-- Threshold-based self-expansion: the keyword system grows as the user works
-
-### Phase D: Workspace Re-scan Command
-Add `legend memory rescan` command:
-- Re-runs workspace discovery + bootstrap
-- Merges new keywords without removing user-added ones
-- Useful after major project changes (new dependencies, restructuring)
+- Expand all domain-independent keyword lists to be as comprehensive as possible
+- **Decision**: Add "therefore", "consequently", "given that", "alternatively", "in order to", "the reason", "we decided", "opted for", "ruled out", "considered", "approach", "strategy", "evaluated", "weighed", "concluded"
+- **Action**: Add "resolved", "migrated", "deprecated", "upgraded", "reverted", "optimized", "debugged", "deployed", "validated", "replaced", "consolidated", "addressed"
+- **Architecture**: Add "subsystem", "pipeline", "middleware", "handler", "registry", "dispatcher", "orchestrator", "facade", "boundary", "gateway", "adapter", "protocol", "schema"
+- **Bug**: Add "defect", "glitch", "fault", "anomaly", "deviation", "malfunction", "degradation", "inconsistency"
+- **Todo**: Add "remaining", "outstanding", "pending", "backlog", "deferred", "scheduled"
+- **Preference**: Add "convention", "standard", "rule", "guideline", "policy", "default to"
+- **Remove domain-specific entries** from static arrays: move language-specific code keywords (`fn `, `struct `, `def `, `class ` etc.), tool names (`react`, `postgres`, `tokio`), and environment names (`docker`, `kubernetes`) to be seeded only via Layer 2 (workspace bootstrap)
+- **Expand stopword list** for noise filtering in layer 3
 
 **Tests**:
-- Bootstrap from a fixture workspace with README.md + Cargo.toml → extracts project name, dependencies as tool keywords, README headings as architecture keywords
-- Bootstrap from a non-code project (markdown-only workspace) → extracts domain keywords from headings and recurring terms
-- Incremental learning: tick the same entity 3+ times → auto-promoted to domain keyword
-- `rescan` merges without duplicating existing keywords
-- Empty workspace → falls back to static arrays gracefully
-- Existing keyword_cache tests still pass
+- All existing keyword_cache tests pass (with adjusted expectations for removed domain-specific terms)
+- Static arrays contain no domain-specific tools/environments
+- Decision/action/bug/architecture categories are comprehensive
 
-**Value**: Legend becomes genuinely workspace-adaptive. A game designer gets keywords like "sprite", "tilemap", "collision"; a researcher gets "hypothesis", "methodology", "dataset". The hardcoded software keywords serve as a reasonable fallback but are no longer the ceiling.
+### Sub-change 9B: Domain Category + Workspace Bootstrap (Environmental Layer) — DONE (680 tests)
+
+**Files**: `src/memory/keyword_cache.rs`, `src/memory/keywords.rs`, new `src/memory/keyword_bootstrap.rs`, `src/commands/init.rs`
+
+**Changes**:
+- Add `domain: Vec<String>` category to `KeywordCache`
+- Add `DOMAIN_KEYWORDS: &[&str]` to keywords.rs (initially empty — purely graph-driven)
+- Wire `domain` into `compute_salience` as neutral-weight signal (+0.1)
+- Wire `domain` into `from_graph()` to populate from `kw:domain:*` nodes
+- New `src/memory/keyword_bootstrap.rs`:
+  ```rust
+  pub fn bootstrap_keywords_from_workspace(report: &DiscoveryReport, memory: &mut MemoryState) -> usize
+  ```
+  - Read high-signal files from `report.high_signal_files`
+  - Extract: dependency names → `tool`, markdown headings → `architecture`, recurring capitalized terms → `code`, config keys → `environment`, other recurring terms → `domain`
+  - Seed as `kw:<category>:<term>` graph nodes
+  - Also seed language-specific code keywords based on detected languages (moved from static Layer 1)
+- Call `bootstrap_keywords_from_workspace` during `init` after discovery
+- Add `legend memory rescan` command to re-run discovery + bootstrap
+
+**Tests**:
+- Bootstrap from fixture workspace extracts dependencies as tools, headings as architecture
+- Bootstrap seeds language-specific code keywords based on detected languages
+- Empty workspace falls back to static arrays gracefully
+- Rescan merges without duplicating existing keywords
+
+### Sub-change 9C: Incremental Discovery with Noise Reduction (Statistical Learning Layer) — DONE (702 tests)
+
+**Files**: `src/memory/mod.rs`, `src/memory/keyword_cache.rs`
+
+**Changes**:
+- Add `term_frequency: HashMap<String, TermStats>` to `MemoryState` (`#[serde(default)]`)
+  ```rust
+  struct TermStats {
+      tick_count: u32,      // distinct ticks this term appeared in
+      total_count: u32,     // total appearances
+      first_seen: u64,
+      last_seen: u64,
+  }
+  ```
+- In `tick_impl`, after entity extraction, update `term_frequency` for each extracted entity
+- **Noise reduction filters** (all 5 must pass for auto-promotion):
+  1. **Stopword exclusion** — term not in expanded stopword list
+  2. **Minimum tick spread** — `tick_count >= 5` (appeared in 5+ distinct ticks)
+  3. **Entity extraction gate** — only terms that pass through `extract_entities` (proper nouns, code identifiers, multi-word phrases)
+  4. **Co-occurrence with existing keywords** — term must have appeared in at least one tick that also contained a known keyword (ensures contextual relevance)
+  5. **Minimum information content** — term length >= 3 chars, not purely numeric
+- When all filters pass → auto-promote to `kw:domain:<term>` graph node
+- Rebuild keyword cache after promotion
+
+**Tests**:
+- Entity appearing in 5 distinct ticks gets auto-promoted to domain keyword
+- Entity in only 4 ticks does not get promoted
+- Stopwords never promoted regardless of frequency
+- Short terms (<3 chars) and pure numbers excluded
+- Entity that never co-occurs with existing keywords not promoted
+- Promoted term appears in rebuilt keyword cache
+
+**Value**: Legend becomes genuinely workspace-adaptive across all domains. Innate keyword instincts work immediately, workspace scanning provides domain context on first run, and statistical learning discovers new terms over time with strong noise filtering.
 
 ---
 
@@ -511,7 +535,9 @@ Track topic coherence in `tick_impl`:
 6. Pattern Completion            ← DONE (CA3 autoassociative recall, 622 tests)
 7. Synaptic Encoding             ← DONE (dual-timescale EMA, 634 tests passing)
 8. Systems Consolidation         ← DONE (centroid embeddings + L3 retrieval, 646 tests)
-9. Dynamic Keyword Bootstrap     ← no deps, benefits from init/discover
+9A. Comprehensive Static Keywords ← NEXT (innate layer, no deps)
+9B. Domain Category + Bootstrap   ← depends on 9A
+9C. Incremental Discovery         ← depends on 9A
 10. Brain-Region Modules         ← after all behavioral changes settle
 11. Terminology                  ← always last
 12. Emotional Consolidation      ← DONE (amygdala-driven, 605 tests passing)

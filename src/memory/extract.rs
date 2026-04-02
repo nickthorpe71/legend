@@ -464,12 +464,13 @@ mod tests {
 
     #[test]
     fn test_extract_environments() {
-        let entities = extract_entities("This issue only happens on wsl and docker.", &kw());
+        // Domain-independent environment terms are in static Layer 1
+        let entities = extract_entities("This issue only happens in production and staging.", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
-        assert!(labels.contains(&"wsl"));
-        assert!(labels.contains(&"docker"));
+        assert!(labels.contains(&"production"), "got: {:?}", labels);
+        assert!(labels.contains(&"staging"), "got: {:?}", labels);
         assert_eq!(
-            entities.iter().find(|e| e.label == "wsl").unwrap().kind,
+            entities.iter().find(|e| e.label == "production").unwrap().kind,
             "Environment"
         );
     }
@@ -477,28 +478,38 @@ mod tests {
     #[test]
     fn test_extract_expanded_actions_and_envs() {
         let entities = extract_entities(
-            "Investigating deploy failures in kubernetes. We rolled back in production.",
+            "Investigating deploy failures in production. We rolled back in staging.",
             &kw(),
         );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"investigating"), "got: {:?}", labels);
         assert!(labels.contains(&"rolled back"), "got: {:?}", labels);
-        assert!(labels.contains(&"kubernetes"), "got: {:?}", labels);
         assert!(labels.contains(&"production"), "got: {:?}", labels);
+        assert!(labels.contains(&"staging"), "got: {:?}", labels);
     }
 
     #[test]
-    fn test_extract_tools_dictionary() {
+    fn test_extract_tools_from_bootstrap() {
+        // Specific tool names (graphql, redis, etc.) are now seeded via Layer 2
+        // (workspace bootstrap). With an empty static tool list, they extract as Terms.
         let entities = extract_entities(
             "We moved services to graphql + redis and added prometheus dashboards.",
             &kw(),
         );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
-        assert!(labels.contains(&"graphql"), "got: {:?}", labels);
-        assert!(labels.contains(&"redis"), "got: {:?}", labels);
-        assert!(labels.contains(&"prometheus"), "got: {:?}", labels);
+        // Terms still get extracted as entities, just not classified as "Tool" without bootstrap
+        assert!(labels.contains(&"graphql") || labels.contains(&"redis") || labels.contains(&"prometheus"),
+            "domain terms should still be extracted, got: {:?}", labels);
+
+        // With a bootstrapped cache, they'd be classified as Tool
+        let mut bootstrapped_kw = kw();
+        bootstrapped_kw.tool = vec!["graphql".into(), "redis".into(), "prometheus".into()];
+        let entities2 = extract_entities(
+            "We moved services to graphql + redis and added prometheus dashboards.",
+            &bootstrapped_kw,
+        );
         assert_eq!(
-            entities.iter().find(|e| e.label == "graphql").unwrap().kind,
+            entities2.iter().find(|e| e.label == "graphql").unwrap().kind,
             "Tool"
         );
     }

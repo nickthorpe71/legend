@@ -129,13 +129,24 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
         score += 0.3;
     }
 
-    // Code references
-    if text.contains("```")
-        || kw.code
-            .iter()
-            .any(|(trigger, _, _)| lowered.contains(trigger.trim()))
-    {
+    // Domain-specific vocabulary (learned from workspace)
+    if !kw.domain.is_empty() && kw.domain.iter().any(|k| lowered.contains(k.as_str())) {
+        score += 0.1;
+    }
+
+    // Code references — distinguish definitions from mere mentions
+    if text.contains("```") {
         score += 0.15;
+    }
+    let code_def_hits = kw.code
+        .iter()
+        .filter(|(trigger, _, _)| lowered.contains(trigger.as_str()))
+        .count();
+    if code_def_hits >= 2 {
+        // Multiple code definitions (e.g. "fn foo uses struct Bar") — high signal
+        score += 0.3;
+    } else if code_def_hits == 1 {
+        score += 0.2;
     }
 
     // Substantive text (not too short)
