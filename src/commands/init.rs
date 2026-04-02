@@ -1,5 +1,6 @@
 use crate::cli::{parse_args, print_command_help, CommandDef};
 use crate::commands::discover;
+use crate::memory::keyword_bootstrap;
 use crate::memory::MemoryState;
 use crate::memory::keywords;
 use serde_json::{json, Value};
@@ -37,6 +38,31 @@ pub fn handle_init(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std:
             if let Ok(report) = discover::run_discovery(Path::new(".")) {
                 let _ = discover::onboard_project(Path::new("."), &report);
                 println!("✓ Project onboarding complete. High-signal context ingested into Legend.");
+                // Re-bootstrap workspace keywords from fresh discovery
+                if let Ok(mut memory) = MemoryState::load_or_default() {
+                    let high_signal: Vec<(String, String)> = report
+                        .high_signal_files
+                        .iter()
+                        .map(|f| (f.path.clone(), f.kind.clone()))
+                        .collect();
+                    let languages: Vec<(String, usize)> = report
+                        .languages
+                        .iter()
+                        .map(|(k, v)| (k.clone(), *v))
+                        .collect();
+                    let br = keyword_bootstrap::bootstrap_keywords_from_workspace(
+                        Path::new("."),
+                        &high_signal,
+                        &languages,
+                        &report.metadata.tech_stack,
+                        &mut memory,
+                    );
+                    if br.total > 0 {
+                        memory.rebuild_keyword_cache();
+                        let _ = memory.save();
+                        println!("✓ Bootstrapped {} workspace keywords", br.total);
+                    }
+                }
             }
         }
 
@@ -840,43 +866,6 @@ fn setup_zed_mcp() -> Result<(), Box<dyn std::error::Error>> {
 // Keyword Seeding
 // ---------------------------------------------------------------------------
 
-/// Language → code keywords mapping for tier-1 seeding.
-fn language_code_keywords(lang: &str) -> Vec<(&'static str, &'static str, &'static str)> {
-    match lang.to_lowercase().as_str() {
-        "rust" => vec![
-            ("fn ", "Function", "defines"),
-            ("struct ", "Struct", "defines"),
-            ("impl ", "Impl", "implements"),
-            ("trait ", "Trait", "defines"),
-            ("enum ", "Enum", "defines"),
-            ("mod ", "Module", "defines"),
-        ],
-        "python" => vec![
-            ("def ", "Function", "defines"),
-            ("class ", "Class", "defines"),
-        ],
-        "javascript" | "typescript" => vec![
-            ("function ", "Function", "defines"),
-            ("interface ", "Interface", "defines"),
-            ("export ", "Export", "defines"),
-            ("import ", "Import", "uses"),
-            ("const ", "Symbol", "defines"),
-            ("let ", "Symbol", "defines"),
-        ],
-        "go" => vec![
-            ("func ", "Function", "defines"),
-            ("package ", "Package", "defines"),
-        ],
-        "ruby" | "php" => vec![
-            ("module ", "Module", "defines"),
-            ("require ", "Import", "uses"),
-            ("class ", "Class", "defines"),
-            ("def ", "Function", "defines"),
-        ],
-        _ => Vec::new(),
-    }
-}
-
 /// Seed tier-1 keywords from discovery report (no LLM needed).
 ///
 /// Seeds universal keywords (decision, bug, todo, etc.) from static arrays,
@@ -928,40 +917,27 @@ fn seed_tier1_keywords(report: &discover::DiscoveryReport) {
         }
     }
 
-    // 3. Seed language-specific CODE_KEYWORDS based on detected languages
-    let detected_languages: Vec<String> = report
+    // 3. Workspace bootstrap — environmental imprinting layer
+    //    Seeds: dependencies → tools, doc headings → architecture,
+    //    recurring terms → domain, language code keywords, config keys → environment
+    let high_signal: Vec<(String, String)> = report
+        .high_signal_files
+        .iter()
+        .map(|f| (f.path.clone(), f.kind.clone()))
+        .collect();
+    let languages: Vec<(String, usize)> = report
         .languages
         .iter()
-        .filter(|(_, &count)| count > 0)
-        .map(|(lang, _)| lang.clone())
+        .map(|(k, v)| (k.clone(), *v))
         .collect();
-
-    for lang in &detected_languages {
-        for (trigger, kind, ctx) in language_code_keywords(lang) {
-            let metadata = vec![
-                format!("entity_kind:{}", kind),
-                format!("entity_context:{}", ctx),
-            ];
-            if memory.add_keyword_node("code", trigger, metadata) {
-                count += 1;
-            }
-        }
-    }
-
-    // 4. Seed TOOL_KEYWORDS that match detected tech stack
-    let tech_lower: Vec<String> = report
-        .metadata
-        .tech_stack
-        .iter()
-        .map(|t| t.to_lowercase())
-        .collect();
-    for kw in keywords::TOOL_KEYWORDS {
-        if tech_lower.iter().any(|t| t.contains(kw)) {
-            if memory.add_keyword_node("tool", kw, Vec::new()) {
-                count += 1;
-            }
-        }
-    }
+    let bootstrap_result = keyword_bootstrap::bootstrap_keywords_from_workspace(
+        Path::new("."),
+        &high_signal,
+        &languages,
+        &report.metadata.tech_stack,
+        &mut memory,
+    );
+    count += bootstrap_result.total;
 
     if count > 0 {
         memory.rebuild_keyword_cache();
@@ -969,6 +945,18 @@ fn seed_tier1_keywords(report: &discover::DiscoveryReport) {
             eprintln!("  Warning: failed to save keyword seeds: {}", e);
         } else {
             println!("✓ Seeded {} keyword nodes into knowledge graph", count);
+            if bootstrap_result.total > 0 {
+                println!(
+                    "  ({} innate + {} workspace: {} tools, {} architecture, {} domain, {} code, {} env)",
+                    count - bootstrap_result.total,
+                    bootstrap_result.total,
+                    bootstrap_result.tools,
+                    bootstrap_result.architecture,
+                    bootstrap_result.domain,
+                    bootstrap_result.code,
+                    bootstrap_result.environment,
+                );
+            }
         }
     }
 }

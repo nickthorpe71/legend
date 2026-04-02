@@ -2,6 +2,7 @@ pub mod amygdala;
 pub mod dentate_gyrus;
 pub mod embed;
 pub mod extract;
+pub mod keyword_bootstrap;
 pub mod keyword_cache;
 pub mod keywords;
 pub mod summarize;
@@ -129,6 +130,48 @@ const REPLAY_EDGE_BOOST: f32 = 0.08;
 /// Salience boost for entries that participate in replay.
 const REPLAY_SALIENCE_BOOST: f32 = 0.02;
 
+/// Layer 3 incremental keyword discovery: minimum distinct ticks a term must
+/// appear in before it can be auto-promoted to a keyword graph node.
+const TERM_PROMOTION_MIN_TICKS: u32 = 5;
+/// Minimum character length for auto-promoted terms.
+const TERM_PROMOTION_MIN_LEN: usize = 3;
+
+/// Stopwords excluded from Layer 3 keyword auto-promotion.
+/// Common English words that carry no domain-specific information.
+const STOPWORDS: &[&str] = &[
+    // Articles & determiners
+    "a", "an", "the", "this", "that", "these", "those",
+    // Pronouns
+    "i", "me", "my", "we", "us", "our", "you", "your", "he", "she", "it",
+    "him", "her", "his", "its", "they", "them", "their",
+    // Prepositions
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "up", "about",
+    "into", "through", "during", "before", "after", "above", "below", "between",
+    "under", "over", "out",
+    // Conjunctions
+    "and", "but", "or", "nor", "so", "yet", "both", "either", "neither",
+    // Common verbs
+    "is", "am", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "can", "could", "must",
+    "get", "got", "make", "made", "go", "went", "gone",
+    "say", "said", "see", "saw", "know", "knew", "think", "thought",
+    "come", "came", "take", "took", "give", "gave", "tell", "told",
+    // Common adverbs
+    "not", "no", "very", "just", "also", "then", "now", "here", "there",
+    "when", "where", "how", "what", "which", "who", "whom", "why",
+    "all", "each", "every", "some", "any", "many", "much", "more", "most",
+    "other", "only", "own", "same", "than", "too", "well", "still",
+    // Common adjectives
+    "new", "old", "good", "bad", "big", "small", "long", "short",
+    "first", "last", "next", "few", "little",
+    // Misc high-frequency
+    "one", "two", "like", "time", "way", "thing", "even", "back",
+    "people", "work", "day", "part", "case", "point",
+    "need", "want", "try", "use", "used", "using", "set", "let",
+    "etc", "e.g", "i.e",
+];
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -164,6 +207,24 @@ impl Default for MemoryConfig {
     }
 }
 
+/// Frequency statistics for a term observed during ticks.
+/// Used by Layer 3 (statistical learning) to decide when to auto-promote
+/// a recurring entity into the keyword graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermStats {
+    /// Number of distinct ticks this term appeared in.
+    pub tick_count: u32,
+    /// Total number of appearances across all ticks.
+    pub total_count: u32,
+    /// Clock value when first seen.
+    pub first_seen: u64,
+    /// Clock value when last seen.
+    pub last_seen: u64,
+    /// Whether this term has co-occurred with an existing keyword.
+    #[serde(default)]
+    pub has_keyword_cooccurrence: bool,
+}
+
 /// Three-layer memory: working memory buffer, short-term vector store, long-term knowledge graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -196,6 +257,11 @@ pub struct MemoryState {
     /// Embedding of the most recent tick, for context-switch detection.
     #[serde(default)]
     pub last_tick_embedding: Vec<f32>,
+    /// Layer 3: term frequency tracking for incremental keyword discovery.
+    /// Maps entity label → usage statistics. Terms that pass noise filters
+    /// are auto-promoted to `kw:domain:<term>` graph nodes.
+    #[serde(default)]
+    pub term_frequency: HashMap<String, TermStats>,
     /// Dynamic keyword cache populated from graph + static fallbacks.
     #[serde(skip)]
     pub keyword_cache: keyword_cache::KeywordCache,
@@ -610,6 +676,7 @@ impl Default for MemoryState {
             last_synced_sha: None,
             recent_valence_sum: 0.0,
             last_tick_embedding: Vec::new(),
+            term_frequency: HashMap::new(),
             keyword_cache: keyword_cache::KeywordCache::default_from_static(),
         }
     }
@@ -910,6 +977,117 @@ impl MemoryState {
         self.keyword_cache = keyword_cache::KeywordCache::from_graph(&self.long_term);
     }
 
+    /// Layer 3: Update term frequency stats and auto-promote terms that pass
+    /// all noise filters to `kw:domain:<term>` graph nodes.
+    ///
+    /// Called from `tick_impl` after entity extraction. Returns the number of
+    /// newly promoted keywords.
+    fn update_term_frequencies(&mut self, text: &str) -> usize {
+        let entities = extract_entities(text, &self.keyword_cache);
+        if entities.is_empty() {
+            return 0;
+        }
+
+        // Check if this tick contains any existing keyword matches (for co-occurrence filter)
+        let lowered = text.to_lowercase();
+        let has_existing_keyword = self.keyword_cache.decision.iter().any(|k| lowered.contains(k.as_str()))
+            || self.keyword_cache.bug.iter().any(|k| lowered.contains(k.as_str()))
+            || self.keyword_cache.todo.iter().any(|k| lowered.contains(k.as_str()))
+            || self.keyword_cache.architecture.iter().any(|k| lowered.contains(k.as_str()))
+            || self.keyword_cache.preference.iter().any(|k| lowered.contains(k.as_str()))
+            || self.keyword_cache.tool.iter().any(|k| lowered.contains(k.as_str()))
+            || self.keyword_cache.domain.iter().any(|k| lowered.contains(k.as_str()));
+
+        let clock = self.clock;
+        for entity in &entities {
+            let label = entity.label.to_lowercase();
+
+            let stats = self.term_frequency.entry(label.clone()).or_insert(TermStats {
+                tick_count: 0,
+                total_count: 0,
+                first_seen: clock,
+                last_seen: clock,
+                has_keyword_cooccurrence: false,
+            });
+
+            // Only increment tick_count if this is a new tick for this term
+            if stats.last_seen < clock {
+                stats.tick_count += 1;
+            }
+            stats.total_count += 1;
+            stats.last_seen = clock;
+
+            // Filter 4: Co-occurrence — mark if this tick has existing keywords
+            if has_existing_keyword {
+                stats.has_keyword_cooccurrence = true;
+            }
+        }
+
+        // Check for promotions
+        let mut promoted = 0;
+        let candidates: Vec<String> = self
+            .term_frequency
+            .iter()
+            .filter(|(_, stats)| stats.tick_count >= TERM_PROMOTION_MIN_TICKS)
+            .map(|(label, _)| label.clone())
+            .collect();
+
+        for label in candidates {
+            if self.should_promote_term(&label) {
+                if self.add_keyword_node("domain", &label, Vec::new()) {
+                    promoted += 1;
+                }
+            }
+        }
+
+        if promoted > 0 {
+            self.rebuild_keyword_cache();
+        }
+
+        promoted
+    }
+
+    /// Check if a term passes all 5 noise filters for auto-promotion.
+    fn should_promote_term(&self, term: &str) -> bool {
+        // Already a keyword?
+        let label = format!("kw:domain:{}", term);
+        if self.long_term.index.contains_key(&label) {
+            return false;
+        }
+
+        // Filter 5: Minimum information content — 3+ chars, not purely numeric
+        if term.len() < TERM_PROMOTION_MIN_LEN {
+            return false;
+        }
+        if term.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-') {
+            return false;
+        }
+
+        // Filter 1: Stopword exclusion
+        if STOPWORDS.contains(&term) {
+            return false;
+        }
+
+        // Filter 2: Minimum tick spread (checked before calling, but verify)
+        let stats = match self.term_frequency.get(term) {
+            Some(s) => s,
+            None => return false,
+        };
+        if stats.tick_count < TERM_PROMOTION_MIN_TICKS {
+            return false;
+        }
+
+        // Filter 3: Entity extraction gate — already passed (only extracted entities
+        // enter term_frequency, so this is inherently satisfied)
+
+        // Filter 4: Co-occurrence with existing keywords
+        if !stats.has_keyword_cooccurrence {
+            return false;
+        }
+
+        true
+    }
+
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         save_memory(self)
     }
@@ -1082,6 +1260,11 @@ impl MemoryState {
                 result_matched = None;
                 result_similarity = None;
             }
+        }
+
+        // Layer 3: update term frequency stats and auto-promote recurring entities
+        if !passive {
+            self.update_term_frequencies(text);
         }
 
         self.prune_short_term();
@@ -3162,6 +3345,7 @@ fn migrate_v5(v5: MemoryStateV5) -> MemoryState {
         last_synced_sha: v5.last_synced_sha,
         recent_valence_sum: 0.0,
         last_tick_embedding: Vec::new(),
+        term_frequency: HashMap::new(),
         keyword_cache: keyword_cache::KeywordCache::default(),
     }
 }
@@ -3248,6 +3432,7 @@ fn migrate_v4(v4: MemoryStateV4) -> MemoryState {
         last_synced_sha: v4.last_synced_sha,
         recent_valence_sum: 0.0,
         last_tick_embedding: Vec::new(),
+        term_frequency: HashMap::new(),
         keyword_cache: keyword_cache::KeywordCache::default(),
     }
 }
@@ -3420,6 +3605,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             last_synced_sha: v3.last_synced_sha,
             recent_valence_sum: 0.0,
             last_tick_embedding: Vec::new(),
+            term_frequency: HashMap::new(),
             keyword_cache: keyword_cache::KeywordCache::default(),
         }
     } else if let Ok(v2) = bincode::deserialize::<MemoryStateV2>(&serialized) {
@@ -3467,6 +3653,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
             last_synced_sha: None,
             recent_valence_sum: 0.0,
             last_tick_embedding: Vec::new(),
+            term_frequency: HashMap::new(),
             keyword_cache: keyword_cache::KeywordCache::default(),
         }
     } else {
@@ -3506,6 +3693,7 @@ fn migrate_corrupt_backup() -> Result<Option<MemoryState>, Box<dyn std::error::E
                 last_synced_sha: None,
                 recent_valence_sum: 0.0,
                 last_tick_embedding: Vec::new(),
+                term_frequency: HashMap::new(),
                 keyword_cache: keyword_cache::KeywordCache::default(),
             },
             Err(_) => {
@@ -6805,5 +6993,166 @@ mod tests {
             "consolidated entry backed by L3 should be evicted first, remaining: {:?}", remaining_ids);
         assert!(remaining_ids.contains(&2),
             "unconsolidated entry should survive");
+    }
+
+    // -----------------------------------------------------------------------
+    // Layer 3: Incremental keyword discovery
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_term_frequency_tracking_basic() {
+        let mut state = MemoryState::default();
+        // Tick with an entity that extract_entities will find
+        state.tick("DECISION: fn process_data() handles struct Config");
+        assert!(!state.term_frequency.is_empty(), "term_frequency should track extracted entities");
+    }
+
+    #[test]
+    fn test_term_frequency_increments_across_ticks() {
+        let mut state = MemoryState::default();
+        // Tick the same entity across multiple ticks
+        for i in 0..5 {
+            state.tick(&format!("DECISION: process_data handles request batch {}", i));
+        }
+        // "process_data" should have tick_count >= 1 (it appears in entity extraction)
+        let has_multi_tick = state.term_frequency.values().any(|s| s.tick_count >= 2);
+        assert!(has_multi_tick, "repeated entities should have multiple tick counts: {:?}",
+            state.term_frequency.iter().map(|(k, v)| (k.clone(), v.tick_count)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_term_not_promoted_before_min_ticks() {
+        let mut state = MemoryState::default();
+        // Tick entity only 3 times (below TERM_PROMOTION_MIN_TICKS of 5)
+        for i in 0..3 {
+            state.tick(&format!("DECISION: CustomWidget renders component {}", i));
+        }
+        // Should NOT have a kw:domain:customwidget node
+        assert!(
+            !state.long_term.index.contains_key("kw:domain:customwidget"),
+            "term should not be promoted before min ticks"
+        );
+    }
+
+    #[test]
+    fn test_term_promoted_after_sufficient_ticks() {
+        let mut state = MemoryState::default();
+        // Seed a code keyword so entities can be extracted from "fn CustomProcessor()"
+        state.add_keyword_node("code", "fn ", vec![
+            "entity_kind:Function".to_string(),
+            "entity_context:defines".to_string(),
+        ]);
+        state.rebuild_keyword_cache();
+
+        // Tick entity 7 times with keyword co-occurrence (DECISION provides co-occurrence)
+        for i in 0..7 {
+            state.tick(&format!("DECISION: fn CustomProcessor() handles batch {}", i));
+        }
+
+        // "customprocessor" should be in term_frequency with sufficient tick_count
+        let stats = state.term_frequency.get("customprocessor");
+        assert!(
+            stats.is_some(),
+            "CustomProcessor should be tracked; keys: {:?}",
+            state.term_frequency.keys().collect::<Vec<_>>()
+        );
+        if let Some(s) = stats {
+            assert!(
+                s.tick_count >= TERM_PROMOTION_MIN_TICKS,
+                "tick_count={} should be >= {}",
+                s.tick_count,
+                TERM_PROMOTION_MIN_TICKS
+            );
+            assert!(s.has_keyword_cooccurrence, "should have keyword co-occurrence");
+        }
+
+        // Should be auto-promoted to kw:domain:customprocessor
+        assert!(
+            state.long_term.index.contains_key("kw:domain:customprocessor"),
+            "term should be auto-promoted after passing all filters; graph keys with kw:domain: {:?}",
+            state.long_term.index.keys().filter(|k| k.starts_with("kw:domain:")).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_stopword_not_promoted() {
+        let mut state = MemoryState::default();
+        // Even if "the" appeared many times it should never be promoted
+        assert!(!state.should_promote_term("the"));
+        assert!(!state.should_promote_term("is"));
+        assert!(!state.should_promote_term("and"));
+    }
+
+    #[test]
+    fn test_short_term_not_promoted() {
+        let mut state = MemoryState::default();
+        // Terms shorter than 3 chars should not be promoted
+        assert!(!state.should_promote_term("ab"));
+        assert!(!state.should_promote_term("x"));
+    }
+
+    #[test]
+    fn test_numeric_term_not_promoted() {
+        let mut state = MemoryState::default();
+        // Purely numeric terms should not be promoted
+        assert!(!state.should_promote_term("12345"));
+        assert!(!state.should_promote_term("3.14"));
+    }
+
+    #[test]
+    fn test_co_occurrence_required_for_promotion() {
+        let mut state = MemoryState::default();
+        // Manually insert term stats WITHOUT co-occurrence
+        state.term_frequency.insert(
+            "orphanterm".to_string(),
+            TermStats {
+                tick_count: 10,
+                total_count: 20,
+                first_seen: 1,
+                last_seen: 10,
+                has_keyword_cooccurrence: false,
+            },
+        );
+        assert!(
+            !state.should_promote_term("orphanterm"),
+            "term without keyword co-occurrence should not promote"
+        );
+
+        // Now set co-occurrence
+        state.term_frequency.get_mut("orphanterm").unwrap().has_keyword_cooccurrence = true;
+        assert!(
+            state.should_promote_term("orphanterm"),
+            "term WITH keyword co-occurrence and sufficient ticks should promote"
+        );
+    }
+
+    #[test]
+    fn test_already_promoted_term_not_duplicated() {
+        let mut state = MemoryState::default();
+        // Pre-add the keyword
+        state.add_keyword_node("domain", "existingterm", Vec::new());
+        // should_promote_term should return false
+        assert!(!state.should_promote_term("existingterm"));
+    }
+
+    #[test]
+    fn test_passive_ticks_dont_update_term_frequency() {
+        let mut state = MemoryState::default();
+        // Passive tick (used during onboarding/ingestion)
+        state.tick_passive("DECISION: fn SpecialHandler() processes important data");
+        // term_frequency should be empty — passive ticks skip Layer 3
+        assert!(
+            state.term_frequency.is_empty(),
+            "passive ticks should not update term_frequency"
+        );
+    }
+
+    #[test]
+    fn test_term_stats_serialization_compat() {
+        // TermStats should deserialize with defaults for missing fields
+        let json = r#"{"tick_count":5,"total_count":10,"first_seen":1,"last_seen":5}"#;
+        let stats: TermStats = serde_json::from_str(json).unwrap();
+        assert_eq!(stats.tick_count, 5);
+        assert!(!stats.has_keyword_cooccurrence); // default false
     }
 }

@@ -6,7 +6,7 @@
 
 use super::keywords::{
     ACTION_KEYWORDS, ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, CODE_KEYWORDS, DECISION_KEYWORDS,
-    ENVIRONMENT_KEYWORDS, NEGATIVE_VALENCE_KEYWORDS, POSITIVE_VALENCE_KEYWORDS,
+    DOMAIN_KEYWORDS, ENVIRONMENT_KEYWORDS, NEGATIVE_VALENCE_KEYWORDS, POSITIVE_VALENCE_KEYWORDS,
     PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS, URGENCY_KEYWORDS,
 };
 use super::GraphMemory;
@@ -30,6 +30,8 @@ pub struct KeywordCache {
     pub positive_valence: Vec<(String, f32)>,
     /// Urgency keywords that amplify emotional magnitude.
     pub urgency: Vec<String>,
+    /// Domain-specific keywords learned from workspace (Layer 2/3).
+    pub domain: Vec<String>,
 }
 
 impl Default for KeywordCache {
@@ -66,6 +68,7 @@ impl KeywordCache {
                 .map(|(kw, w)| (kw.to_string(), *w))
                 .collect(),
             urgency: URGENCY_KEYWORDS.iter().map(|s| s.to_string()).collect(),
+            domain: DOMAIN_KEYWORDS.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -86,6 +89,7 @@ impl KeywordCache {
             negative_valence: Vec::new(),
             positive_valence: Vec::new(),
             urgency: Vec::new(),
+            domain: Vec::new(),
         };
 
         for node in graph.nodes.values() {
@@ -116,6 +120,7 @@ impl KeywordCache {
                         cache.positive_valence.push((term.to_string(), weight));
                     }
                     "urgency" => cache.urgency.push(term.to_string()),
+                    "domain" => cache.domain.push(term.to_string()),
                     _ => {} // Unknown category, skip
                 }
             }
@@ -175,6 +180,9 @@ impl KeywordCache {
         if self.urgency.is_empty() {
             self.urgency = URGENCY_KEYWORDS.iter().map(|s| s.to_string()).collect();
         }
+        if self.domain.is_empty() {
+            self.domain = DOMAIN_KEYWORDS.iter().map(|s| s.to_string()).collect();
+        }
     }
 }
 
@@ -231,7 +239,9 @@ mod tests {
         assert!(!cache.decision.is_empty());
         assert!(!cache.action.is_empty());
         assert!(!cache.environment.is_empty());
-        assert!(!cache.tool.is_empty());
+        // tool and domain are intentionally empty in static — populated via Layer 2/3
+        assert!(cache.tool.is_empty(), "static tools should be empty");
+        assert!(cache.domain.is_empty(), "static domain should be empty");
         assert!(!cache.architecture.is_empty());
         assert!(!cache.bug.is_empty());
         assert!(!cache.todo.is_empty());
