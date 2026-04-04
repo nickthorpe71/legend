@@ -18,7 +18,6 @@ fn help_output_is_stable() {
 
         Commands:
           memory [start|tick|query|...] Hierarchical memory (context, decisions, history)
-          llm [signals|task|apply|...]  Policy-driven LLM task orchestration and validation
           discover [path]               Scan project to suggest features and context
           init                          Initialize Legend in a new project
           mcp-serve                     Run MCP stdio server for AI tool integration

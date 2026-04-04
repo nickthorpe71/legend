@@ -67,56 +67,6 @@ static MEMORY: CommandDef = CommandDef {
     children: &[&MEMORY_START, &MEMORY_TICK, &MEMORY_QUERY, &MEMORY_SESSIONS],
 };
 
-// -- legend llm subcommands --
-static LLM_TASK: CommandDef = CommandDef {
-    name: "task",
-    about: "Create a typed LLM task payload",
-    usage: "legend llm task <kind> [--text <text>] [--input-json <json>] [--source <label>]",
-    flags: &[
-        FlagDef { long: "--input-json", short: None, about: "JSON input payload", takes_value: true },
-        FlagDef { long: "--text", short: None, about: "Text input", takes_value: true },
-        FlagDef { long: "--source", short: None, about: "Source label", takes_value: true },
-    ],
-    positionals: &[],
-    children: &[],
-};
-static LLM_APPLY: CommandDef = CommandDef {
-    name: "apply",
-    about: "Validate and apply a model result",
-    usage: "legend llm apply <task_id> [--result <json>]",
-    flags: &[
-        FlagDef { long: "--result", short: None, about: "JSON result payload", takes_value: true },
-    ],
-    positionals: &[],
-    children: &[],
-};
-static LLM_LIST: CommandDef = CommandDef {
-    name: "list",
-    about: "Show recent LLM tasks",
-    usage: "legend llm list [limit]",
-    flags: &[],
-    positionals: &[],
-    children: &[],
-};
-static LLM_SHOW: CommandDef = CommandDef {
-    name: "show",
-    about: "Show full task record",
-    usage: "legend llm show <task_id>",
-    flags: &[],
-    positionals: &[],
-    children: &[],
-};
-
-// -- legend llm --
-static LLM: CommandDef = CommandDef {
-    name: "llm",
-    about: "Policy-driven LLM task orchestration and validation",
-    usage: "legend llm <subcommand> [options]",
-    flags: &[],
-    positionals: &[],
-    children: &[&LLM_TASK, &LLM_APPLY, &LLM_LIST, &LLM_SHOW],
-};
-
 // -- leaf commands --
 static DISCOVER: CommandDef = CommandDef {
     name: "discover",
@@ -198,11 +148,6 @@ static COMMANDS: &[TopCommand] = &[
         def: &MEMORY,
         usage_hint: "memory [start|tick|query|...]",
         handler: commands::memory::handle_memory,
-    },
-    TopCommand {
-        def: &LLM,
-        usage_hint: "llm [signals|task|apply|...]",
-        handler: commands::llm::handle_llm,
     },
     TopCommand {
         def: &DISCOVER,

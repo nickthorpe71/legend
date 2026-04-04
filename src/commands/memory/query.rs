@@ -77,7 +77,7 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
             serde_json::json!({
                 "id": m.id,
                 "text": m.text,
-                "similarity": (m.similarity * 1000.0).round() / 1000.0,
+                "similarity": crate::tool::round3(m.similarity),
                 "reason": "matched in working memory (L1), rehearsal incremented",
             })
         })
@@ -99,7 +99,7 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
             serde_json::json!({
                 "id": m.id,
                 "text": m.text,
-                "similarity": (m.similarity * 1000.0).round() / 1000.0,
+                "similarity": crate::tool::round3(m.similarity),
                 "reason": reason,
             })
         })
@@ -121,7 +121,7 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
                 "id": n.id,
                 "label": n.label,
                 "kind": n.kind,
-                "weight": (n.weight * 1000.0).round() / 1000.0,
+                "weight": crate::tool::round3(n.weight),
                 "reason": reason,
             })
         })

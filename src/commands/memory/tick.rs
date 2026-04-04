@@ -1,7 +1,6 @@
 use super::event_log::*;
 use super::helpers::*;
 use crate::cli::{parse_args, CommandDef};
-use crate::commands::llm::{auto_trigger_for_text, LlmAutoTriggerSummary};
 use crate::memory::TickResult;
 
 struct TickOptions {
@@ -138,15 +137,8 @@ pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<d
             .collect(),
     });
     log_event_rich("tick", text.trim(), Some(event_data));
-    let llm_trigger = match auto_trigger_for_text(text.trim(), "memory_tick", Some(memory.brain.clock)) {
-        Ok(summary) => Some(summary),
-        Err(err) => {
-            eprintln!("[llm auto-trigger skipped: {}]", err);
-            None
-        }
-    };
 
-    print_tick_result(&tick_result, llm_trigger);
+    print_tick_result(&tick_result);
 
     if text.trim().to_uppercase().starts_with("ARCHITECTURE:") {
         append_to_architecture_md(text.trim());
@@ -180,11 +172,10 @@ pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<d
     Ok(())
 }
 
-fn print_tick_result(result: &TickResult, llm_trigger: Option<LlmAutoTriggerSummary>) {
+fn print_tick_result(result: &TickResult) {
     let output = serde_json::json!({
         "action": result.action,
         "entry_id": result.entry_id,
-        "llm_trigger": llm_trigger,
     });
     let json = serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string());
     println!("{}", json);

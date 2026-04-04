@@ -152,6 +152,14 @@ impl KeywordCache {
         1 // unknown kind = lowest priority
     }
 
+    /// Check if the given (lowercased) text matches any classification keyword.
+    pub fn matches_any_category(&self, text: &str) -> bool {
+        [&self.decision, &self.bug, &self.todo, &self.architecture,
+         &self.preference, &self.tool, &self.domain]
+            .iter()
+            .any(|list| list.iter().any(|k| text.contains(k.as_str())))
+    }
+
     /// Fill empty categories from static `keywords.rs` arrays.
     pub fn apply_fallbacks(&mut self) {
         if self.code.is_empty() {
