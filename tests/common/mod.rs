@@ -244,6 +244,9 @@ pub struct FixtureShortTermEntry {
     pub gradient_sq_sum: f32,
     pub density: f32,
     pub consolidated: bool,
+    pub emotional_valence: f32,
+    pub stability: f32,
+    pub last_retrieval_interval: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -260,6 +263,7 @@ pub struct FixtureShortTermEntryMissingConsolidated {
     pub refs: Vec<FixtureMemoryRef>,
     pub gradient_sq_sum: f32,
     pub density: f32,
+    // Note: `consolidated` intentionally missing — tests deserialization with missing field
 }
 
 #[derive(Clone, Serialize)]
@@ -302,7 +306,7 @@ pub fn write_bincode_memory_fixture(harness: &Harness) {
     let state = FixtureMemoryState {
         config: FixtureMemoryConfig::default(),
         immediate: VecDeque::new(),
-        short_term: vec![FixtureShortTermEntry {
+        short_term: vec![FixtureShortTermEntryMissingConsolidated {
             id: 5,
             text: "bincode entry".into(),
             summary: "bincode entry".into(),
@@ -315,7 +319,6 @@ pub fn write_bincode_memory_fixture(harness: &Harness) {
             refs: vec![],
             gradient_sq_sum: 0.0,
             density: 0.0,
-            consolidated: false,
         }],
         long_term: FixtureGraphMemory::default(),
         clock: 99,
@@ -396,6 +399,9 @@ pub fn write_consolidation_fixture(harness: &Harness) {
                 gradient_sq_sum: 0.0,
                 density: 0.0,
                 consolidated: false,
+                emotional_valence: 0.0,
+                stability: 1.0,
+                last_retrieval_interval: 0,
             },
             FixtureShortTermEntry {
                 id: 2,
@@ -411,6 +417,9 @@ pub fn write_consolidation_fixture(harness: &Harness) {
                 gradient_sq_sum: 0.0,
                 density: 0.0,
                 consolidated: false,
+                emotional_valence: 0.0,
+                stability: 1.0,
+                last_retrieval_interval: 0,
             },
         ],
         long_term: FixtureGraphMemory::default(),

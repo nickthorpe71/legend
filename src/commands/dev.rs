@@ -1,5 +1,4 @@
-use crate::memory::extract::is_stopword;
-use crate::memory::MemoryState;
+use crate::memory::wernicke::is_stopword;
 use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
@@ -32,17 +31,17 @@ pub fn handle_dev(args: &[String], _def: &crate::cli::CommandDef) -> Result<(), 
 ///
 /// Then rebalances weights so real nodes rise back to their natural position.
 fn handle_prune_noise() -> Result<(), Box<dyn std::error::Error>> {
-    let mut memory = MemoryState::load_or_default()?;
+    let mut memory = crate::memory::load_or_default()?;
 
     // --- L2: remove EXPERIENCE entries ---
     // Match both fresh entries ("EXPERIENCE: Experience: ...") and heavily-
     // reconsolidated ones ("| EXPERIENCE: Experience: ...") where the text was
     // summarized and may no longer start cleanly with "EXPERIENCE:".
-    let l2_before = memory.short_term.len();
+    let l2_before = memory.brain.short_term.len();
     memory
-        .short_term
+        .brain.short_term
         .retain(|e| !e.text.contains("EXPERIENCE: Experience:"));
-    let l2_removed = l2_before - memory.short_term.len();
+    let l2_removed = l2_before - memory.brain.short_term.len();
 
     // --- L3 nodes: remove labels that are hook-telemetry artifacts OR generic
     // stopwords (both the old hardcoded list and the full is_stopword list).
@@ -50,31 +49,31 @@ fn handle_prune_noise() -> Result<(), Box<dyn std::error::Error>> {
     // "status" etc. are now stopwords too.
     const HOOK_LABELS: &[&str] = &["EXPERIENCE", "Experience", "Executed", "Completed"];
     let noise_ids: HashSet<u64> = memory
-        .long_term
+        .brain.long_term
         .nodes
         .iter()
         .filter(|(_, n)| HOOK_LABELS.contains(&n.label.as_str()) || is_stopword(&n.label))
         .map(|(id, _)| *id)
         .collect();
 
-    let l3_before = memory.long_term.nodes.len();
+    let l3_before = memory.brain.long_term.nodes.len();
     memory
-        .long_term
+        .brain.long_term
         .nodes
         .retain(|id, _| !noise_ids.contains(id));
     memory
-        .long_term
+        .brain.long_term
         .index
         .retain(|_, id| !noise_ids.contains(id));
-    let l3_removed = l3_before - memory.long_term.nodes.len();
+    let l3_removed = l3_before - memory.brain.long_term.nodes.len();
 
     // --- L3 edges: drop any edge touching a removed node ---
-    let edges_before = memory.long_term.edges.len();
+    let edges_before = memory.brain.long_term.edges.len();
     memory
-        .long_term
+        .brain.long_term
         .edges
         .retain(|e| !noise_ids.contains(&e.from) && !noise_ids.contains(&e.to));
-    let edges_removed = edges_before - memory.long_term.edges.len();
+    let edges_removed = edges_before - memory.brain.long_term.edges.len();
 
     // --- Session log: drop EXPERIENCE entries so they stop polluting
     // Recent Activity even on stores that predate the display filter ---
@@ -85,9 +84,9 @@ fn handle_prune_noise() -> Result<(), Box<dyn std::error::Error>> {
     let log_removed = log_before - memory.session_log.len();
 
     // --- Rebalance so real nodes float back to their natural weights ---
-    memory.rebalance_weights();
+    crate::memory::rebalance_weights(&mut memory.brain);
 
-    memory.save()?;
+    crate::memory::save(&memory)?;
 
     println!("✓ Noise pruned:");
     println!("  L2 entries removed  : {}", l2_removed);

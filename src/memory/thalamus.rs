@@ -1,5 +1,5 @@
 /// N-gram embedding and vector similarity functions.
-use crate::memory::keyword_cache::KeywordCache;
+use crate::memory::wernicke::KeywordCache;
 
 /// Compute an n-gram embedding vector of given dimension.
 ///
@@ -140,7 +140,7 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
     }
     let code_def_hits = kw.code
         .iter()
-        .filter(|(trigger, _, _)| lowered.contains(trigger.as_str()))
+        .filter(|(trigger, _, _, _)| lowered.contains(trigger.as_str()))
         .count();
     if code_def_hits >= 2 {
         // Multiple code definitions (e.g. "fn foo uses struct Bar") — high signal

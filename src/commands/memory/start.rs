@@ -1,6 +1,5 @@
 use super::event_log::*;
 use crate::cli::{parse_args, CommandDef};
-use crate::memory::MemoryState;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Default)]
@@ -84,8 +83,8 @@ const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
 
 pub(super) fn handle_start(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_start_args(args, def);
-    let mut memory = MemoryState::load_or_default()?;
-    let mut summary = memory.build_start_summary_with_options(
+    let mut memory = crate::memory::load_or_default()?;
+    let mut summary = crate::memory::build_start_summary_with_options(&mut memory, 
         opts.compact,
         opts.category.as_deref(),
         opts.query.as_deref(),
@@ -119,16 +118,16 @@ pub(super) fn handle_start(args: &[String], def: &CommandDef) -> Result<(), Box<
     }
 
     // Flush working memory: promote qualifying entries to L2, then clear L1
-    memory.flush_working_memory();
+    crate::memory::prefrontal::flush_working_memory(&mut memory.brain);
 
     let event_data = EventData::Start(StartEventData {
-        clock: memory.clock,
-        short_term_count: memory.short_term.len(),
-        long_term_nodes: memory.long_term.nodes.len(),
+        clock: memory.brain.clock,
+        short_term_count: memory.brain.short_term.len(),
+        long_term_nodes: memory.brain.long_term.nodes.len(),
         session_log_entries: memory.session_log.len(),
     });
 
-    memory.save()?;
+    crate::memory::save(&memory)?;
     log_event_rich("start", "session cold-start", Some(event_data));
 
     if opts.json {

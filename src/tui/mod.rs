@@ -217,7 +217,7 @@ impl App {
     }
 
     pub fn reload_memory(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.memory = MemoryState::load_or_default()?;
+        self.memory = crate::memory::load_or_default()?;
         self.events = load_events();
         Ok(())
     }
@@ -226,7 +226,7 @@ impl App {
         if let Some(&root_id) = self.graph_stack.last() {
             let mut dedup: HashMap<u64, GraphListItem> = HashMap::new();
 
-            for edge in &self.memory.long_term.edges {
+            for edge in &self.memory.brain.long_term.edges {
                 let neighbor_id = if edge.from == root_id {
                     edge.to
                 } else if edge.to == root_id {
@@ -235,7 +235,7 @@ impl App {
                     continue;
                 };
 
-                if let Some(node) = self.memory.long_term.nodes.get(&neighbor_id) {
+                if let Some(node) = self.memory.brain.long_term.nodes.get(&neighbor_id) {
                     let weight = node.weight + edge.weight;
                     let item = GraphListItem {
                         id: node.id,
@@ -260,7 +260,7 @@ impl App {
             items.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(Ordering::Equal));
             items
         } else {
-            let mut nodes: Vec<_> = self.memory.long_term.nodes.values().collect();
+            let mut nodes: Vec<_> = self.memory.brain.long_term.nodes.values().collect();
             nodes.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(Ordering::Equal));
             nodes
                 .into_iter()
@@ -283,7 +283,7 @@ impl App {
 
     fn graph_focus_label(&self, id: u64) -> String {
         self.memory
-            .long_term
+            .brain.long_term
             .nodes
             .get(&id)
             .map(|n| n.label.clone())
@@ -313,7 +313,7 @@ impl App {
 
     fn item_count(&self) -> usize {
         match self.view {
-            View::ShortTerm => self.memory.short_term.len(),
+            View::ShortTerm => self.memory.brain.short_term.len(),
             View::Graph => self.graph_items().len(),
             View::Events => self.events.len(),
         }
@@ -373,8 +373,8 @@ impl App {
             return;
         }
         let query = self.input_buffer.clone();
-        let ctx = self.memory.retrieve_context(&query);
-        let _ = self.memory.save();
+        let ctx = crate::memory::retrieve_context(&mut self.memory.brain, &query);
+        let _ = crate::memory::save(&self.memory);
 
         let mut result = format!("Query: \"{}\"\n\n", query);
         result.push_str("Short-term matches:\n");
@@ -435,10 +435,10 @@ impl App {
     fn selected_text(&self) -> Option<String> {
         let idx = self.list_state.selected().unwrap_or(0);
         match self.view {
-            View::ShortTerm => self.memory.short_term.get(idx).map(|e| e.text.clone()),
+            View::ShortTerm => self.memory.brain.short_term.get(idx).map(|e| e.text.clone()),
             View::Graph => self.graph_selected_id().and_then(|id| {
                 self.memory
-                    .long_term
+                    .brain.long_term
                     .nodes
                     .get(&id)
                     .map(|n| n.label.clone())
@@ -453,13 +453,13 @@ impl App {
     }
 
     fn format_short_term_detail(&self, idx: usize) -> Option<String> {
-        let entry = self.memory.short_term.get(idx)?;
-        let age = self.memory.clock.saturating_sub(entry.last_access);
+        let entry = self.memory.brain.short_term.get(idx)?;
+        let age = self.memory.brain.clock.saturating_sub(entry.last_access);
 
-        let labile_status = if entry.labile_until >= self.memory.clock {
+        let labile_status = if entry.labile_until >= self.memory.brain.clock {
             format!(
                 "Yes (expires in {} ticks)",
-                entry.labile_until - self.memory.clock
+                entry.labile_until - self.memory.brain.clock
             )
         } else {
             "No".to_string()
@@ -492,20 +492,20 @@ impl App {
     }
 
     fn format_graph_detail(&self, node_id: u64) -> Option<String> {
-        let node = self.memory.long_term.nodes.get(&node_id)?;
-        let age = self.memory.clock.saturating_sub(node.last_seen);
+        let node = self.memory.brain.long_term.nodes.get(&node_id)?;
+        let age = self.memory.brain.clock.saturating_sub(node.last_seen);
 
         // Find edges involving this node
         let mut incoming: Vec<(&GraphEdge, &GraphNode)> = vec![];
         let mut outgoing: Vec<(&GraphEdge, &GraphNode)> = vec![];
 
-        for edge in &self.memory.long_term.edges {
+        for edge in &self.memory.brain.long_term.edges {
             if edge.to == node.id {
-                if let Some(from_node) = self.memory.long_term.nodes.get(&edge.from) {
+                if let Some(from_node) = self.memory.brain.long_term.nodes.get(&edge.from) {
                     incoming.push((edge, from_node));
                 }
             } else if edge.from == node.id {
-                if let Some(to_node) = self.memory.long_term.nodes.get(&edge.to) {
+                if let Some(to_node) = self.memory.brain.long_term.nodes.get(&edge.to) {
                     outgoing.push((edge, to_node));
                 }
             }
@@ -761,7 +761,7 @@ pub fn run_tui() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     // Load memory and create app
-    let memory = MemoryState::load_or_default()?;
+    let memory = crate::memory::load_or_default()?;
     let mut app = App::new(memory);
 
     // Auto-refresh interval
@@ -925,7 +925,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("Clock: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{}", app.memory.clock),
+                format!("{}", app.memory.brain.clock),
                 Style::default().fg(Color::White),
             ),
         ]),
@@ -933,7 +933,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("ST: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{}", app.memory.short_term.len()),
+                format!("{}", app.memory.brain.short_term.len()),
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" entries"),
@@ -941,14 +941,14 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("Nodes: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{}", app.memory.long_term.nodes.len()),
+                format!("{}", app.memory.brain.long_term.nodes.len()),
                 Style::default().fg(Color::Green),
             ),
         ]),
         Line::from(vec![
             Span::styled("Edges: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{}", app.memory.long_term.edges.len()),
+                format!("{}", app.memory.brain.long_term.edges.len()),
                 Style::default().fg(Color::Green),
             ),
         ]),
@@ -960,9 +960,9 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 format!(
                     "{}",
                     app.memory
-                        .short_term
+                        .brain.short_term
                         .iter()
-                        .filter(|e| e.labile_until >= app.memory.clock)
+                        .filter(|e| e.labile_until >= app.memory.brain.clock)
                         .count()
                 ),
                 Style::default()
@@ -1101,10 +1101,10 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
 fn render_short_term(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
         .memory
-        .short_term
+        .brain.short_term
         .iter()
         .map(|entry| {
-            let labile_marker = if entry.labile_until >= app.memory.clock {
+            let labile_marker = if entry.labile_until >= app.memory.brain.clock {
                 Span::styled(" [L]", Style::default().fg(Color::Magenta))
             } else {
                 Span::raw("")
@@ -1154,7 +1154,7 @@ fn render_graph(f: &mut Frame, app: &mut App, area: Rect) {
     let title = if let Some(&root_id) = app.graph_stack.last() {
         let label = app
             .memory
-            .long_term
+            .brain.long_term
             .nodes
             .get(&root_id)
             .map(|n| truncate(&n.label, 30))

@@ -1,6 +1,6 @@
 /// Extractive summarization utilities.
 use crate::memory::ShortTermEntry;
-use crate::memory::keyword_cache::KeywordCache;
+use crate::memory::wernicke::KeywordCache;
 
 const MAX_SUMMARY_LEN: usize = 200;
 const MAX_GROUP_SUMMARY_LEN: usize = 300;
@@ -29,7 +29,7 @@ pub fn summarize_single(text: &str, kw: &KeywordCache) -> String {
         .max_by_key(|s| {
             let lower = s.to_lowercase();
             let words = s.split_whitespace().count();
-            let has_code = kw.code.iter().any(|(trigger, _, _)| s.contains(trigger.as_str()));
+            let has_code = kw.code.iter().any(|(trigger, _, _, _)| s.contains(trigger.as_str()));
             let has_key = s.contains(':') || s.contains('=') || s.contains("TODO");
             let has_decision = kw.decision.iter().any(|k| lower.contains(k.as_str()));
             let has_arch = kw.architecture.iter().any(|k| lower.contains(k.as_str()));

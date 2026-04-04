@@ -8,7 +8,7 @@
 /// at half the hippocampal rate, modeling how emotionally charged memories
 /// resist forgetting.
 
-use super::keyword_cache::KeywordCache;
+use super::wernicke::KeywordCache;
 
 /// Compute emotional valence for a text fragment.
 ///

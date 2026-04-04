@@ -487,7 +487,7 @@ pub(super) fn validate_result(
                 if label.len() < 2 || label.len() > 120 {
                     continue;
                 }
-                if crate::memory::extract::is_stopword(&label) {
+                if crate::memory::wernicke::is_stopword(&label) {
                     continue;
                 }
 

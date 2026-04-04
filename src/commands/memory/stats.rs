@@ -1,18 +1,17 @@
 use super::event_log::EVENT_LOG_PATH;
-use crate::memory::MemoryState;
 
 pub(super) fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
-    let memory = MemoryState::load_or_default()?;
+    let memory = crate::memory::load_or_default()?;
     println!("Memory stats:");
-    println!("  Working memory (L1): {}", memory.working_memory.len());
-    println!("  Short-term entries: {}", memory.short_term.len());
-    println!("  Long-term nodes: {}", memory.long_term.nodes.len());
-    println!("  Long-term edges: {}", memory.long_term.edges.len());
+    println!("  Working memory (L1): {}", memory.brain.working_memory.len());
+    println!("  Short-term entries: {}", memory.brain.short_term.len());
+    println!("  Long-term nodes: {}", memory.brain.long_term.nodes.len());
+    println!("  Long-term edges: {}", memory.brain.long_term.edges.len());
     println!(
         "  Ticks since consolidation: {}",
-        memory.ticks_since_consolidation
+        memory.brain.ticks_since_consolidation
     );
-    if let Some(task) = memory.get_task() {
+    if let Some(task) = crate::memory::get_task(&memory) {
         println!("  Current task: {}", task);
     }
 

@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod memory;
+mod tool;
 mod tui;
 
 use cli::{ArgDef, CommandDef, FlagDef};

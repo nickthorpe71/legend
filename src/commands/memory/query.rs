@@ -1,7 +1,7 @@
 use super::event_log::*;
 use super::helpers::truncate_text;
 use crate::cli::{parse_args, CommandDef};
-use crate::memory::{MemoryContext, MemoryState};
+use crate::memory::MemoryContext;
 
 #[derive(Default)]
 struct QueryOptions {
@@ -25,9 +25,9 @@ fn parse_query_args(args: &[String], def: &CommandDef) -> Result<QueryOptions, B
 pub(super) fn handle_query(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_query_args(args, def)?;
 
-    let mut memory = MemoryState::load_or_default()?;
-    let context = memory.retrieve_context(opts.query.trim());
-    memory.save()?;
+    let mut memory = crate::memory::load_or_default()?;
+    let context = crate::memory::retrieve_context(&mut memory.brain, opts.query.trim());
+    crate::memory::save(&memory)?;
 
     let primed_count = context
         .long_term

@@ -1,6 +1,6 @@
 /// Entity extraction from text (code-aware + plain identifiers).
 use std::collections::HashMap;
-use crate::memory::keyword_cache::KeywordCache;
+use super::cache::KeywordCache;
 
 pub struct ExtractedEntity {
     pub label: String,
@@ -68,7 +68,7 @@ pub fn extract_entities(text: &str, kw: &KeywordCache) -> Vec<ExtractedEntity> {
         }
 
         // 4. Code patterns (Multi-language)
-        for (trigger, kind, ctx) in &kw.code {
+        for (trigger, kind, ctx, _priority) in &kw.code {
             try_extract(trimmed, trigger, kind, ctx, &mut entities);
         }
 

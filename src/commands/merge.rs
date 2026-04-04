@@ -23,7 +23,7 @@ pub fn handle_git_merge_driver(args: &[String], _def: &crate::cli::CommandDef) -
         let mut ours = load_memory_from_path(ours_path)?;
         let theirs = load_memory_from_path(theirs_path)?;
 
-        ours.merge_from_log(theirs);
+        crate::memory::merge_from_log(&mut ours, theirs);
         save_memory_to_path(&ours, ours_path)?;
     } else if filename.ends_with("events.jsonl") {
         merge_jsonl_events(ancestor_path, ours_path, theirs_path)?;

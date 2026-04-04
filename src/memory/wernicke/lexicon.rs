@@ -8,32 +8,49 @@
 /// via Layer 2 (workspace bootstrap) and Layer 3 (incremental discovery).
 
 /// Code syntax keywords — language-specific patterns that indicate definitions/usage.
+/// Format: (trigger, entity_kind, context, priority).
+/// Priority determines which kind wins during node deduplication (higher = more specific).
+///
 /// NOTE: These are seeded during workspace bootstrap (Layer 2) based on detected
 /// languages, NOT loaded as static defaults. Kept here as a reference catalog.
-pub const CODE_KEYWORDS: &[(&str, &str, &str)] = &[
+pub const CODE_KEYWORDS: &[(&str, &str, &str, u8)] = &[
     // Rust / C / C++
-    ("fn ", "Function", "defines"),
-    ("struct ", "Struct", "defines"),
-    ("impl ", "Impl", "implements"),
-    ("trait ", "Trait", "defines"),
-    ("enum ", "Enum", "defines"),
-    ("mod ", "Module", "defines"),
+    ("fn ", "Function", "defines", 7),
+    ("struct ", "Struct", "defines", 7),
+    ("impl ", "Impl", "implements", 4),
+    ("trait ", "Trait", "defines", 7),
+    ("enum ", "Enum", "defines", 7),
+    ("mod ", "Module", "defines", 7),
     // Python / Mojo
-    ("def ", "Function", "defines"),
-    ("class ", "Class", "defines"),
+    ("def ", "Function", "defines", 7),
+    ("class ", "Class", "defines", 7),
     // JavaScript / TypeScript
-    ("function ", "Function", "defines"),
-    ("interface ", "Interface", "defines"),
-    ("export ", "Export", "defines"),
-    ("import ", "Import", "uses"),
-    ("const ", "Symbol", "defines"),
-    ("let ", "Symbol", "defines"),
+    ("function ", "Function", "defines", 7),
+    ("interface ", "Interface", "defines", 7),
+    ("export ", "Export", "defines", 4),
+    ("import ", "Import", "uses", 4),
+    ("const ", "Symbol", "defines", 5),
+    ("let ", "Symbol", "defines", 5),
     // Go
-    ("func ", "Function", "defines"),
-    ("package ", "Package", "defines"),
+    ("func ", "Function", "defines", 7),
+    ("package ", "Package", "defines", 4),
     // Ruby / PHP
-    ("module ", "Module", "defines"),
-    ("require ", "Import", "uses"),
+    ("module ", "Module", "defines", 7),
+    ("require ", "Import", "uses", 4),
+];
+
+/// Priority for non-code entity kinds produced by entity extraction.
+/// Used alongside CODE_KEYWORDS priorities for node deduplication.
+/// Format: (entity_kind, priority). Higher = more specific / harder to reconstruct.
+pub const ENTITY_KIND_PRIORITY: &[(&str, u8)] = &[
+    ("FilePath", 8),
+    ("Type", 5),
+    ("Tool", 6),
+    ("Environment", 6),
+    ("Decorator", 4),
+    ("Topic", 3),
+    ("Term", 2),
+    ("Action", 4),
 ];
 
 /// Decision-making language — domain-independent reasoning markers.
@@ -574,10 +591,11 @@ mod tests {
 
     #[test]
     fn test_code_keyword_format() {
-        for (kw, kind, ctx) in CODE_KEYWORDS {
+        for (kw, kind, ctx, pri) in CODE_KEYWORDS {
             assert!(!kw.is_empty(), "Keyword cannot be empty");
             assert!(!kind.is_empty(), "Kind cannot be empty");
             assert!(!ctx.is_empty(), "Context cannot be empty");
+            assert!(*pri > 0, "Priority must be > 0 for '{}'", kw);
             // Most keywords should end with a space to avoid false positives
             if kw.len() <= 3 {
                 assert!(kw.ends_with(' '), "Short keyword '{}' must end with a space", kw);

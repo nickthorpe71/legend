@@ -4,18 +4,20 @@
 /// like `kw:<category>:<term>` and builds per-category keyword lists.
 /// Falls back to static arrays from `keywords.rs` when graph categories are empty.
 
-use super::keywords::{
+use super::lexicon::{
     ACTION_KEYWORDS, ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, CODE_KEYWORDS, DECISION_KEYWORDS,
-    DOMAIN_KEYWORDS, ENVIRONMENT_KEYWORDS, NEGATIVE_VALENCE_KEYWORDS, POSITIVE_VALENCE_KEYWORDS,
-    PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS, URGENCY_KEYWORDS,
+    DOMAIN_KEYWORDS, ENTITY_KIND_PRIORITY, ENVIRONMENT_KEYWORDS, NEGATIVE_VALENCE_KEYWORDS,
+    POSITIVE_VALENCE_KEYWORDS, PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS,
+    URGENCY_KEYWORDS,
 };
-use super::GraphMemory;
+use crate::memory::GraphMemory;
 
 /// Cached keyword lists per category, built from graph + static fallbacks.
 #[derive(Debug, Clone)]
 pub struct KeywordCache {
-    /// Code keywords: (trigger, entity_kind, context) triples.
-    pub code: Vec<(String, String, String)>,
+    /// Code keywords: (trigger, entity_kind, context, priority) tuples.
+    /// Priority determines node kind specificity during graph deduplication.
+    pub code: Vec<(String, String, String, u8)>,
     pub decision: Vec<String>,
     pub action: Vec<(String, String)>,
     pub environment: Vec<String>,
@@ -46,7 +48,7 @@ impl KeywordCache {
         Self {
             code: CODE_KEYWORDS
                 .iter()
-                .map(|(kw, kind, ctx)| (kw.to_string(), kind.to_string(), ctx.to_string()))
+                .map(|(kw, kind, ctx, pri)| (kw.to_string(), kind.to_string(), ctx.to_string(), *pri))
                 .collect(),
             decision: DECISION_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             action: ACTION_KEYWORDS
@@ -99,9 +101,9 @@ impl KeywordCache {
             if let Some((category, term)) = parse_keyword_label(&node.label) {
                 match category {
                     "code" => {
-                        let (entity_kind, entity_context) =
+                        let (entity_kind, entity_context, priority) =
                             parse_code_metadata(&node.source_texts);
-                        cache.code.push((term.to_string(), entity_kind, entity_context));
+                        cache.code.push((term.to_string(), entity_kind, entity_context, priority));
                     }
                     "decision" => cache.decision.push(term.to_string()),
                     "action" => cache.action.push((term.to_string(), "Action".to_string())),
@@ -130,12 +132,32 @@ impl KeywordCache {
         cache
     }
 
+    /// Look up the priority for an entity kind.
+    ///
+    /// Checks code keywords first (their kind → priority mapping), then falls
+    /// back to `ENTITY_KIND_PRIORITY` for non-code kinds. Returns 1 for unknown kinds.
+    pub fn kind_priority(&self, kind: &str) -> u8 {
+        // Check code keywords — each has a (trigger, entity_kind, context, priority)
+        for (_, ek, _, pri) in &self.code {
+            if ek == kind {
+                return *pri;
+            }
+        }
+        // Fall back to static non-code priority table
+        for (ek, pri) in ENTITY_KIND_PRIORITY {
+            if *ek == kind {
+                return *pri;
+            }
+        }
+        1 // unknown kind = lowest priority
+    }
+
     /// Fill empty categories from static `keywords.rs` arrays.
     pub fn apply_fallbacks(&mut self) {
         if self.code.is_empty() {
             self.code = CODE_KEYWORDS
                 .iter()
-                .map(|(kw, kind, ctx)| (kw.to_string(), kind.to_string(), ctx.to_string()))
+                .map(|(kw, kind, ctx, pri)| (kw.to_string(), kind.to_string(), ctx.to_string(), *pri))
                 .collect();
         }
         if self.decision.is_empty() {
@@ -199,20 +221,23 @@ fn parse_keyword_label(label: &str) -> Option<(&str, &str)> {
 }
 
 /// Parse code keyword metadata from source_texts.
-/// Looks for `entity_kind:X` and `entity_context:Y` entries.
-fn parse_code_metadata(source_texts: &[String]) -> (String, String) {
+/// Looks for `entity_kind:X`, `entity_context:Y`, and `entity_priority:N` entries.
+fn parse_code_metadata(source_texts: &[String]) -> (String, String, u8) {
     let mut kind = "Symbol".to_string();
     let mut context = "mentions".to_string();
+    let mut priority: u8 = 1; // default lowest
 
     for text in source_texts {
         if let Some(k) = text.strip_prefix("entity_kind:") {
             kind = k.to_string();
         } else if let Some(c) = text.strip_prefix("entity_context:") {
             context = c.to_string();
+        } else if let Some(p) = text.strip_prefix("entity_priority:") {
+            priority = p.parse().unwrap_or(1);
         }
     }
 
-    (kind, context)
+    (kind, context, priority)
 }
 
 /// Parse valence weight from source_texts.
