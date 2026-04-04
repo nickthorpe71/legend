@@ -89,6 +89,9 @@ fn fixture_structs_produce_fully_loadable_state() {
         gradient_sq_sum: 1.5,
         density: 2.3,
         consolidated: true,
+        emotional_valence: 0.0,
+        stability: 1.0,
+        last_retrieval_interval: 0,
     };
 
     let session = FixtureSessionEntry {

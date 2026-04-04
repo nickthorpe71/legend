@@ -4,7 +4,6 @@ use super::memory::{
     StartEventData, TickEventData,
 };
 use crate::cli::{parse_args, CommandDef};
-use crate::memory::MemoryState;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 
@@ -161,9 +160,9 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
         .and_then(|c| c.as_str())
         .map(|s| s.to_string());
 
-    let mut memory = MemoryState::load_or_default().map_err(|e| e.to_string())?;
+    let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
     let mut summary =
-        memory.build_start_summary_with_options(false, category.as_deref(), None);
+        crate::memory::build_start_summary_with_options(&mut memory, false, category.as_deref(), None);
 
     // Session log capacity warning
     const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
@@ -181,17 +180,17 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
     }
 
     // Flush working memory: promote qualifying entries to L2, then clear L1
-    memory.flush_working_memory();
+    crate::memory::prefrontal::flush_working_memory(&mut memory.brain);
 
     // Log event
     let event_data = EventData::Start(StartEventData {
-        clock: memory.clock,
-        short_term_count: memory.short_term.len(),
-        long_term_nodes: memory.long_term.nodes.len(),
+        clock: memory.brain.clock,
+        short_term_count: memory.brain.short_term.len(),
+        long_term_nodes: memory.brain.long_term.nodes.len(),
         session_log_entries: memory.session_log.len(),
     });
 
-    memory.save().map_err(|e| e.to_string())?;
+    crate::memory::save(&memory).map_err(|e| e.to_string())?;
     log_event_rich("start", "session cold-start (MCP)", Some(event_data));
 
     let output = format_start_summary_markdown(&summary);
@@ -213,9 +212,9 @@ fn tool_memory_tick(arguments: &Value) -> Result<String, String> {
         return Err("Tick rejected: low-quality content detected".to_string());
     }
 
-    let mut memory = MemoryState::load_or_default().map_err(|e| e.to_string())?;
-    let tick_result = memory.tick(text);
-    memory.save().map_err(|e| e.to_string())?;
+    let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
+    let tick_result = crate::memory::tick(&mut memory, text);
+    crate::memory::save(&memory).map_err(|e| e.to_string())?;
 
     // Reset pending-tick counter
     let _ = std::fs::write(".legend/.pending_ticks", "0");
@@ -272,9 +271,9 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
         return Err("Topic cannot be empty".to_string());
     }
 
-    let mut memory = MemoryState::load_or_default().map_err(|e| e.to_string())?;
-    let context = memory.retrieve_context(topic);
-    memory.save().map_err(|e| e.to_string())?;
+    let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
+    let context = crate::memory::retrieve_context(&mut memory.brain, topic);
+    crate::memory::save(&memory).map_err(|e| e.to_string())?;
 
     // Count primed nodes
     let primed_count = context
@@ -323,8 +322,8 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
 }
 
 fn tool_memory_task_get() -> Result<String, String> {
-    let memory = MemoryState::load_or_default().map_err(|e| e.to_string())?;
-    match memory.get_task() {
+    let memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
+    match crate::memory::get_task(&memory) {
         Some(task) => Ok(format!("Current task: {}", task)),
         None => Ok("No current task set".to_string()),
     }
@@ -341,33 +340,33 @@ fn tool_memory_task_set(arguments: &Value) -> Result<String, String> {
         return Err("Task cannot be empty".to_string());
     }
 
-    let mut memory = MemoryState::load_or_default().map_err(|e| e.to_string())?;
-    memory.set_task(task);
-    memory.save().map_err(|e| e.to_string())?;
+    let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
+    crate::memory::set_task(&mut memory, task);
+    crate::memory::save(&memory).map_err(|e| e.to_string())?;
     log_event("task_set", task);
 
     Ok(format!("Current task set: {}", task))
 }
 
 fn tool_memory_stats() -> Result<String, String> {
-    let memory = MemoryState::load_or_default().map_err(|e| e.to_string())?;
+    let memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
 
     let mut out = String::new();
-    out.push_str(&format!("Working memory (L1): {}\n", memory.working_memory.len()));
-    out.push_str(&format!("Short-term entries: {}\n", memory.short_term.len()));
+    out.push_str(&format!("Working memory (L1): {}\n", memory.brain.working_memory.len()));
+    out.push_str(&format!("Short-term entries: {}\n", memory.brain.short_term.len()));
     out.push_str(&format!(
         "Long-term nodes: {}\n",
-        memory.long_term.nodes.len()
+        memory.brain.long_term.nodes.len()
     ));
     out.push_str(&format!(
         "Long-term edges: {}\n",
-        memory.long_term.edges.len()
+        memory.brain.long_term.edges.len()
     ));
     out.push_str(&format!(
         "Ticks since consolidation: {}\n",
-        memory.ticks_since_consolidation
+        memory.brain.ticks_since_consolidation
     ));
-    if let Some(task) = memory.get_task() {
+    if let Some(task) = crate::memory::get_task(&memory) {
         out.push_str(&format!("Current task: {}", task));
     }
 

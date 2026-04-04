@@ -1,7 +1,6 @@
 mod helpers;
 
 use crate::cli::{parse_args, CommandDef};
-use crate::memory::MemoryState;
 use helpers::*;
 use serde_json::{json, Value};
 use std::cmp::Ordering;
@@ -247,9 +246,9 @@ fn handle_apply(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::er
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            let mut memory = MemoryState::load_or_default()?;
-            let applied = memory.apply_llm_entities(source_text, &entities, task_conf);
-            memory.save()?;
+            let mut memory = crate::memory::load_or_default()?;
+            let applied = crate::memory::apply_llm_entities(&mut memory.brain, source_text, &entities, task_conf);
+            crate::memory::save(&memory)?;
 
             json!({
                 "status": "applied",
@@ -379,8 +378,8 @@ fn analyze_input_for_llm(kind: &LlmTaskKind, input: &Value) -> SignalReport {
 }
 
 fn analyze_text_for_llm(text: &str) -> SignalReport {
-    let kw = crate::memory::keyword_cache::KeywordCache::default_from_static();
-    let entities = crate::memory::extract::extract_entities(text, &kw);
+    let kw = crate::memory::wernicke::KeywordCache::default_from_static();
+    let entities = crate::memory::wernicke::extract_entities(text, &kw);
     let chars = text.chars().count();
     let words = text.split_whitespace().count();
     let entity_count = entities.len();

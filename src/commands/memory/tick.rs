@@ -2,7 +2,7 @@ use super::event_log::*;
 use super::helpers::*;
 use crate::cli::{parse_args, CommandDef};
 use crate::commands::llm::{auto_trigger_for_text, LlmAutoTriggerSummary};
-use crate::memory::{MemoryState, TickResult};
+use crate::memory::TickResult;
 
 struct TickOptions {
     text: String,
@@ -53,11 +53,12 @@ pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<d
         clean_text.trim().to_string()
     };
 
-    let mut memory = MemoryState::load_or_default()?;
+    let mut memory = crate::memory::load_or_default()?;
 
     let mut keywords_added = false;
     for directive in &keyword_directives {
-        let created = memory.add_keyword_node(
+        let created = crate::memory::add_keyword_node(
+            &mut memory.brain,
             &directive.category,
             &directive.term,
             directive.metadata.clone(),
@@ -71,11 +72,11 @@ pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<d
         }
     }
     if keywords_added {
-        memory.rebuild_keyword_cache();
+        crate::memory::rebuild_keyword_cache(&mut memory.brain);
     }
 
     let tick_result = if text.trim().is_empty() && !keyword_directives.is_empty() {
-        memory.save()?;
+        crate::memory::save(&memory)?;
         for directive in &keyword_directives {
             log_event(
                 "keyword_register",
@@ -88,14 +89,14 @@ pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<d
         );
         return Ok(());
     } else if opts.is_passive {
-        memory.tick_passive(&text)
+        crate::memory::tick_passive(&mut memory, &text)
     } else {
-        memory.tick(&text)
+        crate::memory::tick(&mut memory, &text)
     };
-    let should_consolidate = memory.should_suggest_consolidation();
+    let should_consolidate = crate::memory::should_suggest_consolidation(&memory);
 
     if let Some(entry) = memory
-        .short_term
+        .brain.short_term
         .iter_mut()
         .find(|e| e.id == tick_result.entry_id)
     {
@@ -106,7 +107,7 @@ pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<d
         }
     }
 
-    memory.save()?;
+    crate::memory::save(&memory)?;
 
     let _ = std::fs::write(".legend/.pending_ticks", "0");
 
@@ -137,7 +138,7 @@ pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<d
             .collect(),
     });
     log_event_rich("tick", text.trim(), Some(event_data));
-    let llm_trigger = match auto_trigger_for_text(text.trim(), "memory_tick", Some(memory.clock)) {
+    let llm_trigger = match auto_trigger_for_text(text.trim(), "memory_tick", Some(memory.brain.clock)) {
         Ok(summary) => Some(summary),
         Err(err) => {
             eprintln!("[llm auto-trigger skipped: {}]", err);
@@ -152,8 +153,8 @@ pub(super) fn handle_tick(args: &[String], def: &CommandDef) -> Result<(), Box<d
     }
 
     if should_consolidate {
-        let summaries = memory.consolidate();
-        memory.save()?;
+        let summaries = crate::memory::consolidate(&mut memory.brain);
+        crate::memory::save(&memory)?;
         if !summaries.is_empty() {
             let consolidate_data = EventData::Consolidate(ConsolidateEventData {
                 groups_merged: summaries.len(),

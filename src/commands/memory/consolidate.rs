@@ -1,11 +1,10 @@
 use super::event_log::*;
 use super::helpers::truncate_text;
-use crate::memory::MemoryState;
 
 pub(super) fn handle_consolidate() -> Result<(), Box<dyn std::error::Error>> {
-    let mut memory = MemoryState::load_or_default()?;
-    let summaries = memory.consolidate();
-    memory.save()?;
+    let mut memory = crate::memory::load_or_default()?;
+    let summaries = crate::memory::consolidate(&mut memory.brain);
+    crate::memory::save(&memory)?;
 
     let event_data = EventData::Consolidate(ConsolidateEventData {
         groups_merged: summaries.len(),

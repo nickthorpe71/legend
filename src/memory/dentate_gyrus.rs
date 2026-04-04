@@ -13,7 +13,7 @@
 /// 2. **Diversity gating** — at merge time, word-overlap Jaccard similarity provides a
 ///    second check beyond cosine similarity. Two entries must share enough actual vocabulary
 ///    (not just hash-bucket overlap) to be considered the "same" memory.
-use super::embed::cosine_similarity;
+use super::thalamus::cosine_similarity;
 use std::collections::HashSet;
 
 /// Minimum word-overlap Jaccard ratio required to merge (prevents unrelated entries collapsing).
@@ -105,7 +105,7 @@ pub fn diversity_pass(existing_text: &str, new_text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::embed::embed_text;
+    use crate::memory::thalamus::embed_text;
 
     #[test]
     fn test_sparse_orthogonalize_pushes_apart_similar() {

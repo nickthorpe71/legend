@@ -55,7 +55,7 @@ pub fn bootstrap_keywords_from_workspace(
     for tech in tech_stack {
         let term = tech.to_lowercase();
         if term.len() >= 2 && seeded.insert(format!("tool:{}", term)) {
-            if memory.add_keyword_node("tool", &term, Vec::new()) {
+            if crate::memory::add_keyword_node(&mut memory.brain,"tool", &term, Vec::new()) {
                 result.tools += 1;
             }
         }
@@ -125,7 +125,7 @@ fn seed_dependencies_as_tools(
                         && name.len() >= 2
                         && seeded.insert(format!("tool:{}", name))
                     {
-                        if memory.add_keyword_node("tool", name, Vec::new()) {
+                        if crate::memory::add_keyword_node(&mut memory.brain,"tool", name, Vec::new()) {
                             count += 1;
                         }
                     }
@@ -141,7 +141,7 @@ fn seed_dependencies_as_tools(
                 if let Some(deps) = json.get(section).and_then(|v| v.as_object()) {
                     for name in deps.keys() {
                         if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                            if memory.add_keyword_node("tool", name, Vec::new()) {
+                            if crate::memory::add_keyword_node(&mut memory.brain,"tool", name, Vec::new()) {
                                 count += 1;
                             }
                         }
@@ -160,7 +160,7 @@ fn seed_dependencies_as_tools(
                 .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                 .collect();
             if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                if memory.add_keyword_node("tool", &name, Vec::new()) {
+                if crate::memory::add_keyword_node(&mut memory.brain,"tool", &name, Vec::new()) {
                     count += 1;
                 }
             }
@@ -184,7 +184,7 @@ fn seed_dependencies_as_tools(
                     .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                     .collect();
                 if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                    if memory.add_keyword_node("tool", &name, Vec::new()) {
+                    if crate::memory::add_keyword_node(&mut memory.brain,"tool", &name, Vec::new()) {
                         count += 1;
                     }
                 }
@@ -204,7 +204,7 @@ fn seed_dependencies_as_tools(
                 // Use last segment of module path as the tool name
                 if let Some(name) = path.rsplit('/').next() {
                     if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                        if memory.add_keyword_node("tool", name, Vec::new()) {
+                        if crate::memory::add_keyword_node(&mut memory.brain,"tool", name, Vec::new()) {
                             count += 1;
                         }
                     }
@@ -226,7 +226,7 @@ fn seed_dependencies_as_tools(
                     .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                     .collect();
                 if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                    if memory.add_keyword_node("tool", &name, Vec::new()) {
+                    if crate::memory::add_keyword_node(&mut memory.brain,"tool", &name, Vec::new()) {
                         count += 1;
                     }
                 }
@@ -260,7 +260,7 @@ fn extract_doc_headings(
             }
             let lower = heading.to_lowercase();
             if seeded.insert(format!("architecture:{}", lower)) {
-                if memory.add_keyword_node("architecture", &lower, Vec::new()) {
+                if crate::memory::add_keyword_node(&mut memory.brain,"architecture", &lower, Vec::new()) {
                     count += 1;
                 }
             }
@@ -350,7 +350,7 @@ fn extract_recurring_terms(
         if *freq >= 2 {
             let lower = term.to_lowercase();
             if seeded.insert(format!("domain:{}", lower)) {
-                if memory.add_keyword_node("domain", &lower, Vec::new()) {
+                if crate::memory::add_keyword_node(&mut memory.brain,"domain", &lower, Vec::new()) {
                     count += 1;
                 }
             }
@@ -397,7 +397,7 @@ fn extract_config_keys(
                 {
                     let lower = section.to_lowercase();
                     if seeded.insert(format!("environment:{}", lower)) {
-                        if memory.add_keyword_node("environment", &lower, Vec::new()) {
+                        if crate::memory::add_keyword_node(&mut memory.brain,"environment", &lower, Vec::new()) {
                             count += 1;
                         }
                     }
@@ -444,7 +444,7 @@ fn extract_code_identifiers(
         if *freq >= 2 {
             let lower = ident.to_lowercase();
             if seeded.insert(format!("domain:{}", lower)) {
-                if memory.add_keyword_node("domain", &lower, Vec::new()) {
+                if crate::memory::add_keyword_node(&mut memory.brain,"domain", &lower, Vec::new()) {
                     count += 1;
                 }
             }
@@ -460,83 +460,84 @@ fn seed_language_code_keywords(
     seeded: &mut HashSet<String>,
     memory: &mut MemoryState,
 ) -> usize {
-    let keywords: Vec<(&str, &str, &str)> = match lang.to_lowercase().as_str() {
+    let keywords: Vec<(&str, &str, &str, u8)> = match lang.to_lowercase().as_str() {
         "rs" | "rust" => vec![
-            ("fn ", "Function", "defines"),
-            ("struct ", "Struct", "defines"),
-            ("impl ", "Impl", "implements"),
-            ("trait ", "Trait", "defines"),
-            ("enum ", "Enum", "defines"),
-            ("mod ", "Module", "defines"),
+            ("fn ", "Function", "defines", 7),
+            ("struct ", "Struct", "defines", 7),
+            ("impl ", "Impl", "implements", 4),
+            ("trait ", "Trait", "defines", 7),
+            ("enum ", "Enum", "defines", 7),
+            ("mod ", "Module", "defines", 7),
         ],
         "py" | "python" => vec![
-            ("def ", "Function", "defines"),
-            ("class ", "Class", "defines"),
+            ("def ", "Function", "defines", 7),
+            ("class ", "Class", "defines", 7),
         ],
         "js" | "ts" | "jsx" | "tsx" | "javascript" | "typescript" => vec![
-            ("function ", "Function", "defines"),
-            ("interface ", "Interface", "defines"),
-            ("export ", "Export", "defines"),
-            ("import ", "Import", "uses"),
-            ("const ", "Symbol", "defines"),
-            ("let ", "Symbol", "defines"),
+            ("function ", "Function", "defines", 7),
+            ("interface ", "Interface", "defines", 7),
+            ("export ", "Export", "defines", 4),
+            ("import ", "Import", "uses", 4),
+            ("const ", "Symbol", "defines", 5),
+            ("let ", "Symbol", "defines", 5),
         ],
         "go" => vec![
-            ("func ", "Function", "defines"),
-            ("package ", "Package", "defines"),
+            ("func ", "Function", "defines", 7),
+            ("package ", "Package", "defines", 4),
         ],
         "rb" | "ruby" => vec![
-            ("module ", "Module", "defines"),
-            ("require ", "Import", "uses"),
-            ("class ", "Class", "defines"),
-            ("def ", "Function", "defines"),
+            ("module ", "Module", "defines", 7),
+            ("require ", "Import", "uses", 4),
+            ("class ", "Class", "defines", 7),
+            ("def ", "Function", "defines", 7),
         ],
         "php" => vec![
-            ("class ", "Class", "defines"),
-            ("function ", "Function", "defines"),
-            ("namespace ", "Module", "defines"),
-            ("use ", "Import", "uses"),
+            ("class ", "Class", "defines", 7),
+            ("function ", "Function", "defines", 7),
+            ("namespace ", "Module", "defines", 7),
+            ("use ", "Import", "uses", 4),
         ],
         "java" | "kt" | "kotlin" => vec![
-            ("class ", "Class", "defines"),
-            ("interface ", "Interface", "defines"),
-            ("package ", "Package", "defines"),
-            ("import ", "Import", "uses"),
+            ("class ", "Class", "defines", 7),
+            ("interface ", "Interface", "defines", 7),
+            ("package ", "Package", "defines", 4),
+            ("import ", "Import", "uses", 4),
         ],
         "cs" | "csharp" => vec![
-            ("class ", "Class", "defines"),
-            ("interface ", "Interface", "defines"),
-            ("namespace ", "Module", "defines"),
-            ("using ", "Import", "uses"),
+            ("class ", "Class", "defines", 7),
+            ("interface ", "Interface", "defines", 7),
+            ("namespace ", "Module", "defines", 7),
+            ("using ", "Import", "uses", 4),
         ],
         "c" | "cpp" | "h" | "hpp" => vec![
-            ("struct ", "Struct", "defines"),
-            ("#include ", "Import", "uses"),
-            ("typedef ", "Type", "defines"),
+            ("struct ", "Struct", "defines", 7),
+            ("#include ", "Import", "uses", 4),
+            ("typedef ", "Type", "defines", 5),
         ],
         "swift" => vec![
-            ("func ", "Function", "defines"),
-            ("struct ", "Struct", "defines"),
-            ("class ", "Class", "defines"),
-            ("protocol ", "Interface", "defines"),
-            ("import ", "Import", "uses"),
+            ("func ", "Function", "defines", 7),
+            ("struct ", "Struct", "defines", 7),
+            ("class ", "Class", "defines", 7),
+            ("protocol ", "Interface", "defines", 7),
+            ("import ", "Import", "uses", 4),
         ],
         "zig" => vec![
-            ("fn ", "Function", "defines"),
-            ("const ", "Symbol", "defines"),
-            ("pub fn ", "Function", "defines"),
+            ("fn ", "Function", "defines", 7),
+            ("const ", "Symbol", "defines", 5),
+            ("pub fn ", "Function", "defines", 7),
         ],
         _ => Vec::new(),
     };
 
     let mut count = 0;
-    for (trigger, kind, ctx) in keywords {
+    for (trigger, kind, ctx, pri) in keywords {
         if seeded.insert(format!("code:{}", trigger)) {
             let metadata = vec![
                 format!("entity_kind:{}", kind),
                 format!("entity_context:{}", ctx),
+                format!("entity_priority:{}", pri),
             ];
-            if memory.add_keyword_node("code", trigger, metadata) {
+            if crate::memory::add_keyword_node(&mut memory.brain,"code", trigger, metadata) {
                 count += 1;
             }
         }
@@ -547,7 +548,6 @@ fn seed_language_code_keywords(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
 
     fn fresh_memory() -> MemoryState {
@@ -600,9 +600,9 @@ tempfile = "3"
         assert!(result.tools >= 3, "should extract serde, tokio, tempfile; got {}", result.tools);
 
         // Verify they're in the graph as kw:tool:* nodes
-        assert!(memory.long_term.index.contains_key("kw:tool:serde"));
-        assert!(memory.long_term.index.contains_key("kw:tool:tokio"));
-        assert!(memory.long_term.index.contains_key("kw:tool:tempfile"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:serde"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:tokio"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:tempfile"));
     }
 
     #[test]
@@ -632,8 +632,8 @@ tempfile = "3"
         );
 
         assert!(result.tools >= 3, "should extract react, express, jest; got {}", result.tools);
-        assert!(memory.long_term.index.contains_key("kw:tool:react"));
-        assert!(memory.long_term.index.contains_key("kw:tool:express"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:react"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:express"));
     }
 
     #[test]
@@ -672,11 +672,11 @@ tempfile = "3"
             result.architecture
         );
         assert!(memory
-            .long_term
+            .brain.long_term
             .index
             .contains_key("kw:architecture:memory system architecture"));
         assert!(memory
-            .long_term
+            .brain.long_term
             .index
             .contains_key("kw:architecture:query processing pipeline"));
     }
@@ -727,8 +727,8 @@ tempfile = "3"
 
         // MemoryState and GraphMemory appear 2+ times each
         assert!(result.domain >= 2, "should extract recurring PascalCase terms; got {}", result.domain);
-        assert!(memory.long_term.index.contains_key("kw:domain:memorystate"));
-        assert!(memory.long_term.index.contains_key("kw:domain:graphmemory"));
+        assert!(memory.brain.long_term.index.contains_key("kw:domain:memorystate"));
+        assert!(memory.brain.long_term.index.contains_key("kw:domain:graphmemory"));
     }
 
     #[test]
@@ -764,9 +764,9 @@ tempfile = "3"
         // Rust: fn, struct, impl, trait, enum, mod = 6
         // Python: def, class = 2
         assert!(result.code >= 8, "should seed language code keywords; got {}", result.code);
-        assert!(memory.long_term.index.contains_key("kw:code:fn "));
-        assert!(memory.long_term.index.contains_key("kw:code:struct "));
-        assert!(memory.long_term.index.contains_key("kw:code:def "));
+        assert!(memory.brain.long_term.index.contains_key("kw:code:fn "));
+        assert!(memory.brain.long_term.index.contains_key("kw:code:struct "));
+        assert!(memory.brain.long_term.index.contains_key("kw:code:def "));
     }
 
     #[test]
@@ -782,8 +782,8 @@ tempfile = "3"
         );
 
         assert!(result.tools >= 2, "tech stack items should become tools; got {}", result.tools);
-        assert!(memory.long_term.index.contains_key("kw:tool:react"));
-        assert!(memory.long_term.index.contains_key("kw:tool:typescript"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:react"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:typescript"));
     }
 
     #[test]
@@ -823,9 +823,9 @@ tempfile = "3"
         );
 
         assert!(result.tools >= 3, "should extract flask, requests, numpy; got {}", result.tools);
-        assert!(memory.long_term.index.contains_key("kw:tool:flask"));
-        assert!(memory.long_term.index.contains_key("kw:tool:requests"));
-        assert!(memory.long_term.index.contains_key("kw:tool:numpy"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:flask"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:requests"));
+        assert!(memory.brain.long_term.index.contains_key("kw:tool:numpy"));
     }
 
     #[test]
@@ -856,7 +856,7 @@ fn main() {
 
         // AppConfig appears 3x, RequestHandler 2x
         assert!(result.domain >= 2, "should extract PascalCase identifiers; got {}", result.domain);
-        assert!(memory.long_term.index.contains_key("kw:domain:appconfig"));
-        assert!(memory.long_term.index.contains_key("kw:domain:requesthandler"));
+        assert!(memory.brain.long_term.index.contains_key("kw:domain:appconfig"));
+        assert!(memory.brain.long_term.index.contains_key("kw:domain:requesthandler"));
     }
 }

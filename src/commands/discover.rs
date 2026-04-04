@@ -1,5 +1,4 @@
 use crate::cli::{parse_args, CommandDef};
-use crate::memory::MemoryState;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -232,7 +231,7 @@ pub(crate) fn onboard_project(
     report: &DiscoveryReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(".legend")?;
-    let mut memory = MemoryState::load_or_default()?;
+    let mut memory = crate::memory::load_or_default()?;
 
     // 1. Ingest metadata
     let mut metadata_text = format!(
@@ -251,7 +250,7 @@ pub(crate) fn onboard_project(
             report.metadata.tech_stack.join(", ")
         ));
     }
-    memory.tick(&metadata_text);
+    crate::memory::tick(&mut memory, &metadata_text);
 
     // 2. Ingest high-signal files (Documentation & Manifests)
     for file in &report.high_signal_files {
@@ -263,7 +262,7 @@ pub(crate) fn onboard_project(
                     "CONTEXT: High-signal file '{}' ({})\n\n{}",
                     file.path, file.kind, content
                 );
-                memory.tick(&tick_content);
+                crate::memory::tick(&mut memory, &tick_content);
             }
         }
     }
@@ -277,10 +276,10 @@ pub(crate) fn onboard_project(
                 task.id, task.prompt, task.tool_hint
             ));
         }
-        memory.tick(&tasks_text);
+        crate::memory::tick(&mut memory, &tasks_text);
     }
 
-    memory.save()?;
+    crate::memory::save(&memory)?;
 
     Ok(())
 }

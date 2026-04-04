@@ -1,5 +1,4 @@
 use crate::cli::{parse_args, CommandDef};
-use crate::memory::MemoryState;
 
 struct SessionsOptions {
     count: usize,
@@ -24,8 +23,8 @@ fn parse_sessions_args(args: &[String], def: &CommandDef) -> SessionsOptions {
 pub(super) fn handle_sessions(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_sessions_args(args, def);
 
-    let memory = MemoryState::load_or_default()?;
-    let recent = memory.recent_sessions(opts.count);
+    let memory = crate::memory::load_or_default()?;
+    let recent = crate::memory::recent_sessions(&memory, opts.count);
 
     if recent.is_empty() {
         println!("No session log entries yet.");

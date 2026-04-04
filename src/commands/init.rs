@@ -1,8 +1,7 @@
 use crate::cli::{parse_args, print_command_help, CommandDef};
 use crate::commands::discover;
-use crate::memory::keyword_bootstrap;
-use crate::memory::MemoryState;
-use crate::memory::keywords;
+use crate::tool::bootstrap as keyword_bootstrap;
+use crate::memory::wernicke::lexicon as keywords;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -39,7 +38,7 @@ pub fn handle_init(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std:
                 let _ = discover::onboard_project(Path::new("."), &report);
                 println!("✓ Project onboarding complete. High-signal context ingested into Legend.");
                 // Re-bootstrap workspace keywords from fresh discovery
-                if let Ok(mut memory) = MemoryState::load_or_default() {
+                if let Ok(mut memory) = crate::memory::load_or_default() {
                     let high_signal: Vec<(String, String)> = report
                         .high_signal_files
                         .iter()
@@ -58,8 +57,8 @@ pub fn handle_init(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std:
                         &mut memory,
                     );
                     if br.total > 0 {
-                        memory.rebuild_keyword_cache();
-                        let _ = memory.save();
+                        crate::memory::rebuild_keyword_cache(&mut memory.brain);
+                        let _ = crate::memory::save(&memory);
                         println!("✓ Bootstrapped {} workspace keywords", br.total);
                     }
                 }
@@ -208,17 +207,17 @@ fn setup_git_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
 /// Loads memory (triggering any pending migrations), then re-saves it
 /// in the current format. This ensures old memory files are upgraded.
 fn migrate_memory_store() {
-    match MemoryState::load_or_default() {
+    match crate::memory::load_or_default() {
         Ok(mut state) => {
-            let entries = state.short_term.len();
-            let nodes = state.long_term.nodes.len();
+            let entries = state.brain.short_term.len();
+            let nodes = state.brain.long_term.nodes.len();
 
-            state.rebalance_weights();
+            crate::memory::rebalance_weights(&mut state.brain);
 
             // Scan manifests for dependencies and add to graph
-            state.scan_ecosystem_dependencies();
+            crate::memory::scan_ecosystem_dependencies(&mut state);
 
-            if let Err(e) = state.save() {
+            if let Err(e) = crate::memory::save(&state) {
                 eprintln!("  Warning: failed to save memory store: {}", e);
             } else if entries > 0 || nodes > 0 {
                 println!(
@@ -871,7 +870,7 @@ fn setup_zed_mcp() -> Result<(), Box<dyn std::error::Error>> {
 /// Seeds universal keywords (decision, bug, todo, etc.) from static arrays,
 /// plus language-specific code keywords based on detected languages.
 fn seed_tier1_keywords(report: &discover::DiscoveryReport) {
-    let mut memory = match MemoryState::load_or_default() {
+    let mut memory = match crate::memory::load_or_default() {
         Ok(m) => m,
         Err(_) => return,
     };
@@ -880,39 +879,39 @@ fn seed_tier1_keywords(report: &discover::DiscoveryReport) {
 
     // 1. Always seed universal classification keywords from static arrays
     for kw in keywords::DECISION_KEYWORDS {
-        if memory.add_keyword_node("decision", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"decision", kw, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::BUG_KEYWORDS {
-        if memory.add_keyword_node("bug", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"bug", kw, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::TODO_KEYWORDS {
-        if memory.add_keyword_node("todo", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"todo", kw, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::PREFERENCE_KEYWORDS {
-        if memory.add_keyword_node("preference", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"preference", kw, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::ARCHITECTURE_KEYWORDS {
-        if memory.add_keyword_node("architecture", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"architecture", kw, Vec::new()) {
             count += 1;
         }
     }
     for (verb, _kind) in keywords::ACTION_KEYWORDS {
-        if memory.add_keyword_node("action", verb, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"action", verb, Vec::new()) {
             count += 1;
         }
     }
 
     // 2. Seed ENVIRONMENT_KEYWORDS as baseline
     for kw in keywords::ENVIRONMENT_KEYWORDS {
-        if memory.add_keyword_node("environment", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"environment", kw, Vec::new()) {
             count += 1;
         }
     }
@@ -940,8 +939,8 @@ fn seed_tier1_keywords(report: &discover::DiscoveryReport) {
     count += bootstrap_result.total;
 
     if count > 0 {
-        memory.rebuild_keyword_cache();
-        if let Err(e) = memory.save() {
+        crate::memory::rebuild_keyword_cache(&mut memory.brain);
+        if let Err(e) = crate::memory::save(&memory) {
             eprintln!("  Warning: failed to save keyword seeds: {}", e);
         } else {
             println!("✓ Seeded {} keyword nodes into knowledge graph", count);
@@ -963,51 +962,51 @@ fn seed_tier1_keywords(report: &discover::DiscoveryReport) {
 
 /// Seed only universal keywords (no discovery report available).
 fn seed_universal_keywords() {
-    let mut memory = match MemoryState::load_or_default() {
+    let mut memory = match crate::memory::load_or_default() {
         Ok(m) => m,
         Err(_) => return,
     };
 
     let mut count = 0;
     for kw in keywords::DECISION_KEYWORDS {
-        if memory.add_keyword_node("decision", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"decision", kw, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::BUG_KEYWORDS {
-        if memory.add_keyword_node("bug", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"bug", kw, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::TODO_KEYWORDS {
-        if memory.add_keyword_node("todo", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"todo", kw, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::PREFERENCE_KEYWORDS {
-        if memory.add_keyword_node("preference", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"preference", kw, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::ARCHITECTURE_KEYWORDS {
-        if memory.add_keyword_node("architecture", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"architecture", kw, Vec::new()) {
             count += 1;
         }
     }
     for (verb, _kind) in keywords::ACTION_KEYWORDS {
-        if memory.add_keyword_node("action", verb, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"action", verb, Vec::new()) {
             count += 1;
         }
     }
     for kw in keywords::ENVIRONMENT_KEYWORDS {
-        if memory.add_keyword_node("environment", kw, Vec::new()) {
+        if crate::memory::add_keyword_node(&mut memory.brain,"environment", kw, Vec::new()) {
             count += 1;
         }
     }
 
     if count > 0 {
-        memory.rebuild_keyword_cache();
-        if let Err(e) = memory.save() {
+        crate::memory::rebuild_keyword_cache(&mut memory.brain);
+        if let Err(e) = crate::memory::save(&memory) {
             eprintln!("  Warning: failed to save keyword seeds: {}", e);
         } else {
             println!("✓ Seeded {} universal keyword nodes into knowledge graph", count);
@@ -1043,13 +1042,13 @@ fn print_tier2_prompt(report: &discover::DiscoveryReport) {
 
 /// Check if graph has any Keyword nodes; if not, seed tier-1 universals.
 fn migrate_keywords_if_needed() {
-    let memory = match MemoryState::load_or_default() {
+    let memory = match crate::memory::load_or_default() {
         Ok(m) => m,
         Err(_) => return,
     };
 
     let has_keywords = memory
-        .long_term
+        .brain.long_term
         .nodes
         .values()
         .any(|n| n.kind == "Keyword");
@@ -1068,8 +1067,8 @@ fn migrate_keywords_if_needed() {
 /// Count keyword nodes in the graph.
 #[allow(dead_code)]
 pub fn count_keyword_nodes() -> usize {
-    match MemoryState::load_or_default() {
-        Ok(m) => m.long_term.nodes.values().filter(|n| n.kind == "Keyword").count(),
+    match crate::memory::load_or_default() {
+        Ok(m) => m.brain.long_term.nodes.values().filter(|n| n.kind == "Keyword").count(),
         Err(_) => 0,
     }
 }

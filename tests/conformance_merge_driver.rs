@@ -74,6 +74,9 @@ fn git_merge_driver_merges_memory_state_from_both_sides() {
             gradient_sq_sum: 0.0,
             density: 0.0,
             consolidated: false,
+            emotional_valence: 0.0,
+            stability: 1.0,
+            last_retrieval_interval: 0,
         }],
         vec![FixtureSessionEntry {
             timestamp: 1,
@@ -98,6 +101,9 @@ fn git_merge_driver_merges_memory_state_from_both_sides() {
                 gradient_sq_sum: 0.0,
                 density: 0.0,
                 consolidated: false,
+                emotional_valence: 0.0,
+                stability: 1.0,
+                last_retrieval_interval: 0,
             },
             FixtureShortTermEntry {
                 id: 2,
@@ -113,6 +119,9 @@ fn git_merge_driver_merges_memory_state_from_both_sides() {
                 gradient_sq_sum: 0.0,
                 density: 0.0,
                 consolidated: false,
+                emotional_valence: 0.0,
+                stability: 1.0,
+                last_retrieval_interval: 0,
             },
         ],
         vec![
