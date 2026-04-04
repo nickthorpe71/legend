@@ -141,31 +141,4 @@ pub struct GitSyncInfo {
     pub uncommitted_summary: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// LLM entity integration
-// ---------------------------------------------------------------------------
-
-/// A schema-validated entity proposed by an external LLM task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmEntity {
-    pub label: String,
-    pub kind: String,
-    pub context: String,
-    #[serde(default = "default_llm_confidence")]
-    pub confidence: f32,
-}
-
-fn default_llm_confidence() -> f32 {
-    0.7
-}
-
-/// Result of applying validated LLM entities into the long-term graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmEntityApplyResult {
-    pub accepted_entities: usize,
-    pub created_nodes: usize,
-    pub updated_nodes: usize,
-    pub edges_reinforced: usize,
-}
-
 // ReinforceResult, ReinforcedEntry — moved to memory/basal_ganglia.rs (brain types).

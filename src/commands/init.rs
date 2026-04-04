@@ -865,6 +865,33 @@ fn setup_zed_mcp() -> Result<(), Box<dyn std::error::Error>> {
 // Keyword Seeding
 // ---------------------------------------------------------------------------
 
+/// Seed universal classification keywords from static arrays into the knowledge graph.
+/// Shared by `seed_tier1_keywords` and `seed_universal_keywords`.
+fn seed_static_keywords(brain: &mut crate::memory::BrainState) -> usize {
+    let mut count = 0;
+    let categories: &[(&str, &[&str])] = &[
+        ("decision", keywords::DECISION_KEYWORDS),
+        ("bug", keywords::BUG_KEYWORDS),
+        ("todo", keywords::TODO_KEYWORDS),
+        ("preference", keywords::PREFERENCE_KEYWORDS),
+        ("architecture", keywords::ARCHITECTURE_KEYWORDS),
+        ("environment", keywords::ENVIRONMENT_KEYWORDS),
+    ];
+    for (category, kws) in categories {
+        for kw in *kws {
+            if crate::memory::add_keyword_node(brain, category, kw, Vec::new()) {
+                count += 1;
+            }
+        }
+    }
+    for (verb, _kind) in keywords::ACTION_KEYWORDS {
+        if crate::memory::add_keyword_node(brain, "action", verb, Vec::new()) {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Seed tier-1 keywords from discovery report (no LLM needed).
 ///
 /// Seeds universal keywords (decision, bug, todo, etc.) from static arrays,
@@ -875,48 +902,9 @@ fn seed_tier1_keywords(report: &discover::DiscoveryReport) {
         Err(_) => return,
     };
 
-    let mut count = 0;
+    let mut count = seed_static_keywords(&mut memory.brain);
 
-    // 1. Always seed universal classification keywords from static arrays
-    for kw in keywords::DECISION_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"decision", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::BUG_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"bug", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::TODO_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"todo", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::PREFERENCE_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"preference", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::ARCHITECTURE_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"architecture", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for (verb, _kind) in keywords::ACTION_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"action", verb, Vec::new()) {
-            count += 1;
-        }
-    }
-
-    // 2. Seed ENVIRONMENT_KEYWORDS as baseline
-    for kw in keywords::ENVIRONMENT_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"environment", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-
-    // 3. Workspace bootstrap — environmental imprinting layer
+    // 2. Workspace bootstrap — environmental imprinting layer
     //    Seeds: dependencies → tools, doc headings → architecture,
     //    recurring terms → domain, language code keywords, config keys → environment
     let high_signal: Vec<(String, String)> = report
@@ -967,42 +955,7 @@ fn seed_universal_keywords() {
         Err(_) => return,
     };
 
-    let mut count = 0;
-    for kw in keywords::DECISION_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"decision", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::BUG_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"bug", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::TODO_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"todo", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::PREFERENCE_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"preference", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::ARCHITECTURE_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"architecture", kw, Vec::new()) {
-            count += 1;
-        }
-    }
-    for (verb, _kind) in keywords::ACTION_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"action", verb, Vec::new()) {
-            count += 1;
-        }
-    }
-    for kw in keywords::ENVIRONMENT_KEYWORDS {
-        if crate::memory::add_keyword_node(&mut memory.brain,"environment", kw, Vec::new()) {
-            count += 1;
-        }
-    }
+    let count = seed_static_keywords(&mut memory.brain);
 
     if count > 0 {
         crate::memory::rebuild_keyword_cache(&mut memory.brain);

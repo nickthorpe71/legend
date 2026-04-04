@@ -28,6 +28,11 @@ use std::fs;
 /// Maximum number of session log entries to keep.
 const SESSION_LOG_CAPACITY: usize = 100;
 
+/// Round a float to 3 decimal places for display.
+pub(crate) fn round3(v: f32) -> f32 {
+    (v * 1000.0).round() / 1000.0
+}
+
 // ---------------------------------------------------------------------------
 // Git integration
 // ---------------------------------------------------------------------------
@@ -406,8 +411,8 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
         .map(|n| {
             serde_json::json!({
                 "id": n.id, "label": n.label, "kind": n.kind,
-                "weight": (n.weight * 1000.0).round() / 1000.0,
-                "salience": (n.salience * 1000.0).round() / 1000.0,
+                "weight": round3(n.weight),
+                "salience": round3(n.salience),
                 "last_seen": n.last_seen,
             })
         })
@@ -420,7 +425,7 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
         .map(|e| {
             serde_json::json!({
                 "from": e.from, "to": e.to,
-                "weight": (e.weight * 1000.0).round() / 1000.0,
+                "weight": round3(e.weight),
                 "kind": e.kind,
             })
         })
@@ -432,8 +437,8 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
         .map(|e| {
             serde_json::json!({
                 "id": e.id, "text": e.text, "summary": e.summary,
-                "salience": (e.salience * 1000.0).round() / 1000.0,
-                "emotional_valence": (e.emotional_valence * 1000.0).round() / 1000.0,
+                "salience": round3(e.salience),
+                "emotional_valence": round3(e.emotional_valence),
                 "usage": e.usage, "last_access": e.last_access,
                 "reconsolidation_count": e.reconsolidation_count,
                 "labile": e.labile_until >= state.brain.clock,
@@ -448,8 +453,8 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
         .map(|e| {
             serde_json::json!({
                 "id": e.id, "text": e.text,
-                "salience": (e.salience * 1000.0).round() / 1000.0,
-                "emotional_valence": (e.emotional_valence * 1000.0).round() / 1000.0,
+                "salience": round3(e.salience),
+                "emotional_valence": round3(e.emotional_valence),
                 "tick_created": e.tick_created,
                 "rehearsal_count": e.rehearsal_count,
                 "promoted": e.promoted,

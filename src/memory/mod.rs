@@ -42,7 +42,7 @@ use entorhinal::{chunk_text, summarize_group, summarize_text};
 // Re-export tool types so existing `crate::memory::TickResult` paths still work.
 #[allow(unused_imports)]
 pub use crate::tool::types::{
-    GitSyncInfo, LlmEntity, LlmEntityApplyResult, MemoryCategory, MemoryConfig, MemoryContext,
+    GitSyncInfo, MemoryCategory, MemoryConfig, MemoryContext,
     SessionEntry, TermStats, TickResult,
 };
 #[allow(unused_imports)]
@@ -307,8 +307,6 @@ pub use prefrontal::WorkingMemoryEntry;
 pub use neocortex::{GraphMemory, GraphNode, GraphEdge, GraphNodeSummary};
 
 // ReinforceResult, ReinforcedEntry — defined in basal_ganglia.rs, re-exported above.
-
-// LlmEntity, LlmEntityApplyResult — moved to crate::tool::types, re-exported above.
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -1017,134 +1015,6 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         summaries
     }
 
-    /// Apply externally generated, schema-validated entities into the graph.
-    /// This is intentionally conservative: low-confidence or stopword labels are skipped.
-pub fn apply_llm_entities(
-    state: &mut BrainState,
-    source_text: &str,
-    entities: &[LlmEntity],
-    task_confidence: f32,
-) -> LlmEntityApplyResult {
-        state.clock += 1;
-        let now = state.clock;
-
-        let mut accepted_entities = 0usize;
-        let mut created_nodes = 0usize;
-        let mut updated_nodes = 0usize;
-        let mut node_ids = Vec::new();
-        let mut contexts = Vec::new();
-
-        for entity in entities {
-            let label = entity.label.trim();
-            if label.len() < 2 || label.len() > 120 {
-                continue;
-            }
-            if crate::memory::wernicke::is_stopword(label) {
-                continue;
-            }
-
-            let confidence = entity.confidence.clamp(0.0, 1.0);
-            if confidence < 0.5 {
-                continue;
-            }
-
-            let normalized_kind = match entity.kind.as_str() {
-                "FilePath" | "Function" | "Struct" | "Enum" | "Trait" | "Class" | "Interface"
-                | "Module" | "Symbol" | "Type" | "Term" | "Topic" | "Tool" | "Environment"
-                | "Action" | "Decorator" | "Import" | "Package" | "Export" | "Impl" => {
-                    entity.kind.clone()
-                }
-                _ => "Term".to_string(),
-            };
-
-            let normalized_context = match entity.context.as_str() {
-                "defines" | "uses" | "implements" | "mentions" | "performs" => {
-                    entity.context.clone()
-                }
-                _ => "mentions".to_string(),
-            };
-
-            let id = if let Some(&existing) = state.long_term.index.get(label) {
-                updated_nodes += 1;
-                existing
-            } else {
-                let id = state.next_id;
-                state.next_id += 1;
-                created_nodes += 1;
-                state.long_term.nodes.insert(
-                    id,
-                    GraphNode {
-                        id,
-                        label: label.to_string(),
-                        kind: normalized_kind.clone(),
-                        weight: 1.0,
-                        last_seen: now,
-                        salience: task_confidence.clamp(0.0, 1.0),
-                        source_texts: Vec::new(),
-                        embedding: Vec::new(),
-                        full_text: None,
-                    },
-                );
-                state.long_term.index.insert(label.to_string(), id);
-                id
-            };
-
-            if let Some(node) = state.long_term.nodes.get_mut(&id) {
-                let weight_multiplier = match normalized_kind.as_str() {
-                    "FilePath" => 2.0,
-                    "Function" | "Struct" | "Enum" | "Trait" | "Class" | "Interface" => 1.6,
-                    "Tool" | "Environment" => 1.4,
-                    "Symbol" | "Type" => 1.2,
-                    "Term" => 0.5,
-                    _ => 1.0,
-                };
-                node.weight += (NODE_WEIGHT_BASE + task_confidence * 0.2 + confidence * 0.2)
-                    * weight_multiplier;
-                node.salience = (node.salience + task_confidence * 0.2 + confidence * 0.2).min(1.0);
-                node.last_seen = now;
-                if state.keyword_cache.kind_priority(&normalized_kind) > state.keyword_cache.kind_priority(&node.kind) {
-                    node.kind = normalized_kind.clone();
-                }
-                if !source_text.trim().is_empty() {
-                    node.source_texts.push(source_text.to_string());
-                    if node.source_texts.len() > 6 {
-                        let overflow = node.source_texts.len() - 6;
-                        node.source_texts.drain(0..overflow);
-                    }
-                }
-            }
-
-            accepted_entities += 1;
-            node_ids.push(id);
-            contexts.push(normalized_context);
-        }
-
-        let mut edges_reinforced = 0usize;
-        for i in 0..node_ids.len() {
-            for j in (i + 1)..node_ids.len() {
-                let edge_kind = match (contexts[i].as_str(), contexts[j].as_str()) {
-                    ("defines", "mentions") => "contains",
-                    (a, b) if a == "uses" || b == "uses" => "depends-on",
-                    (a, b) if a == "implements" || b == "implements" => "implements",
-                    ("defines", "defines") => "co-defined",
-                    (a, b) if a == "performs" || b == "performs" => "drives",
-                    _ => "related",
-                };
-                neocortex::upsert_edge(&mut state.long_term, node_ids[i], node_ids[j], edge_kind, state.clock);
-                edges_reinforced += 1;
-            }
-        }
-
-        neocortex::prune_graph(&mut state.long_term, state.clock);
-
-        LlmEntityApplyResult {
-            accepted_entities,
-            created_nodes,
-            updated_nodes,
-            edges_reinforced,
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
@@ -1181,27 +1051,31 @@ pub fn rebalance_weights(state: &mut BrainState) {
 // Free functions — brain helpers (stay here)
 // ---------------------------------------------------------------------------
 
+/// Insert a new graph node and register it in the index. Returns the assigned ID.
+fn insert_graph_node(
+    state: &mut BrainState,
+    label: String,
+    kind: &str,
+    weight: f32,
+    salience: f32,
+    source_texts: Vec<String>,
+) -> u64 {
+    let id = state.next_id;
+    state.next_id += 1;
+    state.long_term.nodes.insert(id, GraphNode {
+        id, label: label.clone(), kind: kind.to_string(),
+        weight, last_seen: state.clock, salience, source_texts,
+        embedding: Vec::new(), full_text: None,
+    });
+    state.long_term.index.insert(label, id);
+    id
+}
+
 pub fn add_node_if_new(state: &mut BrainState, label: &str, kind: &str, salience: f32) {
     if state.long_term.index.contains_key(label) {
         return;
     }
-    let id = state.next_id;
-    state.next_id += 1;
-    state.long_term.nodes.insert(
-        id,
-        GraphNode {
-            id,
-            label: label.to_string(),
-            kind: kind.to_string(),
-            weight: 1.0,
-            last_seen: state.clock,
-            salience,
-            source_texts: Vec::new(),
-            embedding: Vec::new(),
-            full_text: None,
-        },
-    );
-    state.long_term.index.insert(label.to_string(), id);
+    insert_graph_node(state, label.to_string(), kind, 1.0, salience, Vec::new());
 }
 
 /// Create or reinforce a Task node in the knowledge graph.
@@ -1210,24 +1084,7 @@ pub fn upsert_task_node(state: &mut BrainState, label: &str) -> u64 {
     let node_id = if let Some(&id) = state.long_term.index.get(label) {
         id
     } else {
-        let id = state.next_id;
-        state.next_id += 1;
-        state.long_term.nodes.insert(
-            id,
-            GraphNode {
-                id,
-                label: label.to_string(),
-                kind: "Task".to_string(),
-                weight: 1.0 + NODE_WEIGHT_BASE,
-                last_seen: state.clock,
-                salience: 0.8,
-                source_texts: Vec::new(),
-                embedding: Vec::new(),
-                full_text: None,
-            },
-        );
-        state.long_term.index.insert(label.to_string(), id);
-        id
+        insert_graph_node(state, label.to_string(), "Task", 1.0 + NODE_WEIGHT_BASE, 0.8, Vec::new())
     };
 
     if let Some(node) = state.long_term.nodes.get_mut(&node_id) {
@@ -1253,23 +1110,7 @@ pub fn add_keyword_node(state: &mut BrainState, category: &str, term: &str, meta
         }
         false
     } else {
-        let id = state.next_id;
-        state.next_id += 1;
-        state.long_term.nodes.insert(
-            id,
-            GraphNode {
-                id,
-                label: label.clone(),
-                kind: "Keyword".to_string(),
-                weight: 1.0,
-                last_seen: state.clock,
-                salience: 0.5,
-                source_texts: metadata,
-                embedding: Vec::new(),
-                full_text: None,
-            },
-        );
-        state.long_term.index.insert(label, id);
+        insert_graph_node(state, label, "Keyword", 1.0, 0.5, metadata);
         true
     }
 }
@@ -1292,13 +1133,7 @@ fn update_term_frequencies(state: &mut BrainState, text: &str) -> usize {
 
     // Check if this tick contains any existing keyword matches (for co-occurrence filter)
     let lowered = text.to_lowercase();
-    let has_existing_keyword = state.keyword_cache.decision.iter().any(|k| lowered.contains(k.as_str()))
-        || state.keyword_cache.bug.iter().any(|k| lowered.contains(k.as_str()))
-        || state.keyword_cache.todo.iter().any(|k| lowered.contains(k.as_str()))
-        || state.keyword_cache.architecture.iter().any(|k| lowered.contains(k.as_str()))
-        || state.keyword_cache.preference.iter().any(|k| lowered.contains(k.as_str()))
-        || state.keyword_cache.tool.iter().any(|k| lowered.contains(k.as_str()))
-        || state.keyword_cache.domain.iter().any(|k| lowered.contains(k.as_str()));
+    let has_existing_keyword = state.keyword_cache.matches_any_category(&lowered);
 
     let clock = state.clock;
     for entity in &entities {
@@ -1424,40 +1259,14 @@ mod tests {
     #[test]
     fn test_eviction_score_recent_high() {
         let recent = ShortTermEntry {
-            id: 1,
-            text: "test".into(),
-            summary: "test".into(),
-            embedding: vec![],
-            last_access: 100,
-            usage: 5,
-            salience: 0.8,
-            reconsolidation_count: 0,
-            labile_until: 0,
-            refs: vec![],
-            gradient_sq_sum: 0.0,
-            density: 0.0,
-            consolidated: false,
-            emotional_valence: 0.0,
-            stability: 1.0,
-            last_retrieval_interval: 0,
+            id: 1, text: "test".into(), summary: "test".into(),
+            last_access: 100, usage: 5, salience: 0.8,
+            ..Default::default()
         };
         let old = ShortTermEntry {
-            id: 2,
-            text: "test".into(),
-            summary: "test".into(),
-            embedding: vec![],
-            last_access: 1,
-            usage: 1,
-            salience: 0.1,
-            reconsolidation_count: 0,
-            labile_until: 0,
-            refs: vec![],
-            gradient_sq_sum: 0.0,
-            density: 0.0,
-            consolidated: false,
-            emotional_valence: 0.0,
-            stability: 1.0,
-            last_retrieval_interval: 0,
+            id: 2, text: "test".into(), summary: "test".into(),
+            last_access: 1, usage: 1, salience: 0.1,
+            ..Default::default()
         };
         assert!(eviction_score(&recent, 100) > eviction_score(&old, 100));
     }
@@ -2051,22 +1860,9 @@ mod tests {
         let mut state = MemoryState::default();
         // Manually inject a stale short-term entry
         state.brain.short_term.push(ShortTermEntry {
-            id: 999,
-            text: "stale".into(),
-            summary: "stale".into(),
+            id: 999, text: "stale".into(), summary: "stale".into(),
             embedding: vec![0.0; 256],
-            last_access: 0,
-            usage: 0,
-            salience: 0.0,
-            reconsolidation_count: 0,
-            labile_until: 0,
-            refs: vec![],
-            gradient_sq_sum: 0.0,
-            density: 0.0,
-            consolidated: false,
-            emotional_valence: 0.0,
-            stability: 1.0,
-            last_retrieval_interval: 0,
+            ..Default::default()
         });
         // Advance clock far enough for pruning to kick in
         state.brain.clock = 500;
@@ -3883,13 +3679,10 @@ mod tests {
         // Insert a consolidated L2 entry
         state.brain.short_term.push(ShortTermEntry {
             id: 999, text: "SkipConsolidated test entry for pattern completion".into(),
-            summary: String::new(),
             embedding: embed_text("SkipConsolidated test entry", dim),
             salience: 0.5, usage: 1, last_access: 1,
-            reconsolidation_count: 0, labile_until: 0, refs: vec![],
-            gradient_sq_sum: 0.0, density: 0.0,
             consolidated: true, // marked consolidated
-            emotional_valence: 0.0, stability: 1.0, last_retrieval_interval: 0,
+            ..Default::default()
         });
 
         let completed = hippocampus::pattern_complete(&state.brain,"SkipConsolidated", &[]);
@@ -4030,19 +3823,13 @@ mod tests {
         let emb = crate::memory::thalamus::embed_text("auth jwt", 256);
         state.brain.short_term.push(ShortTermEntry {
             id: 1, text: "AuthModule uses JwtParser for token validation".into(),
-            summary: String::new(), embedding: emb.clone(), salience: 0.5,
-            usage: 1, last_access: 8, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb.clone(), salience: 0.5, usage: 1, last_access: 8,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
             id: 2, text: "JwtParser validates AuthModule tokens".into(),
-            summary: String::new(), embedding: emb, salience: 0.5,
-            usage: 1, last_access: 10, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb, salience: 0.5, usage: 1, last_access: 10,
+            ..Default::default()
         });
 
         let edge_weight_before = state.brain.long_term.edges[0].weight;
@@ -4070,19 +3857,13 @@ mod tests {
         let emb = crate::memory::thalamus::embed_text("server database", 256);
         state.brain.short_term.push(ShortTermEntry {
             id: 1, text: "ServerHandler processes API requests".into(),
-            summary: String::new(), embedding: emb.clone(), salience: 0.5,
-            usage: 1, last_access: 10, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb.clone(), salience: 0.5, usage: 1, last_access: 10,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
             id: 2, text: "DatabasePool manages connections".into(),
-            summary: String::new(), embedding: emb, salience: 0.5,
-            usage: 1, last_access: 90, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb, salience: 0.5, usage: 1, last_access: 90,
+            ..Default::default()
         });
 
         let edge_count_before = state.brain.long_term.edges.len();
@@ -4118,19 +3899,13 @@ mod tests {
         let emb = crate::memory::thalamus::embed_text("config router", 256);
         state.brain.short_term.push(ShortTermEntry {
             id: 1, text: "ConfigParser loads YAML settings".into(),
-            summary: String::new(), embedding: emb.clone(), salience: 0.5,
-            usage: 1, last_access: 8, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb.clone(), salience: 0.5, usage: 1, last_access: 8,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
             id: 2, text: "RouterSetup configures API endpoints".into(),
-            summary: String::new(), embedding: emb, salience: 0.5,
-            usage: 1, last_access: 9, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb, salience: 0.5, usage: 1, last_access: 9,
+            ..Default::default()
         });
 
         assert!(state.brain.long_term.edges.is_empty(), "no edges before replay");
@@ -4160,19 +3935,13 @@ mod tests {
         let emb = crate::memory::thalamus::embed_text("memory event", 256);
         state.brain.short_term.push(ShortTermEntry {
             id: 1, text: "MemHandler and EventLoop process ticks".into(),
-            summary: String::new(), embedding: emb.clone(), salience: 0.5,
-            usage: 1, last_access: 8, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb.clone(), salience: 0.5, usage: 1, last_access: 8,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
             id: 2, text: "EventLoop dispatches to MemHandler".into(),
-            summary: String::new(), embedding: emb, salience: 0.5,
-            usage: 1, last_access: 9, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb, salience: 0.5, usage: 1, last_access: 9,
+            ..Default::default()
         });
 
         let salience_before: Vec<f32> = state.brain.short_term.iter().map(|e| e.salience).collect();
@@ -4380,20 +4149,12 @@ mod tests {
         let emb2 = embed_text(&text2, dim);
 
         state.brain.short_term.push(ShortTermEntry {
-            id: 1, text: text1.clone(),
-            summary: String::new(), embedding: emb1, salience: 0.8,
-            usage: 0, last_access: 0, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            id: 1, text: text1.clone(), embedding: emb1, salience: 0.8,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
-            id: 2, text: text2.clone(),
-            summary: String::new(), embedding: emb2, salience: 0.7,
-            usage: 0, last_access: 0, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            id: 2, text: text2.clone(), embedding: emb2, salience: 0.7,
+            ..Default::default()
         });
 
         let summaries = consolidate(&mut state.brain);
@@ -4423,19 +4184,13 @@ mod tests {
 
         state.brain.short_term.push(ShortTermEntry {
             id: 1, text: "Database migration strategy for PostgreSQL".into(),
-            summary: String::new(), embedding: emb1, salience: 0.6,
-            usage: 0, last_access: 0, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb1, salience: 0.6,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
             id: 2, text: "Database migration rollback for PostgreSQL".into(),
-            summary: String::new(), embedding: emb2, salience: 0.6,
-            usage: 0, last_access: 0, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb2, salience: 0.6,
+            ..Default::default()
         });
 
         consolidate(&mut state.brain);
@@ -4464,19 +4219,13 @@ mod tests {
 
         state.brain.short_term.push(ShortTermEntry {
             id: 1, text: "trivial formatting update to docs".into(),
-            summary: String::new(), embedding: emb1, salience: 0.1,
-            usage: 0, last_access: 0, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb1, salience: 0.1,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
             id: 2, text: "trivial formatting change to docs".into(),
-            summary: String::new(), embedding: emb2, salience: 0.1,
-            usage: 0, last_access: 0, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            embedding: emb2, salience: 0.1,
+            ..Default::default()
         });
 
         consolidate(&mut state.brain);
@@ -4534,20 +4283,12 @@ mod tests {
         let emb2 = embed_text(text2, dim);
 
         state.brain.short_term.push(ShortTermEntry {
-            id: 1, text: text1.into(),
-            summary: String::new(), embedding: emb1.clone(), salience: 0.8,
-            usage: 0, last_access: 0, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            id: 1, text: text1.into(), embedding: emb1.clone(), salience: 0.8,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
-            id: 2, text: text2.into(),
-            summary: String::new(), embedding: emb2.clone(), salience: 0.8,
-            usage: 0, last_access: 0, reconsolidation_count: 0,
-            labile_until: 0, refs: vec![], gradient_sq_sum: 0.0,
-            density: 0.0, consolidated: false, emotional_valence: 0.0,
-            stability: 1.0, last_retrieval_interval: 0,
+            id: 2, text: text2.into(), embedding: emb2.clone(), salience: 0.8,
+            ..Default::default()
         });
 
         consolidate(&mut state.brain);
@@ -4591,21 +4332,16 @@ mod tests {
         // Two entries with identical scores — only the consolidated flag differs
         state.brain.short_term.push(ShortTermEntry {
             id: 1, text: "Consolidated topic alpha details".into(),
-            summary: String::new(), embedding: embed_text("Consolidated topic alpha details", dim),
-            salience: 0.5, usage: 1, last_access: 0,
-            reconsolidation_count: 0, labile_until: 0, refs: vec![],
-            gradient_sq_sum: 0.0, density: 0.0,
+            embedding: embed_text("Consolidated topic alpha details", dim),
+            salience: 0.5, usage: 1,
             consolidated: true, // backed by L3 with embedding
-            emotional_valence: 0.0, stability: 1.0, last_retrieval_interval: 0,
+            ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
             id: 2, text: "Unconsolidated topic beta details".into(),
-            summary: String::new(), embedding: embed_text("Unconsolidated topic beta details", dim),
-            salience: 0.5, usage: 1, last_access: 0,
-            reconsolidation_count: 0, labile_until: 0, refs: vec![],
-            gradient_sq_sum: 0.0, density: 0.0,
-            consolidated: false,
-            emotional_valence: 0.0, stability: 1.0, last_retrieval_interval: 0,
+            embedding: embed_text("Unconsolidated topic beta details", dim),
+            salience: 0.5, usage: 1,
+            ..Default::default()
         });
 
         // Directly call insert_short_term to trigger eviction
