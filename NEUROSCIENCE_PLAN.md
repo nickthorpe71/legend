@@ -468,32 +468,28 @@ Track topic coherence in `tick_impl`:
 
 ---
 
-## Change 14: Structural Synaptic Plasticity (Multi-Edge Connections)
+## Change 14: CPEB-Inspired Synaptic Tagging — DONE
 
-**Problem**: Currently each node pair has a single edge with one weight. In the brain, Kandel (Nobel 2000, *Aplysia* studies) showed that learning physically grows new synaptic terminals between neurons — it's not just one connection getting stronger, it's structurally denser wiring. Our single edge collapses all contextual relationships into one weight. "Config" ↔ "JWT" connected via authentication AND token expiry are indistinguishable.
+**Problem**: Legend already has a global importance signal (`emotional_valence`) and local edge activity (`last_seen`), but no mechanism connecting them. High-valence events do not selectively strengthen the specific graph edges that were recently active and therefore relevant to the event.
 
-**Brain analogy**: Structural plasticity — habituation retracts synaptic terminals, sensitization grows new ones. Multiple parallel synapses between the same neuron pair encode different facets of the relationship. Selective pruning of one synapse doesn't destroy the others.
+**Brain analogy**: Kandel's synaptic tagging and capture model. Neuromodulatory signals such as serotonin trigger broadly available plasticity resources, but only synapses with a recent local tag capture them. Here, emotional valence is the global signal and recently reinforced graph edges are the tagged synapses.
 
-**Files**: `src/memory/mod.rs`
-
-**Depends on**: Change 15 (contextual queries make multi-edges useful)
+**Files**: `src/memory/mod.rs`, `src/memory/neocortex.rs`
 
 **Changes**:
-- Modify `upsert_edge` to match on `(from, to, kind)` instead of just `(from, to)` — allows multiple edges between the same pair with different kinds
-- When a new kind of relationship is discovered between an existing pair, create a new edge rather than upgrading the existing one's kind
-- Preserve kind-upgrade logic for genuinely hierarchical kinds (e.g., "related" → "contains")
-- Update `spreading_activation` to traverse all edges from a node (naturally works with multiple edges)
-- Update `prune_graph` edge pruning to handle multiple edges per pair
-- Each edge independently tracks its own activation_count, stability, and interval EMAs
+- Add `CPEB_TAG_WINDOW`, `CPEB_VALENCE_THRESHOLD`, and `CPEB_STABILITY_BOOST` constants
+- Add `neocortex::cpeb_tag_edges(...)` to selectively boost `GraphEdge.stability` for edges whose `last_seen` falls within the recent activity window
+- In `tick_impl`, after computing tick valence for smart consolidation triggers, apply CPEB tagging when `|valence| > threshold`
+- Make `apply_l3_decay` stability-aware so CPEB-tagged edges retain weight longer, not just stronger spreading activation
 
 **Tests**:
-- Same node pair can have "contains" and "temporal" edges simultaneously
-- Reinforcing one edge doesn't affect the other's stability/activation_count
-- Pruning a low-weight edge between a pair preserves the other edge(s)
-- Spreading activation traverses all edges from a node
-- Existing edge behavior unchanged for single-kind pairs
+- High-valence ticks boost stability only for recently active edges
+- Neutral ticks do not trigger the boost
+- Larger valence magnitudes produce larger stability increases
+- Tagged edges decay more slowly than untagged edges with the same starting weight
+- The tag window is respected for stale edges
 
-**Value**: Different contextual associations between concepts are preserved independently. A temporal work-session link can decay without destroying the structural "contains" relationship. Enables context-aware queries (Change 16).
+**Value**: Important events now selectively preserve the graph pathways that were actually active around the event. This gives Legend a targeted long-term potentiation mechanism instead of globally strengthening the entire neocortical graph.
 
 ---
 
@@ -542,12 +538,12 @@ Track topic coherence in `tick_impl`:
 11. Terminology                  ← always last
 12. Emotional Consolidation      ← DONE (amygdala-driven, 605 tests passing)
 13. Context Switch Consolidation ← DONE (novelty detection, 605 tests passing)
-14. Structural Synaptic Plasticity ← depends on 7, unlocks 15
-15. Context-Aware Spreading Activation ← depends on 14
+14. CPEB Synaptic Tagging         ← DONE
+15. Context-Aware Spreading Activation ← needs re-evaluation after 14 redesign
 16. Neural Net Feasibility Review ← after all behavioral changes, with usage data
 ```
 
-Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Change 9 (keyword bootstrap) can be done at any point but benefits from having the emotional valence keywords (Change 2) and architecture settled. Changes 10-11 are structural/doc cleanup, always last. Changes 12-13 are smart consolidation triggers — can be done any time after the SWR replay foundation (Change 5) is in place. Change 14 is a research review — always after all behavioral and structural changes are settled.
+Changes 1-3 are independent — can be done in any order. Change 4 unlocks 5, 6, 7. Change 8 is best after behavioral changes. Change 9 (keyword bootstrap) can be done at any point but benefits from having the emotional valence keywords (Change 2) and architecture settled. Changes 10-11 are structural/doc cleanup, always last. Changes 12-13 are smart consolidation triggers — can be done any time after the SWR replay foundation (Change 5) is in place. Change 15 should be reconsidered against the current single-edge architecture now that Change 14 is selective synaptic tagging instead of multi-edge structure.
 
 ## Migration
 

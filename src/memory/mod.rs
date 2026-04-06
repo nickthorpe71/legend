@@ -196,6 +196,12 @@ const EMOTIONAL_INTENSITY_DECAY: f32 = 0.8;
 /// Context switch detection: cosine similarity threshold for topic shifts.
 const CONTEXT_SWITCH_THRESHOLD: f32 = 0.15;
 
+/// CPEB synaptic tagging: recently-active edges get amplified stability
+/// when a high-valence event occurs (Kandel's synaptic capture model).
+const CPEB_TAG_WINDOW: u64 = 5;
+const CPEB_VALENCE_THRESHOLD: f32 = 0.3;
+const CPEB_STABILITY_BOOST: f32 = 1.5;
+
 /// Stopwords excluded from Layer 3 keyword auto-promotion.
 /// Common English words that carry no domain-specific information.
 const STOPWORDS: &[&str] = &[
@@ -564,6 +570,18 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
             let tick_embedding = embed_text(text, state.config.embedding_dim);
             let tick_valence = compute_emotional_valence(text, &state.keyword_cache);
             state.recent_valence_sum += tick_valence.abs();
+
+            // CPEB synaptic tagging: high-valence events selectively strengthen
+            // recently active graph edges (Kandel's synaptic capture model).
+            if tick_valence.abs() > CPEB_VALENCE_THRESHOLD {
+                neocortex::cpeb_tag_edges(
+                    &mut state.long_term,
+                    state.clock,
+                    tick_valence.abs(),
+                    CPEB_TAG_WINDOW,
+                    CPEB_STABILITY_BOOST,
+                );
+            }
 
             // Context switch detection: compare with previous tick's embedding
             if !state.last_tick_embedding.is_empty() {
@@ -3363,6 +3381,160 @@ mod tests {
             "high-stability edge should propagate more: B={} vs C={}",
             b_activation, c_activation
         );
+    }
+
+    #[test]
+    fn test_cpeb_tagging_boosts_recently_active_edges() {
+        let mut state = MemoryState::default();
+        state.brain.clock = 20;
+
+        let (a_id, b_id, c_id, d_id) = (1900, 1901, 1902, 1903);
+        insert_test_node(&mut state.brain, a_id, "RecentA");
+        insert_test_node(&mut state.brain, b_id, "RecentB");
+        insert_test_node(&mut state.brain, c_id, "OldA");
+        insert_test_node(&mut state.brain, d_id, "OldB");
+
+        state.brain.long_term.edges.push(GraphEdge {
+            from: a_id, to: b_id, weight: 0.5,
+            kind: "related".into(), last_seen: 20,
+            activation_count: 1, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+        state.brain.long_term.edges.push(GraphEdge {
+            from: c_id, to: d_id, weight: 0.5,
+            kind: "related".into(), last_seen: 14,
+            activation_count: 1, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+
+        let text = "BLOCKER: critical crash panic failure in auth flow";
+        assert!(
+            compute_emotional_valence(text, &state.brain.keyword_cache).abs() > CPEB_VALENCE_THRESHOLD
+        );
+
+        tick(&mut state, text);
+
+        assert!(state.brain.long_term.edges[0].stability > 1.0);
+        assert!((state.brain.long_term.edges[1].stability - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_cpeb_no_boost_on_neutral_tick() {
+        let mut state = MemoryState::default();
+        state.brain.clock = 20;
+
+        let (a_id, b_id) = (1910, 1911);
+        insert_test_node(&mut state.brain, a_id, "NeutralA");
+        insert_test_node(&mut state.brain, b_id, "NeutralB");
+        state.brain.long_term.edges.push(GraphEdge {
+            from: a_id, to: b_id, weight: 0.5,
+            kind: "related".into(), last_seen: 20,
+            activation_count: 1, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+
+        let text = "updated routine documentation and formatting notes";
+        assert_eq!(compute_emotional_valence(text, &state.brain.keyword_cache), 0.0);
+
+        tick(&mut state, text);
+
+        assert!((state.brain.long_term.edges[0].stability - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_cpeb_boost_scales_with_valence() {
+        let low_text = "BUG: auth error on login";
+        let high_text = "BLOCKER: critical auth crash panic failure regression";
+
+        let mut low_state = MemoryState::default();
+        low_state.brain.clock = 20;
+        let (low_a, low_b) = (1920, 1921);
+        insert_test_node(&mut low_state.brain, low_a, "LowA");
+        insert_test_node(&mut low_state.brain, low_b, "LowB");
+        low_state.brain.long_term.edges.push(GraphEdge {
+            from: low_a, to: low_b, weight: 0.5,
+            kind: "related".into(), last_seen: 20,
+            activation_count: 1, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+
+        let mut high_state = MemoryState::default();
+        high_state.brain.clock = 20;
+        let (high_a, high_b) = (1930, 1931);
+        insert_test_node(&mut high_state.brain, high_a, "HighA");
+        insert_test_node(&mut high_state.brain, high_b, "HighB");
+        high_state.brain.long_term.edges.push(GraphEdge {
+            from: high_a, to: high_b, weight: 0.5,
+            kind: "related".into(), last_seen: 20,
+            activation_count: 1, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+
+        let low_valence = compute_emotional_valence(low_text, &low_state.brain.keyword_cache).abs();
+        let high_valence = compute_emotional_valence(high_text, &high_state.brain.keyword_cache).abs();
+        assert!(low_valence > CPEB_VALENCE_THRESHOLD);
+        assert!(high_valence > low_valence);
+
+        tick(&mut low_state, low_text);
+        tick(&mut high_state, high_text);
+
+        let low_boost = low_state.brain.long_term.edges[0].stability - 1.0;
+        let high_boost = high_state.brain.long_term.edges[0].stability - 1.0;
+        assert!(
+            high_boost > low_boost,
+            "higher valence should produce larger CPEB boost: high={} low={}",
+            high_boost,
+            low_boost
+        );
+    }
+
+    #[test]
+    fn test_cpeb_tagged_edge_decays_slower() {
+        let mut long_term = GraphMemory::default();
+        long_term.edges.push(GraphEdge {
+            from: 1, to: 2, weight: 1.0,
+            kind: "related".into(), last_seen: 50,
+            activation_count: 1, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+        long_term.edges.push(GraphEdge {
+            from: 3, to: 4, weight: 1.0,
+            kind: "related".into(), last_seen: 40,
+            activation_count: 1, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+
+        let tagged = neocortex::cpeb_tag_edges(&mut long_term, 50, 0.9, CPEB_TAG_WINDOW, CPEB_STABILITY_BOOST);
+        assert_eq!(tagged, 1);
+
+        long_term.edges[0].last_seen = 50;
+        long_term.edges[1].last_seen = 50;
+
+        neocortex::apply_l3_decay(&mut long_term, 250);
+
+        assert!(
+            long_term.edges[0].weight > long_term.edges[1].weight,
+            "tagged edge should retain more weight after decay: tagged={} untagged={}",
+            long_term.edges[0].weight,
+            long_term.edges[1].weight
+        );
+    }
+
+    #[test]
+    fn test_cpeb_tag_window_respected() {
+        let mut long_term = GraphMemory::default();
+        long_term.edges.push(GraphEdge {
+            from: 1, to: 2, weight: 1.0,
+            kind: "related".into(), last_seen: 10,
+            activation_count: 1, stability: 1.0,
+            recent_interval_avg: 1.0, historical_interval_avg: 1.0,
+        });
+
+        let tagged =
+            neocortex::cpeb_tag_edges(&mut long_term, 20, 0.8, CPEB_TAG_WINDOW, CPEB_STABILITY_BOOST);
+
+        assert_eq!(tagged, 0);
+        assert!((long_term.edges[0].stability - 1.0).abs() < f32::EPSILON);
     }
 
     // --- Pattern completion tests (Change 6) ---

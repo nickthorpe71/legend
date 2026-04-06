@@ -441,6 +441,27 @@ pub fn hebbian_reinforce(long_term: &mut GraphMemory, co_retrieved_ids: &[u64], 
     }
 }
 
+/// CPEB-inspired synaptic tagging: recently active edges capture the global
+/// valence signal and receive extra stability for long-term retention.
+pub fn cpeb_tag_edges(
+    long_term: &mut GraphMemory,
+    clock: u64,
+    valence_magnitude: f32,
+    tag_window: u64,
+    stability_boost: f32,
+) -> u32 {
+    let mut tagged_count = 0u32;
+
+    for edge in &mut long_term.edges {
+        if clock.saturating_sub(edge.last_seen) <= tag_window {
+            edge.stability = (edge.stability + stability_boost * valence_magnitude).min(10.0);
+            tagged_count += 1;
+        }
+    }
+
+    tagged_count
+}
+
 /// Apply L3 decay to graph nodes and edges.
 pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64) {
     for node in long_term.nodes.values_mut() {
@@ -450,7 +471,9 @@ pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64) {
     }
     // Edge decay: edges that haven't been reinforced recently lose weight
     for edge in &mut long_term.edges {
-        let decay = (-(clock.saturating_sub(edge.last_seen) as f32) * NEOCORTICAL_DECAY_RATE).exp();
+        let effective_decay_rate = NEOCORTICAL_DECAY_RATE / edge.stability.max(1.0);
+        let decay =
+            (-(clock.saturating_sub(edge.last_seen) as f32) * effective_decay_rate).exp();
         edge.weight *= decay;
     }
 }
