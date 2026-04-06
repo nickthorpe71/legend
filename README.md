@@ -110,13 +110,13 @@ These are primarily used by your AI agent automatically, but you can run them ma
 
 ## How It Works
 
-Legend stores memories in `.legend/memory.lz4` using LZ4 compression for fast (<5ms) reads. Memories are organized into three layers:
+Legend stores memories in `.legend/memory.lz4` using MessagePack + LZ4 compression for fast (<5ms) reads. The architecture is organized around brain-region modules inspired by cognitive neuroscience:
 
-1. **Short-term** — recent ticks, high detail, decays over time
-2. **Mid-term** — consolidated clusters of related memories
-3. **Long-term** — a knowledge graph of entities, relationships, and architectural patterns
+1. **Working Memory (Prefrontal Cortex)** — attention-gated buffer (~10 items), filters noise before deeper storage
+2. **Episodic Memory (Hippocampus)** — short-term vector store with reconsolidation, emotional valence, and Ebbinghaus forgetting curves
+3. **Knowledge Graph (Neocortex)** — long-term entity relationships with multi-hop spreading activation and Hebbian learning
 
-Salience-based retrieval ensures the most relevant memories surface first. Frequently accessed memories are automatically reinforced; stale ones decay naturally.
+Salience-based retrieval with pattern completion ensures the most relevant memories surface first. Emotional memories resist forgetting; stale ones decay naturally.
 
 ## License
 

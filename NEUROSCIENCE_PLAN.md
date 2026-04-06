@@ -343,7 +343,7 @@ In pruning: consolidated L2 entries whose Summary node has a valid embedding get
 
 ---
 
-## Change 10: Brain-Region Module Structure
+## Change 10: Brain-Region Module Structure — DONE
 
 **Problem**: `mod.rs` is a 4700+ line monolith. The codebase should be organized by brain region so each module is a distinct neural subsystem with clear inputs/outputs.
 

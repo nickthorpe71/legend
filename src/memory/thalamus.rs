@@ -1,4 +1,32 @@
-/// N-gram embedding and vector similarity functions.
+/// Thalamus — Sensory encoding relay hub.
+///
+/// The thalamus is the brain's central relay station: nearly all sensory input
+/// passes through it before reaching the cortex.  It doesn't interpret signals
+/// itself but transforms them into a representation the rest of the brain can
+/// use for matching, gating, and routing.
+///
+/// In Legend, `thalamus.rs` fills exactly that role:
+///
+/// - **N-gram hashing as perceptual representation** — raw text is transformed
+///   into a 256-dimensional embedding via FNV-1a hashing of word unigrams,
+///   character trigrams, and word bigrams.  This is the "sensory encoding" step:
+///   converting arbitrary input into a fixed-size vector the downstream modules
+///   (hippocampus, neocortex, dentate gyrus) can compare and manipulate.
+///
+/// - **Cosine similarity as neural distance** — the distance between two
+///   embeddings is measured by cosine similarity, analogous to the neural
+///   "closeness" of two percepts.  High similarity → same memory trace;
+///   moderate → related but distinct; low → novel input.
+///
+/// - **Salience scoring as attentional gating** — `compute_salience()` assigns
+///   an importance prior to each incoming chunk based on keyword heuristics
+///   (decisions, bugs, architecture, preferences, code definitions).  This
+///   determines whether the prefrontal attention gate promotes the input to
+///   episodic memory (L2) or lets it fade in working memory (L1).
+///
+/// The thalamus is deliberately stateless: it transforms input and returns
+/// values without mutating `BrainState`.  All side effects happen in the
+/// calling orchestrator (`tick_impl`) and downstream brain-region modules.
 use crate::memory::wernicke::KeywordCache;
 
 /// Compute an n-gram embedding vector of given dimension.
