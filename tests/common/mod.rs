@@ -302,42 +302,6 @@ pub fn seed_basic_repo(harness: &Harness) {
     harness.write_file("README.md", "# Fixture App\n");
 }
 
-pub fn write_bincode_memory_fixture(harness: &Harness) {
-    let state = FixtureMemoryState {
-        config: FixtureMemoryConfig::default(),
-        immediate: VecDeque::new(),
-        short_term: vec![FixtureShortTermEntryMissingConsolidated {
-            id: 5,
-            text: "bincode entry".into(),
-            summary: "bincode entry".into(),
-            embedding: vec![0.7, 0.2, 0.1],
-            last_access: 99,
-            usage: 2,
-            salience: 0.7,
-            reconsolidation_count: 0,
-            labile_until: 0,
-            refs: vec![],
-            gradient_sq_sum: 0.0,
-            density: 0.0,
-        }],
-        long_term: FixtureGraphMemory::default(),
-        clock: 99,
-        next_id: 6,
-        session_log: vec![],
-        current_task: Some("migration fixture".into()),
-        ticks_since_consolidation: 0,
-        last_retrieved_ids: vec![],
-        last_synced_sha: Some("abc123".into()),
-    };
-
-    let serialized = bincode::serialize(&state).expect("serialize bincode fixture");
-    let compressed =
-        lz4::block::compress(&serialized, None, true).expect("compress bincode fixture");
-    fs::create_dir_all(harness.legend_dir()).expect("create legend dir");
-    fs::write(harness.legend_dir().join("memory.lz4"), compressed)
-        .expect("write bincode memory fixture");
-}
-
 pub fn write_msgpack_missing_field_fixture(harness: &Harness) {
     let state = FixtureMemoryState {
         config: FixtureMemoryConfig::default(),

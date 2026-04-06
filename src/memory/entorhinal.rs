@@ -1,4 +1,31 @@
-/// Extractive summarization utilities.
+/// Entorhinal Cortex — Information compression gateway.
+///
+/// The entorhinal cortex sits between the hippocampus and the neocortex,
+/// acting as a compression and routing gateway.  It receives rich sensory
+/// data and reduces it to compact representations suitable for hippocampal
+/// storage — analogous to how grid cells in the entorhinal cortex compress
+/// spatial information into periodic, low-dimensional codes.
+///
+/// In Legend, `entorhinal.rs` provides three compression functions:
+///
+/// - **Text chunking (`chunk_text`)** — splits long input into ~200-character
+///   segments respecting line boundaries.  This is the "grid-cell spatial
+///   encoding" analogy: continuous input is discretized into manageable units
+///   that each get their own embedding, salience score, and memory trace.
+///
+/// - **Single-text summarization (`summarize_single`)** — extractive
+///   best-sentence selection, boosted by decision rationale, code references,
+///   and architecture keywords.  This is lossy compression: the full text is
+///   preserved on the `ShortTermEntry`, but the summary provides a compact
+///   cue for display and group consolidation.
+///
+/// - **Group summarization (`summarize_group`)** — picks the top 3 entries
+///   from a cluster (by salience + usage), joins their summaries, and
+///   truncates to 300 characters.  Used during consolidation to create
+///   compressed L3 Summary nodes from related L2 entries.
+///
+/// Like the biological entorhinal cortex, this module is a pure transform
+/// layer — it compresses information but doesn't store or retrieve it.
 use crate::memory::ShortTermEntry;
 use crate::memory::wernicke::KeywordCache;
 

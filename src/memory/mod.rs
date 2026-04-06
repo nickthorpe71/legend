@@ -298,7 +298,8 @@ pub struct MemoryState {
 }
 
 // ShortTermEntry, MemoryRef, MemorySnippet — defined in hippocampus.rs, re-exported here.
-pub use hippocampus::{ShortTermEntry, MemoryRef, MemorySnippet};
+#[allow(unused_imports)] // MemoryRef: used by lib consumers + ShortTermEntry's public API
+pub use hippocampus::{MemoryRef, MemorySnippet, ShortTermEntry};
 
 // WorkingMemoryEntry — defined in prefrontal.rs, re-exported here.
 pub use prefrontal::WorkingMemoryEntry;
@@ -1245,10 +1246,7 @@ pub fn safe_truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::persistence::{
-        MemoryStateV4, MemoryStateV5, ShortTermEntryV4, ShortTermEntryV5, MSGPACK_FORMAT_VERSION,
-        MSGPACK_MAGIC, migrate_v4, migrate_v5,
-    };
+    use crate::tool::persistence::{MSGPACK_FORMAT_VERSION, MSGPACK_MAGIC};
     use std::collections::VecDeque;
     use std::fs;
 
@@ -2703,49 +2701,6 @@ mod tests {
     // ---- V4 migration test ----
 
     #[test]
-    fn test_v4_migration_preserves_data() {
-        let v4 = MemoryStateV4 {
-            config: MemoryConfig::default(),
-            immediate: VecDeque::new(),
-            short_term: vec![ShortTermEntryV4 {
-                id: 42,
-                text: "test memory entry".to_string(),
-                summary: "test".to_string(),
-                embedding: vec![1.0, 2.0, 3.0],
-                last_access: 100,
-                usage: 5,
-                salience: 0.7,
-                reconsolidation_count: 2,
-                labile_until: 0,
-                refs: vec![],
-                gradient_sq_sum: 0.5,
-                density: 0.3,
-            }],
-            long_term: GraphMemory::default(),
-            clock: 200,
-            next_id: 43,
-            session_log: vec![],
-            current_task: Some("test task".to_string()),
-            ticks_since_consolidation: 5,
-            last_retrieved_ids: vec![1, 2],
-            last_synced_sha: Some("abc123".to_string()),
-        };
-
-        let migrated = migrate_v4(v4);
-        assert_eq!(migrated.brain.clock, 200);
-        assert_eq!(migrated.brain.next_id, 43);
-        assert_eq!(migrated.brain.short_term.len(), 1);
-        let entry = &migrated.brain.short_term[0];
-        assert_eq!(entry.id, 42);
-        assert_eq!(entry.text, "test memory entry");
-        assert_eq!(entry.gradient_sq_sum, 0.5);
-        assert_eq!(entry.density, 0.3);
-        assert!(!entry.consolidated, "migrated entries should have consolidated=false");
-        assert_eq!(migrated.current_task, Some("test task".to_string()));
-        assert_eq!(migrated.last_synced_sha, Some("abc123".to_string()));
-    }
-
-    #[test]
     fn test_msgpack_roundtrip() {
         let dir = std::env::temp_dir().join("legend_test_msgpack_rt");
         let _ = fs::create_dir_all(&dir);
@@ -2780,66 +2735,6 @@ mod tests {
         assert_eq!(loaded.brain.short_term[0].text, "msgpack roundtrip test");
         assert_eq!(loaded.brain.short_term[0].embedding, vec![0.1, 0.2, 0.3]);
         assert!(loaded.brain.short_term[0].consolidated);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_bincode_to_msgpack_auto_migration() {
-        let dir = std::env::temp_dir().join("legend_test_bc_to_mp");
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("memory.lz4");
-
-        // Save in old bincode V5 format (bincode doesn't support #[serde(flatten)])
-        let legacy = MemoryStateV5 {
-            config: MemoryConfig::default(),
-            immediate: VecDeque::new(),
-            short_term: vec![ShortTermEntryV5 {
-                id: 5,
-                text: "bincode entry".into(),
-                summary: String::new(),
-                embedding: vec![],
-                last_access: 0,
-                usage: 0,
-                salience: 0.7,
-                reconsolidation_count: 0,
-                labile_until: 0,
-                refs: vec![],
-                gradient_sq_sum: 0.0,
-                density: 0.0,
-                consolidated: false,
-            }],
-            long_term: GraphMemory::default(),
-            clock: 99,
-            next_id: 0,
-            session_log: vec![],
-            current_task: None,
-            ticks_since_consolidation: 0,
-            last_retrieved_ids: vec![],
-            last_synced_sha: None,
-        };
-        let serialized = bincode::serialize(&legacy).unwrap();
-        let compressed = lz4::block::compress(&serialized, None, true).unwrap();
-        fs::write(&path, &compressed).unwrap();
-
-        // Load should succeed via bincode fallback
-        let loaded = load_memory_from_path(&path).expect("load bincode");
-        assert_eq!(loaded.brain.clock, 99);
-        assert_eq!(loaded.brain.short_term[0].text, "bincode entry");
-
-        // Re-save should write msgpack
-        save_memory_to_path(&loaded, &path).expect("re-save as msgpack");
-
-        // Verify it's now msgpack format
-        let compressed2 = fs::read(&path).unwrap();
-        let decompressed = lz4::block::decompress(&compressed2, None).unwrap();
-        assert_eq!(&decompressed[..4], b"LGND");
-        assert_eq!(decompressed[4], 1);
-
-        // Load again from msgpack
-        let reloaded = load_memory_from_path(&path).expect("load msgpack");
-        assert_eq!(reloaded.brain.clock, 99);
-        assert_eq!(reloaded.brain.short_term[0].text, "bincode entry");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -3255,42 +3150,6 @@ mod tests {
             st_before,
             "flush should NOT double-promote already-promoted entries"
         );
-    }
-
-    #[test]
-    fn test_v5_migration_discards_immediate() {
-        let v5 = MemoryStateV5 {
-            config: MemoryConfig::default(),
-            immediate: VecDeque::from(["old1".to_string(), "old2".to_string()]),
-            short_term: vec![ShortTermEntryV5 {
-                id: 10,
-                text: "preserved entry".to_string(),
-                summary: String::new(),
-                embedding: Vec::new(),
-                last_access: 0,
-                usage: 0,
-                salience: 0.0,
-                reconsolidation_count: 0,
-                labile_until: 0,
-                refs: Vec::new(),
-                gradient_sq_sum: 0.0,
-                density: 0.0,
-                consolidated: false,
-            }],
-            long_term: GraphMemory::default(),
-            clock: 50,
-            next_id: 11,
-            session_log: vec![],
-            current_task: None,
-            ticks_since_consolidation: 0,
-            last_retrieved_ids: vec![],
-            last_synced_sha: None,
-        };
-        let migrated = migrate_v5(v5);
-        assert!(migrated.brain.working_memory.is_empty(), "V5 migration should discard old immediate");
-        assert_eq!(migrated.brain.short_term.len(), 1);
-        assert_eq!(migrated.brain.short_term[0].text, "preserved entry");
-        assert_eq!(migrated.brain.clock, 50);
     }
 
     // --- Synaptic encoding tests (Change 7) ---
