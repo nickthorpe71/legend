@@ -296,7 +296,7 @@ fn setup_gemini_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "Gemini CLI",
         "BeforeAgent",
         "SessionEnd",
-        None,
+        Some("AfterTool"),
         None,
     )
 }
@@ -319,8 +319,14 @@ fn generate_legend_instructions() -> String {
 
 You MUST use **Legend** to maintain context across sessions.
 
+## Session Start — CRITICAL
+The **SessionStart hook** automatically runs `{cmd} memory start` and injects the output into your first system-reminder. **Your very first message MUST:**
+1. Acknowledge the Legend context you received (current task, recent activity, key memories)
+2. If the hook output is missing or empty, run `{cmd} memory start` manually
+
+**NEVER skip or ignore the Legend session context.** It contains your task continuity, architectural decisions, and user preferences from prior sessions. Failing to acknowledge it wastes the user's time re-explaining context.
+
 ## Essential Commands
-- **Session start:** `{cmd} memory start` — returns prior decisions, recent activity, and categorized memories.
 - **Record decisions:** `{cmd} memory tick <<'EOF'` ... `EOF` — tick decisions with rationale (DECISION:, BUG:, ARCHITECTURE:, BLOCKER: prefixes). Aim for 3-8 ticks per session.
 - **Recall context:** `{cmd} memory query <<'EOF'` ... `EOF` — query before starting new topics. Top result auto-reinforced.
 {LEGEND_MARKER_END}"#,
@@ -338,6 +344,10 @@ fn get_legend_command() -> &'static str {
     // Check if we're in the Legend source directory
     if let Ok(cargo_toml) = fs::read_to_string("Cargo.toml") {
         if cargo_toml.contains("name = \"legend\"") {
+            // Prefer pre-built binary for speed in hooks (~40ms vs ~200ms)
+            if Path::new("./target/release/legend").exists() {
+                return "./target/release/legend";
+            }
             return "cargo run --quiet --";
         }
     }
@@ -418,14 +428,21 @@ fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "Claude Code",
         "UserPromptSubmit",
         "Stop",
-        None,
+        Some("PostToolUse"),
         None,
     )
 }
 
 /// Set up Codex hooks in .codex/settings.json
 fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    setup_agent_hooks(".codex", "Codex", "UserPromptSubmit", "Stop", None, None)
+    setup_agent_hooks(
+        ".codex",
+        "Codex",
+        "UserPromptSubmit",
+        "Stop",
+        Some("PostToolUse"),
+        None,
+    )
 }
 
 /// Set up agent hooks in a settings.json for the given tool directory.
@@ -440,8 +457,8 @@ fn setup_agent_hooks(
     display_name: &str,
     prompt_event: &str,
     stop_event: &str,
-    after_tool_event: Option<&str>,
-    after_agent_event: Option<&str>,
+    post_tool_event: Option<&str>,
+    _after_agent_event: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = Path::new(dir_name);
     let settings_path = agent_dir.join("settings.json");
@@ -455,19 +472,39 @@ fn setup_agent_hooks(
         }]
     });
 
+    // Auto-query Legend with the user's prompt text (10s cooldown, 800 char cap)
     let legend_prompt_hook = json!({
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": "echo \"[Legend] Tick decisions. Query before new tasks.\""
+            "command": format!(
+                "input=$(cat); now=$(date +%s); stamp=.legend/.last_query; last=$(cat \"$stamp\" 2>/dev/null || echo 0); if [ $((now - last)) -lt 10 ]; then exit 0; fi; prompt=$(echo \"$input\" | sed -n 's/.*\"prompt\": *\"\\([^\"]*\\)\".*/\\1/p' | head -c 200); if [ -n \"$prompt\" ]; then echo \"$now\" > \"$stamp\"; result=$({cmd} memory query \"$prompt\" 2>/dev/null | head -c 800); if [ -n \"$result\" ]; then printf '{{\"additionalContext\":\"[Legend Context] %s\"}}' \"$(echo \"$result\" | tr '\"' \"'\" | tr '\\n' ' ')\"; fi; fi",
+                cmd = cmd
+            )
         }]
     });
 
+    // Remind LLM to tick after file modifications (no binary invocation — zero latency)
+    let legend_post_tool_hook = json!({
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [{
+            "type": "command",
+            "command": format!(
+                "input=$(cat); file=$(echo \"$input\" | sed -n 's/.*\"file_path\": *\"\\([^\"]*\\)\".*/\\1/p'); if [ -n \"$file\" ]; then printf '{{\"additionalContext\":\"[Legend] You modified %s. Tick your decision: {cmd} memory tick '\\''DECISION: ...'\\''\"}}' \"$file\"; fi",
+                cmd = cmd
+            )
+        }]
+    });
+
+    // Show changed file count at session end
     let legend_stop_hook = json!({
         "matcher": "*",
         "hooks": [{
             "type": "command",
-            "command": "echo \"[Legend] Session ending. Tick final decisions and next steps.\""
+            "command": format!(
+                "changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$changed\" ]; then count=$(echo \"$changed\" | wc -l | tr -d ' '); printf '{{\"additionalContext\":\"[Legend] %s file(s) changed this session. Tick final decisions: {cmd} memory tick\"}}' \"$count\"; fi",
+                cmd = cmd
+            )
         }]
     });
 
@@ -487,8 +524,8 @@ fn setup_agent_hooks(
             &settings,
             prompt_event,
             stop_event,
-            after_tool_event,
-            after_agent_event,
+            post_tool_event,
+            _after_agent_event,
         ) {
             println!("  {} hooks already configured", display_name);
             return Ok(());
@@ -502,7 +539,8 @@ fn setup_agent_hooks(
                 stop_hook: &legend_stop_hook,
                 prompt_event,
                 stop_event,
-                after_tool_event,
+                post_tool_hook: post_tool_event.map(|_| &legend_post_tool_hook),
+                post_tool_event,
             },
         );
 
@@ -522,6 +560,9 @@ fn setup_agent_hooks(
         hooks_map.insert("SessionStart".to_string(), json!([legend_session_hook]));
         hooks_map.insert(prompt_event.to_string(), json!([legend_prompt_hook]));
         hooks_map.insert(stop_event.to_string(), json!([legend_stop_hook]));
+        if let Some(event) = post_tool_event {
+            hooks_map.insert(event.to_string(), json!([legend_post_tool_hook]));
+        }
         let settings = json!({ "hooks": hooks_map });
 
         let output = serde_json::to_string_pretty(&settings)?;
@@ -610,13 +651,14 @@ fn remove_any_legend_hooks(settings: &mut Value) -> bool {
             if let Some(hook_entries) = hooks_obj.get_mut(hook_type).and_then(|s| s.as_array_mut())
             {
                 let initial_len = hook_entries.len();
-                // Filter out entries that contain any Legend commands
+                // Filter out entries that contain any Legend commands or markers
                 hook_entries.retain(|entry| {
                     let entry_str = serde_json::to_string(entry).unwrap_or_default();
-                    // If it contains these core strings, it's likely a Legend hook
                     !(entry_str.contains("memory start")
                         || entry_str.contains("memory query")
-                        || entry_str.contains("memory tick"))
+                        || entry_str.contains("memory tick")
+                        || entry_str.contains("[Legend]")
+                        || entry_str.contains("[Legend Context]"))
                 });
                 if hook_entries.len() < initial_len {
                     removed = true;
@@ -641,8 +683,8 @@ struct LegendHooks<'a> {
     stop_hook: &'a Value,
     prompt_event: &'a str,
     stop_event: &'a str,
-    #[allow(dead_code)]
-    after_tool_event: Option<&'a str>,
+    post_tool_hook: Option<&'a Value>,
+    post_tool_event: Option<&'a str>,
 }
 
 /// Merge Legend hooks into existing settings
@@ -681,6 +723,17 @@ fn merge_legend_hooks(settings: &mut Value, hooks_config: LegendHooks) {
         .and_then(|s| s.as_array_mut())
     {
         arr.push(hooks_config.stop_hook.clone());
+    }
+
+    // Add post-tool hook if configured (e.g. PostToolUse or AfterTool)
+    if let (Some(hook), Some(event)) = (hooks_config.post_tool_hook, hooks_config.post_tool_event)
+    {
+        if hooks.get(event).is_none() {
+            hooks[event] = json!([]);
+        }
+        if let Some(arr) = hooks.get_mut(event).and_then(|s| s.as_array_mut()) {
+            arr.push(hook.clone());
+        }
     }
 }
 

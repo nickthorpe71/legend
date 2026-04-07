@@ -1,10 +1,21 @@
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "input=$(cat); file=$(echo \"$input\" | sed -n 's/.*\"file_path\": *\"\\([^\"]*\\)\".*/\\1/p'); if [ -n \"$file\" ]; then printf '{\"additionalContext\":\"[Legend] You modified %s. Tick your decision: ./target/release/legend memory tick '\\''DECISION: ...'\\''\"}' \"$file\"; fi",
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit|Write|NotebookEdit"
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
           {
-            "command": "cargo run --quiet -- memory start",
+            "command": "./target/release/legend memory start",
             "type": "command"
           }
         ],
@@ -15,16 +26,7 @@
       {
         "hooks": [
           {
-            "command": "echo \"[Legend] Session ending. Tick final decisions and next steps.\"",
-            "type": "command"
-          }
-        ],
-        "matcher": "*"
-      },
-      {
-        "hooks": [
-          {
-            "command": "echo \"[Legend] Session ending. Tick final decisions and next steps.\"",
+            "command": "changed=$(git diff --name-only 2>/dev/null | head -5); if [ -n \"$changed\" ]; then count=$(echo \"$changed\" | wc -l | tr -d ' '); printf '{\"additionalContext\":\"[Legend] %s file(s) changed this session. Tick final decisions: ./target/release/legend memory tick\"}' \"$count\"; fi",
             "type": "command"
           }
         ],
@@ -35,16 +37,7 @@
       {
         "hooks": [
           {
-            "command": "echo \"[Legend] Tick decisions. Query before new tasks.\"",
-            "type": "command"
-          }
-        ],
-        "matcher": "*"
-      },
-      {
-        "hooks": [
-          {
-            "command": "echo \"[Legend] Tick decisions. Query before new tasks.\"",
+            "command": "input=$(cat); now=$(date +%s); stamp=.legend/.last_query; last=$(cat \"$stamp\" 2>/dev/null || echo 0); if [ $((now - last)) -lt 10 ]; then exit 0; fi; prompt=$(echo \"$input\" | sed -n 's/.*\"prompt\": *\"\\([^\"]*\\)\".*/\\1/p' | head -c 200); if [ -n \"$prompt\" ]; then echo \"$now\" > \"$stamp\"; result=$(./target/release/legend memory query \"$prompt\" 2>/dev/null | head -c 800); if [ -n \"$result\" ]; then printf '{\"additionalContext\":\"[Legend Context] %s\"}' \"$(echo \"$result\" | tr '\"' \"'\" | tr '\\n' ' ')\"; fi; fi",
             "type": "command"
           }
         ],
