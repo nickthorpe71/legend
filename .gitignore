@@ -3,6 +3,9 @@ bin/
 build/
 *.o
 
+# Legend hook ephemeral files
+.legend/.last_query
+
 # Test artifacts
 tests/tmp/
 .test_*
