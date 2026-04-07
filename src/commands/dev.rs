@@ -5,7 +5,10 @@ use std::collections::HashSet;
 // Dev-only commands — not exposed in user/LLM docs or `legend help`
 // ---------------------------------------------------------------------------
 
-pub fn handle_dev(args: &[String], _def: &crate::cli::CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_dev(
+    args: &[String],
+    _def: &crate::cli::CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     match args.first().map(|s| s.as_str()) {
         Some("prune-noise") => handle_prune_noise(),
         _ => {
@@ -39,7 +42,8 @@ fn handle_prune_noise() -> Result<(), Box<dyn std::error::Error>> {
     // summarized and may no longer start cleanly with "EXPERIENCE:".
     let l2_before = memory.brain.short_term.len();
     memory
-        .brain.short_term
+        .brain
+        .short_term
         .retain(|e| !e.text.contains("EXPERIENCE: Experience:"));
     let l2_removed = l2_before - memory.brain.short_term.len();
 
@@ -49,7 +53,8 @@ fn handle_prune_noise() -> Result<(), Box<dyn std::error::Error>> {
     // "status" etc. are now stopwords too.
     const HOOK_LABELS: &[&str] = &["EXPERIENCE", "Experience", "Executed", "Completed"];
     let noise_ids: HashSet<u64> = memory
-        .brain.long_term
+        .brain
+        .long_term
         .nodes
         .iter()
         .filter(|(_, n)| HOOK_LABELS.contains(&n.label.as_str()) || is_stopword(&n.label))
@@ -58,11 +63,13 @@ fn handle_prune_noise() -> Result<(), Box<dyn std::error::Error>> {
 
     let l3_before = memory.brain.long_term.nodes.len();
     memory
-        .brain.long_term
+        .brain
+        .long_term
         .nodes
         .retain(|id, _| !noise_ids.contains(id));
     memory
-        .brain.long_term
+        .brain
+        .long_term
         .index
         .retain(|_, id| !noise_ids.contains(id));
     let l3_removed = l3_before - memory.brain.long_term.nodes.len();
@@ -70,7 +77,8 @@ fn handle_prune_noise() -> Result<(), Box<dyn std::error::Error>> {
     // --- L3 edges: drop any edge touching a removed node ---
     let edges_before = memory.brain.long_term.edges.len();
     memory
-        .brain.long_term
+        .brain
+        .long_term
         .edges
         .retain(|e| !noise_ids.contains(&e.from) && !noise_ids.contains(&e.to));
     let edges_removed = edges_before - memory.brain.long_term.edges.len();

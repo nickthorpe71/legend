@@ -493,30 +493,31 @@ Track topic coherence in `tick_impl`:
 
 ---
 
-## Change 15: Context-Aware Spreading Activation
+## Change 15: Query-Mode Gated Retrieval — DONE
 
-**Problem**: Spreading activation treats all edges equally regardless of kind. A query about "authentication" follows "temporal" edges (same work session) with the same weight as "contains" edges (structural code relationships). This dilutes results with irrelevant associations.
+**Problem**: `spreading_activation` treated all edge kinds as equally relevant for every query. As the graph accumulated structural, temporal, and generic associative edges, retrieval could drift into the wrong mode. A code-structure question could over-follow session-history links; a recent-work question could over-follow static structural relationships.
 
-**Brain analogy**: Different neurotransmitter systems (dopamine, serotonin, acetylcholine) modulate which neural pathways are active. Context biases which connections propagate — emotional context activates amygdala pathways, spatial context activates hippocampal place cells. The same neurons participate in different circuits depending on the active neuromodulatory state.
+**Brain analogy**: State-dependent retrieval bias. In the brain, top-down attention and neuromodulatory context bias which pathways dominate recall. This is a retrieval-gating change, not a structural plasticity change.
 
-**Files**: `src/memory/mod.rs`
+**Files**: `src/memory/mod.rs`, `src/memory/neocortex.rs`, `src/memory/hippocampus.rs`
 
-**Depends on**: Change 14 (multi-edge makes this meaningful)
+**Depends on**: None. Works with the current single-edge graph model.
 
 **Changes**:
-- Add optional `context_filter: Option<&[&str]>` parameter to `spreading_activation` — list of preferred edge kinds
-- When context_filter is set, preferred-kind edges get full weight, other kinds get a dampening factor (e.g., 0.3)
-- Infer context from query: extract entities, check their dominant edge kinds in the graph, use those as the context filter
-- Add `fn infer_query_context(&self, query: &str) -> Vec<String>` method
-- Wire into `retrieve_context`: pass inferred context to spreading activation and priming
+- Add `QueryMode` to the neocortex layer with `Structural`, `Temporal`, `Diagnostic`, `Semantic`, and `Neutral` modes
+- Add `edge_kind_multiplier(...)` to apply soft priors over edge kinds rather than hard filtering
+- Extend `spreading_activation` and `graph_lookup` to accept a `QueryMode`
+- Add `infer_query_mode(...)` in `mod.rs` using simple query heuristics plus entity/code cues
+- Wire query mode into direct graph lookup, associative priming, and hippocampal pattern completion
 
 **Tests**:
-- Query about code ("fn handle_auth") preferentially follows "contains"/"represents" edges
-- Query about a work session preferentially follows "temporal" edges
-- Without context filter, behavior identical to current (backward compat)
-- Context inference extracts dominant edge kinds from query entities
+- Structural queries downweight temporal edges
+- Temporal queries prefer temporal edges
+- Neutral mode preserves previous activation math
+- Nonpreferred edges are damped but not zeroed out
+- Query-mode inference classifies basic temporal, structural, diagnostic, and semantic cases
 
-**Value**: Queries return more relevant results by following contextually appropriate graph pathways. "What did I work on yesterday?" follows temporal edges. "How does auth work?" follows structural edges.
+**Value**: Retrieval becomes mode-sensitive without changing storage. Legend keeps one associative graph, but queries can bias recall toward structural, temporal, or diagnostic pathways depending on intent.
 
 ---
 
@@ -539,7 +540,7 @@ Track topic coherence in `tick_impl`:
 12. Emotional Consolidation      ← DONE (amygdala-driven, 605 tests passing)
 13. Context Switch Consolidation ← DONE (novelty detection, 605 tests passing)
 14. CPEB Synaptic Tagging         ← DONE
-15. Context-Aware Spreading Activation ← needs re-evaluation after 14 redesign
+15. Query-Mode Gated Retrieval   ← DONE
 16. Neural Net Feasibility Review ← after all behavioral changes, with usage data
 ```
 

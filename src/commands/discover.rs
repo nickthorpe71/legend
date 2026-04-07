@@ -176,7 +176,10 @@ fn generate_tasks(
 ///
 /// NOTE: `legend discover` is deprecated. Use `legend init` instead, which
 /// includes discovery automatically on first init.
-pub fn handle_discover(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_discover(
+    args: &[String],
+    def: &CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[Note: `legend discover` is deprecated. Use `legend init` which includes discovery automatically.]");
 
     let parsed = parse_args(args, def);

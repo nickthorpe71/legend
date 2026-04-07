@@ -15,14 +15,12 @@
 //! - **Renormalization**: Periodic EMA-based salience normalization prevents score
 //!   drift and maintains a healthy distribution across all entries.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use super::{
-    BrainState, ShortTermEntry,
-    wernicke::extract_entities,
-    ADAGRAD_BASE_LR, ADAGRAD_EPSILON, ADAGRAD_SQ_SUM_CAP,
-    CONTRASTIVE_PENALTY, REINFORCE_GRAPH_SCALE, RENORM_BLEND,
+    wernicke::extract_entities, BrainState, ShortTermEntry, ADAGRAD_BASE_LR, ADAGRAD_EPSILON,
+    ADAGRAD_SQ_SUM_CAP, CONTRASTIVE_PENALTY, REINFORCE_GRAPH_SCALE, RENORM_BLEND,
 };
 
 // ---------------------------------------------------------------------------
@@ -81,8 +79,7 @@ pub fn reinforce(state: &mut BrainState, ids: &[u64], signal: f32) -> ReinforceR
 
             // AdaGrad-style adaptive salience update: frequently-reinforced entries
             // get smaller future updates, preventing saturation.
-            let adaptive_lr =
-                ADAGRAD_BASE_LR / (entry.gradient_sq_sum + ADAGRAD_EPSILON).sqrt();
+            let adaptive_lr = ADAGRAD_BASE_LR / (entry.gradient_sq_sum + ADAGRAD_EPSILON).sqrt();
             let delta = signal * adaptive_lr;
             entry.gradient_sq_sum =
                 (entry.gradient_sq_sum + signal * signal).min(ADAGRAD_SQ_SUM_CAP);

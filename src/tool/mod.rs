@@ -5,7 +5,6 @@
 /// sync, filesystem scanning, CLI output formatting.
 ///
 /// The brain processes information; the tool feeds it in and reads it out.
-
 pub mod bootstrap;
 pub mod persistence;
 pub mod types;
@@ -19,8 +18,8 @@ pub use persistence::{
 pub use types::*;
 
 use crate::memory::{
-    add_node_if_new, classify_text, retrieve_context, safe_truncate, tick_impl,
-    GraphNode, MemoryState, ShortTermEntry,
+    add_node_if_new, classify_text, retrieve_context, safe_truncate, tick_impl, GraphNode,
+    MemoryState, ShortTermEntry,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -271,9 +270,7 @@ pub fn build_start_summary_with_options(
             "architecture" | "arch" => (&architecture, architecture_total),
             "todos" | "todo" => (&todos, todos_total),
             "bugs" | "bug" => (&bugs, bugs_total),
-            "preferences" | "preference" | "prefs" | "pref" => {
-                (&preferences, preferences_total)
-            }
+            "preferences" | "preference" | "prefs" | "pref" => (&preferences, preferences_total),
             _ => return serde_json::json!({"error": format!("Unknown category: {}", filter)}),
         };
         return serde_json::json!({
@@ -333,7 +330,10 @@ pub fn merge_from_log(state: &mut MemoryState, other: MemoryState) {
     to_replay.sort_by_key(|e| e.timestamp);
 
     if !to_replay.is_empty() {
-        eprintln!("[LEGEND] Smart-merging {} new session memories...", to_replay.len());
+        eprintln!(
+            "[LEGEND] Smart-merging {} new session memories...",
+            to_replay.len()
+        );
         for entry in to_replay {
             tick_passive(state, &entry.text);
         }
@@ -373,7 +373,11 @@ pub fn build_context_summary(state: &MemoryState) -> serde_json::Value {
     let session_texts: Vec<&str> = recent.iter().map(|s| s.text.as_str()).collect();
 
     let mut top_nodes: Vec<&GraphNode> = state.brain.long_term.nodes.values().collect();
-    top_nodes.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+    top_nodes.sort_by(|a, b| {
+        b.weight
+            .partial_cmp(&a.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     top_nodes.truncate(8);
 
     let node_summaries: Vec<serde_json::Value> = top_nodes
@@ -405,7 +409,8 @@ pub fn build_context_summary(state: &MemoryState) -> serde_json::Value {
 /// Export the full memory state as JSON for external tools (e.g. dashboard).
 pub fn build_dump(state: &MemoryState) -> serde_json::Value {
     let nodes: Vec<serde_json::Value> = state
-        .brain.long_term
+        .brain
+        .long_term
         .nodes
         .values()
         .map(|n| {
@@ -419,7 +424,8 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
         .collect();
 
     let edges: Vec<serde_json::Value> = state
-        .brain.long_term
+        .brain
+        .long_term
         .edges
         .iter()
         .map(|e| {
@@ -432,7 +438,8 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
         .collect();
 
     let short_term: Vec<serde_json::Value> = state
-        .brain.short_term
+        .brain
+        .short_term
         .iter()
         .map(|e| {
             serde_json::json!({
@@ -448,7 +455,8 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
         .collect();
 
     let working_memory: Vec<serde_json::Value> = state
-        .brain.working_memory
+        .brain
+        .working_memory
         .iter()
         .map(|e| {
             serde_json::json!({

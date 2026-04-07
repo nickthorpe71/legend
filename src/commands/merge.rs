@@ -7,7 +7,10 @@ use crate::memory::{load_memory_from_path, save_memory_to_path};
 /// %A: Current version (ours)
 /// %B: Other version (theirs)
 /// %P: The filename
-pub fn handle_git_merge_driver(args: &[String], _def: &crate::cli::CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_git_merge_driver(
+    args: &[String],
+    _def: &crate::cli::CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 4 {
         return Err("Usage: legend git-merge-driver %O %A %B %P".into());
     }

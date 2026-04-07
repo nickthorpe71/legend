@@ -40,9 +40,7 @@ pub fn load_or_default() -> Result<MemoryState, Box<dyn std::error::Error>> {
                         "Warning: failed to load memory store ({}), but a backup already exists.",
                         err
                     );
-                    eprintln!(
-                        "Starting with a fresh memory store to avoid corruption loop."
-                    );
+                    eprintln!("Starting with a fresh memory store to avoid corruption loop.");
                     // Remove the unloadable memory file so next save writes a clean one
                     let _ = fs::remove_file(MEMORY_FILE);
                 }
@@ -60,8 +58,7 @@ pub fn save(state: &MemoryState) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn reset_memory() -> Result<(), Box<dyn std::error::Error>> {
     if Path::new(MEMORY_FILE).exists() {
-        fs::remove_file(MEMORY_FILE)
-            .map_err(|e| format!("Failed to remove memory file: {}", e))?;
+        fs::remove_file(MEMORY_FILE).map_err(|e| format!("Failed to remove memory file: {}", e))?;
     }
     Ok(())
 }
@@ -69,8 +66,7 @@ pub fn reset_memory() -> Result<(), Box<dyn std::error::Error>> {
 pub fn load_memory_from_path<P: AsRef<Path>>(
     path: P,
 ) -> Result<MemoryState, Box<dyn std::error::Error>> {
-    let compressed =
-        fs::read(path).map_err(|e| format!("Failed to read memory file: {}", e))?;
+    let compressed = fs::read(path).map_err(|e| format!("Failed to read memory file: {}", e))?;
     let decompressed = lz4::block::decompress(&compressed, None)
         .map_err(|e| format!("Failed to decompress memory: {}", e))?;
 
@@ -105,8 +101,7 @@ pub fn save_memory_to_path<P: AsRef<Path>>(
     let temp_file = format!("{}.tmp", path_ref.display());
     fs::write(&temp_file, &compressed)
         .map_err(|e| format!("Failed to write temp memory file: {}", e))?;
-    fs::rename(&temp_file, path_ref)
-        .map_err(|e| format!("Failed to write memory file: {}", e))?;
+    fs::rename(&temp_file, path_ref).map_err(|e| format!("Failed to write memory file: {}", e))?;
     Ok(())
 }
 
@@ -117,4 +112,3 @@ pub fn save_memory_to_path<P: AsRef<Path>>(
 fn load_memory() -> Result<MemoryState, Box<dyn std::error::Error>> {
     load_memory_from_path(MEMORY_FILE)
 }
-

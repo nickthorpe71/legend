@@ -19,19 +19,16 @@
 /// Core types (`GraphMemory`, `GraphNode`, `GraphEdge`) remain in `mod.rs` for
 /// serialization. This module contains free functions that operate on `GraphMemory`
 /// and `BrainState`.
-
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    BrainState,
     wernicke::{extract_entities, KeywordCache},
-    EDGE_REINFORCE_DELTA, GRAPH_EDGE_CAPACITY, GRAPH_NODE_CAPACITY,
-    GRAPH_PRUNE_WEIGHT, GRAPH_WEIGHT_TARGET_MAX, HEBBIAN_EDGE_BOOST,
-    HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST, HEBBIAN_NODE_CEILING,
-    NEOCORTICAL_DECAY_RATE, NODE_WEIGHT_BASE, PRUNE_AGE_WEIGHT,
-    REPLAY_EDGE_BOOST, REPLAY_SALIENCE_BOOST, REPLAY_TEMPORAL_WINDOW,
-    SPREADING_ACTIVATION_DECAY, SPREADING_ACTIVATION_MAX_HOPS,
+    BrainState, EDGE_REINFORCE_DELTA, GRAPH_EDGE_CAPACITY, GRAPH_NODE_CAPACITY, GRAPH_PRUNE_WEIGHT,
+    GRAPH_WEIGHT_TARGET_MAX, HEBBIAN_EDGE_BOOST, HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST,
+    HEBBIAN_NODE_CEILING, NEOCORTICAL_DECAY_RATE, NODE_WEIGHT_BASE, PRUNE_AGE_WEIGHT,
+    REPLAY_EDGE_BOOST, REPLAY_SALIENCE_BOOST, REPLAY_TEMPORAL_WINDOW, SPREADING_ACTIVATION_DECAY,
+    SPREADING_ACTIVATION_MAX_HOPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -134,6 +131,17 @@ pub struct GraphNodeSummary {
     pub source_texts: Vec<String>,
 }
 
+/// Query-mode gated retrieval: bias spreading activation based on the current
+/// retrieval goal without requiring graph schema changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryMode {
+    Structural,
+    Temporal,
+    Diagnostic,
+    Semantic,
+    Neutral,
+}
+
 // ── Existing helpers ────────────────────────────────────────────────────
 
 /// Default edge stability for new synaptic connections.
@@ -144,6 +152,35 @@ pub fn default_edge_stability() -> f32 {
 /// Default edge kind for new connections.
 pub fn default_edge_kind() -> String {
     "related".to_string()
+}
+
+/// Soft priors over edge kinds for different retrieval modes.
+pub fn edge_kind_multiplier(mode: QueryMode, edge_kind: &str) -> f32 {
+    match mode {
+        QueryMode::Structural => match edge_kind {
+            "contains" | "represents" => 1.0,
+            "related" => 0.85,
+            "temporal" => 0.55,
+            _ => 0.8,
+        },
+        QueryMode::Temporal => match edge_kind {
+            "temporal" => 1.0,
+            "related" => 0.8,
+            "contains" | "represents" => 0.6,
+            _ => 0.75,
+        },
+        QueryMode::Diagnostic => match edge_kind {
+            "related" => 1.0,
+            "temporal" => 0.95,
+            "contains" | "represents" => 0.75,
+            _ => 0.8,
+        },
+        QueryMode::Semantic => match edge_kind {
+            "related" => 1.0,
+            _ => 0.85,
+        },
+        QueryMode::Neutral => 1.0,
+    }
 }
 
 // ── Narrow-param functions (operate on GraphMemory only) ────────────────
@@ -158,6 +195,7 @@ pub fn spreading_activation(
     seed_ids: &[u64],
     max_hops: usize,
     decay_factor: f32,
+    query_mode: QueryMode,
 ) -> Vec<(u64, f32)> {
     let mut activations: HashMap<u64, f32> = HashMap::new();
     let mut visited: HashSet<u64> = HashSet::new();
@@ -187,8 +225,11 @@ pub fn spreading_activation(
                 if let Some(nid) = neighbor_id {
                     if !visited.contains(&nid) && long_term.nodes.contains_key(&nid) {
                         // Synaptic encoding: edges with high stability (spaced
-                        // reinforcement) propagate activation more effectively.
-                        let effective_weight = edge.weight * edge.stability.sqrt();
+                        // reinforcement) propagate activation more effectively,
+                        // while retrieval mode softly biases edge kinds.
+                        let kind_multiplier = edge_kind_multiplier(query_mode, &edge.kind);
+                        let effective_weight =
+                            edge.weight * edge.stability.sqrt() * kind_multiplier;
                         let activation = parent_activation * effective_weight * hop_decay;
                         let entry = activations.entry(nid).or_insert(0.0);
                         if activation > *entry {
@@ -225,6 +266,7 @@ pub fn graph_lookup(
     query: &str,
     limit: usize,
     keyword_cache: &KeywordCache,
+    query_mode: QueryMode,
 ) -> Vec<GraphNodeSummary> {
     let entities = extract_entities(query, keyword_cache);
     let mut results: Vec<GraphNodeSummary> = Vec::new();
@@ -253,6 +295,7 @@ pub fn graph_lookup(
             &seed_ids,
             SPREADING_ACTIVATION_MAX_HOPS,
             SPREADING_ACTIVATION_DECAY,
+            query_mode,
         );
         for (nid, activation) in activated {
             if let Some(node) = long_term.nodes.get(&nid) {
@@ -374,8 +417,7 @@ pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, 
         let interval = clock.saturating_sub(edge.last_seen) as f32;
         if edge.activation_count > 0 && interval > 0.0 {
             edge.recent_interval_avg = 0.5 * interval + 0.5 * edge.recent_interval_avg;
-            edge.historical_interval_avg =
-                0.1 * interval + 0.9 * edge.historical_interval_avg;
+            edge.historical_interval_avg = 0.1 * interval + 0.9 * edge.historical_interval_avg;
 
             // Spaced repetition: compare recent vs historical intervals
             if edge.historical_interval_avg > 0.0 {
@@ -472,8 +514,7 @@ pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64) {
     // Edge decay: edges that haven't been reinforced recently lose weight
     for edge in &mut long_term.edges {
         let effective_decay_rate = NEOCORTICAL_DECAY_RATE / edge.stability.max(1.0);
-        let decay =
-            (-(clock.saturating_sub(edge.last_seen) as f32) * effective_decay_rate).exp();
+        let decay = (-(clock.saturating_sub(edge.last_seen) as f32) * effective_decay_rate).exp();
         edge.weight *= decay;
     }
 }
@@ -654,8 +695,7 @@ pub fn replay_consolidation(state: &mut BrainState) {
                     }
                     // Check if edge already exists
                     let existing = state.long_term.edges.iter_mut().find(|e| {
-                        (e.from == *id_a && e.to == *id_b)
-                            || (e.from == *id_b && e.to == *id_a)
+                        (e.from == *id_a && e.to == *id_b) || (e.from == *id_b && e.to == *id_a)
                     });
                     if let Some(edge) = existing {
                         edge.weight += REPLAY_EDGE_BOOST;

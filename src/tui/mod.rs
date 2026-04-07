@@ -283,7 +283,8 @@ impl App {
 
     fn graph_focus_label(&self, id: u64) -> String {
         self.memory
-            .brain.long_term
+            .brain
+            .long_term
             .nodes
             .get(&id)
             .map(|n| n.label.clone())
@@ -435,10 +436,16 @@ impl App {
     fn selected_text(&self) -> Option<String> {
         let idx = self.list_state.selected().unwrap_or(0);
         match self.view {
-            View::ShortTerm => self.memory.brain.short_term.get(idx).map(|e| e.text.clone()),
+            View::ShortTerm => self
+                .memory
+                .brain
+                .short_term
+                .get(idx)
+                .map(|e| e.text.clone()),
             View::Graph => self.graph_selected_id().and_then(|id| {
                 self.memory
-                    .brain.long_term
+                    .brain
+                    .long_term
                     .nodes
                     .get(&id)
                     .map(|n| n.label.clone())
@@ -960,7 +967,8 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 format!(
                     "{}",
                     app.memory
-                        .brain.short_term
+                        .brain
+                        .short_term
                         .iter()
                         .filter(|e| e.labile_until >= app.memory.brain.clock)
                         .count()
@@ -1101,7 +1109,8 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
 fn render_short_term(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
         .memory
-        .brain.short_term
+        .brain
+        .short_term
         .iter()
         .map(|entry| {
             let labile_marker = if entry.labile_until >= app.memory.brain.clock {
@@ -1154,7 +1163,8 @@ fn render_graph(f: &mut Frame, app: &mut App, area: Rect) {
     let title = if let Some(&root_id) = app.graph_stack.last() {
         let label = app
             .memory
-            .brain.long_term
+            .brain
+            .long_term
             .nodes
             .get(&root_id)
             .map(|n| truncate(&n.label, 30))

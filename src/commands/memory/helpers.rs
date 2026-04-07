@@ -28,10 +28,7 @@ pub(crate) fn extract_keyword_directives(text: &str) -> (String, Vec<KeywordDire
                     None => (after_category.to_string(), None),
                 };
                 if !category.is_empty() && !term.is_empty() {
-                    let metadata = description
-                        .filter(|d| !d.is_empty())
-                        .into_iter()
-                        .collect();
+                    let metadata = description.filter(|d| !d.is_empty()).into_iter().collect();
                     directives.push(KeywordDirective {
                         category,
                         term,
@@ -85,11 +82,12 @@ pub(super) fn ts_to_iso_date(ts: u64) -> String {
     let mut remaining = ts / 86400;
     let mut year = 1970u64;
     loop {
-        let days_in_year = if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) {
-            366
-        } else {
-            365
-        };
+        let days_in_year =
+            if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) {
+                366
+            } else {
+                365
+            };
         if remaining < days_in_year {
             break;
         }

@@ -16,8 +16,18 @@ static MEMORY_TICK: CommandDef = CommandDef {
     about: "Record a memory (decision, progress, discovery)",
     usage: "legend memory tick [--blocker] [--passive] <text>",
     flags: &[
-        FlagDef { long: "--blocker", short: Some('b'), about: "Mark as blocker", takes_value: false },
-        FlagDef { long: "--passive", short: Some('p'), about: "Passive observation", takes_value: false },
+        FlagDef {
+            long: "--blocker",
+            short: Some('b'),
+            about: "Mark as blocker",
+            takes_value: false,
+        },
+        FlagDef {
+            long: "--passive",
+            short: Some('p'),
+            about: "Passive observation",
+            takes_value: false,
+        },
     ],
     positionals: &[],
     children: &[],
@@ -26,9 +36,12 @@ static MEMORY_QUERY: CommandDef = CommandDef {
     name: "query",
     about: "Query memory (auto-reinforces top result)",
     usage: "legend memory query [--reasons] <text>",
-    flags: &[
-        FlagDef { long: "--reasons", short: Some('r'), about: "Include retrieval reasoning", takes_value: false },
-    ],
+    flags: &[FlagDef {
+        long: "--reasons",
+        short: Some('r'),
+        about: "Include retrieval reasoning",
+        takes_value: false,
+    }],
     positionals: &[],
     children: &[],
 };
@@ -37,11 +50,36 @@ static MEMORY_START: CommandDef = CommandDef {
     about: "Session start: context + categorized in one call",
     usage: "legend memory start [options] [query]",
     flags: &[
-        FlagDef { long: "--compact", short: Some('c'), about: "Compact output", takes_value: false },
-        FlagDef { long: "--json", short: Some('j'), about: "JSON output", takes_value: false },
-        FlagDef { long: "--tokens", short: Some('t'), about: "Show token overhead", takes_value: false },
-        FlagDef { long: "--category", short: None, about: "Filter by category", takes_value: true },
-        FlagDef { long: "--query", short: Some('q'), about: "Query string", takes_value: true },
+        FlagDef {
+            long: "--compact",
+            short: Some('c'),
+            about: "Compact output",
+            takes_value: false,
+        },
+        FlagDef {
+            long: "--json",
+            short: Some('j'),
+            about: "JSON output",
+            takes_value: false,
+        },
+        FlagDef {
+            long: "--tokens",
+            short: Some('t'),
+            about: "Show token overhead",
+            takes_value: false,
+        },
+        FlagDef {
+            long: "--category",
+            short: None,
+            about: "Filter by category",
+            takes_value: true,
+        },
+        FlagDef {
+            long: "--query",
+            short: Some('q'),
+            about: "Query string",
+            takes_value: true,
+        },
     ],
     positionals: &[],
     children: &[],
@@ -50,9 +88,12 @@ static MEMORY_SESSIONS: CommandDef = CommandDef {
     name: "sessions",
     about: "Show session log entries",
     usage: "legend memory sessions [--all] [count]",
-    flags: &[
-        FlagDef { long: "--all", short: Some('a'), about: "Include empty entries", takes_value: false },
-    ],
+    flags: &[FlagDef {
+        long: "--all",
+        short: Some('a'),
+        about: "Include empty entries",
+        takes_value: false,
+    }],
     positionals: &[],
     children: &[],
 };
@@ -72,12 +113,17 @@ static DISCOVER: CommandDef = CommandDef {
     name: "discover",
     about: "Scan project to suggest features and context",
     usage: "legend discover [path] [--apply]",
-    flags: &[
-        FlagDef { long: "--apply", short: None, about: "Ingest context into Legend memory", takes_value: false },
-    ],
-    positionals: &[
-        ArgDef { name: "PATH", about: "Project path to scan", required: false },
-    ],
+    flags: &[FlagDef {
+        long: "--apply",
+        short: None,
+        about: "Ingest context into Legend memory",
+        takes_value: false,
+    }],
+    positionals: &[ArgDef {
+        name: "PATH",
+        about: "Project path to scan",
+        required: false,
+    }],
     children: &[],
 };
 
@@ -86,8 +132,18 @@ static INIT: CommandDef = CommandDef {
     about: "Initialize Legend in a new project",
     usage: "legend init [--discover] [--help]",
     flags: &[
-        FlagDef { long: "--discover", short: None, about: "Scan existing project to pre-fill memory context", takes_value: false },
-        FlagDef { long: "--help", short: Some('h'), about: "Show this help message", takes_value: false },
+        FlagDef {
+            long: "--discover",
+            short: None,
+            about: "Scan existing project to pre-fill memory context",
+            takes_value: false,
+        },
+        FlagDef {
+            long: "--help",
+            short: Some('h'),
+            about: "Show this help message",
+            takes_value: false,
+        },
     ],
     positionals: &[],
     children: &[],
@@ -97,9 +153,12 @@ static MCP_SERVE: CommandDef = CommandDef {
     name: "mcp-serve",
     about: "Run MCP stdio server for AI tool integration",
     usage: "legend mcp-serve [--cwd <path>]",
-    flags: &[
-        FlagDef { long: "--cwd", short: None, about: "Working directory", takes_value: true },
-    ],
+    flags: &[FlagDef {
+        long: "--cwd",
+        short: None,
+        about: "Working directory",
+        takes_value: true,
+    }],
     positionals: &[],
     children: &[],
 };
@@ -117,9 +176,12 @@ static DASHBOARD: CommandDef = CommandDef {
     name: "dashboard",
     about: "Launch TUI dashboard (--3d for Bevy 3D view)",
     usage: "legend dashboard [--3d]",
-    flags: &[
-        FlagDef { long: "--3d", short: None, about: "Launch Bevy 3D view instead of TUI", takes_value: false },
-    ],
+    flags: &[FlagDef {
+        long: "--3d",
+        short: None,
+        about: "Launch Bevy 3D view instead of TUI",
+        takes_value: false,
+    }],
     positionals: &[],
     children: &[],
 };

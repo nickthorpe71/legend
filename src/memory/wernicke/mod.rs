@@ -9,7 +9,6 @@
 ///   (decisions, bugs, architecture, etc.). Like hardwired neural circuits.
 /// - **cache** — Dynamic keyword cache: graph-backed, runtime-refreshed keyword lists
 ///   with semantic priming from the knowledge graph.
-
 pub mod cache;
 pub mod extract;
 pub mod lexicon;

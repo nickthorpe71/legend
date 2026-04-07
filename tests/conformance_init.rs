@@ -153,8 +153,7 @@ fn init_reinit_preserves_existing_hooks() {
     harness.cmd_ok(&["init"]);
 
     let settings = harness.read_file(".claude/settings.json");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&settings).expect("parse settings.json");
+    let parsed: serde_json::Value = serde_json::from_str(&settings).expect("parse settings.json");
     // Should have hooks (Legend hooks added)
     assert!(
         parsed["hooks"].is_object(),
@@ -226,8 +225,7 @@ fn init_mcp_configs_are_idempotent() {
 
     // MCP config should not be duplicated
     let mcp_second = harness.read_file(".mcp.json");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&mcp_second).expect("parse .mcp.json");
+    let parsed: serde_json::Value = serde_json::from_str(&mcp_second).expect("parse .mcp.json");
     // Should still have exactly one legend-memory entry
     assert!(parsed["mcpServers"]["legend-memory"].is_object());
 
@@ -320,11 +318,7 @@ fn init_memory_store_migration_on_reinit() {
     harness.cmd_ok(&["init"]);
 
     // Tick some memories
-    harness.cmd_ok(&[
-        "memory",
-        "tick",
-        "DECISION: Chose X over Y because Z.",
-    ]);
+    harness.cmd_ok(&["memory", "tick", "DECISION: Chose X over Y because Z."]);
 
     // Re-init should report memory store status
     let output = harness.cmd_ok(&["init"]);

@@ -3,7 +3,10 @@ use super::event_log::EVENT_LOG_PATH;
 pub(super) fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
     let memory = crate::memory::load_or_default()?;
     println!("Memory stats:");
-    println!("  Working memory (L1): {}", memory.brain.working_memory.len());
+    println!(
+        "  Working memory (L1): {}",
+        memory.brain.working_memory.len()
+    );
     println!("  Short-term entries: {}", memory.brain.short_term.len());
     println!("  Long-term nodes: {}", memory.brain.long_term.nodes.len());
     println!("  Long-term edges: {}", memory.brain.long_term.edges.len());

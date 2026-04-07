@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Dispatch entry point used by the COMMANDS registry.
-pub fn handle_dashboard_dispatch(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_dashboard_dispatch(
+    args: &[String],
+    def: &CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = parse_args(args, def);
     if parsed.has("3d") {
         handle_dashboard()

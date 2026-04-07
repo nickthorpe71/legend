@@ -1,3 +1,13 @@
+use super::{
+    dentate_gyrus::word_overlap,
+    entorhinal::cosine_similarity,
+    entorhinal::embed_text,
+    entorhinal::{summarize_single, summarize_text},
+    wernicke::{self, extract_entities},
+    BrainState, CONSOLIDATED_EVICTION_REDUCTION, EVICTION_DECAY_RATE, HIPPOCAMPAL_DECAY_RATE,
+    KEYWORD_MATCH_BONUS, KEYWORD_MATCH_BONUS_CAP, MIN_QUERY_SIMILARITY, PRUNE_AGE_WEIGHT,
+    PRUNE_THRESHOLD, PRUNE_USAGE_WEIGHT, RECONSOLIDATION_THRESHOLD,
+};
 /// Hippocampus — Episodic memory (L2) functions.
 ///
 /// The hippocampus is the brain's episodic memory system, responsible for encoding,
@@ -16,20 +26,8 @@
 ///   stability that grows with spaced retrieval.
 ///
 /// Core types (`ShortTermEntry`, `MemoryRef`) remain in `mod.rs` for serialization.
-
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use super::{
-    BrainState,
-    thalamus::cosine_similarity, thalamus::embed_text,
-    wernicke::{self, extract_entities},
-    entorhinal::{summarize_text, summarize_single},
-    dentate_gyrus::word_overlap,
-    EVICTION_DECAY_RATE, HIPPOCAMPAL_DECAY_RATE,
-    RECONSOLIDATION_THRESHOLD, CONSOLIDATED_EVICTION_REDUCTION,
-    KEYWORD_MATCH_BONUS, KEYWORD_MATCH_BONUS_CAP, MIN_QUERY_SIMILARITY,
-    PRUNE_USAGE_WEIGHT, PRUNE_AGE_WEIGHT, PRUNE_THRESHOLD,
-};
 
 // ---------------------------------------------------------------------------
 // Hippocampal types
@@ -157,11 +155,19 @@ pub fn find_best_match(short_term: &[ShortTermEntry], embedding: &[f32]) -> (u64
 /// Return the top-k most similar short-term entries to the given embedding.
 /// When `query` is provided, non-stopword keywords that appear in entry text
 /// receive a small similarity bonus to improve lexical precision.
-pub fn top_k_similar(short_term: &[ShortTermEntry], embedding: &[f32], k: usize, query: &str) -> Vec<MemorySnippet> {
+pub fn top_k_similar(
+    short_term: &[ShortTermEntry],
+    embedding: &[f32],
+    k: usize,
+    query: &str,
+) -> Vec<MemorySnippet> {
     // Pre-compute query keywords (lowercased, non-stopword, len > 1)
     let query_keywords: Vec<String> = query
         .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
         .filter(|w| w.len() > 1 && !wernicke::is_stopword(w))
         .collect();
 
@@ -314,12 +320,11 @@ pub fn insert_short_term(
         // since the neocortex can independently serve their role.
         let has_embedded_summary = |entry: &ShortTermEntry| -> bool {
             entry.consolidated
-                && state
-                    .long_term
-                    .nodes
-                    .values()
-                    .any(|n| n.kind == "Summary" && !n.embedding.is_empty()
-                        && n.source_texts.iter().any(|st| st == &entry.text))
+                && state.long_term.nodes.values().any(|n| {
+                    n.kind == "Summary"
+                        && !n.embedding.is_empty()
+                        && n.source_texts.iter().any(|st| st == &entry.text)
+                })
         };
         if let Some(idx) = state
             .short_term
@@ -374,6 +379,7 @@ pub fn pattern_complete(
     state: &BrainState,
     query: &str,
     partial_matches: &[MemorySnippet],
+    query_mode: super::neocortex::QueryMode,
 ) -> Vec<MemorySnippet> {
     // Collect entity seeds from both the query and partial matches
     let mut seed_ids: Vec<u64> = Vec::new();
@@ -399,7 +405,8 @@ pub fn pattern_complete(
     }
 
     // Spread activation to find related graph nodes
-    let activated = super::neocortex::spreading_activation(&state.long_term, &seed_ids, 2, 0.5);
+    let activated =
+        super::neocortex::spreading_activation(&state.long_term, &seed_ids, 2, 0.5, query_mode);
 
     // Collect source_texts from activated nodes
     let mut candidate_texts: Vec<(String, f32)> = Vec::new();

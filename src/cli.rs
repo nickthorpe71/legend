@@ -148,11 +148,7 @@ fn find_flag_short(def: &CommandDef, ch: char) -> Option<&FlagDef> {
 
 /// Print formatted help for a single command.
 pub fn print_command_help(def: &CommandDef) {
-    println!(
-        "{} - {}",
-        title_case(def.name),
-        def.about
-    );
+    println!("{} - {}", title_case(def.name), def.about);
     println!();
     println!("Usage: {}", def.usage);
 
@@ -165,10 +161,7 @@ pub fn print_command_help(def: &CommandDef) {
                 .map(|c| format!("-{}, ", c))
                 .unwrap_or_else(|| "    ".to_string());
             let value_hint = if flag.takes_value { " <value>" } else { "" };
-            println!(
-                "  {}{}{}\t{}",
-                short, flag.long, value_hint, flag.about
-            );
+            println!("  {}{}{}\t{}", short, flag.long, value_hint, flag.about);
         }
     }
 

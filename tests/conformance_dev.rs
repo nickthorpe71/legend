@@ -9,7 +9,9 @@ fn dev_unknown_subcommand_prints_help() {
     let output = harness.cmd(&["dev", "nonexistent"]);
     let combined = format!("{}{}", output.stdout, output.stderr);
     assert!(
-        combined.contains("unknown") || combined.contains("Available") || combined.contains("prune"),
+        combined.contains("unknown")
+            || combined.contains("Available")
+            || combined.contains("prune"),
         "dev unknown subcommand should print help: {}",
         combined
     );

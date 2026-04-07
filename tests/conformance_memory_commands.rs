@@ -34,24 +34,16 @@ fn query_with_reasons_shows_similarity_and_reinforcement() {
         reasons["note"],
         "Top result auto-reinforced (+3% salience boost)"
     );
-    assert!(
-        reasons["short_term"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .any(|item| item["text"]
-                == "DECISION: Chose graph index because it keeps lookups cheap.")
-    );
-    assert!(
-        reasons["short_term"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .any(|item| item["reason"]
-                .as_str()
-                .unwrap_or("")
-                .contains("similarity"))
-    );
+    assert!(reasons["short_term"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .any(|item| item["text"] == "DECISION: Chose graph index because it keeps lookups cheap."));
+    assert!(reasons["short_term"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .any(|item| item["reason"].as_str().unwrap_or("").contains("similarity")));
 }
 
 #[test]
@@ -67,24 +59,15 @@ fn reinforce_increases_salience() {
     ]);
     let entry_id = tick["entry_id"].as_u64().expect("entry id");
 
-    let reinforce = harness.output_json(&[
-        "memory",
-        "reinforce",
-        "1.0",
-        &entry_id.to_string(),
-    ]);
+    let reinforce = harness.output_json(&["memory", "reinforce", "1.0", &entry_id.to_string()]);
     let reinforced = reinforce["reinforced"]
         .as_array()
         .expect("reinforced array");
     assert_eq!(reinforced.len(), 1);
     assert_eq!(reinforced[0]["id"], entry_id);
     assert!(
-        reinforced[0]["salience_after"]
-            .as_f64()
-            .unwrap_or(0.0)
-            >= reinforced[0]["salience_before"]
-                .as_f64()
-                .unwrap_or(0.0)
+        reinforced[0]["salience_after"].as_f64().unwrap_or(0.0)
+            >= reinforced[0]["salience_before"].as_f64().unwrap_or(0.0)
     );
 }
 
@@ -128,10 +111,7 @@ fn reset_clears_all_state() {
 
     let dump = harness.output_json(&["memory", "dump"]);
     assert_eq!(dump["short_term"].as_array().map(|v| v.len()), Some(0));
-    assert_eq!(
-        dump["graph"]["nodes"].as_array().map(|v| v.len()),
-        Some(0)
-    );
+    assert_eq!(dump["graph"]["nodes"].as_array().map(|v| v.len()), Some(0));
 }
 
 #[test]
@@ -275,14 +255,23 @@ fn dump_command_returns_full_state() {
     ]);
 
     let dump = harness.output_json(&["memory", "dump"]);
-    assert!(dump["clock"].as_u64().is_some(), "dump should include clock");
-    assert!(dump["short_term"].is_array(), "dump should include short_term");
+    assert!(
+        dump["clock"].as_u64().is_some(),
+        "dump should include clock"
+    );
+    assert!(
+        dump["short_term"].is_array(),
+        "dump should include short_term"
+    );
     assert!(dump["graph"].is_object(), "dump should include graph");
     assert!(
         dump["session_log"].is_array(),
         "dump should include session_log"
     );
-    assert!(dump["working_memory"].is_array(), "dump should include working_memory");
+    assert!(
+        dump["working_memory"].is_array(),
+        "dump should include working_memory"
+    );
 }
 
 #[test]
@@ -407,23 +396,14 @@ fn negative_reinforce_decreases_salience() {
     ]);
     let entry_id = tick["entry_id"].as_u64().expect("entry id");
 
-    let reinforce = harness.output_json(&[
-        "memory",
-        "reinforce",
-        "-1.0",
-        &entry_id.to_string(),
-    ]);
+    let reinforce = harness.output_json(&["memory", "reinforce", "-1.0", &entry_id.to_string()]);
     let reinforced = reinforce["reinforced"]
         .as_array()
         .expect("reinforced array");
     assert_eq!(reinforced.len(), 1);
     assert!(
-        reinforced[0]["salience_after"]
-            .as_f64()
-            .unwrap_or(1.0)
-            <= reinforced[0]["salience_before"]
-                .as_f64()
-                .unwrap_or(0.0),
+        reinforced[0]["salience_after"].as_f64().unwrap_or(1.0)
+            <= reinforced[0]["salience_before"].as_f64().unwrap_or(0.0),
         "negative signal should decrease salience"
     );
 }

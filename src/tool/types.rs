@@ -4,7 +4,6 @@
 /// task management, git sync, LLM integration) as opposed to cognitive
 /// mechanisms. The brain (memory/) never creates or consumes these directly;
 /// the tool layer (tool/mod.rs) translates between brain outputs and these types.
-
 use serde::{Deserialize, Serialize};
 
 use crate::memory::{GraphNodeSummary, MemorySnippet};

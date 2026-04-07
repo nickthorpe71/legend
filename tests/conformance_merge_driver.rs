@@ -12,7 +12,10 @@ fn git_merge_driver_merges_append_only_event_logs() {
     let ours = harness.path().join("ours.jsonl");
     let theirs = harness.path().join("theirs.jsonl");
 
-    write_events_fixture(&ancestor, &[r#"{"ts":1,"cmd":"start","detail":"session cold-start"}"#]);
+    write_events_fixture(
+        &ancestor,
+        &[r#"{"ts":1,"cmd":"start","detail":"session cold-start"}"#],
+    );
     write_events_fixture(
         &ours,
         &[
@@ -39,8 +42,12 @@ fn git_merge_driver_merges_append_only_event_logs() {
         ],
     );
 
-    assert!(output.stderr.contains("[LEGEND] Auto-merging conflicted state file: events.jsonl"));
-    assert!(output.stderr.contains("[LEGEND] Merged events.jsonl: 1 base + 2 new lines"));
+    assert!(output
+        .stderr
+        .contains("[LEGEND] Auto-merging conflicted state file: events.jsonl"));
+    assert!(output
+        .stderr
+        .contains("[LEGEND] Merged events.jsonl: 1 base + 2 new lines"));
 
     let merged = std::fs::read_to_string(&ours).expect("read merged events");
     let lines: Vec<&str> = merged.lines().collect();
@@ -146,18 +153,17 @@ fn git_merge_driver_merges_memory_state_from_both_sides() {
             ".legend/memory.lz4",
         ],
     );
-    assert!(output.stderr.contains("[LEGEND] Auto-merging conflicted state file: .legend/memory.lz4"));
+    assert!(output
+        .stderr
+        .contains("[LEGEND] Auto-merging conflicted state file: .legend/memory.lz4"));
 
     let dump = harness.output_json(&["memory", "dump"]);
     let short_term = dump["short_term"].as_array().expect("short_term array");
-    assert!(
-        short_term
-            .iter()
-            .any(|entry| entry["text"] == "shared base memory")
-    );
-    assert!(
-        short_term
-            .iter()
-            .any(|entry| entry["text"].as_str().unwrap_or("").contains("theirs memory entry"))
-    );
+    assert!(short_term
+        .iter()
+        .any(|entry| entry["text"] == "shared base memory"));
+    assert!(short_term.iter().any(|entry| entry["text"]
+        .as_str()
+        .unwrap_or("")
+        .contains("theirs memory entry")));
 }

@@ -598,7 +598,11 @@ mod tests {
             assert!(*pri > 0, "Priority must be > 0 for '{}'", kw);
             // Most keywords should end with a space to avoid false positives
             if kw.len() <= 3 {
-                assert!(kw.ends_with(' '), "Short keyword '{}' must end with a space", kw);
+                assert!(
+                    kw.ends_with(' '),
+                    "Short keyword '{}' must end with a space",
+                    kw
+                );
             }
         }
     }
@@ -625,13 +629,28 @@ mod tests {
             false
         }
 
-        assert!(!has_duplicates(DECISION_KEYWORDS), "Duplicate in DECISION_KEYWORDS");
-        assert!(!has_duplicates(ENVIRONMENT_KEYWORDS), "Duplicate in ENVIRONMENT_KEYWORDS");
+        assert!(
+            !has_duplicates(DECISION_KEYWORDS),
+            "Duplicate in DECISION_KEYWORDS"
+        );
+        assert!(
+            !has_duplicates(ENVIRONMENT_KEYWORDS),
+            "Duplicate in ENVIRONMENT_KEYWORDS"
+        );
         assert!(!has_duplicates(TODO_KEYWORDS), "Duplicate in TODO_KEYWORDS");
-        assert!(!has_duplicates(ARCHITECTURE_KEYWORDS), "Duplicate in ARCHITECTURE_KEYWORDS");
+        assert!(
+            !has_duplicates(ARCHITECTURE_KEYWORDS),
+            "Duplicate in ARCHITECTURE_KEYWORDS"
+        );
         assert!(!has_duplicates(BUG_KEYWORDS), "Duplicate in BUG_KEYWORDS");
-        assert!(!has_duplicates(PREFERENCE_KEYWORDS), "Duplicate in PREFERENCE_KEYWORDS");
-        assert!(!has_duplicates(URGENCY_KEYWORDS), "Duplicate in URGENCY_KEYWORDS");
+        assert!(
+            !has_duplicates(PREFERENCE_KEYWORDS),
+            "Duplicate in PREFERENCE_KEYWORDS"
+        );
+        assert!(
+            !has_duplicates(URGENCY_KEYWORDS),
+            "Duplicate in URGENCY_KEYWORDS"
+        );
     }
 
     #[test]
@@ -640,9 +659,20 @@ mod tests {
         for kw in ENVIRONMENT_KEYWORDS {
             let lower = kw.to_lowercase();
             assert!(
-                !["docker", "kubernetes", "k8s", "aws", "gcp", "azure",
-                  "github", "terraform", "ansible"].contains(&lower.as_str()),
-                "Domain-specific platform '{}' should not be in static ENVIRONMENT_KEYWORDS", kw
+                ![
+                    "docker",
+                    "kubernetes",
+                    "k8s",
+                    "aws",
+                    "gcp",
+                    "azure",
+                    "github",
+                    "terraform",
+                    "ansible"
+                ]
+                .contains(&lower.as_str()),
+                "Domain-specific platform '{}' should not be in static ENVIRONMENT_KEYWORDS",
+                kw
             );
         }
     }
@@ -650,10 +680,20 @@ mod tests {
     #[test]
     fn test_valence_weights_in_range() {
         for (kw, w) in NEGATIVE_VALENCE_KEYWORDS {
-            assert!(*w >= -1.0 && *w <= 0.0, "Negative valence '{}' weight {} out of range", kw, w);
+            assert!(
+                *w >= -1.0 && *w <= 0.0,
+                "Negative valence '{}' weight {} out of range",
+                kw,
+                w
+            );
         }
         for (kw, w) in POSITIVE_VALENCE_KEYWORDS {
-            assert!(*w >= 0.0 && *w <= 1.0, "Positive valence '{}' weight {} out of range", kw, w);
+            assert!(
+                *w >= 0.0 && *w <= 1.0,
+                "Positive valence '{}' weight {} out of range",
+                kw,
+                w
+            );
         }
     }
 }

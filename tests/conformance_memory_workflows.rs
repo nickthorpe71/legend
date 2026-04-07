@@ -34,9 +34,14 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
     assert!(normalized_start.contains("# Legend Memory Context"));
     assert!(normalized_start.contains("## Recent Activity"));
     assert!(normalized_start.contains("## Categorized Memories"));
-    assert!(normalized_start.contains("DECISION: Chose graph index because it keeps lookups cheap."));
-    assert!(normalized_start.contains("ARCHITECTURE: Query pipeline fans into graph lookup and associative priming."));
-    assert!(normalized_start.contains("BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."));
+    assert!(
+        normalized_start.contains("DECISION: Chose graph index because it keeps lookups cheap.")
+    );
+    assert!(normalized_start
+        .contains("ARCHITECTURE: Query pipeline fans into graph lookup and associative priming."));
+    assert!(normalized_start.contains(
+        "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
+    ));
     assert!(normalized_start.contains("*Use heredoc for tick/query:"));
 
     let query_projection = json!({
@@ -56,43 +61,36 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
     "#
     );
 
-    let recent_sessions = context["recent_sessions"].as_array().expect("recent_sessions array");
-    assert!(
-        recent_sessions
-            .iter()
-            .any(|entry| entry == "DECISION: Chose graph index because it keeps lookups cheap.")
-    );
-    assert!(
-        recent_sessions.iter().any(|entry| {
-            entry == "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming."
-        })
-    );
-    assert!(
-        recent_sessions.iter().any(|entry| {
-            entry == "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
-        })
-    );
+    let recent_sessions = context["recent_sessions"]
+        .as_array()
+        .expect("recent_sessions array");
+    assert!(recent_sessions
+        .iter()
+        .any(|entry| entry == "DECISION: Chose graph index because it keeps lookups cheap."));
+    assert!(recent_sessions.iter().any(|entry| {
+        entry == "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming."
+    }));
+    assert!(recent_sessions.iter().any(|entry| {
+        entry == "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
+    }));
 
     assert!(context["stats"]["short_term_entries"].as_u64().unwrap_or(0) >= 4);
-    assert!(context["stats"]["session_log_entries"].as_u64().unwrap_or(0) >= 4);
+    assert!(
+        context["stats"]["session_log_entries"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 4
+    );
     assert!(context["stats"]["long_term_nodes"].as_u64().unwrap_or(0) > 0);
 
     let short_term = dump["short_term"].as_array().expect("short_term array");
-    assert!(
-        short_term
-            .iter()
-            .any(|entry| entry["text"] == "DECISION: Chose graph index because it keeps lookups cheap.")
-    );
-    assert!(
-        short_term
-            .iter()
-            .any(|entry| entry["text"] == "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming.")
-    );
-    assert!(
-        short_term
-            .iter()
-            .any(|entry| entry["text"] == "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix.")
-    );
+    assert!(short_term.iter().any(
+        |entry| entry["text"] == "DECISION: Chose graph index because it keeps lookups cheap."
+    ));
+    assert!(short_term.iter().any(|entry| entry["text"]
+        == "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming."));
+    assert!(short_term.iter().any(|entry| entry["text"]
+        == "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."));
     assert!(dump["session_log"].as_array().map(|v| v.len()).unwrap_or(0) >= 4);
 }
 
@@ -127,7 +125,9 @@ fn stats_and_sessions_reflect_recent_activity() {
     assert!(stats.stdout.contains("Queries:          1"));
 
     assert!(normalized_sessions.contains("ONBOARDING:"));
-    assert!(normalized_sessions.contains("DECISION: Chose graph index because it keeps lookups cheap."));
+    assert!(
+        normalized_sessions.contains("DECISION: Chose graph index because it keeps lookups cheap.")
+    );
     assert!(normalized_sessions.contains(
         "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
     ));
@@ -148,13 +148,13 @@ fn consolidate_on_seeded_store_creates_summary_output() {
         summaries[0]["source_texts"].as_array().map(|v| v.len()),
         Some(2)
     );
-    assert!(
-        summaries[0]["label"]
-            .as_str()
-            .expect("summary label")
-            .contains("graph lookup")
-    );
+    assert!(summaries[0]["label"]
+        .as_str()
+        .expect("summary label")
+        .contains("graph lookup"));
 
-    let graph_nodes = dump["graph"]["nodes"].as_array().expect("graph nodes array");
+    let graph_nodes = dump["graph"]["nodes"]
+        .as_array()
+        .expect("graph nodes array");
     assert!(graph_nodes.iter().any(|node| node["kind"] == "Summary"));
 }

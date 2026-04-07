@@ -1,6 +1,6 @@
+use super::cache::KeywordCache;
 /// Entity extraction from text (code-aware + plain identifiers).
 use std::collections::HashMap;
-use super::cache::KeywordCache;
 
 pub struct ExtractedEntity {
     pub label: String,
@@ -154,7 +154,7 @@ fn extract_after_keyword(line: &str, keyword: &str) -> Option<String> {
         "readonly ",
     ];
     let mut current = rest.trim_start();
-    
+
     // Skip leading quotes if present
     if current.starts_with('\'') || current.starts_with('"') {
         current = &current[1..];
@@ -465,12 +465,17 @@ mod tests {
     #[test]
     fn test_extract_environments() {
         // Domain-independent environment terms are in static Layer 1
-        let entities = extract_entities("This issue only happens in production and staging.", &kw());
+        let entities =
+            extract_entities("This issue only happens in production and staging.", &kw());
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"production"), "got: {:?}", labels);
         assert!(labels.contains(&"staging"), "got: {:?}", labels);
         assert_eq!(
-            entities.iter().find(|e| e.label == "production").unwrap().kind,
+            entities
+                .iter()
+                .find(|e| e.label == "production")
+                .unwrap()
+                .kind,
             "Environment"
         );
     }
@@ -498,8 +503,13 @@ mod tests {
         );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         // Terms still get extracted as entities, just not classified as "Tool" without bootstrap
-        assert!(labels.contains(&"graphql") || labels.contains(&"redis") || labels.contains(&"prometheus"),
-            "domain terms should still be extracted, got: {:?}", labels);
+        assert!(
+            labels.contains(&"graphql")
+                || labels.contains(&"redis")
+                || labels.contains(&"prometheus"),
+            "domain terms should still be extracted, got: {:?}",
+            labels
+        );
 
         // With a bootstrapped cache, they'd be classified as Tool
         let mut bootstrapped_kw = kw();
@@ -509,7 +519,11 @@ mod tests {
             &bootstrapped_kw,
         );
         assert_eq!(
-            entities2.iter().find(|e| e.label == "graphql").unwrap().kind,
+            entities2
+                .iter()
+                .find(|e| e.label == "graphql")
+                .unwrap()
+                .kind,
             "Tool"
         );
     }
@@ -546,8 +560,10 @@ mod tests {
 
     #[test]
     fn test_multi_language_keywords() {
-        let entities =
-            extract_entities("interface IService {}; package com.legend; export const X = 1;", &kw());
+        let entities = extract_entities(
+            "interface IService {}; package com.legend; export const X = 1;",
+            &kw(),
+        );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"IService"));
         assert!(labels.contains(&"com.legend"));
@@ -635,7 +651,10 @@ mod tests {
             "got: {:?}",
             labels
         );
-        let fp = entities.iter().find(|e| e.label == "src/commands/memory.rs").unwrap();
+        let fp = entities
+            .iter()
+            .find(|e| e.label == "src/commands/memory.rs")
+            .unwrap();
         assert_eq!(fp.kind, "FilePath");
     }
 
@@ -651,7 +670,12 @@ mod tests {
     fn test_extract_entities_deduplicates() {
         let entities = extract_entities("fn Config { struct Config; class Config }", &kw());
         let config_count = entities.iter().filter(|e| e.label == "Config").count();
-        assert_eq!(config_count, 1, "Should deduplicate: {:?}", entities.iter().map(|e| &e.label).collect::<Vec<_>>());
+        assert_eq!(
+            config_count,
+            1,
+            "Should deduplicate: {:?}",
+            entities.iter().map(|e| &e.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -662,7 +686,10 @@ mod tests {
 
     #[test]
     fn test_extract_entities_trait_and_impl() {
-        let entities = extract_entities("trait Serializable {} impl Serializable for Config {}", &kw());
+        let entities = extract_entities(
+            "trait Serializable {} impl Serializable for Config {}",
+            &kw(),
+        );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
         assert!(labels.contains(&"Serializable"), "got: {:?}", labels);
         assert!(labels.contains(&"Config"), "got: {:?}", labels);
