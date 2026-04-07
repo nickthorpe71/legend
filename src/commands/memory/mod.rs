@@ -14,10 +14,10 @@ mod tick;
 // Public re-exports (keeps mcp.rs and other consumers working unchanged)
 // ---------------------------------------------------------------------------
 
+pub use event_log::{log_event, log_event_rich};
 pub use event_log::{
     EventData, GraphHit, MatchedEntry, QueryEventData, StartEventData, TickEventData,
 };
-pub use event_log::{log_event, log_event_rich};
 pub use helpers::{append_to_architecture_md, is_noise_tick, truncate_text};
 pub use start::format_start_summary_markdown;
 
@@ -25,7 +25,10 @@ pub use start::format_start_summary_markdown;
 // Subcommand dispatch
 // ---------------------------------------------------------------------------
 
-pub fn handle_memory(args: &[String], def: &crate::cli::CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_memory(
+    args: &[String],
+    def: &crate::cli::CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     if args.is_empty() {
         print_memory_help();
         return Ok(());

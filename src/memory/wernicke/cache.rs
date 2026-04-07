@@ -3,12 +3,10 @@
 /// Scans the knowledge graph for `kind == "Keyword"` nodes with labels
 /// like `kw:<category>:<term>` and builds per-category keyword lists.
 /// Falls back to static arrays from `keywords.rs` when graph categories are empty.
-
 use super::lexicon::{
     ACTION_KEYWORDS, ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, CODE_KEYWORDS, DECISION_KEYWORDS,
     DOMAIN_KEYWORDS, ENTITY_KIND_PRIORITY, ENVIRONMENT_KEYWORDS, NEGATIVE_VALENCE_KEYWORDS,
-    POSITIVE_VALENCE_KEYWORDS, PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS,
-    URGENCY_KEYWORDS,
+    POSITIVE_VALENCE_KEYWORDS, PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS, URGENCY_KEYWORDS,
 };
 use crate::memory::GraphMemory;
 
@@ -48,7 +46,9 @@ impl KeywordCache {
         Self {
             code: CODE_KEYWORDS
                 .iter()
-                .map(|(kw, kind, ctx, pri)| (kw.to_string(), kind.to_string(), ctx.to_string(), *pri))
+                .map(|(kw, kind, ctx, pri)| {
+                    (kw.to_string(), kind.to_string(), ctx.to_string(), *pri)
+                })
                 .collect(),
             decision: DECISION_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             action: ACTION_KEYWORDS
@@ -57,7 +57,10 @@ impl KeywordCache {
                 .collect(),
             environment: ENVIRONMENT_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             tool: TOOL_KEYWORDS.iter().map(|s| s.to_string()).collect(),
-            architecture: ARCHITECTURE_KEYWORDS.iter().map(|s| s.to_string()).collect(),
+            architecture: ARCHITECTURE_KEYWORDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             bug: BUG_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             todo: TODO_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             preference: PREFERENCE_KEYWORDS.iter().map(|s| s.to_string()).collect(),
@@ -103,7 +106,9 @@ impl KeywordCache {
                     "code" => {
                         let (entity_kind, entity_context, priority) =
                             parse_code_metadata(&node.source_texts);
-                        cache.code.push((term.to_string(), entity_kind, entity_context, priority));
+                        cache
+                            .code
+                            .push((term.to_string(), entity_kind, entity_context, priority));
                     }
                     "decision" => cache.decision.push(term.to_string()),
                     "action" => cache.action.push((term.to_string(), "Action".to_string())),
@@ -154,10 +159,17 @@ impl KeywordCache {
 
     /// Check if the given (lowercased) text matches any classification keyword.
     pub fn matches_any_category(&self, text: &str) -> bool {
-        [&self.decision, &self.bug, &self.todo, &self.architecture,
-         &self.preference, &self.tool, &self.domain]
-            .iter()
-            .any(|list| list.iter().any(|k| text.contains(k.as_str())))
+        [
+            &self.decision,
+            &self.bug,
+            &self.todo,
+            &self.architecture,
+            &self.preference,
+            &self.tool,
+            &self.domain,
+        ]
+        .iter()
+        .any(|list| list.iter().any(|k| text.contains(k.as_str())))
     }
 
     /// Fill empty categories from static `keywords.rs` arrays.
@@ -165,7 +177,9 @@ impl KeywordCache {
         if self.code.is_empty() {
             self.code = CODE_KEYWORDS
                 .iter()
-                .map(|(kw, kind, ctx, pri)| (kw.to_string(), kind.to_string(), ctx.to_string(), *pri))
+                .map(|(kw, kind, ctx, pri)| {
+                    (kw.to_string(), kind.to_string(), ctx.to_string(), *pri)
+                })
                 .collect();
         }
         if self.decision.is_empty() {
@@ -184,7 +198,10 @@ impl KeywordCache {
             self.tool = TOOL_KEYWORDS.iter().map(|s| s.to_string()).collect();
         }
         if self.architecture.is_empty() {
-            self.architecture = ARCHITECTURE_KEYWORDS.iter().map(|s| s.to_string()).collect();
+            self.architecture = ARCHITECTURE_KEYWORDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         }
         if self.bug.is_empty() {
             self.bug = BUG_KEYWORDS.iter().map(|s| s.to_string()).collect();
@@ -357,10 +374,7 @@ mod tests {
         assert!(cache.tool.contains(&"prisma".to_string()));
         assert_eq!(cache.tool.len(), 1);
         // Decision falls back to static
-        assert_eq!(
-            cache.decision.len(),
-            DECISION_KEYWORDS.len()
-        );
+        assert_eq!(cache.decision.len(), DECISION_KEYWORDS.len());
     }
 
     #[test]
@@ -431,13 +445,19 @@ mod tests {
 
     #[test]
     fn test_parse_valence_weight() {
-        assert_eq!(parse_valence_weight(&["weight:-0.6".to_string()], -0.4), -0.6);
+        assert_eq!(
+            parse_valence_weight(&["weight:-0.6".to_string()], -0.4),
+            -0.6
+        );
         assert_eq!(parse_valence_weight(&["weight:0.8".to_string()], 0.4), 0.8);
         assert_eq!(parse_valence_weight(&[], -0.4), -0.4);
         assert_eq!(parse_valence_weight(&["no_weight".to_string()], 0.4), 0.4);
         // Clamped to [-1, 1]
         assert_eq!(parse_valence_weight(&["weight:5.0".to_string()], 0.0), 1.0);
-        assert_eq!(parse_valence_weight(&["weight:-5.0".to_string()], 0.0), -1.0);
+        assert_eq!(
+            parse_valence_weight(&["weight:-5.0".to_string()], 0.0),
+            -1.0
+        );
     }
 
     #[test]
@@ -502,8 +522,14 @@ mod tests {
     fn test_empty_graph_valence_fallbacks() {
         let graph = GraphMemory::default();
         let cache = KeywordCache::from_graph(&graph);
-        assert_eq!(cache.negative_valence.len(), NEGATIVE_VALENCE_KEYWORDS.len());
-        assert_eq!(cache.positive_valence.len(), POSITIVE_VALENCE_KEYWORDS.len());
+        assert_eq!(
+            cache.negative_valence.len(),
+            NEGATIVE_VALENCE_KEYWORDS.len()
+        );
+        assert_eq!(
+            cache.positive_valence.len(),
+            POSITIVE_VALENCE_KEYWORDS.len()
+        );
         assert_eq!(cache.urgency.len(), URGENCY_KEYWORDS.len());
     }
 }

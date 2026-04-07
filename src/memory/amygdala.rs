@@ -7,7 +7,6 @@
 /// The valence value persists on memory entries alongside salience but decays
 /// at half the hippocampal rate, modeling how emotionally charged memories
 /// resist forgetting.
-
 use super::wernicke::KeywordCache;
 
 /// Compute emotional valence for a text fragment.
@@ -91,11 +90,7 @@ mod tests {
     #[test]
     fn test_neutral_text() {
         let v = compute_emotional_valence("updated the documentation formatting", &kw());
-        assert!(
-            v.abs() < 0.3,
-            "neutral text should be near zero, got {}",
-            v
-        );
+        assert!(v.abs() < 0.3, "neutral text should be near zero, got {}", v);
     }
 
     #[test]

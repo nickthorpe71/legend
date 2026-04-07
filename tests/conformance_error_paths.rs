@@ -48,7 +48,9 @@ fn tick_rejects_noise() {
         output.stderr
     );
     assert!(
-        output.stderr.contains("[tick rejected: low-quality content detected]"),
+        output
+            .stderr
+            .contains("[tick rejected: low-quality content detected]"),
         "stderr should indicate noise rejection: {}",
         output.stderr
     );
@@ -134,12 +136,11 @@ fn tick_rejects_tool_telemetry_noise() {
         "tick",
         "Executed tool read_file with status success",
     ]);
+    assert!(output.status.success(), "tool telemetry noise exits 0");
     assert!(
-        output.status.success(),
-        "tool telemetry noise exits 0"
-    );
-    assert!(
-        output.stderr.contains("[tick rejected: low-quality content detected]"),
+        output
+            .stderr
+            .contains("[tick rejected: low-quality content detected]"),
         "tool telemetry should be rejected as noise: {}",
         output.stderr
     );
@@ -156,12 +157,11 @@ fn tick_rejects_agent_turn_noise() {
         "tick",
         "EXPERIENCE: Completed an agent turn with no changes",
     ]);
+    assert!(output.status.success(), "agent turn noise exits 0");
     assert!(
-        output.status.success(),
-        "agent turn noise exits 0"
-    );
-    assert!(
-        output.stderr.contains("[tick rejected: low-quality content detected]"),
+        output
+            .stderr
+            .contains("[tick rejected: low-quality content detected]"),
         "agent turn noise should be rejected: {}",
         output.stderr
     );

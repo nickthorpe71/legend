@@ -9,14 +9,19 @@ use common::{
 fn corrupt_store_is_backed_up_and_falls_back_to_empty_state() {
     let harness = Harness::new();
     std::fs::create_dir_all(harness.legend_dir()).expect("create legend dir");
-    std::fs::write(harness.legend_dir().join("memory.lz4"), b"not-valid").expect("write corrupt store");
+    std::fs::write(harness.legend_dir().join("memory.lz4"), b"not-valid")
+        .expect("write corrupt store");
 
     let output = harness.cmd_ok(&["memory", "stats"]);
 
     assert!(output.stdout.contains("Working memory (L1): 0"));
     assert!(output.stdout.contains("Short-term entries: 0"));
-    assert!(output.stderr.contains("Warning: failed to load memory store"));
-    assert!(output.stderr.contains("Backup saved to .legend/memory.lz4.corrupt"));
+    assert!(output
+        .stderr
+        .contains("Warning: failed to load memory store"));
+    assert!(output
+        .stderr
+        .contains("Backup saved to .legend/memory.lz4.corrupt"));
     assert!(harness.exists(".legend/memory.lz4.corrupt"));
 }
 
@@ -33,10 +38,11 @@ fn msgpack_fixture_missing_new_fields_loads_without_data_loss() {
     let short_term = dump["short_term"].as_array().expect("short_term array");
     assert_eq!(short_term.len(), 1);
     assert_eq!(short_term[0]["text"], "important migrated memory");
-    let salience = short_term[0]["salience"]
-        .as_f64()
-        .expect("salience number");
-    assert!((salience - 0.9).abs() < 0.001, "unexpected salience: {salience}");
+    let salience = short_term[0]["salience"].as_f64().expect("salience number");
+    assert!(
+        (salience - 0.9).abs() < 0.001,
+        "unexpected salience: {salience}"
+    );
     assert_eq!(short_term[0]["refs"][0]["path"], "src/main.rs");
     assert_eq!(dump["session_log"][0]["text"], "test session");
 

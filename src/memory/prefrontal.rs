@@ -16,12 +16,10 @@
 //!
 //! The `WorkingMemoryEntry` struct lives here as the canonical prefrontal type.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use super::{
-    BrainState,
-    hippocampus, neocortex,
-    hippocampus::extract_memory_refs_from_text,
+    hippocampus, hippocampus::extract_memory_refs_from_text, neocortex, BrainState,
     ATTENTION_GATE_THRESHOLD,
 };
 
@@ -58,8 +56,7 @@ pub fn push_working_memory(
         let displaced = state.working_memory.remove(0);
         // Promotion gate: displaced entry gets L2 if high salience or rehearsed
         if !displaced.promoted
-            && (displaced.salience >= ATTENTION_GATE_THRESHOLD
-                || displaced.rehearsal_count >= 1)
+            && (displaced.salience >= ATTENTION_GATE_THRESHOLD || displaced.rehearsal_count >= 1)
         {
             let refs = extract_memory_refs_from_text(&displaced.text);
             hippocampus::insert_short_term(

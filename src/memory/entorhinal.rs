@@ -1,37 +1,139 @@
-/// Entorhinal Cortex — Information compression gateway.
+use crate::memory::wernicke::KeywordCache;
+/// Entorhinal Cortex — Representational encoding and compression gateway.
 ///
 /// The entorhinal cortex sits between the hippocampus and the neocortex,
-/// acting as a compression and routing gateway.  It receives rich sensory
-/// data and reduces it to compact representations suitable for hippocampal
-/// storage — analogous to how grid cells in the entorhinal cortex compress
-/// spatial information into periodic, low-dimensional codes.
+/// acting as the primary encoding and compression gateway.  It receives raw
+/// sensory data and transforms it into the representations the rest of the
+/// brain uses — analogous to how grid cells compress spatial information
+/// into periodic, low-dimensional codes.
 ///
-/// In Legend, `entorhinal.rs` provides three compression functions:
+/// In Legend, `entorhinal.rs` owns both representational encoding and
+/// information compression:
+///
+/// **Representational encoding:**
+///
+/// - **N-gram embedding (`embed_text`)** — raw text is transformed into a
+///   256-dimensional vector via FNV-1a hashing of word unigrams, character
+///   trigrams, and word bigrams.  This is the primary encoding step:
+///   converting arbitrary input into a fixed-size representation that
+///   downstream modules (hippocampus, neocortex, dentate gyrus) can compare.
+///
+/// - **Cosine similarity (`cosine_similarity`)** — distance between two
+///   embeddings, analogous to neural "closeness" of two percepts.
+///
+/// - **Embedding merge (`merge_embeddings`)** — element-wise average for
+///   combining related representations during consolidation.
+///
+/// **Information compression:**
 ///
 /// - **Text chunking (`chunk_text`)** — splits long input into ~200-character
-///   segments respecting line boundaries.  This is the "grid-cell spatial
-///   encoding" analogy: continuous input is discretized into manageable units
-///   that each get their own embedding, salience score, and memory trace.
+///   segments respecting line boundaries.  Continuous input is discretized
+///   into manageable units that each get their own embedding and memory trace.
 ///
 /// - **Single-text summarization (`summarize_single`)** — extractive
 ///   best-sentence selection, boosted by decision rationale, code references,
-///   and architecture keywords.  This is lossy compression: the full text is
-///   preserved on the `ShortTermEntry`, but the summary provides a compact
-///   cue for display and group consolidation.
+///   and architecture keywords.
 ///
 /// - **Group summarization (`summarize_group`)** — picks the top 3 entries
 ///   from a cluster (by salience + usage), joins their summaries, and
-///   truncates to 300 characters.  Used during consolidation to create
-///   compressed L3 Summary nodes from related L2 entries.
+///   truncates to 300 characters.
 ///
 /// Like the biological entorhinal cortex, this module is a pure transform
-/// layer — it compresses information but doesn't store or retrieve it.
+/// layer — it encodes and compresses information but doesn't store or
+/// retrieve it.
 use crate::memory::ShortTermEntry;
-use crate::memory::wernicke::KeywordCache;
 
 const MAX_SUMMARY_LEN: usize = 200;
 const MAX_GROUP_SUMMARY_LEN: usize = 300;
 const CHUNK_TARGET_LEN: usize = 200;
+
+// ── Representational encoding ───────────────────────────────────────────
+
+/// Compute an n-gram embedding vector of given dimension.
+///
+/// Uses word unigrams, character trigrams, and word bigrams,
+/// then L2-normalizes for cosine similarity.
+pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
+    let mut vector = vec![0.0f32; dim];
+    let lowered = text.to_lowercase();
+    let tokens: Vec<&str> = lowered.split_whitespace().collect();
+
+    // Word unigrams
+    for token in &tokens {
+        let idx = (fnv_hash(token.as_bytes()) as usize) % dim;
+        vector[idx] += 1.0;
+    }
+
+    // Character trigrams (captures subword similarity)
+    for token in &tokens {
+        let chars: Vec<char> = token.chars().collect();
+        if chars.len() >= 3 {
+            for window in chars.windows(3) {
+                let trigram: String = window.iter().collect();
+                let idx = (fnv_hash(trigram.as_bytes()) as usize) % dim;
+                vector[idx] += 0.3;
+            }
+        }
+    }
+
+    // Word bigrams (captures phrase structure)
+    for pair in tokens.windows(2) {
+        let bigram = format!("{} {}", pair[0], pair[1]);
+        let idx = (fnv_hash(bigram.as_bytes()) as usize) % dim;
+        vector[idx] += 0.75;
+    }
+
+    // L2-normalize
+    let norm: f32 = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in &mut vector {
+            *v /= norm;
+        }
+    }
+
+    vector
+}
+
+/// FNV-1a 64-bit hash.
+pub fn fnv_hash(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Cosine similarity between two vectors.
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+
+    let mut dot = 0.0;
+    let mut norm_a = 0.0;
+    let mut norm_b = 0.0;
+
+    for i in 0..a.len().min(b.len()) {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+    }
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
+/// Element-wise average of two embedding vectors.
+pub fn merge_embeddings(a: &[f32], b: &[f32]) -> Vec<f32> {
+    let len = a.len().min(b.len());
+    (0..len).map(|i| (a[i] + b[i]) / 2.0).collect()
+}
+
+// ── Information compression ─────────────────────────────────────────────
 
 /// Summarize a single text chunk (extractive — pick best sentence).
 /// Prioritizes sentences with code references and decision rationale.
@@ -56,7 +158,10 @@ pub fn summarize_single(text: &str, kw: &KeywordCache) -> String {
         .max_by_key(|s| {
             let lower = s.to_lowercase();
             let words = s.split_whitespace().count();
-            let has_code = kw.code.iter().any(|(trigger, _, _, _)| s.contains(trigger.as_str()));
+            let has_code = kw
+                .code
+                .iter()
+                .any(|(trigger, _, _, _)| s.contains(trigger.as_str()));
             let has_key = s.contains(':') || s.contains('=') || s.contains("TODO");
             let has_decision = kw.decision.iter().any(|k| lower.contains(k.as_str()));
             let has_arch = kw.architecture.iter().any(|k| lower.contains(k.as_str()));
@@ -370,5 +475,83 @@ mod tests {
         // TypeScript boost
         let ts = "First. interface IData { id: number }. Last.";
         assert!(summarize_single(ts, &kw()).contains("interface IData"));
+    }
+
+    // ── Embedding tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_embed_produces_correct_dimensions() {
+        assert_eq!(embed_text("hello world", 256).len(), 256);
+    }
+
+    #[test]
+    fn test_embed_is_normalized() {
+        let vec = embed_text("the quick brown fox jumps over the lazy dog", 256);
+        let norm: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.01, "norm={}", norm);
+    }
+
+    #[test]
+    fn test_cosine_similarity_identical() {
+        let a = embed_text("hello world", 256);
+        let sim = cosine_similarity(&a, &a);
+        assert!((sim - 1.0).abs() < 0.001, "got {}", sim);
+    }
+
+    #[test]
+    fn test_cosine_similarity_related_vs_unrelated() {
+        let a = embed_text("memory system with embeddings and similarity search", 256);
+        let b = embed_text("embedding vectors and cosine similarity matching", 256);
+        let c = embed_text("cooking recipes for italian pasta dishes", 256);
+        assert!(cosine_similarity(&a, &b) > cosine_similarity(&a, &c));
+    }
+
+    #[test]
+    fn test_cosine_similarity_empty() {
+        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+    }
+
+    #[test]
+    fn test_merge_embeddings() {
+        assert_eq!(
+            merge_embeddings(&[1.0, 0.0, 0.5], &[0.0, 1.0, 0.5]),
+            vec![0.5, 0.5, 0.5]
+        );
+    }
+
+    #[test]
+    fn test_fnv_hash_deterministic() {
+        let h1 = fnv_hash(b"hello");
+        assert_eq!(h1, fnv_hash(b"hello"));
+        assert_ne!(h1, fnv_hash(b"world"));
+    }
+
+    #[test]
+    fn test_embed_empty_input() {
+        let v = embed_text("", 256);
+        assert_eq!(v.len(), 256);
+    }
+
+    #[test]
+    fn test_embed_single_word() {
+        let v = embed_text("hello", 256);
+        assert_eq!(v.len(), 256);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.01 || norm == 0.0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_different_lengths() {
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![1.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!((0.0..=1.0).contains(&sim), "got {}", sim);
+    }
+
+    #[test]
+    fn test_merge_embeddings_different_lengths() {
+        let result = merge_embeddings(&[1.0, 2.0, 3.0], &[4.0, 5.0]);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result, vec![2.5, 3.5]);
     }
 }

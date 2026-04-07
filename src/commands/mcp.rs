@@ -161,8 +161,12 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
         .map(|s| s.to_string());
 
     let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
-    let mut summary =
-        crate::memory::build_start_summary_with_options(&mut memory, false, category.as_deref(), None);
+    let mut summary = crate::memory::build_start_summary_with_options(
+        &mut memory,
+        false,
+        category.as_deref(),
+        None,
+    );
 
     // Session log capacity warning
     const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
@@ -309,7 +313,11 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
     });
     log_event_rich("query", topic, Some(event_data));
 
-    let working_memory: Vec<&str> = context.working_memory.iter().map(|m| m.text.as_str()).collect();
+    let working_memory: Vec<&str> = context
+        .working_memory
+        .iter()
+        .map(|m| m.text.as_str())
+        .collect();
     let memories: Vec<&str> = context.short_term.iter().map(|m| m.text.as_str()).collect();
     let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
 
@@ -352,8 +360,14 @@ fn tool_memory_stats() -> Result<String, String> {
     let memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
 
     let mut out = String::new();
-    out.push_str(&format!("Working memory (L1): {}\n", memory.brain.working_memory.len()));
-    out.push_str(&format!("Short-term entries: {}\n", memory.brain.short_term.len()));
+    out.push_str(&format!(
+        "Working memory (L1): {}\n",
+        memory.brain.working_memory.len()
+    ));
+    out.push_str(&format!(
+        "Short-term entries: {}\n",
+        memory.brain.short_term.len()
+    ));
     out.push_str(&format!(
         "Long-term nodes: {}\n",
         memory.brain.long_term.nodes.len()
@@ -378,10 +392,7 @@ fn tool_memory_stats() -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 fn handle_tools_call(id: &Value, params: &Value) -> Value {
-    let name = params
-        .get("name")
-        .and_then(|n| n.as_str())
-        .unwrap_or("");
+    let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
     match dispatch_tool(name, &arguments) {
@@ -463,7 +474,10 @@ fn mcp_main_loop() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Entry point for `legend mcp-serve`
-pub fn handle_mcp_serve(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub fn handle_mcp_serve(
+    args: &[String],
+    def: &CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parsed = parse_args(args, def);
 
     if let Some(cwd) = parsed.get("cwd") {
@@ -508,10 +522,7 @@ mod tests {
         assert!(result.get("capabilities").is_some());
         assert!(result["capabilities"].get("tools").is_some());
         assert_eq!(result["serverInfo"]["name"], "legend-memory");
-        assert_eq!(
-            result["serverInfo"]["version"],
-            env!("CARGO_PKG_VERSION")
-        );
+        assert_eq!(result["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
@@ -520,10 +531,7 @@ mod tests {
         let tools = resp["result"]["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 6);
 
-        let names: Vec<&str> = tools
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"legend_memory_start"));
         assert!(names.contains(&"legend_memory_tick"));
         assert!(names.contains(&"legend_memory_query"));
@@ -533,7 +541,11 @@ mod tests {
 
         // Verify each tool has inputSchema
         for tool in tools {
-            assert!(tool.get("inputSchema").is_some(), "Tool {} missing inputSchema", tool["name"]);
+            assert!(
+                tool.get("inputSchema").is_some(),
+                "Tool {} missing inputSchema",
+                tool["name"]
+            );
             assert_eq!(tool["inputSchema"]["type"], "object");
         }
     }
@@ -582,10 +594,13 @@ mod tests {
 
     #[test]
     fn test_tools_call_error_uses_is_error() {
-        let resp = handle_tools_call(&json!(1), &json!({
-            "name": "nonexistent_tool",
-            "arguments": {}
-        }));
+        let resp = handle_tools_call(
+            &json!(1),
+            &json!({
+                "name": "nonexistent_tool",
+                "arguments": {}
+            }),
+        );
         // Tool errors are JSON-RPC successes with isError: true
         assert!(resp.get("error").is_none());
         assert_eq!(resp["result"]["isError"], true);

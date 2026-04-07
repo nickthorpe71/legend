@@ -55,7 +55,7 @@ pub fn bootstrap_keywords_from_workspace(
     for tech in tech_stack {
         let term = tech.to_lowercase();
         if term.len() >= 2 && seeded.insert(format!("tool:{}", term)) {
-            if crate::memory::add_keyword_node(&mut memory.brain,"tool", &term, Vec::new()) {
+            if crate::memory::add_keyword_node(&mut memory.brain, "tool", &term, Vec::new()) {
                 result.tools += 1;
             }
         }
@@ -67,20 +67,16 @@ pub fn bootstrap_keywords_from_workspace(
         if let Ok(content) = fs::read_to_string(&full_path) {
             match kind.as_str() {
                 "Documentation" => {
-                    result.architecture +=
-                        extract_doc_headings(&content, &mut seeded, memory);
-                    result.domain +=
-                        extract_recurring_terms(&content, &mut seeded, memory);
+                    result.architecture += extract_doc_headings(&content, &mut seeded, memory);
+                    result.domain += extract_recurring_terms(&content, &mut seeded, memory);
                 }
                 "Manifest" => {
                     // Dependencies already handled above; extract config keys
-                    result.environment +=
-                        extract_config_keys(&content, path, &mut seeded, memory);
+                    result.environment += extract_config_keys(&content, path, &mut seeded, memory);
                 }
                 "EntryPoint" => {
                     // Extract module/struct/type names from entry points
-                    result.domain +=
-                        extract_code_identifiers(&content, &mut seeded, memory);
+                    result.domain += extract_code_identifiers(&content, &mut seeded, memory);
                 }
                 _ => {}
             }
@@ -94,7 +90,8 @@ pub fn bootstrap_keywords_from_workspace(
         }
     }
 
-    result.total = result.tools + result.architecture + result.domain + result.code + result.environment;
+    result.total =
+        result.tools + result.architecture + result.domain + result.code + result.environment;
     result
 }
 
@@ -125,7 +122,12 @@ fn seed_dependencies_as_tools(
                         && name.len() >= 2
                         && seeded.insert(format!("tool:{}", name))
                     {
-                        if crate::memory::add_keyword_node(&mut memory.brain,"tool", name, Vec::new()) {
+                        if crate::memory::add_keyword_node(
+                            &mut memory.brain,
+                            "tool",
+                            name,
+                            Vec::new(),
+                        ) {
                             count += 1;
                         }
                     }
@@ -141,7 +143,12 @@ fn seed_dependencies_as_tools(
                 if let Some(deps) = json.get(section).and_then(|v| v.as_object()) {
                     for name in deps.keys() {
                         if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                            if crate::memory::add_keyword_node(&mut memory.brain,"tool", name, Vec::new()) {
+                            if crate::memory::add_keyword_node(
+                                &mut memory.brain,
+                                "tool",
+                                name,
+                                Vec::new(),
+                            ) {
                                 count += 1;
                             }
                         }
@@ -160,7 +167,7 @@ fn seed_dependencies_as_tools(
                 .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                 .collect();
             if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                if crate::memory::add_keyword_node(&mut memory.brain,"tool", &name, Vec::new()) {
+                if crate::memory::add_keyword_node(&mut memory.brain, "tool", &name, Vec::new()) {
                     count += 1;
                 }
             }
@@ -184,7 +191,8 @@ fn seed_dependencies_as_tools(
                     .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                     .collect();
                 if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                    if crate::memory::add_keyword_node(&mut memory.brain,"tool", &name, Vec::new()) {
+                    if crate::memory::add_keyword_node(&mut memory.brain, "tool", &name, Vec::new())
+                    {
                         count += 1;
                     }
                 }
@@ -204,7 +212,12 @@ fn seed_dependencies_as_tools(
                 // Use last segment of module path as the tool name
                 if let Some(name) = path.rsplit('/').next() {
                     if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                        if crate::memory::add_keyword_node(&mut memory.brain,"tool", name, Vec::new()) {
+                        if crate::memory::add_keyword_node(
+                            &mut memory.brain,
+                            "tool",
+                            name,
+                            Vec::new(),
+                        ) {
                             count += 1;
                         }
                     }
@@ -226,7 +239,8 @@ fn seed_dependencies_as_tools(
                     .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                     .collect();
                 if name.len() >= 2 && seeded.insert(format!("tool:{}", name)) {
-                    if crate::memory::add_keyword_node(&mut memory.brain,"tool", &name, Vec::new()) {
+                    if crate::memory::add_keyword_node(&mut memory.brain, "tool", &name, Vec::new())
+                    {
                         count += 1;
                     }
                 }
@@ -260,7 +274,12 @@ fn extract_doc_headings(
             }
             let lower = heading.to_lowercase();
             if seeded.insert(format!("architecture:{}", lower)) {
-                if crate::memory::add_keyword_node(&mut memory.brain,"architecture", &lower, Vec::new()) {
+                if crate::memory::add_keyword_node(
+                    &mut memory.brain,
+                    "architecture",
+                    &lower,
+                    Vec::new(),
+                ) {
                     count += 1;
                 }
             }
@@ -312,7 +331,8 @@ fn extract_recurring_terms(
     seeded: &mut HashSet<String>,
     memory: &mut MemoryState,
 ) -> usize {
-    let mut term_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut term_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for line in content.lines() {
         // Skip headings and code blocks
@@ -336,7 +356,9 @@ fn extract_recurring_terms(
                 && clean.chars().any(|c| c.is_lowercase())
                 && clean.chars().filter(|c| c.is_uppercase()).count() >= 2;
             let is_upper = clean.len() >= 3
-                && clean.chars().all(|c| c.is_uppercase() || c == '_' || c == '-');
+                && clean
+                    .chars()
+                    .all(|c| c.is_uppercase() || c == '_' || c == '-');
 
             if is_pascal || is_upper {
                 *term_counts.entry(clean).or_insert(0) += 1;
@@ -350,7 +372,8 @@ fn extract_recurring_terms(
         if *freq >= 2 {
             let lower = term.to_lowercase();
             if seeded.insert(format!("domain:{}", lower)) {
-                if crate::memory::add_keyword_node(&mut memory.brain,"domain", &lower, Vec::new()) {
+                if crate::memory::add_keyword_node(&mut memory.brain, "domain", &lower, Vec::new())
+                {
                     count += 1;
                 }
             }
@@ -397,7 +420,12 @@ fn extract_config_keys(
                 {
                     let lower = section.to_lowercase();
                     if seeded.insert(format!("environment:{}", lower)) {
-                        if crate::memory::add_keyword_node(&mut memory.brain,"environment", &lower, Vec::new()) {
+                        if crate::memory::add_keyword_node(
+                            &mut memory.brain,
+                            "environment",
+                            &lower,
+                            Vec::new(),
+                        ) {
                             count += 1;
                         }
                     }
@@ -416,7 +444,8 @@ fn extract_code_identifiers(
     memory: &mut MemoryState,
 ) -> usize {
     let mut count = 0;
-    let mut ident_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut ident_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     // Simple pattern: look for PascalCase identifiers (likely type/struct/class names)
     for line in content.lines() {
@@ -444,7 +473,8 @@ fn extract_code_identifiers(
         if *freq >= 2 {
             let lower = ident.to_lowercase();
             if seeded.insert(format!("domain:{}", lower)) {
-                if crate::memory::add_keyword_node(&mut memory.brain,"domain", &lower, Vec::new()) {
+                if crate::memory::add_keyword_node(&mut memory.brain, "domain", &lower, Vec::new())
+                {
                     count += 1;
                 }
             }
@@ -537,7 +567,7 @@ fn seed_language_code_keywords(
                 format!("entity_context:{}", ctx),
                 format!("entity_priority:{}", pri),
             ];
-            if crate::memory::add_keyword_node(&mut memory.brain,"code", trigger, metadata) {
+            if crate::memory::add_keyword_node(&mut memory.brain, "code", trigger, metadata) {
                 count += 1;
             }
         }
@@ -558,13 +588,7 @@ mod tests {
     fn test_bootstrap_empty_workspace() {
         let dir = TempDir::new().unwrap();
         let mut memory = fresh_memory();
-        let result = bootstrap_keywords_from_workspace(
-            dir.path(),
-            &[],
-            &[],
-            &[],
-            &mut memory,
-        );
+        let result = bootstrap_keywords_from_workspace(dir.path(), &[], &[], &[], &mut memory);
         assert_eq!(result.total, 0);
     }
 
@@ -597,12 +621,20 @@ tempfile = "3"
             &mut memory,
         );
 
-        assert!(result.tools >= 3, "should extract serde, tokio, tempfile; got {}", result.tools);
+        assert!(
+            result.tools >= 3,
+            "should extract serde, tokio, tempfile; got {}",
+            result.tools
+        );
 
         // Verify they're in the graph as kw:tool:* nodes
         assert!(memory.brain.long_term.index.contains_key("kw:tool:serde"));
         assert!(memory.brain.long_term.index.contains_key("kw:tool:tokio"));
-        assert!(memory.brain.long_term.index.contains_key("kw:tool:tempfile"));
+        assert!(memory
+            .brain
+            .long_term
+            .index
+            .contains_key("kw:tool:tempfile"));
     }
 
     #[test]
@@ -631,7 +663,11 @@ tempfile = "3"
             &mut memory,
         );
 
-        assert!(result.tools >= 3, "should extract react, express, jest; got {}", result.tools);
+        assert!(
+            result.tools >= 3,
+            "should extract react, express, jest; got {}",
+            result.tools
+        );
         assert!(memory.brain.long_term.index.contains_key("kw:tool:react"));
         assert!(memory.brain.long_term.index.contains_key("kw:tool:express"));
     }
@@ -672,11 +708,13 @@ tempfile = "3"
             result.architecture
         );
         assert!(memory
-            .brain.long_term
+            .brain
+            .long_term
             .index
             .contains_key("kw:architecture:memory system architecture"));
         assert!(memory
-            .brain.long_term
+            .brain
+            .long_term
             .index
             .contains_key("kw:architecture:query processing pipeline"));
     }
@@ -700,7 +738,10 @@ tempfile = "3"
             &mut memory,
         );
 
-        assert_eq!(result.architecture, 0, "generic headings should be filtered");
+        assert_eq!(
+            result.architecture, 0,
+            "generic headings should be filtered"
+        );
     }
 
     #[test]
@@ -726,9 +767,21 @@ tempfile = "3"
         );
 
         // MemoryState and GraphMemory appear 2+ times each
-        assert!(result.domain >= 2, "should extract recurring PascalCase terms; got {}", result.domain);
-        assert!(memory.brain.long_term.index.contains_key("kw:domain:memorystate"));
-        assert!(memory.brain.long_term.index.contains_key("kw:domain:graphmemory"));
+        assert!(
+            result.domain >= 2,
+            "should extract recurring PascalCase terms; got {}",
+            result.domain
+        );
+        assert!(memory
+            .brain
+            .long_term
+            .index
+            .contains_key("kw:domain:memorystate"));
+        assert!(memory
+            .brain
+            .long_term
+            .index
+            .contains_key("kw:domain:graphmemory"));
     }
 
     #[test]
@@ -746,7 +799,10 @@ tempfile = "3"
             &mut memory,
         );
 
-        assert_eq!(result.domain, 0, "single-occurrence terms should not be seeded");
+        assert_eq!(
+            result.domain, 0,
+            "single-occurrence terms should not be seeded"
+        );
     }
 
     #[test]
@@ -763,7 +819,11 @@ tempfile = "3"
 
         // Rust: fn, struct, impl, trait, enum, mod = 6
         // Python: def, class = 2
-        assert!(result.code >= 8, "should seed language code keywords; got {}", result.code);
+        assert!(
+            result.code >= 8,
+            "should seed language code keywords; got {}",
+            result.code
+        );
         assert!(memory.brain.long_term.index.contains_key("kw:code:fn "));
         assert!(memory.brain.long_term.index.contains_key("kw:code:struct "));
         assert!(memory.brain.long_term.index.contains_key("kw:code:def "));
@@ -781,9 +841,17 @@ tempfile = "3"
             &mut memory,
         );
 
-        assert!(result.tools >= 2, "tech stack items should become tools; got {}", result.tools);
+        assert!(
+            result.tools >= 2,
+            "tech stack items should become tools; got {}",
+            result.tools
+        );
         assert!(memory.brain.long_term.index.contains_key("kw:tool:react"));
-        assert!(memory.brain.long_term.index.contains_key("kw:tool:typescript"));
+        assert!(memory
+            .brain
+            .long_term
+            .index
+            .contains_key("kw:tool:typescript"));
     }
 
     #[test]
@@ -801,7 +869,10 @@ tempfile = "3"
         let result = bootstrap_keywords_from_workspace(dir.path(), &[], &[], &[], &mut memory);
 
         // Second run should seed 0 new (add_keyword_node returns false for existing)
-        assert_eq!(result.tools, 0, "second bootstrap should not duplicate keywords");
+        assert_eq!(
+            result.tools, 0,
+            "second bootstrap should not duplicate keywords"
+        );
     }
 
     #[test]
@@ -822,9 +893,17 @@ tempfile = "3"
             &mut memory,
         );
 
-        assert!(result.tools >= 3, "should extract flask, requests, numpy; got {}", result.tools);
+        assert!(
+            result.tools >= 3,
+            "should extract flask, requests, numpy; got {}",
+            result.tools
+        );
         assert!(memory.brain.long_term.index.contains_key("kw:tool:flask"));
-        assert!(memory.brain.long_term.index.contains_key("kw:tool:requests"));
+        assert!(memory
+            .brain
+            .long_term
+            .index
+            .contains_key("kw:tool:requests"));
         assert!(memory.brain.long_term.index.contains_key("kw:tool:numpy"));
     }
 
@@ -855,8 +934,20 @@ fn main() {
         );
 
         // AppConfig appears 3x, RequestHandler 2x
-        assert!(result.domain >= 2, "should extract PascalCase identifiers; got {}", result.domain);
-        assert!(memory.brain.long_term.index.contains_key("kw:domain:appconfig"));
-        assert!(memory.brain.long_term.index.contains_key("kw:domain:requesthandler"));
+        assert!(
+            result.domain >= 2,
+            "should extract PascalCase identifiers; got {}",
+            result.domain
+        );
+        assert!(memory
+            .brain
+            .long_term
+            .index
+            .contains_key("kw:domain:appconfig"));
+        assert!(memory
+            .brain
+            .long_term
+            .index
+            .contains_key("kw:domain:requesthandler"));
     }
 }

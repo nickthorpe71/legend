@@ -1,7 +1,7 @@
 use crate::cli::{parse_args, print_command_help, CommandDef};
 use crate::commands::discover;
-use crate::tool::bootstrap as keyword_bootstrap;
 use crate::memory::wernicke::lexicon as keywords;
+use crate::tool::bootstrap as keyword_bootstrap;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -36,7 +36,9 @@ pub fn handle_init(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std:
             println!("  Re-scanning project context...");
             if let Ok(report) = discover::run_discovery(Path::new(".")) {
                 let _ = discover::onboard_project(Path::new("."), &report);
-                println!("✓ Project onboarding complete. High-signal context ingested into Legend.");
+                println!(
+                    "✓ Project onboarding complete. High-signal context ingested into Legend."
+                );
                 // Re-bootstrap workspace keywords from fresh discovery
                 if let Ok(mut memory) = crate::memory::load_or_default() {
                     let high_signal: Vec<(String, String)> = report
@@ -423,14 +425,7 @@ fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Set up Codex hooks in .codex/settings.json
 fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
-    setup_agent_hooks(
-        ".codex",
-        "Codex",
-        "UserPromptSubmit",
-        "Stop",
-        None,
-        None,
-    )
+    setup_agent_hooks(".codex", "Codex", "UserPromptSubmit", "Stop", None, None)
 }
 
 /// Set up agent hooks in a settings.json for the given tool directory.
@@ -722,7 +717,11 @@ fn merge_json_config(
         let mut settings: Value = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse {}: {}", display_name, e))?;
 
-        if settings.get(key).and_then(|v| v.get("legend-memory")).is_some() {
+        if settings
+            .get(key)
+            .and_then(|v| v.get("legend-memory"))
+            .is_some()
+        {
             println!("  {} MCP already configured", display_name);
             return Ok(());
         }
@@ -735,8 +734,7 @@ fn merge_json_config(
         }
 
         let output = serde_json::to_string_pretty(&settings)?;
-        fs::write(path, output)
-            .map_err(|e| format!("Failed to write {}: {}", display_name, e))?;
+        fs::write(path, output).map_err(|e| format!("Failed to write {}: {}", display_name, e))?;
         println!("✓ Added Legend MCP to existing {}", display_name);
     } else {
         if let Some(d) = dir {
@@ -745,8 +743,7 @@ fn merge_json_config(
         }
         let settings = json!({ key: { "legend-memory": value } });
         let output = serde_json::to_string_pretty(&settings)?;
-        fs::write(path, output)
-            .map_err(|e| format!("Failed to write {}: {}", display_name, e))?;
+        fs::write(path, output).map_err(|e| format!("Failed to write {}: {}", display_name, e))?;
         println!("✓ Created {} with Legend MCP config", display_name);
     }
     Ok(())
@@ -962,7 +959,10 @@ fn seed_universal_keywords() {
         if let Err(e) = crate::memory::save(&memory) {
             eprintln!("  Warning: failed to save keyword seeds: {}", e);
         } else {
-            println!("✓ Seeded {} universal keyword nodes into knowledge graph", count);
+            println!(
+                "✓ Seeded {} universal keyword nodes into knowledge graph",
+                count
+            );
         }
     }
 }
@@ -982,7 +982,11 @@ fn print_tier2_prompt(report: &discover::DiscoveryReport) {
     eprintln!(
         "Legend has seeded base keywords for project '{}' ({}). To add domain-specific keywords,",
         report.metadata.name,
-        detected_langs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        detected_langs
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     eprintln!("use KEYWORD: directives in your ticks:");
     eprintln!();
@@ -1001,7 +1005,8 @@ fn migrate_keywords_if_needed() {
     };
 
     let has_keywords = memory
-        .brain.long_term
+        .brain
+        .long_term
         .nodes
         .values()
         .any(|n| n.kind == "Keyword");
@@ -1021,7 +1026,13 @@ fn migrate_keywords_if_needed() {
 #[allow(dead_code)]
 pub fn count_keyword_nodes() -> usize {
     match crate::memory::load_or_default() {
-        Ok(m) => m.brain.long_term.nodes.values().filter(|n| n.kind == "Keyword").count(),
+        Ok(m) => m
+            .brain
+            .long_term
+            .nodes
+            .values()
+            .filter(|n| n.kind == "Keyword")
+            .count(),
         Err(_) => 0,
     }
 }

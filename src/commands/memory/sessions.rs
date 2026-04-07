@@ -20,7 +20,10 @@ fn parse_sessions_args(args: &[String], def: &CommandDef) -> SessionsOptions {
     }
 }
 
-pub(super) fn handle_sessions(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn handle_sessions(
+    args: &[String],
+    def: &CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_sessions_args(args, def);
 
     let memory = crate::memory::load_or_default()?;

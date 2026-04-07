@@ -8,7 +8,11 @@ fn help_output_is_stable() {
     let harness = Harness::new();
     let output = harness.cmd_ok(&["help"]);
 
-    assert!(output.stderr.is_empty(), "unexpected stderr: {}", output.stderr);
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {}",
+        output.stderr
+    );
     assert_snapshot!(
         &harness.normalize(&output.stdout),
         @r###"
@@ -59,7 +63,11 @@ fn init_first_run_creates_expected_files_and_repeat_is_stable() {
 
     assert!(first.stderr.contains("Ingesting README.md..."));
     assert!(first.stderr.contains("Ingesting Cargo.toml..."));
-    assert!(second.stderr.is_empty(), "unexpected stderr: {}", second.stderr);
+    assert!(
+        second.stderr.is_empty(),
+        "unexpected stderr: {}",
+        second.stderr
+    );
 
     assert_snapshot!(
         &harness.normalize(&first.stdout),

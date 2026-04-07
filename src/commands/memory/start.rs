@@ -45,10 +45,7 @@ fn check_version_cached() -> Option<String> {
     let cached_ts: u64 = lines.next()?.parse().ok()?;
     let latest = lines.next()?.trim().to_string();
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
 
     if now - cached_ts < VERSION_CHECK_INTERVAL && version_greater(&latest, current) {
         return Some(latest);
@@ -57,9 +54,7 @@ fn check_version_cached() -> Option<String> {
 }
 
 fn version_greater(a: &str, b: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> {
-        v.split('.').filter_map(|s| s.parse().ok()).collect()
-    };
+    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
     parse(a) > parse(b)
 }
 
@@ -81,10 +76,14 @@ fn refresh_version_cache_background() {
 /// Session log capacity warning threshold (90% of SESSION_LOG_CAPACITY=100)
 const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
 
-pub(super) fn handle_start(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn handle_start(
+    args: &[String],
+    def: &CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_start_args(args, def);
     let mut memory = crate::memory::load_or_default()?;
-    let mut summary = crate::memory::build_start_summary_with_options(&mut memory, 
+    let mut summary = crate::memory::build_start_summary_with_options(
+        &mut memory,
         opts.compact,
         opts.category.as_deref(),
         opts.query.as_deref(),
@@ -108,11 +107,7 @@ pub(super) fn handle_start(args: &[String], def: &CommandDef) -> Result<(), Box<
         if let Some(obj) = summary.as_object_mut() {
             obj.insert(
                 "update_available".to_string(),
-                serde_json::json!(format!(
-                    "v{} → v{}",
-                    env!("CARGO_PKG_VERSION"),
-                    latest
-                )),
+                serde_json::json!(format!("v{} → v{}", env!("CARGO_PKG_VERSION"), latest)),
             );
         }
     }
@@ -292,11 +287,36 @@ mod tests {
         about: "Session start",
         usage: "legend memory start [options] [query]",
         flags: &[
-            FlagDef { long: "--compact", short: Some('c'), about: "Compact output", takes_value: false },
-            FlagDef { long: "--json", short: Some('j'), about: "JSON output", takes_value: false },
-            FlagDef { long: "--tokens", short: Some('t'), about: "Show token overhead", takes_value: false },
-            FlagDef { long: "--category", short: None, about: "Filter by category", takes_value: true },
-            FlagDef { long: "--query", short: Some('q'), about: "Query string", takes_value: true },
+            FlagDef {
+                long: "--compact",
+                short: Some('c'),
+                about: "Compact output",
+                takes_value: false,
+            },
+            FlagDef {
+                long: "--json",
+                short: Some('j'),
+                about: "JSON output",
+                takes_value: false,
+            },
+            FlagDef {
+                long: "--tokens",
+                short: Some('t'),
+                about: "Show token overhead",
+                takes_value: false,
+            },
+            FlagDef {
+                long: "--category",
+                short: None,
+                about: "Filter by category",
+                takes_value: true,
+            },
+            FlagDef {
+                long: "--query",
+                short: Some('q'),
+                about: "Query string",
+                takes_value: true,
+            },
         ],
         positionals: &[],
         children: &[],

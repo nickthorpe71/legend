@@ -36,10 +36,7 @@ fn tools_list_returns_six_tools_with_schemas() {
         .expect("tools array");
     assert_eq!(tools.len(), 6);
 
-    let names: Vec<&str> = tools
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"legend_memory_start"));
     assert!(names.contains(&"legend_memory_tick"));
     assert!(names.contains(&"legend_memory_query"));
@@ -48,7 +45,11 @@ fn tools_list_returns_six_tools_with_schemas() {
     assert!(names.contains(&"legend_memory_stats"));
 
     for tool in tools {
-        assert!(tool["inputSchema"].is_object(), "tool {} missing schema", tool["name"]);
+        assert!(
+            tool["inputSchema"].is_object(),
+            "tool {} missing schema",
+            tool["name"]
+        );
     }
 }
 
@@ -128,7 +129,10 @@ fn start_tool_returns_markdown_summary() {
     let result = &responses[0]["result"];
     let content = result["content"].as_array().expect("content array");
     let text = content[0]["text"].as_str().unwrap();
-    assert!(text.contains("Legend"), "start output should contain markdown summary");
+    assert!(
+        text.contains("Legend"),
+        "start output should contain markdown summary"
+    );
 }
 
 #[test]
@@ -237,16 +241,15 @@ fn unknown_method_returns_json_rpc_error() {
     seed_basic_repo(&harness);
     harness.cmd_ok(&["init"]);
 
-    let responses = harness.mcp_session(&[jsonrpc_request(
-        1,
-        "nonexistent/method",
-        json!({}),
-    )]);
+    let responses = harness.mcp_session(&[jsonrpc_request(1, "nonexistent/method", json!({}))]);
 
     assert_eq!(responses.len(), 1);
     let error = &responses[0]["error"];
     assert_eq!(error["code"], -32601);
-    assert!(error["message"].as_str().unwrap().contains("Method not found"));
+    assert!(error["message"]
+        .as_str()
+        .unwrap()
+        .contains("Method not found"));
 }
 
 #[test]
@@ -277,11 +280,7 @@ fn cwd_flag_changes_working_directory() {
     assert!(status.success());
 
     // Tick into the main harness directory
-    harness.cmd_ok(&[
-        "memory",
-        "tick",
-        "DECISION: Main harness tick for cwd test",
-    ]);
+    harness.cmd_ok(&["memory", "tick", "DECISION: Main harness tick for cwd test"]);
 
     // Use mcp_session_in with --cwd pointing to the main harness
     // The mcp_session_in uses the cwd param so memory operations target that dir

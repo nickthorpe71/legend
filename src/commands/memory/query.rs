@@ -9,7 +9,10 @@ struct QueryOptions {
     show_reasons: bool,
 }
 
-fn parse_query_args(args: &[String], def: &CommandDef) -> Result<QueryOptions, Box<dyn std::error::Error>> {
+fn parse_query_args(
+    args: &[String],
+    def: &CommandDef,
+) -> Result<QueryOptions, Box<dyn std::error::Error>> {
     let parsed = parse_args(args, def);
 
     if parsed.positional.is_empty() {
@@ -22,7 +25,10 @@ fn parse_query_args(args: &[String], def: &CommandDef) -> Result<QueryOptions, B
     })
 }
 
-pub(super) fn handle_query(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn handle_query(
+    args: &[String],
+    def: &CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_query_args(args, def)?;
 
     let mut memory = crate::memory::load_or_default()?;
@@ -140,7 +146,11 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
 }
 
 fn print_context(context: MemoryContext) {
-    let working_memory: Vec<&str> = context.working_memory.iter().map(|m| m.text.as_str()).collect();
+    let working_memory: Vec<&str> = context
+        .working_memory
+        .iter()
+        .map(|m| m.text.as_str())
+        .collect();
     let memories: Vec<&str> = context.short_term.iter().map(|m| m.text.as_str()).collect();
     let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
 
@@ -162,9 +172,12 @@ mod tests {
         name: "query",
         about: "Query memory",
         usage: "legend memory query [--reasons] <text>",
-        flags: &[
-            FlagDef { long: "--reasons", short: Some('r'), about: "Include retrieval reasoning", takes_value: false },
-        ],
+        flags: &[FlagDef {
+            long: "--reasons",
+            short: Some('r'),
+            about: "Include retrieval reasoning",
+            takes_value: false,
+        }],
         positionals: &[],
         children: &[],
     };
