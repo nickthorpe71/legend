@@ -27,7 +27,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run LongMemEval benchmark against Legend")
     parser.add_argument("--dataset", default="longmemeval_oracle.json", help="Path to LongMemEval JSON")
     parser.add_argument("--output", default="results.jsonl", help="Output hypothesis JSONL")
-    parser.add_argument("--model", default="claude-haiku-4-5-20251001", help="Claude model for reading step")
+    parser.add_argument("--model", default="claude-sonnet-4-5-20250929", help="Claude model for reading step")
     parser.add_argument("--limit", type=int, default=0, help="Only run first N questions (0 = all)")
     parser.add_argument("--legend", default="../target/release/legend", help="Path to Legend binary")
     parser.add_argument("--verbose", action="store_true", help="Print progress details")
@@ -48,7 +48,7 @@ def run_legend(legend_bin: str, cwd: str, args: list[str], stdin_text: str | Non
         input=stdin_text,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=120,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Legend command failed: {' '.join(args)}\nstderr: {result.stderr}")
@@ -71,29 +71,44 @@ def setup_workspace(legend_bin: str, workspace: str):
 
 
 def ingest_sessions(legend_bin: str, workspace: str, sessions: list, verbose: bool = False):
-    """Tick all user turns from haystack sessions into Legend."""
+    """Tick all turns from haystack sessions into Legend."""
     tick_count = 0
+    rejected = 0
     for session in sessions:
         for turn in session:
-            if turn.get("role") == "user" and turn.get("content", "").strip():
-                content = turn["content"].strip()
-                # Truncate very long turns to avoid CLI limits
-                if len(content) > 2000:
-                    content = content[:2000]
-                try:
-                    run_legend(legend_bin, workspace, ["memory", "tick", content])
-                    tick_count += 1
-                except RuntimeError:
-                    # Some ticks may be rejected as noise — that's fine
-                    pass
+            content = turn.get("content", "").strip()
+            if not content:
+                continue
+            try:
+                run_legend(legend_bin, workspace, ["memory", "tick", content])
+                tick_count += 1
+            except RuntimeError:
+                rejected += 1
     if verbose:
-        print(f"    Ingested {tick_count} ticks")
+        print(f"    Ingested {tick_count} ticks ({rejected} rejected)")
 
 
 def query_legend(legend_bin: str, workspace: str, question: str) -> str:
-    """Query Legend and return the retrieved context as a string."""
+    """Query Legend and return the retrieved context as plain text."""
     output = run_legend(legend_bin, workspace, ["memory", "query", question])
-    return output.strip()
+    raw = output.strip()
+
+    # Parse JSON and format as readable text
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+    lines = []
+    for i, mem in enumerate(data.get("working_memory", []), 1):
+        lines.append(f"[Active Memory {i}] {mem}")
+    for i, mem in enumerate(data.get("memories", []), 1):
+        lines.append(f"[Memory {i}] {mem}")
+    topics = data.get("related_topics", [])
+    if topics:
+        lines.append(f"[Related Topics] {', '.join(topics)}")
+
+    return "\n\n".join(lines) if lines else raw
 
 
 def answer_with_llm(question: str, context: str, model: str) -> str:
@@ -105,11 +120,11 @@ def answer_with_llm(question: str, context: str, model: str) -> str:
         sys.exit(1)
 
     client = anthropic.Anthropic()
-    prompt = f"""Based on the following memory context retrieved from past conversations, answer the question.
-If the context doesn't contain enough information to answer, say "I don't know" or "Not enough information".
-Answer concisely and directly.
+    prompt = f"""You are answering questions based on memories retrieved from past conversations.
+Use ONLY the provided context. Answer concisely and directly.
+If the context doesn't contain enough information, say "I don't know".
 
-## Retrieved Context
+## Retrieved Memories
 {context}
 
 ## Question
@@ -176,7 +191,7 @@ def run_benchmark(args):
                 hypothesis = answer_with_llm(question, context, args.model)
                 if args.verbose:
                     print(f"  A: {hypothesis[:100]}...")
-                    print(f"  Expected: {q['answer'][:100]}...")
+                    print(f"  Expected: {str(q['answer'])[:100]}...")
 
                 # 4. Write result
                 entry = {"question_id": qid, "hypothesis": hypothesis}
