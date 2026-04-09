@@ -20,7 +20,7 @@ fn initialize_returns_protocol_version_and_server_info() {
 }
 
 #[test]
-fn tools_list_returns_six_tools_with_schemas() {
+fn tools_list_returns_three_core_tools_with_schemas() {
     let harness = Harness::new();
     seed_basic_repo(&harness);
     harness.cmd_ok(&["init"]);
@@ -34,15 +34,12 @@ fn tools_list_returns_six_tools_with_schemas() {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 3);
 
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"legend_memory_start"));
     assert!(names.contains(&"legend_memory_tick"));
     assert!(names.contains(&"legend_memory_query"));
-    assert!(names.contains(&"legend_memory_task_get"));
-    assert!(names.contains(&"legend_memory_task_set"));
-    assert!(names.contains(&"legend_memory_stats"));
 
     for tool in tools {
         assert!(
@@ -133,65 +130,10 @@ fn start_tool_returns_markdown_summary() {
         text.contains("Legend"),
         "start output should contain markdown summary"
     );
-}
-
-#[test]
-fn task_round_trip_set_then_get() {
-    let harness = Harness::new();
-    seed_basic_repo(&harness);
-    harness.cmd_ok(&["init"]);
-
-    let responses = harness.mcp_session(&[
-        jsonrpc_request(
-            1,
-            "tools/call",
-            json!({
-                "name": "legend_memory_task_set",
-                "arguments": { "task": "Refactor retrieval pipeline" }
-            }),
-        ),
-        jsonrpc_request(
-            2,
-            "tools/call",
-            json!({
-                "name": "legend_memory_task_get",
-                "arguments": {}
-            }),
-        ),
-    ]);
-
-    assert!(responses.len() >= 2);
-    let get_result = &responses[1]["result"];
-    let content = get_result["content"].as_array().expect("content array");
-    let text = content[0]["text"].as_str().unwrap();
+    // Protocol injection should be present
     assert!(
-        text.contains("Refactor retrieval pipeline"),
-        "task_get should return the task we set: {text}"
-    );
-}
-
-#[test]
-fn stats_tool_returns_counts() {
-    let harness = Harness::new();
-    seed_basic_repo(&harness);
-    harness.cmd_ok(&["init"]);
-
-    let responses = harness.mcp_session(&[jsonrpc_request(
-        1,
-        "tools/call",
-        json!({
-            "name": "legend_memory_stats",
-            "arguments": {}
-        }),
-    )]);
-
-    assert_eq!(responses.len(), 1);
-    let result = &responses[0]["result"];
-    let content = result["content"].as_array().expect("content array");
-    let text = content[0]["text"].as_str().unwrap();
-    assert!(
-        text.contains("Short-term") || text.contains("short_term") || text.contains("entries"),
-        "stats should include entry counts: {text}"
+        text.contains("Legend Protocol"),
+        "start output should contain behavioral protocol: {text}"
     );
 }
 
@@ -290,14 +232,14 @@ fn cwd_flag_changes_working_directory() {
             1,
             "tools/call",
             json!({
-                "name": "legend_memory_stats",
+                "name": "legend_memory_start",
                 "arguments": {}
             }),
         )],
     );
 
-    // The stats should work without error (even if the other dir has no legend data,
-    // it should not crash - it just shows empty stats)
+    // Start should work without error (even if the other dir has no legend data,
+    // it should not crash - it just shows empty summary)
     assert_eq!(responses.len(), 1);
     let result = &responses[0]["result"];
     let content = result["content"].as_array().expect("content array");

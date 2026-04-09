@@ -14,7 +14,7 @@ mod tick;
 // Public re-exports (keeps mcp.rs and other consumers working unchanged)
 // ---------------------------------------------------------------------------
 
-pub use event_log::{log_event, log_event_rich};
+pub use event_log::log_event_rich;
 pub use event_log::{
     EventData, GraphHit, MatchedEntry, QueryEventData, StartEventData, TickEventData,
 };
