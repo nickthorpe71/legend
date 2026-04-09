@@ -60,7 +60,7 @@ fn handle_tools_list(id: &Value) -> Value {
     let tools = json!([
         {
             "name": "legend_memory_start",
-            "description": "Start session. Returns categorized memories, current task, stats, and behavioral protocol. Call this at the beginning of every session.",
+            "description": "Start session. Returns categorized memories, recent activity, and behavioral protocol. Call this at the beginning of every session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
