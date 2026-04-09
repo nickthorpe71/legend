@@ -1,7 +1,7 @@
 use super::memory::{
-    append_to_architecture_md, format_start_summary_markdown, is_noise_tick, log_event,
-    log_event_rich, truncate_text, EventData, GraphHit, MatchedEntry, QueryEventData,
-    StartEventData, TickEventData,
+    append_to_architecture_md, format_start_summary_markdown, is_noise_tick, log_event_rich,
+    truncate_text, EventData, GraphHit, MatchedEntry, QueryEventData, StartEventData,
+    TickEventData,
 };
 use crate::cli::{parse_args, CommandDef};
 use serde_json::{json, Value};
@@ -60,7 +60,7 @@ fn handle_tools_list(id: &Value) -> Value {
     let tools = json!([
         {
             "name": "legend_memory_start",
-            "description": "Start session. Returns categorized memories and recent activity.",
+            "description": "Start session. Returns categorized memories, current task, stats, and behavioral protocol. Call this at the beginning of every session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -74,7 +74,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_tick",
-            "description": "Record a decision/discovery/insight. Prefix: DECISION:, BUG:, ARCHITECTURE:, BLOCKER:",
+            "description": "Record a decision, discovery, or insight into long-term memory. Call this frequently — after completing work, making decisions, or discovering something. Use prefixes: DECISION:, BUG:, ARCHITECTURE:, BLOCKER:, COMPLETED:. Example: 'DECISION: Chose SQLite over Postgres because the app is single-user'. Include rationale — the 'why' is more valuable than the 'what'.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -88,7 +88,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_query",
-            "description": "Search memory for topic context. Auto-reinforces top result.",
+            "description": "Search memory for topic context. Returns matching memories with similarity scores and related graph topics. Auto-reinforces the top result. Call this before starting new topics or when you need prior context.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -98,38 +98,6 @@ fn handle_tools_list(id: &Value) -> Value {
                     }
                 },
                 "required": ["topic"]
-            }
-        },
-        {
-            "name": "legend_memory_task_get",
-            "description": "Get current task.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        },
-        {
-            "name": "legend_memory_task_set",
-            "description": "Set current task.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "The task description to set"
-                    }
-                },
-                "required": ["task"]
-            }
-        },
-        {
-            "name": "legend_memory_stats",
-            "description": "Memory statistics.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-                "required": []
             }
         }
     ]);
@@ -147,9 +115,6 @@ fn dispatch_tool(name: &str, arguments: &Value) -> Result<String, String> {
         "legend_memory_start" => tool_memory_start(arguments),
         "legend_memory_tick" => tool_memory_tick(arguments),
         "legend_memory_query" => tool_memory_query(arguments),
-        "legend_memory_task_get" => tool_memory_task_get(),
-        "legend_memory_task_set" => tool_memory_task_set(arguments),
-        "legend_memory_stats" => tool_memory_stats(),
         _ => Err(format!("Unknown tool: {}", name)),
     }
 }
@@ -197,7 +162,21 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
     crate::memory::save(&memory).map_err(|e| e.to_string())?;
     log_event_rich("start", "session cold-start (MCP)", Some(event_data));
 
-    let output = format_start_summary_markdown(&summary);
+    let mut output = format_start_summary_markdown(&summary);
+
+    // Protocol injection: tell the LLM how to use Legend
+    output.push_str("\n---\n");
+    output.push_str("## Legend Protocol\n");
+    output.push_str("- **Tick frequently** — after decisions, discoveries, blockers, completed work, architecture changes\n");
+    output.push_str(
+        "- **Use prefixes**: `DECISION:`, `BUG:`, `ARCHITECTURE:`, `BLOCKER:`, `COMPLETED:`\n",
+    );
+    output.push_str(
+        "- **Include rationale** — \"Chose X over Y because Z\" is better than \"Using X\"\n",
+    );
+    output.push_str("- **Query before new topics** — check what Legend already knows\n");
+    output.push_str("- **Don't tick noise** — avoid restating what the user just said or trivial status updates\n");
+
     Ok(output)
 }
 
@@ -257,11 +236,38 @@ fn tool_memory_tick(arguments: &Value) -> Result<String, String> {
         append_to_architecture_md(text);
     }
 
-    let output = json!({
-        "action": tick_result.action,
-        "entry_id": tick_result.entry_id,
-    });
-    Ok(serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string()))
+    // Build rich response with matched context
+    let mut related: Vec<String> = tick_result
+        .context
+        .short_term
+        .iter()
+        .take(3)
+        .map(|m| {
+            format!(
+                "- [sim:{:.2}] {}",
+                m.similarity,
+                truncate_text(&m.text, 100)
+            )
+        })
+        .collect();
+    let graph_topics: Vec<String> = tick_result
+        .context
+        .long_term
+        .iter()
+        .take(5)
+        .map(|n| n.label.clone())
+        .collect();
+
+    let mut output = format!("Recorded ({}).", tick_result.action);
+    if !related.is_empty() {
+        output.push_str("\n\nRelated memories:\n");
+        output.push_str(&related.drain(..).collect::<Vec<_>>().join("\n"));
+    }
+    if !graph_topics.is_empty() {
+        output.push_str("\n\nGraph topics: ");
+        output.push_str(&graph_topics.join(", "));
+    }
+    Ok(output)
 }
 
 fn tool_memory_query(arguments: &Value) -> Result<String, String> {
@@ -313,78 +319,42 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
     });
     log_event_rich("query", topic, Some(event_data));
 
-    let working_memory: Vec<&str> = context
-        .working_memory
-        .iter()
-        .map(|m| m.text.as_str())
-        .collect();
-    let memories: Vec<&str> = context.short_term.iter().map(|m| m.text.as_str()).collect();
-    let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
+    // Build human-readable response with similarity scores
+    let mut output = String::new();
 
-    let result = json!({
-        "working_memory": working_memory,
-        "memories": memories,
-        "related_topics": related_topics,
-    });
-    Ok(serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string()))
-}
-
-fn tool_memory_task_get() -> Result<String, String> {
-    let memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
-    match crate::memory::get_task(&memory) {
-        Some(task) => Ok(format!("Current task: {}", task)),
-        None => Ok("No current task set".to_string()),
-    }
-}
-
-fn tool_memory_task_set(arguments: &Value) -> Result<String, String> {
-    let task = arguments
-        .get("task")
-        .and_then(|t| t.as_str())
-        .ok_or_else(|| "Missing required argument: task".to_string())?;
-
-    let task = task.trim();
-    if task.is_empty() {
-        return Err("Task cannot be empty".to_string());
+    if !context.working_memory.is_empty() {
+        output.push_str("## Working Memory (L1)\n");
+        for m in &context.working_memory {
+            output.push_str(&format!("- {}\n", m.text));
+        }
+        output.push('\n');
     }
 
-    let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
-    crate::memory::set_task(&mut memory, task);
-    crate::memory::save(&memory).map_err(|e| e.to_string())?;
-    log_event("task_set", task);
-
-    Ok(format!("Current task set: {}", task))
-}
-
-fn tool_memory_stats() -> Result<String, String> {
-    let memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
-
-    let mut out = String::new();
-    out.push_str(&format!(
-        "Working memory (L1): {}\n",
-        memory.brain.working_memory.len()
-    ));
-    out.push_str(&format!(
-        "Short-term entries: {}\n",
-        memory.brain.short_term.len()
-    ));
-    out.push_str(&format!(
-        "Long-term nodes: {}\n",
-        memory.brain.long_term.nodes.len()
-    ));
-    out.push_str(&format!(
-        "Long-term edges: {}\n",
-        memory.brain.long_term.edges.len()
-    ));
-    out.push_str(&format!(
-        "Ticks since consolidation: {}\n",
-        memory.brain.ticks_since_consolidation
-    ));
-    if let Some(task) = crate::memory::get_task(&memory) {
-        out.push_str(&format!("Current task: {}", task));
+    if !context.short_term.is_empty() {
+        output.push_str("## Episodic Memory (L2)\n");
+        for m in &context.short_term {
+            output.push_str(&format!("- [sim:{:.2}] {}\n", m.similarity, m.text));
+        }
+        output.push('\n');
     }
 
-    Ok(out)
+    if !context.long_term.is_empty() {
+        output.push_str("## Knowledge Graph (L3)\n");
+        for n in &context.long_term {
+            let edge_info = n
+                .edge_type
+                .as_ref()
+                .map(|e| format!(" ({})", e))
+                .unwrap_or_default();
+            output.push_str(&format!("- {} [{}]{}\n", n.label, n.kind, edge_info));
+        }
+    }
+
+    if output.is_empty() {
+        output.push_str("No memories found for this topic.");
+    }
+
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -526,18 +496,15 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_tools_list_returns_6_tools() {
+    fn test_handle_tools_list_returns_3_core_tools() {
         let resp = handle_tools_list(&json!(1));
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 3);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"legend_memory_start"));
         assert!(names.contains(&"legend_memory_tick"));
         assert!(names.contains(&"legend_memory_query"));
-        assert!(names.contains(&"legend_memory_task_get"));
-        assert!(names.contains(&"legend_memory_task_set"));
-        assert!(names.contains(&"legend_memory_stats"));
 
         // Verify each tool has inputSchema
         for tool in tools {
@@ -576,13 +543,6 @@ mod tests {
         let result = dispatch_tool("legend_memory_query", &json!({}));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("topic"));
-    }
-
-    #[test]
-    fn test_task_set_missing_task() {
-        let result = dispatch_tool("legend_memory_task_set", &json!({}));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("task"));
     }
 
     #[test]
