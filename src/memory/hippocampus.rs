@@ -196,9 +196,9 @@ pub fn top_k_similar(
             }
         })
         .collect();
+    scored.retain(|s| s.similarity >= MIN_QUERY_SIMILARITY);
     scored.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
     scored.truncate(k);
-    scored.retain(|s| s.similarity >= MIN_QUERY_SIMILARITY);
     scored
 }
 

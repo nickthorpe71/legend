@@ -52,7 +52,7 @@ When Legend is installed in a project, it:
 - **Filters noise** through attention gating, emotional valence, and pattern separation.
 - **Visualizes** the memory state via a live terminal dashboard or a 3D Bevy application.
 
-Legend is entirely self-contained: a single binary, zero network calls, deterministic n-gram embeddings, and LZ4-compressed MessagePack storage.
+Legend is entirely self-contained: a single binary with an embedded sentence transformer (all-MiniLM-L6-v2 quantized, 384-dim), zero network calls, and LZ4-compressed MessagePack storage.
 
 ---
 
@@ -112,7 +112,7 @@ Real measured value: test-game estimated **+53,400 token net savings** over 88 s
 
 ### Layer 2 — Episodic Memory (Hippocampus)
 - **Type:** `Vec<ShortTermEntry>`, **Capacity:** 1,024 entries
-- Each entry: `id`, `text`, `summary`, `embedding` (256-dim), `salience`, `usage`, `last_access`, `reconsolidation_count`, `labile_until`, `refs`, `gradient_sq_sum`, `density`, `consolidated`, `emotional_valence`, `stability`, `last_retrieval_interval`
+- Each entry: `id`, `text`, `summary`, `embedding` (384-dim), `salience`, `usage`, `last_access`, `reconsolidation_count`, `labile_until`, `refs`, `gradient_sq_sum`, `density`, `consolidated`, `emotional_valence`, `stability`, `last_retrieval_interval`
 - **Decay:** Exponential, `salience *= exp(-age × 0.001 / stability)`. Base half-life ~693 ticks, extended by Ebbinghaus stability (1.0–10.0). Stability grows with spaced retrieval.
 - **Emotional valence:** Decays at half the hippocampal rate (emotional memories resist forgetting).
 
@@ -136,21 +136,22 @@ Real measured value: test-game estimated **+53,400 token net savings** over 88 s
 
 ## 5. The Embedding System
 
-Uses **n-gram hashing** — not neural embeddings. No external dependencies, sub-millisecond latency, fully deterministic.
+Uses **all-MiniLM-L6-v2 quantized** — a 6-layer sentence transformer (~23MB) embedded directly in the binary via `include_bytes!()`. Produces 384-dim semantic embeddings with zero network dependency.
 
-### How `embed_text()` Works (256-dim output):
-1. **Tokenize:** lowercase + split by whitespace
-2. **Word unigrams:** FNV-1a hash → bucket, `vector[index] += 1.0`
-3. **Character trigrams:** 3-char window per token, `vector[index] += 0.3` (makes "memory"/"memories" similar)
-4. **Word bigrams:** pairs of tokens, `vector[index] += 0.75`
-5. **L2 normalize** → unit vector; cosine similarity = dot product
+### How `embed_text()` Works (384-dim output):
+1. **Tokenize:** WordPiece tokenization via the embedded tokenizer
+2. **Encode:** 6-layer BERT forward pass through the quantized ONNX model
+3. **Pool:** Mean pooling across token embeddings → 384-dim vector
+4. **Result:** Semantic embedding that captures meaning, enabling similarity between paraphrases
+
+If retrieval quality is insufficient, swap to BAAI/bge-small-en-v1.5 (same 384-dim, 12 layers) by replacing the model files in `models/all-MiniLM-L6-v2-q/`.
 
 ### Dual Threshold System:
 | Similarity | Word overlap ≥ 40% | Action |
 |---|---|---|
-| ≥ 0.88 | Yes | **Reinforce** — boost salience, no new entry |
-| ≥ 0.72 | Yes | **Merge** — average embeddings |
-| < 0.72 | Any | **Insert** — create new entry |
+| ≥ 0.85 | Yes | **Reinforce** — boost salience, no new entry |
+| ≥ 0.75 | Yes | **Merge** — average embeddings |
+| < 0.75 | Any | **Insert** — create new entry |
 
 ---
 
@@ -210,10 +211,10 @@ Sentence scoring: `word_count + (has_code_symbol ? 5) + (has_key_symbol ? 3) + (
 3. Chunk input into ~200-char pieces (entorhinal cortex)
 4. For each chunk:
    - Push to L1 working memory (prefrontal cortex)
-   - Embed + compute salience (thalamus) + compute emotional valence (amygdala)
+   - Embed (entorhinal cortex) + compute salience (thalamus) + compute emotional valence (amygdala)
    - **Attention gate:** salience ≥ 0.25 → promote to L2 path; else stay in L1 only
    - **Pattern separation:** sparse_orthogonalize against similar-but-distinct L2 entries (dentate gyrus)
-   - **Reconsolidation check:** if a labile entry matches (sim ≥ 0.35) → merge in-place, skip normal path
+   - **Reconsolidation check:** if a labile entry matches (sim ≥ 0.40) → merge in-place, skip normal path
    - **Normal path:** find top-1 similar, apply dual-threshold → reinforce / merge / insert
 5. Update graph (neocortex) — extract entities (Wernicke), create/update nodes and edges
 6. Retrieve context for priming
@@ -225,14 +226,16 @@ Sentence scoring: `word_count + (has_code_symbol ? 5) + (has_key_symbol ? 3) + (
 ## 10. Memory Retrieval & Associative Priming
 
 1. Embed query, apply decay
-2. Search L2 by cosine similarity + keyword bonus → top 5. Mark returned entries as **labile** (`labile_until = clock + 5`). Minimum similarity threshold: 0.15 (noise floor). Keyword bonus: up to 0.2.
-3. Auto-reinforce top result: `salience += similarity × 0.03`
-4. **Pattern completion (CA3):** If top result sim < 0.5 or < 3 results, extract entities from partial matches → spreading activation through graph → search L2 for entries containing activated entities
-5. L3 graph lookup: match entities from query → **multi-hop spreading activation** (up to 3 hops, 0.5× decay per hop)
-6. **Associative priming:** extract entities from top L2 results → spreading activation through graph at decayed weight (surfaces structurally related concepts not in the query text)
-7. **L3 Summary retrieval:** scan Summary nodes with centroid embeddings by cosine similarity (≥ 0.3, up to 3 results)
-8. Deduplicate, sort by weight, cap at 15 graph nodes
-9. **Hebbian reinforcement:** co-retrieved node pairs get edge weight += 0.05 (ceiling 10.0); each node gets +0.02 (ceiling 5.0)
+2. Gather all L2 candidates above similarity floor (0.25) + keyword bonus (up to 0.1 per keyword, cap 0.1 total)
+3. **L3 Summary retrieval:** scan Summary nodes with centroid embeddings by cosine similarity (≥ 0.3, up to 3 results) — added to candidate pool
+4. **MMR diversity selection (dentate gyrus):** If candidate pool > 5, apply Maximal Marginal Relevance with λ=0.7 to select 5 results that balance relevance with diversity. Prevents near-duplicate results from dominating.
+5. Mark selected entries as **labile** (`labile_until = clock + 5`)
+6. Auto-reinforce top result: `salience += similarity × 0.03`
+7. **Pattern completion (CA3):** If top result sim < 0.5 or < 3 results, extract entities from partial matches → spreading activation through graph → search L2 for entries containing activated entities
+8. L3 graph lookup: match entities from query → **multi-hop spreading activation** (up to 3 hops, 0.5× decay per hop)
+9. **Associative priming:** extract entities from top L2 results → spreading activation through graph at decayed weight (surfaces structurally related concepts not in the query text)
+10. Deduplicate, sort by weight, cap at 15 graph nodes
+11. **Hebbian reinforcement:** co-retrieved node pairs get edge weight += 0.05 (ceiling 10.0); each node gets +0.02 (ceiling 5.0)
 
 ---
 
@@ -254,7 +257,7 @@ Sentence scoring: `word_count + (has_code_symbol ? 5) + (has_key_symbol ? 3) + (
 `legend memory consolidate` (also auto-runs at 15 active ticks, or on emotional intensity / context-switch triggers):
 
 1. **Sharp-wave ripple replay:** Temporally co-active L2 pairs (within 5 ticks of each other) reinforce shared graph edges (+0.08) and get salience boosts (+0.02)
-2. **Cluster** L2 entries by cosine similarity ≥ 0.72
+2. **Cluster** L2 entries by cosine similarity ≥ 0.75
 3. Groups with > 1 member → `summarize_group()` → create L3 Summary node (weight = 1.0 + group_salience)
 4. **Systems consolidation:** High-salience groups (avg ≥ 0.4) get centroid embeddings and rich text (up to 500 chars) stored on Summary nodes. Topic anchors attached when entities recur across majority of group.
 5. Prune L2 and L3
@@ -281,7 +284,7 @@ Summary nodes survive longer in L3 (high weight, slow decay) and surface in futu
 ### Pattern Separation (Dentate Gyrus)
 At encoding time, new embeddings are pushed away from similar-but-distinct L2 embeddings via `sparse_orthogonalize()`. This creates sparser representations that reduce retrieval interference between related-but-different memories.
 
-**Diversity gate:** Word-overlap Jaccard similarity ≥ 0.40 required beyond cosine similarity for merging. Entries must share enough actual vocabulary (not just hash-bucket overlap) to be considered the same memory.
+**Diversity gate:** Word-overlap Jaccard similarity ≥ 0.40 required beyond cosine similarity for merging. Entries must share enough actual vocabulary to be considered the same memory — a precision safeguard beyond embedding similarity.
 
 ### Pattern Completion (CA3 Autoassociative Network)
 At retrieval time, when initial results are weak (top sim < 0.5 or < 3 results), pattern completion activates:
@@ -460,7 +463,7 @@ Observed: legend self ~1,099/session | test-game ~1,112/session | spritec ~345/s
 
 ## 25. Current Limitations
 
-1. **Lexical-only similarity** — "auth" and "authentication" may not cluster (mitigated by character trigrams)
+1. **Embedding model size** — the ~23MB MiniLM model adds to binary size (~48MB total). Retrieval quality may be lower than larger models like BGE-small (12 layers vs 6).
 2. **No native token counting** — +/-30% uncertainty on estimates
 3. **EXPERIENCE: tick noise** — hook can generate high-volume auto-noise
 4. **Session fragmentation overhead** — 30+ short sessions/day inflates startup costs
@@ -475,8 +478,8 @@ Observed: legend self ~1,099/session | test-game ~1,112/session | spritec ~345/s
 
 ## 26. Key Design Decisions & Rationale
 
-1. **No external embedding model** — chosen for zero dependencies, determinism, sub-ms latency (lexical overlap is reasonable signal for technical dev notes)
-2. **Dual threshold (0.88 / 0.72)** — raised from 0.92/0.55 to reduce false merges. Dentate gyrus pattern separation and 0.40 Jaccard gate provide additional diversity protection.
+1. **Embedded sentence transformer** — all-MiniLM-L6-v2 quantized compiled into the binary via `include_bytes!()`. Zero network dependency, semantic similarity. If quality is insufficient, swap to BGE-small-en-v1.5 (same 384-dim, 12 layers vs 6).
+2. **Dual threshold (0.85 / 0.75)** — tuned for semantic embeddings (tighter similarity distribution than n-gram hashing). Dentate gyrus pattern separation and 0.40 Jaccard gate provide additional diversity protection.
 3. **Brain-region module architecture** — each cognitive mechanism maps to a named neuroscience analog. Enforces separation of concerns and makes the system's design intent readable from file names alone.
 4. **Reconsolidation window (5 ticks)** — inspired by neuroscience; related follow-up updates merge into existing memory rather than duplicating
 5. **Salience-driven eviction over LRU** — preserves important old decisions over recent-but-trivial notes
@@ -497,14 +500,14 @@ src/
 ├── lib.rs                           Library re-exports
 ├── memory/                          Pure brain — no IO
 │   ├── mod.rs                       Orchestrator: tick_impl, retrieve_context, consolidate, constants
-│   ├── thalamus.rs                  Sensory encoding: n-gram embeddings, cosine similarity, salience scoring
+│   ├── thalamus.rs                  Sensory encoding: salience scoring, attentional gating
 │   ├── prefrontal.rs                Working memory (L1): attention gating, context-switch flushing
 │   ├── hippocampus.rs               Episodic memory (L2): reconsolidation, pattern completion, SWR replay
 │   ├── neocortex.rs                 Knowledge graph (L3): spreading activation, Hebbian learning, consolidation
 │   ├── amygdala.rs                  Emotional valence: threat/reward scoring
 │   ├── dentate_gyrus.rs             Pattern separation: sparse orthogonalization, diversity gating
 │   ├── basal_ganglia.rs             Reinforcement: AdaGrad, contrastive descent, renormalization
-│   ├── entorhinal.rs                Compression gateway: chunking, extractive summarization
+│   ├── entorhinal.rs                Encoding + compression: semantic embeddings (MiniLM), chunking, summarization
 │   └── wernicke/                    Language comprehension
 │       ├── mod.rs                   Re-exports, KeywordCache
 │       ├── extract.rs               Entity extraction (multi-language code patterns + identifiers)
@@ -528,7 +531,7 @@ dashboard/  (separate crate — Bevy 0.15 + bevy_egui 0.33)
 
 **Total main binary: ~16,700 lines of Rust.**
 
-**Runtime deps:** serde, serde_json, rmp-serde, lz4, ratatui, crossterm
+**Runtime deps:** serde, serde_json, rmp-serde, lz4, ratatui, crossterm, fastembed
 **Test coverage: 659 tests, all passing**
 
 ---
@@ -554,9 +557,9 @@ dashboard/  (separate crate — Bevy 0.15 + bevy_egui 0.33)
 |---|---|---|
 | `immediate_capacity` | 10 | L1 working memory max (Miller's Law ~7±2) |
 | `short_term_capacity` | 1,024 | L2 max entries |
-| `embedding_dim` | 256 | N-gram vector dimension |
-| `theta_high` | 0.88 | Reinforce threshold (CA3 pattern completion) |
-| `theta_low` | 0.72 | Merge threshold (dentate gyrus pattern separation) |
+| `embedding_dim` | 384 | MiniLM-L6-v2 embedding dimension |
+| `theta_high` | 0.85 | Reinforce threshold (CA3 pattern completion) |
+| `theta_low` | 0.75 | Merge threshold (dentate gyrus pattern separation) |
 | `ATTENTION_GATE_THRESHOLD` | 0.25 | Min salience for L1→L2 promotion |
 | `HIPPOCAMPAL_DECAY_RATE` | 0.001 | L2 base decay per tick (modulated by stability) |
 | `NEOCORTICAL_DECAY_RATE` | 0.0005 | L3 decay per tick |
@@ -573,7 +576,7 @@ dashboard/  (separate crate — Bevy 0.15 + bevy_egui 0.33)
 | `GRAPH_EDGE_CAPACITY` | 8,192 | L3 edge cap |
 | `GRAPH_PRUNE_WEIGHT` | 0.05 | Min node weight to survive pruning |
 | `GRAPH_WEIGHT_TARGET_MAX` | 2.0 | Normalization ceiling |
-| `RECONSOLIDATION_THRESHOLD` | 0.35 | Min sim for labile update |
+| `RECONSOLIDATION_THRESHOLD` | 0.40 | Min sim for labile update |
 | `RECONSOLIDATION_WINDOW` | 5 | Ticks entry stays labile |
 | `CONSOLIDATION_SUGGESTION_THRESHOLD` | 15 | Ticks between auto-consolidation |
 | `SPREADING_ACTIVATION_MAX_HOPS` | 3 | Graph traversal depth |
@@ -590,8 +593,10 @@ dashboard/  (separate crate — Bevy 0.15 + bevy_egui 0.33)
 | `RENORM_BLEND` | 0.1 | EMA blend weight |
 | `AUTO_REINFORCE_SCALE` | 0.03 | Top result salience boost scale |
 | `MIN_QUERY_SIMILARITY` | 0.15 | Noise floor for retrieval |
-| `KEYWORD_MATCH_BONUS` | 0.05 | Per-keyword retrieval bonus |
-| `KEYWORD_MATCH_BONUS_CAP` | 0.2 | Max keyword bonus |
+| `KEYWORD_MATCH_BONUS` | 0.03 | Per-keyword retrieval bonus |
+| `KEYWORD_MATCH_BONUS_CAP` | 0.1 | Max keyword bonus |
+| `MMR_LAMBDA` | 0.7 | MMR relevance/diversity trade-off (1.0 = pure relevance) |
+| `L2_RETRIEVAL_K` | 5 | Number of results selected by MMR |
 | `CONSOLIDATED_EVICTION_REDUCTION` | 0.2 | Eviction discount for consolidated entries |
 | `SYSTEMS_CONSOLIDATION_SALIENCE_THRESHOLD` | 0.4 | Min avg salience for neocortical encoding |
 | `SUMMARY_FULL_TEXT_MAX_LEN` | 500 | Max chars on Summary node full_text |

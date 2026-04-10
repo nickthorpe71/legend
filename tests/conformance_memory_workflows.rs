@@ -53,8 +53,11 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
         @r#"
     {
       "memories": [
+        "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix.",
+        "ONBOARDING TASKS: The following investigations are recommended to complete the mental model: - [read_readme] The project has a README.md. Read it to understand the core goals and onboarding flow.. Tool hint: read_file { \"file_path\": \"README.md\" }",
         "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming.",
-        "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
+        "ONBOARDING: Discovery report for fixture-app Version: 0.1.0 Tech Stack: Rust",
+        "CONTEXT: High-signal file 'README.md' (Documentation)  # Fixture App | CONTEXT: High-signal file 'Cargo.toml' (Manifest)  [package] name = \"fixture-app\" version = \"0.1.0\" edition = \"2021\""
       ],
       "related_topics_len": 15
     }
@@ -100,6 +103,8 @@ fn stats_and_sessions_reflect_recent_activity() {
     seed_basic_repo(&harness);
     harness.cmd_ok(&["init"]);
 
+    // Start session BEFORE ticks so they count in session quality stats
+    harness.cmd_ok(&["memory", "start"]);
     harness.cmd_ok(&[
         "memory",
         "tick",
@@ -110,7 +115,6 @@ fn stats_and_sessions_reflect_recent_activity() {
         "tick",
         "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix.",
     ]);
-    harness.cmd_ok(&["memory", "start"]);
     harness.cmd_ok(&["memory", "query", "graph index"]);
 
     let stats = harness.cmd_ok(&["memory", "stats"]);

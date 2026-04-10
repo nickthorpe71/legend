@@ -726,8 +726,7 @@ fn merge_legend_hooks(settings: &mut Value, hooks_config: LegendHooks) {
     }
 
     // Add post-tool hook if configured (e.g. PostToolUse or AfterTool)
-    if let (Some(hook), Some(event)) = (hooks_config.post_tool_hook, hooks_config.post_tool_event)
-    {
+    if let (Some(hook), Some(event)) = (hooks_config.post_tool_hook, hooks_config.post_tool_event) {
         if hooks.get(event).is_none() {
             hooks[event] = json!([]);
         }

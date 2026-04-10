@@ -57,6 +57,15 @@ For each of the 500 questions:
 
 The benchmark measures Legend's encoding + retrieval quality. The LLM reading step is standardized (same model, same prompt) so the variable is Legend's memory system.
 
+## Coverage Limitations
+
+LongMemEval primarily tests L1 (working memory) and L2 (episodic memory). Because all haystack sessions are ingested rapidly with minimal clock advancement:
+- L2 entries remain fresh with no meaningful decay
+- L2 capacity (1024) is rarely exceeded
+- L3 knowledge graph retrieval (spreading activation, Summary node lookup, pattern completion) is not the primary retrieval path
+
+**TODO:** Find or build a complementary benchmark that stress-tests L3 by: (1) ingesting enough ticks to exceed L2 capacity, (2) simulating time passage to trigger L2 decay, (3) asking relational/structural queries that require graph traversal rather than direct text match.
+
 ## Expected Challenges
 
 - **Multi-session reasoning** (133 questions) — Legend consolidates, which may lose scattered details

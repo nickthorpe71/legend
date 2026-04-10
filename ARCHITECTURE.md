@@ -35,7 +35,7 @@ Legend uses a **three-layer hierarchical memory** modeled on cognitive neuroscie
   | `id` | `u64` | Unique monotonic ID |
   | `text` | `String` | Full text of the memory |
   | `summary` | `String` | Extractive summary (best sentence) |
-  | `embedding` | `Vec<f32>` | 256-dim n-gram vector for similarity search |
+  | `embedding` | `Vec<f32>` | 384-dim semantic vector (MiniLM-L6-v2) for similarity search |
   | `salience` | `f32` | Importance score (0.05–1.0), determines survival priority |
   | `usage` | `u32` | How many times this entry has been accessed or reinforced |
   | `last_access` | `u64` | Clock tick of last read/write |
@@ -109,7 +109,7 @@ For each chunk:
     ↓
 4. Push to L1 working memory (prefrontal cortex)
     ↓
-5. embed_text() — generate 256-dim n-gram vector (thalamus sensory encoding)
+5. embed_text() — generate 384-dim semantic vector (entorhinal cortex encoding)
 6. compute_salience() — score importance from keyword heuristics (thalamus)
 7. compute_emotional_valence() — bipolar threat/reward signal (amygdala)
     ↓
@@ -120,8 +120,8 @@ For each chunk:
 10. Reconsolidation check: if a labile entry matches (sim ≥ 0.35), update in-place
     ↓
 11. Dual-threshold matching against L2:
-    ├─ similarity ≥ 0.88 AND word overlap ≥ 40% → REINFORCE (bump usage+salience)
-    ├─ similarity ≥ 0.72 AND word overlap ≥ 40% → MERGE (average embeddings)
+    ├─ similarity ≥ 0.85 AND word overlap ≥ 40% → REINFORCE (bump usage+salience)
+    ├─ similarity ≥ 0.75 AND word overlap ≥ 40% → MERGE (average embeddings)
     └─ otherwise → INSERT new entry
     ↓
 12. update_graph() — extract entities (wernicke), create/update graph nodes and edges (neocortex)
@@ -133,14 +133,13 @@ For each chunk:
 15. Context-switch detection: if cosine similarity to previous tick < 0.15, flush L1
 ```
 
-### How Embeddings Work (Thalamus)
+### How Embeddings Work (Entorhinal Cortex)
 
-Legend uses **n-gram hashing** (not neural embeddings) for zero-dependency, deterministic similarity:
+Legend uses **all-MiniLM-L6-v2 quantized** (384-dim sentence transformer) embedded directly in the binary — zero network dependency, semantic similarity:
 
-1. **Word unigrams** — each word hashes (FNV-1a) to a bucket in a 256-dim vector, weight 1.0
-2. **Character trigrams** — sliding 3-char windows within each word, weight 0.3 (captures subword similarity)
-3. **Word bigrams** — consecutive word pairs, weight 0.75 (captures phrase structure)
-4. **L2 normalization** — the vector is normalized so cosine similarity works correctly
+1. **Model** — 6-layer BERT (~23MB quantized ONNX), producing 384-dim embeddings via mean pooling
+2. **Binary embedding** — model files are compiled into the binary via `include_bytes!()`, no download step
+3. **Semantic matching** — captures meaning, not just lexical overlap, enabling similarity between paraphrases
 
 ### How Salience Scoring Works (Thalamus)
 
@@ -181,10 +180,10 @@ Valence persists on L2 entries and decays at half the hippocampal rate, modeling
 
 ## Updating Memory
 
-### 1. Reinforcement (High Similarity ≥ 0.88)
+### 1. Reinforcement (High Similarity ≥ 0.85)
 Existing entry is reinforced: `usage += 2`, `salience += new_salience` (capped at 1.0). No new entry created.
 
-### 2. Merging (Medium Similarity ≥ 0.72)
+### 2. Merging (Medium Similarity ≥ 0.75)
 Embeddings averaged, `usage += 1`, `salience += new_salience × 0.5`, summary regenerated from both texts.
 
 ### 3. Reconsolidation (Labile Memory Update)
@@ -210,7 +209,7 @@ Query text
     ↓
 1. clock += 1, apply_decay()
     ↓
-2. embed_text(query) → 256-dim vector
+2. embed_text(query) → 384-dim vector
     ↓
 3. Scan L2 entries by cosine similarity + keyword bonus → top 5
    (min similarity 0.15 noise floor, keyword bonus up to 0.2)
@@ -250,7 +249,7 @@ Runs manually or auto-triggers after 15 active ticks. Two additional smart trigg
 
 **Pipeline:**
 1. **Sharp-wave ripple replay** — temporally co-active L2 pairs (within 5 ticks) reinforce shared graph edges (+0.08) and get salience boosts (+0.02)
-2. **Cluster** L2 entries by cosine similarity ≥ θ_low (0.72)
+2. **Cluster** L2 entries by cosine similarity ≥ θ_low (0.75)
 3. **Summarize** each group → create L3 Summary node (weight = 1.0 + max_salience)
 4. **Systems consolidation** — high-salience groups (avg ≥ 0.4) get centroid embeddings and rich text stored on Summary nodes, enabling L3 to serve queries independently after L2 entries decay
 5. **Prune** L2 and L3
@@ -312,9 +311,9 @@ The `KeywordCache` is rebuilt from graph + static fallbacks on every load.
 
 ## Key Design Decisions
 
-1. **No external dependencies for embeddings.** N-gram hashing gives deterministic, zero-latency embeddings with no API calls or model files. Trade-off: purely lexical similarity.
+1. **Embedded sentence transformer.** all-MiniLM-L6-v2 quantized (~23MB) is compiled into the binary via `include_bytes!()`. Zero network dependency, semantic similarity. If retrieval quality is insufficient, swap to BGE-small-en-v1.5 (same 384-dim, 12 layers vs 6).
 
-2. **Dual-threshold matching (θ_high=0.88, θ_low=0.72).** High threshold reinforces without modification. Low threshold merges. Below low threshold, a new entry is created. Raised from 0.92/0.55 to reduce false merges.
+2. **Dual-threshold matching (θ_high=0.85, θ_low=0.75).** High threshold reinforces without modification. Low threshold merges. Below low threshold, a new entry is created. Tuned for semantic embeddings (tighter similarity distribution).
 
 3. **Word-overlap diversity gate (Jaccard ≥ 0.40).** Even at high cosine similarity, entries with different vocabulary stay separate. Prevents hash collision false positives.
 
@@ -336,14 +335,14 @@ The `KeywordCache` is rebuilt from graph + static fallbacks on every load.
 |------|---------|
 | **Brain modules (`src/memory/`)** | |
 | `mod.rs` | Orchestrator — routes ticks through brain regions, `tick_impl`, `retrieve_context`, `consolidate`, constants |
-| `thalamus.rs` | Sensory encoding — n-gram embeddings, cosine similarity, salience scoring |
+| `thalamus.rs` | Sensory encoding — salience scoring, attentional gating |
 | `prefrontal.rs` | Working memory (L1) — attention gating, context-switch flushing |
 | `hippocampus.rs` | Episodic memory (L2) — reconsolidation, pattern completion (CA3), SWR replay, forgetting curve |
 | `neocortex.rs` | Knowledge graph (L3) — spreading activation, Hebbian learning, systems consolidation |
 | `amygdala.rs` | Emotional valence — threat/reward scoring, intensity tracking |
 | `dentate_gyrus.rs` | Pattern separation — sparse orthogonalization, diversity gating |
 | `basal_ganglia.rs` | Reinforcement — AdaGrad optimization, contrastive descent, renormalization |
-| `entorhinal.rs` | Compression gateway — text chunking, extractive summarization |
+| `entorhinal.rs` | Encoding + compression — semantic embeddings (MiniLM), text chunking, extractive summarization |
 | `wernicke/` | Language comprehension — entity extraction, static vocabulary, dynamic keyword cache |
 | **Tool modules (`src/tool/`)** | |
 | `mod.rs` | IO orchestrator — tick/tick_passive, start summary, git sync, session log, task management |
@@ -389,3 +388,9 @@ The `KeywordCache` is rebuilt from graph + static fallbacks on every load.
 - **2026-04-07** — ARCHITECTURE: Refactored thalamus/entorhinal ownership split. Moved embed_text(), fnv_hash(), cosine_similarity(), merge_embeddings() from thalamus.rs to entorhinal.rs. Thalamus now owns only compute_…
 - **2026-04-07** — ARCHITECTURE: Built Legend Viz — brain debugger web UI. Phase 1: Feature-gated instrumentation layer (src/memory/trace.rs) with TraceEvent, PipelineStep (~40 variants), TracePayload, global mpsc cha…
 - **2026-04-07** — ARCHITECTURE: Restored Legend hook system with smart auto-query & tick-on-action. Changes to src/commands/init.rs: (1) UserPromptSubmit now auto-queries Legend with user's prompt text via additionalCo…
+- **2026-04-07** — ARCHITECTURE: Legend Viz redesign complete. (1) Backend: Enriched ~20 trace payloads in src/memory/mod.rs — PushWorkingMemory, FlushWorkingMemory, PruneL2, PruneL3, InsertShortTerm, UpdateGraph, Att…
+- **2026-04-09** — ARCHITECTURE: LongMemEval benchmark retrieval analysis — Legend query CLI outputs JSON (working_memory, memories, related_topics) which is hard for LLMs to parse. Benchmark now converts to labeled p…
+- **2026-04-09** — ARCHITECTURE: Replaced n-gram FNV hash embeddings (256-dim) with fastembed BAAI/bge-small-en-v1.5 sentence embeddings (384-dim). No fallback — model must be available. Auto-migration re-embeds all L…
+- **2026-04-09** — ARCHITECTURE: Added MMR (Maximal Marginal Relevance) diversity selection to retrieve_context. Instead of returning top-5 by raw similarity (which can return near-duplicates), retrieval now gathers all…
+- **2026-04-09** — ARCHITECTURE: Three semantic-embedding optimizations. (1) Batch embedding — embed_texts_batch() in entorhinal.rs processes all chunks in one forward pass instead of N individual calls; tick_impl pre…
+- **2026-04-10** — ARCHITECTURE: The user wants to optimize the Legend memory system (specifically tick and query latency) using a "C-style Rust" approach. This means keeping the neuroscience abstractions (Hippocampus, …

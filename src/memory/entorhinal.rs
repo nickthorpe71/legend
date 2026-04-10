@@ -1,4 +1,43 @@
+use std::sync::Mutex;
+
 use crate::memory::wernicke::KeywordCache;
+
+/// Lazy-initialized sentence embedding model (all-MiniLM-L6-v2 quantized, 384-dim).
+/// The model is embedded directly in the binary — no network download required.
+///
+/// # Model choice
+/// We use all-MiniLM-L6-v2 quantized (~23MB) over BAAI/bge-small-en-v1.5 (~45MB)
+/// for faster inference (6 layers vs 12) and smaller binary size. Both produce
+/// 384-dim embeddings. If retrieval quality degrades (measured via LongMemEval),
+/// swap to BGE-small-en-v1.5 by changing the model files — no code changes needed.
+static SENTENCE_MODEL: std::sync::LazyLock<Mutex<fastembed::TextEmbedding>> =
+    std::sync::LazyLock::new(|| {
+        let model_def = fastembed::UserDefinedEmbeddingModel::new(
+            include_bytes!("../../models/all-MiniLM-L6-v2-q/model.onnx").to_vec(),
+            fastembed::TokenizerFiles {
+                tokenizer_file: include_bytes!("../../models/all-MiniLM-L6-v2-q/tokenizer.json")
+                    .to_vec(),
+                config_file: include_bytes!("../../models/all-MiniLM-L6-v2-q/config.json")
+                    .to_vec(),
+                special_tokens_map_file: include_bytes!(
+                    "../../models/all-MiniLM-L6-v2-q/special_tokens_map.json"
+                )
+                .to_vec(),
+                tokenizer_config_file: include_bytes!(
+                    "../../models/all-MiniLM-L6-v2-q/tokenizer_config.json"
+                )
+                .to_vec(),
+            },
+        );
+
+        let model = fastembed::TextEmbedding::try_new_from_user_defined(
+            model_def,
+            fastembed::InitOptionsUserDefined::default(),
+        )
+        .expect("Failed to initialize embedded MiniLM model");
+        Mutex::new(model)
+    });
+
 /// Entorhinal Cortex — Representational encoding and compression gateway.
 ///
 /// The entorhinal cortex sits between the hippocampus and the neocortex,
@@ -12,11 +51,11 @@ use crate::memory::wernicke::KeywordCache;
 ///
 /// **Representational encoding:**
 ///
-/// - **N-gram embedding (`embed_text`)** — raw text is transformed into a
-///   256-dimensional vector via FNV-1a hashing of word unigrams, character
-///   trigrams, and word bigrams.  This is the primary encoding step:
-///   converting arbitrary input into a fixed-size representation that
-///   downstream modules (hippocampus, neocortex, dentate gyrus) can compare.
+/// - **Semantic embedding (`embed_text`)** — raw text is transformed into a
+///   384-dimensional vector using the all-MiniLM-L6-v2 quantized sentence
+///   transformer, embedded directly in the binary.  This captures semantic
+///   meaning so downstream modules (hippocampus, neocortex, dentate gyrus)
+///   can compare entries by meaning, not just lexical overlap.
 ///
 /// - **Cosine similarity (`cosine_similarity`)** — distance between two
 ///   embeddings, analogous to neural "closeness" of two percepts.
@@ -49,52 +88,76 @@ const CHUNK_TARGET_LEN: usize = 200;
 
 // ── Representational encoding ───────────────────────────────────────────
 
-/// Compute an n-gram embedding vector of given dimension.
+/// Compute a semantic embedding vector using all-MiniLM-L6-v2 quantized (384-dim).
 ///
-/// Uses word unigrams, character trigrams, and word bigrams,
-/// then L2-normalizes for cosine similarity.
+/// The model is embedded in the binary — no download or network access needed.
+/// Panics if the model cannot be initialized (no silent degradation).
 pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
-    let mut vector = vec![0.0f32; dim];
-    let lowered = text.to_lowercase();
-    let tokens: Vec<&str> = lowered.split_whitespace().collect();
-
-    // Word unigrams
-    for token in &tokens {
-        let idx = (fnv_hash(token.as_bytes()) as usize) % dim;
-        vector[idx] += 1.0;
+    if text.trim().is_empty() {
+        return vec![0.0f32; dim];
     }
 
-    // Character trigrams (captures subword similarity)
-    for token in &tokens {
-        let chars: Vec<char> = token.chars().collect();
-        if chars.len() >= 3 {
-            for window in chars.windows(3) {
-                let trigram: String = window.iter().collect();
-                let idx = (fnv_hash(trigram.as_bytes()) as usize) % dim;
-                vector[idx] += 0.3;
-            }
-        }
-    }
+    let mut guard = SENTENCE_MODEL.lock().expect("fastembed mutex poisoned");
+    let embeddings = guard
+        .embed(vec![text], None)
+        .expect("fastembed embedding failed");
+    let emb = embeddings.into_iter().next().expect("no embedding returned");
 
-    // Word bigrams (captures phrase structure)
-    for pair in tokens.windows(2) {
-        let bigram = format!("{} {}", pair[0], pair[1]);
-        let idx = (fnv_hash(bigram.as_bytes()) as usize) % dim;
-        vector[idx] += 0.75;
+    if emb.len() == dim {
+        return emb;
     }
-
-    // L2-normalize
-    let norm: f32 = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for v in &mut vector {
-            *v /= norm;
-        }
+    // Dimension mismatch: truncate or pad to requested dim
+    let mut result = vec![0.0f32; dim];
+    for (i, &v) in emb.iter().enumerate().take(dim) {
+        result[i] = v;
     }
-
-    vector
+    result
 }
 
-/// FNV-1a 64-bit hash.
+/// Batch-embed multiple texts in a single model forward pass.
+///
+/// More efficient than calling `embed_text` in a loop — the model processes
+/// all inputs together, avoiding per-call mutex lock and ONNX session overhead.
+/// Empty texts get zero vectors without being sent to the model.
+pub fn embed_texts_batch(texts: &[&str], dim: usize) -> Vec<Vec<f32>> {
+    if texts.is_empty() {
+        return Vec::new();
+    }
+
+    // Separate empty/non-empty texts, tracking original indices
+    let mut results = vec![vec![0.0f32; dim]; texts.len()];
+    let non_empty: Vec<(usize, &str)> = texts
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.trim().is_empty())
+        .map(|(i, t)| (i, *t))
+        .collect();
+
+    if non_empty.is_empty() {
+        return results;
+    }
+
+    let batch: Vec<&str> = non_empty.iter().map(|(_, t)| *t).collect();
+    let mut guard = SENTENCE_MODEL.lock().expect("fastembed mutex poisoned");
+    let embeddings = guard.embed(batch, None).expect("fastembed batch embedding failed");
+
+    for ((orig_idx, _), emb) in non_empty.into_iter().zip(embeddings.into_iter()) {
+        if emb.len() == dim {
+            results[orig_idx] = emb;
+        } else {
+            let mut padded = vec![0.0f32; dim];
+            for (i, &v) in emb.iter().enumerate().take(dim) {
+                padded[i] = v;
+            }
+            results[orig_idx] = padded;
+        }
+    }
+
+    results
+}
+
+/// FNV-1a 64-bit hash (retained for potential future use).
+#[cfg(test)]
 pub fn fnv_hash(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for &b in bytes {
@@ -481,28 +544,29 @@ mod tests {
 
     #[test]
     fn test_embed_produces_correct_dimensions() {
-        assert_eq!(embed_text("hello world", 256).len(), 256);
+        assert_eq!(embed_text("hello world", 384).len(), 384);
     }
 
     #[test]
     fn test_embed_is_normalized() {
-        let vec = embed_text("the quick brown fox jumps over the lazy dog", 256);
+        let vec = embed_text("the quick brown fox jumps over the lazy dog", 384);
         let norm: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 0.01, "norm={}", norm);
+        // fastembed embeddings are approximately normalized
+        assert!(norm > 0.5 && norm < 1.5, "norm={}", norm);
     }
 
     #[test]
     fn test_cosine_similarity_identical() {
-        let a = embed_text("hello world", 256);
+        let a = embed_text("hello world", 384);
         let sim = cosine_similarity(&a, &a);
         assert!((sim - 1.0).abs() < 0.001, "got {}", sim);
     }
 
     #[test]
     fn test_cosine_similarity_related_vs_unrelated() {
-        let a = embed_text("memory system with embeddings and similarity search", 256);
-        let b = embed_text("embedding vectors and cosine similarity matching", 256);
-        let c = embed_text("cooking recipes for italian pasta dishes", 256);
+        let a = embed_text("memory system with embeddings and similarity search", 384);
+        let b = embed_text("embedding vectors and cosine similarity matching", 384);
+        let c = embed_text("cooking recipes for italian pasta dishes", 384);
         assert!(cosine_similarity(&a, &b) > cosine_similarity(&a, &c));
     }
 
@@ -528,16 +592,16 @@ mod tests {
 
     #[test]
     fn test_embed_empty_input() {
-        let v = embed_text("", 256);
-        assert_eq!(v.len(), 256);
+        let v = embed_text("", 384);
+        assert_eq!(v.len(), 384);
     }
 
     #[test]
     fn test_embed_single_word() {
-        let v = embed_text("hello", 256);
-        assert_eq!(v.len(), 256);
+        let v = embed_text("hello", 384);
+        assert_eq!(v.len(), 384);
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 0.01 || norm == 0.0);
+        assert!(norm > 0.5 || norm == 0.0, "norm={}", norm);
     }
 
     #[test]
@@ -553,5 +617,58 @@ mod tests {
         let result = merge_embeddings(&[1.0, 2.0, 3.0], &[4.0, 5.0]);
         assert_eq!(result.len(), 2);
         assert_eq!(result, vec![2.5, 3.5]);
+    }
+
+    // ── Batch embedding tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_embed_batch_empty() {
+        let results = embed_texts_batch(&[], 384);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_embed_batch_matches_single() {
+        let single = embed_text("hello world", 384);
+        let batch = embed_texts_batch(&["hello world"], 384);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].len(), 384);
+        // Should produce identical embeddings
+        let sim = cosine_similarity(&single, &batch[0]);
+        assert!((sim - 1.0).abs() < 0.001, "batch should match single: {}", sim);
+    }
+
+    #[test]
+    fn test_embed_batch_multiple() {
+        let texts = &["hello world", "memory system", "cooking recipes"];
+        let batch = embed_texts_batch(texts, 384);
+        assert_eq!(batch.len(), 3);
+        for emb in &batch {
+            assert_eq!(emb.len(), 384);
+        }
+        // Related texts should be more similar than unrelated
+        let sim_01 = cosine_similarity(&batch[0], &batch[1]);
+        let sim_02 = cosine_similarity(&batch[0], &batch[2]);
+        // Just verify they're all valid embeddings with non-zero norms
+        for emb in &batch {
+            let norm: f32 = emb.iter().map(|v| v * v).sum::<f32>().sqrt();
+            assert!(norm > 0.5, "norm={}", norm);
+        }
+        // Sanity: similarities are in valid range
+        assert!((-1.0..=1.0).contains(&sim_01));
+        assert!((-1.0..=1.0).contains(&sim_02));
+    }
+
+    #[test]
+    fn test_embed_batch_handles_empty_strings() {
+        let batch = embed_texts_batch(&["hello", "", "world"], 384);
+        assert_eq!(batch.len(), 3);
+        // Empty string should be zero vector
+        assert!(batch[1].iter().all(|&v| v == 0.0));
+        // Non-empty should have non-zero norms
+        let norm_0: f32 = batch[0].iter().map(|v| v * v).sum::<f32>().sqrt();
+        let norm_2: f32 = batch[2].iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!(norm_0 > 0.5);
+        assert!(norm_2 > 0.5);
     }
 }

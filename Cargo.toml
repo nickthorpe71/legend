@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "legend-viz"]
+exclude = ["dashboard"]
+
 [package]
 name = "legend"
 version = "0.3.9"
@@ -25,6 +29,7 @@ serde_json = "1.0"
 ratatui = "0.29"
 crossterm = "0.28"
 rmp-serde = "1.3"
+fastembed = "5"
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -36,6 +41,10 @@ tempfile = "3.18"
 # [[bench]]
 # name = "performance"
 # harness = false
+
+[features]
+default = []
+instrument = []
 
 [profile.release]
 strip = true
