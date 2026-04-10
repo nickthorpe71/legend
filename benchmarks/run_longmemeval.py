@@ -100,13 +100,13 @@ def query_legend(legend_bin: str, workspace: str, question: str) -> str:
         return raw
 
     lines = []
-    for i, mem in enumerate(data.get("working_memory", []), 1):
-        lines.append(f"[Active Memory {i}] {mem}")
     for i, mem in enumerate(data.get("memories", []), 1):
         lines.append(f"[Memory {i}] {mem}")
     topics = data.get("related_topics", [])
     if topics:
         lines.append(f"[Related Topics] {', '.join(topics)}")
+    for i, mem in enumerate(data.get("working_memory", []), 1):
+        lines.append(f"[Active Memory {i}] {mem}")
 
     return "\n\n".join(lines) if lines else raw
 

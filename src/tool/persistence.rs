@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::memory::{wernicke::KeywordCache, MemoryState};
+use crate::memory::{entorhinal::embed_text, wernicke::KeywordCache, MemoryState};
 
 pub const MEMORY_FILE: &str = ".legend/memory.lz4";
 
@@ -24,7 +24,9 @@ pub fn load_or_default() -> Result<MemoryState, Box<dyn std::error::Error>> {
     if Path::new(MEMORY_FILE).exists() {
         match load_memory() {
             Ok(mut state) => {
+                state.brain.long_term.rebuild_edge_index();
                 state.brain.keyword_cache = KeywordCache::from_graph(&state.brain.long_term);
+                migrate_embeddings(&mut state)?;
                 Ok(state)
             }
             Err(err) => {
@@ -73,8 +75,9 @@ pub fn load_memory_from_path<P: AsRef<Path>>(
     // MessagePack format: starts with LGND magic + version byte
     if decompressed.len() >= 5 && &decompressed[..4] == MSGPACK_MAGIC {
         let _version = decompressed[4];
-        let state: MemoryState = rmp_serde::from_slice(&decompressed[5..])
+        let mut state: MemoryState = rmp_serde::from_slice(&decompressed[5..])
             .map_err(|e| format!("Failed to deserialize msgpack memory: {}", e))?;
+        state.brain.long_term.rebuild_edge_index();
         return Ok(state);
     }
 
@@ -108,6 +111,56 @@ pub fn save_memory_to_path<P: AsRef<Path>>(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+const TARGET_EMBEDDING_DIM: usize = 384;
+
+/// Re-embed all stored entries when embedding dimensions don't match the current model.
+/// Runs once on first load after upgrading from n-gram (256-dim) to fastembed (384-dim).
+fn migrate_embeddings(state: &mut MemoryState) -> Result<(), Box<dyn std::error::Error>> {
+    let needs_migration = state.brain.config.embedding_dim != TARGET_EMBEDDING_DIM
+        || state
+            .brain
+            .short_term
+            .iter()
+            .any(|e| !e.embedding.is_empty() && e.embedding.len() != TARGET_EMBEDDING_DIM);
+
+    if !needs_migration {
+        return Ok(());
+    }
+
+    eprintln!(
+        "Migrating embeddings from {}d to {}d (one-time)...",
+        state.brain.config.embedding_dim, TARGET_EMBEDDING_DIM
+    );
+
+    // Re-embed L1 working memory
+    for entry in &mut state.brain.working_memory {
+        if !entry.text.is_empty() {
+            entry.embedding = embed_text(&entry.text, TARGET_EMBEDDING_DIM);
+        }
+    }
+
+    // Re-embed L2 short-term entries
+    for entry in &mut state.brain.short_term {
+        if !entry.text.is_empty() {
+            entry.embedding = embed_text(&entry.text, TARGET_EMBEDDING_DIM);
+        }
+    }
+
+    // Re-embed L3 Summary node centroids
+    for node in state.brain.long_term.nodes.values_mut() {
+        if !node.embedding.is_empty() {
+            let text = node.full_text.as_deref().unwrap_or(&node.label);
+            node.embedding = embed_text(text, TARGET_EMBEDDING_DIM);
+        }
+    }
+
+    state.brain.config.embedding_dim = TARGET_EMBEDDING_DIM;
+    eprintln!("Embedding migration complete. Saving...");
+    save(state)?;
+
+    Ok(())
+}
 
 fn load_memory() -> Result<MemoryState, Box<dyn std::error::Error>> {
     load_memory_from_path(MEMORY_FILE)

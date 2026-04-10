@@ -3,6 +3,9 @@ bin/
 build/
 *.o
 
+# Fastembed model cache (model is embedded in binary)
+.fastembed_cache/
+
 # Legend hook ephemeral files
 .legend/.last_query
 

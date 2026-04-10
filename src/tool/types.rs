@@ -20,14 +20,17 @@ pub struct MemoryConfig {
     pub immediate_capacity: usize,
     /// Max entries in the short-term vector store.
     pub short_term_capacity: usize,
-    /// Dimensionality of n-gram embedding vectors.
+    /// Dimensionality of semantic embedding vectors (MiniLM-L6-v2 = 384).
     pub embedding_dim: usize,
     /// Similarity above this → reinforce existing entry (no new insert).
     /// CA3 pattern completion: near-identical cues recall the same memory trace.
+    /// Lowered from 0.88 to 0.85 for semantic embeddings (tighter similarity
+    /// distribution means more true duplicates fall in the 0.85-0.88 range).
     pub theta_high: f32,
     /// Similarity above this but below theta_high → merge embeddings (EMA blend).
-    /// Dentate Gyrus pattern separation: raised to 0.72 to prevent similar-but-distinct
-    /// topics from collapsing. Only genuinely overlapping memories should merge.
+    /// Dentate Gyrus pattern separation: raised to 0.75 for semantic embeddings
+    /// (semantic similarity is more meaningful, so we can be stricter about
+    /// what constitutes a genuinely overlapping memory).
     pub theta_low: f32,
 }
 
@@ -36,9 +39,9 @@ impl Default for MemoryConfig {
         Self {
             immediate_capacity: 10,
             short_term_capacity: 1024,
-            embedding_dim: 256,
-            theta_high: 0.88,
-            theta_low: 0.72,
+            embedding_dim: 384,
+            theta_high: 0.85,
+            theta_low: 0.75,
         }
     }
 }

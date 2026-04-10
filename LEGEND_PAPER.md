@@ -72,11 +72,11 @@ The codebase is organized so that each cognitive mechanism lives in a module nam
 | `prefrontal.rs` | Prefrontal cortex | Working memory (L1): attention gating, context-switch flushing |
 | `hippocampus.rs` | Hippocampus | Episodic memory (L2): reconsolidation, pattern completion, SWR replay |
 | `neocortex.rs` | Neocortex | Knowledge graph (L3): spreading activation, Hebbian learning, consolidation |
-| `thalamus.rs` | Thalamus | Sensory encoding: n-gram embeddings, cosine similarity, salience scoring |
+| `thalamus.rs` | Thalamus | Sensory encoding: salience scoring, attentional gating |
 | `amygdala.rs` | Amygdala | Emotional valence: bipolar threat/reward scoring |
 | `dentate_gyrus.rs` | Dentate gyrus | Pattern separation: sparse orthogonalization, diversity gating |
 | `basal_ganglia.rs` | Basal ganglia | Reinforcement: AdaGrad optimization, contrastive descent |
-| `entorhinal.rs` | Entorhinal cortex | Compression: text chunking, extractive summarization |
+| `entorhinal.rs` | Entorhinal cortex | Encoding + compression: semantic embeddings (MiniLM), text chunking, summarization |
 | `wernicke/` | Wernicke's area | Language comprehension: entity extraction, keyword vocabulary |
 
 All brain modules (`src/memory/`) are pure computation with no filesystem or network access. IO and persistence live in a separate tool layer (`src/tool/`), maintaining a clean boundary between cognitive logic and system integration.
@@ -85,7 +85,7 @@ All brain modules (`src/memory/`) are pure computation with no filesystem or net
 
 **Layer 1 — Working Memory (Prefrontal Cortex).** A small buffer (`Vec<WorkingMemoryEntry>`, capacity 10) informed by Miller's Law (~7±2 items). Only entries with salience exceeding an attention gate threshold (0.25) are promoted to L2. On context switch — detected when cosine similarity between consecutive ticks drops below 0.15 — L1 is flushed and unpromoted entries receive a final promotion opportunity.
 
-**Layer 2 — Episodic Memory (Hippocampus).** A bounded store (`Vec<ShortTermEntry>`, capacity 1,024). Each entry contains text, extractive summary, 256-dimensional embedding, salience score, usage count, reconsolidation metadata, emotional valence, Ebbinghaus stability, density, and optional source references. Salience decays exponentially: `salience *= exp(-age × 0.001 / stability)`, yielding a base half-life of ~693 ticks that increases with spaced retrieval (stability ranges 1.0–10.0). Emotional valence decays at half the hippocampal rate, modeling how emotionally significant memories resist forgetting.
+**Layer 2 — Episodic Memory (Hippocampus).** A bounded store (`Vec<ShortTermEntry>`, capacity 1,024). Each entry contains text, extractive summary, 384-dimensional embedding (from an embedded sentence transformer), salience score, usage count, reconsolidation metadata, emotional valence, Ebbinghaus stability, density, and optional source references. Salience decays exponentially: `salience *= exp(-age × 0.001 / stability)`, yielding a base half-life of ~693 ticks that increases with spaced retrieval (stability ranges 1.0–10.0). Emotional valence decays at half the hippocampal rate, modeling how emotionally significant memories resist forgetting.
 
 **Layer 3 — Knowledge Graph (Neocortex).** Up to 2,048 nodes and 8,192 edges. Nodes represent extracted entities with typed labels. Edges carry one of seven relationship kinds (`contains`, `depends-on`, `implements`, `co-defined`, `drives`, `represents`, `related`) with weight, activation count, stability, and dual-timescale interval averages — short-term plasticity (α=0.5) and long-term potentiation (α=0.1), directly reflecting Kandel's distinction between short-term facilitation and long-term structural change [2]. Decay rate is 0.0005 per tick (half-life ~1,386 ticks), twice as durable as L2.
 
@@ -100,13 +100,13 @@ The central write path is `tick_impl(text, passive)`. Each call increments a mon
 Input text is chunked into ~200-character segments (entorhinal cortex compression). Each chunk proceeds through:
 
 1. **Working memory insertion** (prefrontal cortex)
-2. **Sensory encoding** (thalamus) — 256-dimensional hashed n-gram embedding
+2. **Sensory encoding** (entorhinal cortex) — 384-dimensional semantic embedding via embedded MiniLM-L6-v2
 3. **Salience scoring** (thalamus) — content heuristics from dynamic keyword cache
 4. **Emotional valence** (amygdala) — bipolar threat/reward signal
 5. **Attention gate** — salience ≥ 0.25 promotes to L2; otherwise remains in L1 only
 6. **Pattern separation** (dentate gyrus) — sparse orthogonalization against similar L2 entries
-7. **Reconsolidation check** — if a labile entry matches (similarity ≥ 0.35), update in-place
-8. **Dual-threshold matching** — ≥ 0.88 + word overlap ≥ 0.40: reinforce; ≥ 0.72: merge; below: insert
+7. **Reconsolidation check** — if a labile entry matches (similarity ≥ 0.40), update in-place
+8. **Dual-threshold matching** — ≥ 0.85 + word overlap ≥ 0.40: reinforce; ≥ 0.75: merge; below: insert
 9. **Graph update** (neocortex) — entity extraction (Wernicke's area), node and edge creation
 10. **Retrieval priming** — local retrieval marks entries labile
 11. **Pruning** — garbage collect L2 and L3
@@ -116,9 +116,9 @@ This pipeline treats every observation simultaneously as raw recency (L1), seman
 
 ### 5.2 Embedding and Similarity
 
-Legend uses deterministic hashed n-gram embeddings (dimension 256). Word unigrams, character trigrams, and word bigrams are accumulated into buckets via FNV-1a hashing and L2-normalized. This design privileges reproducibility, zero-dependency operation, and sub-millisecond latency over broad semantic coverage. In technical domains, where retrieval often depends on exact identifiers and near-variants, this bias is usually beneficial.
+Legend uses all-MiniLM-L6-v2 quantized, a 6-layer sentence transformer producing 384-dimensional embeddings. The ~23MB quantized ONNX model is compiled directly into the binary via `include_bytes!()`, eliminating network dependency while providing semantic similarity that captures meaning beyond lexical overlap. This design privileges zero-dependency operation and semantic quality over minimal binary size.
 
-Because hashing can create accidental proximity, Legend adds a lexical overlap gate (Jaccard word overlap ≥ 0.40) before merge or reinforce actions — a hybrid precision control.
+Legend adds a lexical overlap gate (Jaccard word overlap ≥ 0.40) before merge or reinforce actions — a precision control that ensures entries share sufficient vocabulary to be considered the same memory, even when embeddings are similar.
 
 ### 5.3 Salience and Adaptive Retention
 
@@ -134,9 +134,9 @@ Before matching, new embeddings undergo sparse orthogonalization against similar
 
 ### 5.5 Reconsolidation
 
-Retrieved memories enter a labile window for 5 ticks, implementing Nader et al.'s finding that retrieval destabilizes consolidated memories [4]. If a new tick matches a labile entry (similarity ≥ 0.35, lexical overlap ≥ 0.10), the existing entry is updated in-place: text merged, embedding recomputed, salience incremented. This prevents duplicate proliferation during iterative investigation — a ubiquitous pattern in knowledge work where early understanding is routinely revised.
+Retrieved memories enter a labile window for 5 ticks, implementing Nader et al.'s finding that retrieval destabilizes consolidated memories [4]. If a new tick matches a labile entry (similarity ≥ 0.40, lexical overlap ≥ 0.10), the existing entry is updated in-place: text merged, embedding recomputed, salience incremented. This prevents duplicate proliferation during iterative investigation — a ubiquitous pattern in knowledge work where early understanding is routinely revised.
 
-If reconsolidation does not trigger, dual-threshold matching applies: θ_high (0.88) reinforces; between θ_low (0.72) and θ_high merges; below θ_low inserts new.
+If reconsolidation does not trigger, dual-threshold matching applies: θ_high (0.85) reinforces; between θ_low (0.75) and θ_high merges; below θ_low inserts new.
 
 ### 5.6 Emotional Valence (Amygdala)
 
@@ -154,15 +154,15 @@ Hebbian reinforcement fires automatically during retrieval: co-retrieved node pa
 
 ### 5.8 Retrieval and Associative Priming
 
-`retrieve_context(query)` is a learning event, not a read-only call. It applies decay, embeds the query, ranks L2 entries by cosine similarity with keyword bonus, marks returned entries labile, and auto-reinforces the top result.
+`retrieve_context(query)` is a learning event, not a read-only call. It applies decay, embeds the query, gathers all L2 candidates above a similarity floor (0.25) with keyword bonus, and adds L3 Summary hits to the candidate pool.
+
+**Diversity selection (dentate gyrus at retrieval time).** When the candidate pool exceeds 5, Maximal Marginal Relevance (MMR) with λ=0.7 iteratively selects results that balance relevance to the query with diversity among selected items. This prevents near-duplicate memories from dominating retrieval, complementing the encoding-time sparse orthogonalization. Selected entries are marked labile and the top result is auto-reinforced.
 
 **Pattern completion (CA3).** When initial results are weak (top similarity < 0.5 or fewer than 3 results), entities are extracted from partial matches, spreading activation traverses the graph, and L2 is searched for entries containing activated entities — modeling how the hippocampal CA3 network reconstructs full memories from partial cues.
 
 **Multi-hop spreading activation.** BFS-style outward spread from seed entities, up to 3 hops with 0.5× decay per hop. Edge weight is modulated by activation count and temporal pattern, so frequently co-activated paths propagate more strongly.
 
 **Associative priming.** A second pass builds seeds from entities in the retrieved L2 snippets and follows additional graph hops, expanding recall beyond the literal query text.
-
-**L3 Summary retrieval.** Consolidated Summary nodes with centroid embeddings are scanned by cosine similarity (≥ 0.3), enabling retrieval of old consolidated knowledge whose L2 entries have decayed.
 
 ### 5.9 Consolidation
 
@@ -175,7 +175,7 @@ Consolidation transforms repeated local observations into compressed long-term a
 The pipeline:
 
 1. **Sharp-wave ripple replay** — temporally co-active L2 pairs (within 5 ticks) have shared graph edges reinforced (+0.08) and receive salience boosts (+0.02). New temporal edges are created between co-active entities. This implements the hippocampal replay mechanism believed to support memory consolidation during rest [3].
-2. **Clustering** — L2 entries grouped by similarity ≥ θ_low (0.72).
+2. **Clustering** — L2 entries grouped by similarity ≥ θ_low (0.75).
 3. **Summarization** — multi-entry groups produce extractive summaries as L3 Summary nodes.
 4. **Systems consolidation** — high-salience groups (average ≥ 0.4) receive centroid embeddings and rich text on Summary nodes, enabling L3 to serve queries independently after L2 entries decay.
 5. **Pruning** — L2 and L3 garbage collected.
@@ -306,7 +306,7 @@ The case study involves a single developer on a single project with no stateless
 
 ## 12. Limitations
 
-Legend is a heuristic, bounded, single-process system. Retrieval is linear scan, not approximate nearest-neighbor indexing. Entity extraction is pattern-driven, not AST-based. Salience uses rule-based priors, not learned objectives. Embeddings are purely lexical — semantically related terms without surface overlap may not cluster. Consolidation is extractive and can over-compress nuance. The system supports single-agent local workflows, not distributed multi-agent consensus.
+Legend is a heuristic, bounded, single-process system. Retrieval is linear scan, not approximate nearest-neighbor indexing. Entity extraction is pattern-driven, not AST-based. Salience uses rule-based priors, not learned objectives. The embedded MiniLM model adds ~23MB to binary size; a larger model (e.g., BGE-small, 12 layers) could improve retrieval quality at the cost of size and latency. Consolidation is extractive and can over-compress nuance. The system supports single-agent local workflows, not distributed multi-agent consensus.
 
 These are acknowledged constraints that define a clear research agenda.
 

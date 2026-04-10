@@ -102,6 +102,73 @@ pub fn diversity_pass(existing_text: &str, new_text: &str) -> bool {
     word_overlap(existing_text, new_text) >= MERGE_WORD_OVERLAP_THRESHOLD
 }
 
+/// Maximal Marginal Relevance — select k items from candidates that balance
+/// relevance to the query with diversity among selected items.
+///
+/// This is pattern separation at retrieval time: instead of returning the top-k
+/// most similar results (which may be near-duplicates), MMR iteratively selects
+/// candidates that are relevant to the query but dissimilar to already-selected
+/// results. This mirrors the dentate gyrus function of creating orthogonal
+/// representations to reduce interference.
+///
+/// `lambda` controls the trade-off: 1.0 = pure relevance, 0.0 = pure diversity.
+/// Legend uses 0.7 (relevance-heavy with diversity protection).
+///
+/// Each candidate needs a `query_similarity` (pre-computed) and an `embedding`
+/// for pairwise diversity computation.
+pub fn mmr_select(
+    candidates: &[(usize, f32, &[f32])], // (index, query_similarity, embedding)
+    k: usize,
+    lambda: f32,
+) -> Vec<usize> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let mut selected: Vec<usize> = Vec::with_capacity(k);
+    let mut selected_embeddings: Vec<&[f32]> = Vec::with_capacity(k);
+    let mut available: Vec<bool> = vec![true; candidates.len()];
+
+    for _ in 0..k {
+        let mut best_idx = None;
+        let mut best_score = f32::NEG_INFINITY;
+
+        for (i, &(_, query_sim, emb)) in candidates.iter().enumerate() {
+            if !available[i] {
+                continue;
+            }
+
+            // Max similarity to any already-selected item
+            let max_sim_to_selected = if selected_embeddings.is_empty() {
+                0.0
+            } else {
+                selected_embeddings
+                    .iter()
+                    .map(|sel_emb| cosine_similarity(emb, sel_emb))
+                    .fold(f32::NEG_INFINITY, f32::max)
+            };
+
+            let mmr_score = lambda * query_sim - (1.0 - lambda) * max_sim_to_selected;
+
+            if mmr_score > best_score {
+                best_score = mmr_score;
+                best_idx = Some(i);
+            }
+        }
+
+        match best_idx {
+            Some(idx) => {
+                selected.push(candidates[idx].0);
+                selected_embeddings.push(candidates[idx].2);
+                available[idx] = false;
+            }
+            None => break,
+        }
+    }
+
+    selected
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +271,78 @@ mod tests {
             "Rust memory model borrow checker",
             "cooking recipes fresh ingredients"
         ));
+    }
+
+    // ── MMR tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_mmr_select_empty_candidates() {
+        assert!(mmr_select(&[], 5, 0.7).is_empty());
+    }
+
+    #[test]
+    fn test_mmr_select_fewer_than_k() {
+        let emb_a = embed_text("hello world", 384);
+        let candidates = vec![(0, 0.9, emb_a.as_slice())];
+        let selected = mmr_select(&candidates, 5, 0.7);
+        assert_eq!(selected, vec![0]);
+    }
+
+    #[test]
+    fn test_mmr_select_picks_highest_first() {
+        let emb_a = embed_text("authentication system login", 384);
+        let emb_b = embed_text("cooking pasta recipes", 384);
+        let candidates = vec![
+            (0, 0.5, emb_a.as_slice()),
+            (1, 0.9, emb_b.as_slice()),
+        ];
+        let selected = mmr_select(&candidates, 1, 0.7);
+        assert_eq!(selected, vec![1], "should pick highest similarity first");
+    }
+
+    #[test]
+    fn test_mmr_select_promotes_diversity() {
+        // Three candidates: A and B are near-duplicates, C is different
+        let emb_a = embed_text("chose Redis for caching because pub/sub support", 384);
+        let emb_b = embed_text("chose Redis for caching because fast performance", 384);
+        let emb_c = embed_text("authentication system uses JWT tokens for sessions", 384);
+
+        let sim_ab = cosine_similarity(&emb_a, &emb_b);
+        assert!(sim_ab > 0.7, "A and B should be similar: {}", sim_ab);
+
+        // A is top, B is close second, C is only slightly lower — close enough
+        // that MMR diversity penalty on the A-B near-duplicate should push C above B
+        let candidates = vec![
+            (0, 0.90, emb_a.as_slice()),
+            (1, 0.88, emb_b.as_slice()),
+            (2, 0.82, emb_c.as_slice()),
+        ];
+
+        // Pure relevance (lambda=1.0) would pick A, B
+        let pure_relevance = mmr_select(&candidates, 2, 1.0);
+        assert_eq!(pure_relevance, vec![0, 1]);
+
+        // With diversity (lambda=0.7), should pick A then C (skipping near-duplicate B)
+        let with_diversity = mmr_select(&candidates, 2, 0.7);
+        assert_eq!(with_diversity[0], 0, "first pick should still be most relevant");
+        assert_eq!(
+            with_diversity[1], 2,
+            "second pick should be diverse C, not near-duplicate B"
+        );
+    }
+
+    #[test]
+    fn test_mmr_select_returns_correct_count() {
+        let embs: Vec<Vec<f32>> = (0..10)
+            .map(|i| embed_text(&format!("topic number {} about various things", i), 384))
+            .collect();
+        let candidates: Vec<(usize, f32, &[f32])> = embs
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, 0.9 - i as f32 * 0.05, e.as_slice()))
+            .collect();
+
+        let selected = mmr_select(&candidates, 5, 0.7);
+        assert_eq!(selected.len(), 5);
     }
 }

@@ -43,6 +43,30 @@ pub struct GraphMemory {
     pub edges: Vec<GraphEdge>,
     /// Label → node ID for fast entity lookup.
     pub index: HashMap<String, u64>,
+    /// (min_id, max_id) → edge index for O(1) edge lookup.
+    /// Rebuilt on load, not serialized.
+    #[serde(skip)]
+    pub edge_index: HashMap<(u64, u64), usize>,
+}
+
+impl GraphMemory {
+    /// Rebuild the edge_index from the edges Vec. Call after deserialization.
+    pub fn rebuild_edge_index(&mut self) {
+        self.edge_index = HashMap::with_capacity(self.edges.len());
+        for (idx, edge) in self.edges.iter().enumerate() {
+            let key = if edge.from <= edge.to {
+                (edge.from, edge.to)
+            } else {
+                (edge.to, edge.from)
+            };
+            self.edge_index.insert(key, idx);
+        }
+    }
+
+    /// Canonical edge key for index lookups.
+    fn edge_key(a: u64, b: u64) -> (u64, u64) {
+        if a <= b { (a, b) } else { (b, a) }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,6 +408,9 @@ pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
             .sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
         long_term.edges.truncate(GRAPH_EDGE_CAPACITY);
     }
+
+    // Rebuild edge index after retain/truncate may have invalidated it
+    long_term.rebuild_edge_index();
 }
 
 /// Proportionally scale all graph node and edge weights so the maximum node weight
@@ -408,11 +435,9 @@ pub fn normalize_graph_weights(long_term: &mut GraphMemory) {
 
 /// Insert a new edge or reinforce an existing one between two nodes.
 pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, clock: u64) {
-    if let Some(edge) = long_term
-        .edges
-        .iter_mut()
-        .find(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
-    {
+    let key = GraphMemory::edge_key(from, to);
+    if let Some(&idx) = long_term.edge_index.get(&key) {
+        let edge = &mut long_term.edges[idx];
         // Synaptic plasticity: update dual-timescale interval tracking
         let interval = clock.saturating_sub(edge.last_seen) as f32;
         if edge.activation_count > 0 && interval > 0.0 {
@@ -443,6 +468,7 @@ pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, 
             edge.kind = kind.to_string();
         }
     } else {
+        let new_idx = long_term.edges.len();
         long_term.edges.push(GraphEdge {
             from,
             to,
@@ -454,6 +480,7 @@ pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, 
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
         });
+        long_term.edge_index.insert(key, new_idx);
     }
 }
 
@@ -669,6 +696,11 @@ pub fn replay_consolidation(state: &mut BrainState) {
 
     let mut replayed_indices: HashSet<usize> = HashSet::new();
 
+    // Ensure edge index is populated (may be empty if edges were pushed without registration)
+    if state.long_term.edge_index.is_empty() && !state.long_term.edges.is_empty() {
+        state.long_term.rebuild_edge_index();
+    }
+
     for i in 0..entry_entities.len() {
         for j in (i + 1)..entry_entities.len() {
             let ei = &state.short_term[entry_entities[i].0];
@@ -687,32 +719,22 @@ pub fn replay_consolidation(state: &mut BrainState) {
                 continue;
             }
 
-            // Reinforce edges between all entity pairs from the two entries
+            // Reinforce existing edges between entity pairs from the two entries.
+            // Only boost edges that already exist — replay strengthens known
+            // associations, it doesn't create new ones (prevents edge explosion).
             for (_, id_a) in entities_i {
                 for (_, id_b) in entities_j {
                     if id_a == id_b {
                         continue;
                     }
-                    // Check if edge already exists
-                    let existing = state.long_term.edges.iter_mut().find(|e| {
-                        (e.from == *id_a && e.to == *id_b) || (e.from == *id_b && e.to == *id_a)
-                    });
-                    if let Some(edge) = existing {
-                        edge.weight += REPLAY_EDGE_BOOST;
-                        edge.last_seen = state.clock;
+                    let key = if id_a <= id_b {
+                        (*id_a, *id_b)
                     } else {
-                        // Create new temporal edge
-                        state.long_term.edges.push(GraphEdge {
-                            from: *id_a,
-                            to: *id_b,
-                            weight: 0.05,
-                            kind: "temporal".to_string(),
-                            last_seen: state.clock,
-                            activation_count: 0,
-                            stability: 1.0,
-                            recent_interval_avg: 0.0,
-                            historical_interval_avg: 0.0,
-                        });
+                        (*id_b, *id_a)
+                    };
+                    if let Some(&edge_idx) = state.long_term.edge_index.get(&key) {
+                        state.long_term.edges[edge_idx].weight += REPLAY_EDGE_BOOST;
+                        state.long_term.edges[edge_idx].last_seen = state.clock;
                     }
                 }
             }
