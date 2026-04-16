@@ -101,7 +101,21 @@ def query_legend(legend_bin: str, workspace: str, question: str) -> str:
 
     lines = []
     for i, mem in enumerate(data.get("memories", []), 1):
-        lines.append(f"[Memory {i}] {mem}")
+        if isinstance(mem, dict):
+            text = mem.get("text", "")
+            wc = mem.get("wall_clock", 0)
+            seq = mem.get("seq", 0)
+            parts = []
+            if wc:
+                from datetime import datetime, timezone
+                dt = datetime.fromtimestamp(wc, tz=timezone.utc)
+                parts.append(f"recorded:{dt.strftime('%Y-%m-%d %H:%M UTC')}")
+            if seq:
+                parts.append(f"seq:{seq}")
+            prefix = f"[{', '.join(parts)}] " if parts else ""
+            lines.append(f"[Memory {i}] {prefix}{text}")
+        else:
+            lines.append(f"[Memory {i}] {mem}")
     topics = data.get("related_topics", [])
     if topics:
         lines.append(f"[Related Topics] {', '.join(topics)}")
@@ -123,6 +137,7 @@ def answer_with_llm(question: str, context: str, model: str) -> str:
     prompt = f"""You are answering questions based on memories retrieved from past conversations.
 Use ONLY the provided context. Answer concisely and directly.
 If the context doesn't contain enough information, say "I don't know".
+Memories may include temporal metadata: "date:" is the wall-clock date, "seq:" is a monotonic sequence number (lower = earlier in time). Use these to reason about chronological order, duration, and temporal relationships. When memories are listed in order, earlier memories happened before later ones.
 
 ## Retrieved Memories
 {context}
