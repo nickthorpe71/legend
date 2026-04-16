@@ -75,16 +75,16 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
           "text": "ONBOARDING TASKS: The following investigations are recommended to complete the mental model:\n- [read_readme] The project has a README.md."
         },
         {
-          "seq": 7,
-          "text": "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
+          "seq": 2,
+          "text": "CONTEXT: High-signal file 'README.md' (Documentation)"
         },
         {
           "seq": 7,
           "text": "Read it to understand the core goals and onboarding flow.."
         },
         {
-          "seq": 2,
-          "text": "CONTEXT: High-signal file 'README.md' (Documentation)"
+          "seq": 7,
+          "text": "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
         },
         {
           "seq": 1,
@@ -95,12 +95,12 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
           "text": "DECISION: Chose graph index because it keeps lookups cheap."
         },
         {
-          "seq": 3,
-          "text": "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\nedition = \"2021\""
-        },
-        {
           "seq": 7,
           "text": "Tool hint: read_file { \"file_path\": \"README.md\" }"
+        },
+        {
+          "seq": 3,
+          "text": "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\nedition = \"2021\""
         },
         {
           "seq": 2,
