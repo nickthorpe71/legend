@@ -3,11 +3,13 @@ use super::{
     entorhinal::cosine_similarity,
     entorhinal::embed_text,
     entorhinal::{summarize_single, summarize_text},
+    neocortex::{self, GraphNode},
     neurochemistry::{self, ChemicalStamp, Neurochemistry, STATE_DEPENDENT_BONUS},
     wernicke::{self, extract_entities},
     BrainState, CONSOLIDATED_EVICTION_REDUCTION, EVICTION_DECAY_RATE, HIPPOCAMPAL_DECAY_RATE,
-    KEYWORD_MATCH_BONUS, KEYWORD_MATCH_BONUS_CAP, MIN_QUERY_SIMILARITY, PRUNE_AGE_WEIGHT,
-    PRUNE_THRESHOLD, PRUNE_USAGE_WEIGHT, RECONSOLIDATION_THRESHOLD,
+    KEYWORD_MATCH_BONUS, KEYWORD_MATCH_BONUS_CAP, L3_BACKUP_SIMILARITY_THRESHOLD,
+    MIN_QUERY_SIMILARITY, PRUNE_AGE_WEIGHT, PRUNE_THRESHOLD, PRUNE_USAGE_WEIGHT,
+    RECONSOLIDATION_THRESHOLD, TRACE_INITIAL_SALIENCE, TRACE_NODE_CAP,
 };
 /// Hippocampus — Episodic memory (L2) functions.
 ///
@@ -384,15 +386,17 @@ pub fn insert_short_term(
         }
 
         let now = state.clock;
-        // Systems consolidation: consolidated entries whose Summary node
-        // has a valid embedding in L3 get reduced eviction resistance,
-        // since the neocortex can independently serve their role.
-        let has_embedded_summary = |entry: &ShortTermEntry| -> bool {
+        // CA3 pattern completion analog: use embedding similarity (not exact text
+        // match) to determine if an L3 node backs this entry. The brain never does
+        // exact recall — it pattern-completes from distributed representations.
+        let has_l3_backup = |entry: &ShortTermEntry| -> bool {
             entry.consolidated
+                && !entry.embedding.is_empty()
                 && state.long_term.nodes.values().any(|n| {
-                    n.kind == "Summary"
+                    matches!(n.kind.as_str(), "Summary" | "Trace")
                         && !n.embedding.is_empty()
-                        && n.source_texts.iter().any(|st| st == &entry.text)
+                        && cosine_similarity(&n.embedding, &entry.embedding)
+                            >= L3_BACKUP_SIMILARITY_THRESHOLD
                 })
         };
         if let Some(idx) = state
@@ -402,16 +406,25 @@ pub fn insert_short_term(
             .min_by(|(_, a), (_, b)| {
                 let mut score_a = eviction_score(a, now);
                 let mut score_b = eviction_score(b, now);
-                if has_embedded_summary(a) {
+                if has_l3_backup(a) {
                     score_a -= CONSOLIDATED_EVICTION_REDUCTION;
                 }
-                if has_embedded_summary(b) {
+                if has_l3_backup(b) {
                     score_b -= CONSOLIDATED_EVICTION_REDUCTION;
                 }
                 score_a.partial_cmp(&score_b).unwrap()
             })
             .map(|(i, _)| i)
         {
+            // Fast mapping: before evicting an unconsolidated entry, create a
+            // lightweight L3 "Trace" node preserving its semantic content.
+            // Brain analog: the neocortex can rapidly absorb one-shot facts via
+            // a direct pathway (bypassing normal slow consolidation) when the
+            // hippocampus is under pressure.
+            let victim = &state.short_term[idx];
+            if !victim.consolidated && !victim.embedding.is_empty() {
+                fast_map_trace(state, idx);
+            }
             state.short_term.remove(idx);
         }
     }
@@ -545,6 +558,98 @@ pub fn eviction_score(entry: &ShortTermEntry, now: u64) -> f32 {
     // Amygdala: emotionally charged memories resist eviction
     let emotional_resistance = entry.emotional_valence.abs() * 0.15;
     entry.salience * 0.4 + usage * 0.3 + recency * 0.3 + emotional_resistance
+}
+
+/// Fast mapping: create a lightweight L3 "Trace" node from an L2 eviction victim.
+///
+/// Brain analog: neocortical fast mapping — a direct hippocampus→cortex pathway
+/// that absorbs one-shot facts without requiring cluster-based consolidation.
+/// The trace preserves the entry's embedding, summary, and entity links so the
+/// information remains retrievable even after the episodic entry is evicted.
+///
+/// `victim_idx` is the index into `state.short_term` of the entry about to be evicted.
+fn fast_map_trace(state: &mut BrainState, victim_idx: usize) {
+    let victim = &state.short_term[victim_idx];
+    let label = if victim.summary.is_empty() {
+        summarize_single(&victim.text, &state.keyword_cache)
+    } else {
+        victim.summary.clone()
+    };
+
+    // Enforce Trace node cap: prune lowest-salience Trace before creating a new one.
+    let trace_count = state
+        .long_term
+        .nodes
+        .values()
+        .filter(|n| n.kind == "Trace")
+        .count();
+    if trace_count >= TRACE_NODE_CAP {
+        if let Some((&weakest_id, _)) = state
+            .long_term
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == "Trace")
+            .min_by(|(_, a), (_, b)| a.salience.partial_cmp(&b.salience).unwrap())
+        {
+            state.long_term.nodes.remove(&weakest_id);
+            // Clean index entry if it pointed to this node
+            state.long_term.index.retain(|_, &mut v| v != weakest_id);
+            // Remove edges involving this node
+            state.long_term.edges.retain(|e| e.from != weakest_id && e.to != weakest_id);
+            state.long_term.rebuild_edge_index();
+        }
+    }
+
+    let trace_id = state.next_id;
+    state.next_id += 1;
+    state.long_term.nodes.insert(
+        trace_id,
+        GraphNode {
+            id: trace_id,
+            label: label.clone(),
+            kind: "Trace".to_string(),
+            weight: 1.0 + TRACE_INITIAL_SALIENCE,
+            last_seen: state.clock,
+            salience: TRACE_INITIAL_SALIENCE,
+            source_texts: vec![victim.text.clone()],
+            embedding: victim.embedding.clone(),
+            full_text: Some(victim.text.clone()),
+        },
+    );
+    state
+        .long_term
+        .index
+        .insert(label.to_lowercase(), trace_id);
+
+    // Link Trace to extracted entities (same as consolidation topic extraction)
+    let entities = extract_entities(&victim.text, &state.keyword_cache);
+    for entity in &entities {
+        let index_key = entity.label.to_lowercase();
+        if let Some(&entity_id) = state.long_term.index.get(&index_key) {
+            neocortex::upsert_edge(
+                &mut state.long_term,
+                trace_id,
+                entity_id,
+                "traces",
+                state.clock,
+            );
+        }
+    }
+}
+
+/// Promote a Trace node to Summary when it proves useful (retrieved and reinforced).
+///
+/// Brain analog: initially weak cortical traces that receive hippocampal replay
+/// strengthen into stable cortical representations. A Trace that gets retrieved
+/// has proven its value — promote it to full Summary status with boosted salience.
+pub fn promote_trace(state: &mut BrainState, node_id: u64) {
+    if let Some(node) = state.long_term.nodes.get_mut(&node_id) {
+        if node.kind == "Trace" {
+            node.kind = "Summary".to_string();
+            node.salience = (node.salience + 0.2).min(1.0);
+            node.weight = (node.weight + 0.5).min(5.0);
+        }
+    }
 }
 
 /// Semantic density: weighted count of high-signal entities in text.
