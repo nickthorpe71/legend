@@ -18,6 +18,7 @@ readme = "README.md"
 name = "legend"
 path = "src/main.rs"
 
+
 [lib]
 name = "legend"
 path = "src/lib.rs"
