@@ -148,6 +148,16 @@ pub(super) const REPLAY_SALIENCE_BOOST: f32 = 0.02;
 /// Eviction score reduction for consolidated L2 entries whose Summary node
 /// has a valid embedding (L3 can serve their role).
 pub(super) const CONSOLIDATED_EVICTION_REDUCTION: f32 = 0.2;
+/// CA3 pattern completion: minimum cosine similarity between an L2 entry's
+/// embedding and an L3 Summary/Trace centroid to count as "backed by L3."
+/// Replaces the fragile exact-text match in eviction scoring.
+pub(super) const L3_BACKUP_SIMILARITY_THRESHOLD: f32 = 0.75;
+/// Fast mapping: maximum number of Trace nodes in L3. When exceeded, the
+/// lowest-salience Trace is pruned before creating a new one.
+pub(super) const TRACE_NODE_CAP: usize = 50;
+/// Fast mapping: initial salience for Trace nodes (below normal Summary 0.4+).
+/// Traces that are never retrieved will decay and prune naturally.
+pub(super) const TRACE_INITIAL_SALIENCE: f32 = 0.3;
 
 // ---------------------------------------------------------------------------
 // Neocortex — Semantic memory (L3), knowledge graph, consolidation
@@ -1100,15 +1110,15 @@ fn encoding_activation(
     }
 
     // ── Step 3: L3 systems consolidation retrieval ──
-    // Summary nodes with centroid embeddings can independently surface old
-    // consolidated memories whose L2 entries may have been evicted.
+    // Summary and Trace nodes with centroid embeddings can independently surface
+    // old consolidated memories and fast-mapped traces whose L2 entries were evicted.
     {
         let existing_ids: HashSet<u64> = candidates.iter().map(|s| s.id).collect();
         let mut summary_hits: Vec<MemorySnippet> = state
             .long_term
             .nodes
             .values()
-            .filter(|n| n.kind == "Summary" && !n.embedding.is_empty())
+            .filter(|n| matches!(n.kind.as_str(), "Summary" | "Trace") && !n.embedding.is_empty())
             .filter_map(|n| {
                 let sim = cosine_similarity(&n.embedding, embedding);
                 if sim >= SUMMARY_RETRIEVAL_MIN_SIM && !existing_ids.contains(&n.id) {
@@ -1386,16 +1396,17 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
     }
 
     // --- L3 systems consolidation retrieval (neocortical independence) ---
-    // Scan Summary nodes that have centroid embeddings for direct similarity
-    // matching. This surfaces old consolidated memories whose L2 entries may
-    // have been evicted, making them independently queryable via neocortex.
+    // Scan Summary and Trace nodes that have centroid embeddings for direct
+    // similarity matching. This surfaces old consolidated memories whose L2
+    // entries may have been evicted, plus fast-mapped traces of unconsolidated
+    // entries that were evicted under hippocampal pressure.
     {
         let existing_ids: HashSet<u64> = candidates.iter().map(|s| s.id).collect();
         let mut summary_hits: Vec<MemorySnippet> = state
             .long_term
             .nodes
             .values()
-            .filter(|n| n.kind == "Summary" && !n.embedding.is_empty())
+            .filter(|n| matches!(n.kind.as_str(), "Summary" | "Trace") && !n.embedding.is_empty())
             .filter_map(|n| {
                 let sim = cosine_similarity(&n.embedding, &embedding);
                 if sim >= SUMMARY_RETRIEVAL_MIN_SIM && !existing_ids.contains(&n.id) {
@@ -1542,6 +1553,13 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
                 trace::TracePayload::Similarities(vec![(top.id, top.similarity)]),
             );
         }
+    }
+
+    // Trace promotion: any Trace node that was retrieved has proven its value.
+    // Promote it to Summary status (brain analog: weak cortical traces that
+    // receive hippocampal replay strengthen into stable representations).
+    for snippet in &snippets {
+        hippocampus::promote_trace(state, snippet.id);
     }
 
     let mut long_term = neocortex::graph_lookup(
@@ -7313,6 +7331,217 @@ mod tests {
                 .iter()
                 .any(|e| e.text.contains("UI redesign")),
             "new high-salience entry should survive eviction"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fast mapping & CA3 backup similarity tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fast_map_creates_trace_on_unconsolidated_eviction() {
+        // When an unconsolidated L2 entry is evicted, a Trace node should be
+        // created in L3 preserving its embedding and text.
+        let mut state = MemoryState::default();
+        state.brain.config.short_term_capacity = 3;
+        // Prevent emergency consolidation (so entries stay unconsolidated)
+        state.brain.ticks_since_consolidation = 0;
+        let dim = state.brain.config.embedding_dim;
+
+        // Fill with 3 diverse entries (won't cluster)
+        let texts = [
+            "DECISION: chose Redis for caching because of TTL support",
+            "BUG: null pointer in authentication middleware on empty tokens",
+            "ARCHITECTURE: event sourcing pattern for order processing pipeline",
+        ];
+        for text in &texts {
+            let emb = embed_text(text, dim);
+            hippocampus::insert_short_term(
+                &mut state.brain, text, emb, 0.3, Vec::new(), 0.0, 0,
+                Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+            );
+        }
+        assert_eq!(state.brain.short_term.len(), 3);
+        let trace_count_before = state.brain.long_term.nodes.values()
+            .filter(|n| n.kind == "Trace").count();
+        assert_eq!(trace_count_before, 0, "no Trace nodes before eviction");
+
+        // Insert a 4th entry — should evict the lowest-scoring unconsolidated entry
+        // and create a Trace node for it.
+        let text = "DECISION: switched from REST to GraphQL for flexible queries";
+        let emb = embed_text(text, dim);
+        hippocampus::insert_short_term(
+            &mut state.brain, text, emb, 0.5, Vec::new(), 0.0, 0,
+            Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+        );
+
+        let trace_count_after = state.brain.long_term.nodes.values()
+            .filter(|n| n.kind == "Trace").count();
+        assert_eq!(trace_count_after, 1, "one Trace node should be created for evicted entry");
+
+        // The Trace should have a valid embedding and full_text
+        let trace = state.brain.long_term.nodes.values()
+            .find(|n| n.kind == "Trace").unwrap();
+        assert!(!trace.embedding.is_empty(), "Trace should have embedding");
+        assert!(trace.full_text.is_some(), "Trace should have full_text");
+        assert!(!trace.source_texts.is_empty(), "Trace should have source_texts");
+    }
+
+    #[test]
+    fn test_trace_node_cap_enforced() {
+        // When Trace nodes exceed TRACE_NODE_CAP, the weakest one is pruned.
+        let mut state = MemoryState::default();
+        let dim = state.brain.config.embedding_dim;
+        state.brain.config.short_term_capacity = 2;
+        state.brain.ticks_since_consolidation = 0;
+
+        // Pre-populate L3 with TRACE_NODE_CAP Trace nodes
+        for i in 0..TRACE_NODE_CAP {
+            let id = state.brain.next_id;
+            state.brain.next_id += 1;
+            state.brain.long_term.nodes.insert(id, neocortex::GraphNode {
+                id,
+                label: format!("trace_{i}"),
+                kind: "Trace".to_string(),
+                weight: 1.0,
+                last_seen: 0,
+                salience: 0.1 + (i as f32 * 0.001), // increasing salience
+                source_texts: vec![format!("trace text {i}")],
+                embedding: embed_text(&format!("trace text {i}"), dim),
+                full_text: Some(format!("trace text {i}")),
+            });
+        }
+        let before = state.brain.long_term.nodes.values()
+            .filter(|n| n.kind == "Trace").count();
+        assert_eq!(before, TRACE_NODE_CAP);
+
+        // Fill L2 and trigger eviction of an unconsolidated entry
+        let texts = [
+            "DECISION: use PostgreSQL for relational data storage",
+            "DECISION: use MongoDB for document storage",
+        ];
+        for text in &texts {
+            let emb = embed_text(text, dim);
+            hippocampus::insert_short_term(
+                &mut state.brain, text, emb, 0.3, Vec::new(), 0.0, 0,
+                Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+            );
+        }
+        // One more to trigger eviction + fast mapping
+        let emb = embed_text("DECISION: new entry forcing eviction", dim);
+        hippocampus::insert_short_term(
+            &mut state.brain, "DECISION: new entry forcing eviction", emb,
+            0.5, Vec::new(), 0.0, 0,
+            Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+        );
+
+        let after = state.brain.long_term.nodes.values()
+            .filter(|n| n.kind == "Trace").count();
+        assert!(
+            after <= TRACE_NODE_CAP,
+            "Trace count should not exceed cap: got {after}, cap {TRACE_NODE_CAP}"
+        );
+    }
+
+    #[test]
+    fn test_ca3_embedding_similarity_detects_l3_backup() {
+        // CA3 pattern completion: eviction should detect L3 backup via embedding
+        // similarity, not exact text match.
+        let mut state = MemoryState::default();
+        state.brain.config.short_term_capacity = 2;
+        state.brain.ticks_since_consolidation = 0;
+        let dim = state.brain.config.embedding_dim;
+
+        // Create a Summary node with an embedding close to what we'll insert in L2
+        let original_text = "DECISION: chose JWT tokens for API authentication";
+        let original_emb = embed_text(original_text, dim);
+        let summary_id = state.brain.next_id;
+        state.brain.next_id += 1;
+        state.brain.long_term.nodes.insert(summary_id, neocortex::GraphNode {
+            id: summary_id,
+            label: "JWT auth decision".to_string(),
+            kind: "Summary".to_string(),
+            weight: 2.0,
+            last_seen: 0,
+            salience: 0.5,
+            // Deliberately use DIFFERENT text than entry (old exact match would miss this)
+            source_texts: vec!["slightly different JWT text".to_string()],
+            embedding: original_emb.clone(),
+            full_text: Some(original_text.to_string()),
+        });
+
+        // Insert an L2 entry with similar embedding (same text) and mark as consolidated
+        hippocampus::insert_short_term(
+            &mut state.brain, original_text, original_emb, 0.3,
+            Vec::new(), 0.0, 0,
+            Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+        );
+        state.brain.short_term.last_mut().unwrap().consolidated = true;
+
+        // Insert a high-salience entry to fill up
+        let text2 = "ARCHITECTURE: microservice gateway design with rate limiting";
+        hippocampus::insert_short_term(
+            &mut state.brain, text2, embed_text(text2, dim), 0.9,
+            Vec::new(), 0.0, 0,
+            Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+        );
+
+        // Insert a 3rd entry — triggers eviction. The consolidated JWT entry
+        // should be preferred for eviction because CA3 finds the Summary backup.
+        let text3 = "DECISION: switched to gRPC for internal service communication";
+        hippocampus::insert_short_term(
+            &mut state.brain, text3, embed_text(text3, dim), 0.5,
+            Vec::new(), 0.0, 0,
+            Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+        );
+
+        // The consolidated entry (JWT) should have been evicted (has L3 backup)
+        // and the new entries should survive.
+        assert!(
+            state.brain.short_term.iter().any(|e| e.text.contains("gRPC")),
+            "new gRPC entry should survive"
+        );
+        assert!(
+            state.brain.short_term.iter().any(|e| e.text.contains("microservice")),
+            "high-salience microservice entry should survive"
+        );
+    }
+
+    #[test]
+    fn test_trace_promoted_on_retrieval() {
+        // A Trace node retrieved via query should be promoted to Summary.
+        let mut state = MemoryState::default();
+        let dim = state.brain.config.embedding_dim;
+
+        let trace_text = "DECISION: chose Redis for distributed caching with TTL";
+        let trace_emb = embed_text(trace_text, dim);
+        let trace_id = state.brain.next_id;
+        state.brain.next_id += 1;
+        state.brain.long_term.nodes.insert(trace_id, neocortex::GraphNode {
+            id: trace_id,
+            label: "Redis caching decision".to_string(),
+            kind: "Trace".to_string(),
+            weight: 1.3,
+            last_seen: 0,
+            salience: TRACE_INITIAL_SALIENCE,
+            source_texts: vec![trace_text.to_string()],
+            embedding: trace_emb,
+            full_text: Some(trace_text.to_string()),
+        });
+
+        assert_eq!(state.brain.long_term.nodes[&trace_id].kind, "Trace");
+
+        // Query something related — the Trace should be surfaced and promoted
+        let _ctx = retrieve_context(&mut state.brain, "Redis caching decision");
+
+        let node = &state.brain.long_term.nodes[&trace_id];
+        assert_eq!(
+            node.kind, "Summary",
+            "Trace should be promoted to Summary after retrieval"
+        );
+        assert!(
+            node.salience > TRACE_INITIAL_SALIENCE,
+            "promoted Trace should have boosted salience"
         );
     }
 }
