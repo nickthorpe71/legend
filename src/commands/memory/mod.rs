@@ -1,6 +1,7 @@
 mod consolidate;
 mod event_log;
 mod helpers;
+mod plan;
 mod query;
 mod reinforce;
 mod sessions;
@@ -18,7 +19,7 @@ pub use event_log::log_event_rich;
 pub use event_log::{
     EventData, GraphHit, MatchedEntry, QueryEventData, StartEventData, TickEventData,
 };
-pub use helpers::{append_to_architecture_md, is_noise_tick, truncate_text};
+pub use helpers::truncate_text;
 pub use start::format_start_summary_markdown;
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ pub fn handle_memory(
         "reinforce" => reinforce::handle_reinforce(&args[1..]),
         "dump" => simple::handle_dump(),
         "task" => task::handle_task(&args[1..]),
+        "plan" => plan::handle_plan(&args[1..]),
         _ => {
             print_memory_help();
             Ok(())
@@ -76,6 +78,8 @@ fn print_memory_help() {
     println!("  legend memory task              Show current task");
     println!("  legend memory task set <text>   Set current task");
     println!("  legend memory task clear        Clear current task");
+    println!("  legend memory plan              Show all current plans");
+    println!("  legend memory plan clear [name] Clear a specific plan (or all plans)");
     println!("  legend memory reinforce <sig> <id...>  Explicit feedback on retrieved entries");
     println!("  legend memory dump              Export full memory state as JSON");
     println!("  legend memory stats             Show memory stats");
@@ -93,58 +97,6 @@ fn print_memory_help() {
 #[cfg(test)]
 mod tests {
     use super::helpers::*;
-
-    // is_noise_tick tests
-    #[test]
-    fn test_noise_tick_rejects_short() {
-        assert!(is_noise_tick("hi"));
-        assert!(is_noise_tick("         "));
-        assert!(is_noise_tick("123456789"));
-    }
-
-    #[test]
-    fn test_noise_tick_accepts_exactly_10_chars() {
-        assert!(!is_noise_tick("1234567890"));
-    }
-
-    #[test]
-    fn test_noise_tick_rejects_tool_telemetry() {
-        assert!(is_noise_tick(
-            "Executed tool \"read_file\" with status \"success\""
-        ));
-        assert!(is_noise_tick(
-            "EXPERIENCE: Executed tool 'ls' with status 'ok'"
-        ));
-    }
-
-    #[test]
-    fn test_noise_tick_rejects_agent_turn_noise() {
-        assert!(is_noise_tick(
-            "EXPERIENCE: Completed an agent turn with no changes"
-        ));
-    }
-
-    #[test]
-    fn test_noise_tick_rejects_empty_tool_status() {
-        assert!(is_noise_tick(
-            "EXPERIENCE: Experience: Executed tool '' with status ''"
-        ));
-    }
-
-    #[test]
-    fn test_noise_tick_accepts_legitimate_experience() {
-        assert!(!is_noise_tick(
-            "EXPERIENCE: User navigated to the settings page and changed theme"
-        ));
-    }
-
-    #[test]
-    fn test_noise_tick_accepts_normal_tick() {
-        assert!(!is_noise_tick("Fixed bug in parser module"));
-        assert!(!is_noise_tick(
-            "DECISION: Chose Tokio over async-std because broader ecosystem support"
-        ));
-    }
 
     // ts_to_iso_date tests
     #[test]

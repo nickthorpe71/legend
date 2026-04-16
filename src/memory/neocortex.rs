@@ -31,6 +31,19 @@ use super::{
     SPREADING_ACTIVATION_MAX_HOPS,
 };
 
+/// CPEB boost decay rate per tick. 0.95 = ~5% decay per tick.
+/// After 90 ticks, boost is essentially zero (0.95^90 ≈ 0.01).
+const CPEB_DECAY_RATE: f32 = 0.95;
+
+/// Soft stability cap knee point — below this, linear growth.
+const STABILITY_KNEE: f32 = 10.0;
+
+/// Maximum reachable stability (asymptote of tanh).
+const STABILITY_MAX: f32 = 20.0;
+
+/// Scale parameter for soft cap transition.
+const STABILITY_SCALE: f32 = 10.0;
+
 // ---------------------------------------------------------------------------
 // Neocortical types
 // ---------------------------------------------------------------------------
@@ -124,6 +137,10 @@ pub struct GraphEdge {
     /// Slow-adapting EMA of reinforcement intervals (LTP, α=0.1).
     #[serde(default)]
     pub historical_interval_avg: f32,
+    /// CPEB-specific stability boost that decays separately.
+    /// Emotional events add to this; it decays each tick.
+    #[serde(default)]
+    pub cpeb_boost: f32,
 }
 
 impl Default for GraphEdge {
@@ -138,6 +155,7 @@ impl Default for GraphEdge {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         }
     }
 }
@@ -278,7 +296,12 @@ pub fn spreading_activation(
         activations.remove(&id);
     }
 
-    let mut results: Vec<(u64, f32)> = activations.into_iter().collect();
+    // Filter by minimum activation — nodes with negligible activation are noise.
+    const MIN_ACTIVATION: f32 = 0.01;
+    let mut results: Vec<(u64, f32)> = activations
+        .into_iter()
+        .filter(|&(_, a)| a >= MIN_ACTIVATION)
+        .collect();
     results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     results
 }
@@ -297,7 +320,9 @@ pub fn graph_lookup(
     let mut seed_ids = Vec::new();
 
     for entity in &entities {
-        if let Some(&node_id) = long_term.index.get(&entity.label) {
+        // Normalize to lowercase to match how update_graph indexes nodes.
+        let index_key = entity.label.to_lowercase();
+        if let Some(&node_id) = long_term.index.get(&index_key) {
             if let Some(node) = long_term.nodes.get(&node_id) {
                 results.push(GraphNodeSummary {
                     id: node.id,
@@ -354,8 +379,136 @@ pub fn graph_lookup(
 
     let mut results: Vec<GraphNodeSummary> = deduped.into_values().collect();
     results.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+    // Use caller's limit as a safety cap, but primary gating is the activation
+    // threshold in spreading_activation (MIN_ACTIVATION = 0.15).
     results.truncate(limit);
     results
+}
+
+/// Boost L2 candidates using graph-connected entities not in the query.
+///
+/// Starting from query entities, spread activation through the graph to find
+/// related entities. Each activated entity that appears in an L2 candidate's
+/// text contributes a bonus weighted by **specificity** (inverse node weight).
+/// Common entities like "Hawaii" (high weight) give small bonuses while specific
+/// entities like "February" (low weight) give large bonuses — an IDF-like signal
+/// derived purely from graph structure.
+///
+/// Spreading continues until activation falls below `min_activation` (no fixed
+/// hop limit). Paths through high-stability, high-weight edges propagate further.
+pub fn graph_boost_candidates(
+    long_term: &GraphMemory,
+    query_entities: &[super::wernicke::extract::ExtractedEntity],
+    candidates: &mut [super::hippocampus::MemorySnippet],
+    query_mode: QueryMode,
+) {
+    /// Per-entity bonus base before specificity weighting.
+    const BONUS_BASE: f32 = 0.05;
+    /// Maximum total graph boost per candidate.
+    const BONUS_CAP: f32 = 0.3;
+    /// Minimum activation to continue spreading. Stops expansion naturally
+    /// when paths lead to weakly-connected regions.
+    const MIN_ACTIVATION: f32 = 0.01;
+    /// Per-hop decay factor for activation.
+    const HOP_DECAY: f32 = 0.5;
+    /// Maximum hops to prevent runaway in dense graphs.
+    const MAX_HOPS: usize = 6;
+
+    // Resolve query entity labels to graph seed nodes
+    let mut seed_ids: Vec<u64> = Vec::new();
+    let mut query_labels: HashSet<String> = HashSet::new();
+    for entity in query_entities {
+        let key = entity.label.to_lowercase();
+        query_labels.insert(key.clone());
+        if let Some(&node_id) = long_term.index.get(&key) {
+            seed_ids.push(node_id);
+        }
+    }
+
+    if seed_ids.is_empty() || candidates.is_empty() {
+        return;
+    }
+
+    // Spreading activation with min_activation cutoff (no fixed hop limit)
+    let mut activations: HashMap<u64, f32> = HashMap::new();
+    let mut visited: HashSet<u64> = seed_ids.iter().copied().collect();
+    let mut frontier: Vec<(u64, f32)> = seed_ids.iter().map(|&id| (id, 1.0_f32)).collect();
+
+    for hop in 0..MAX_HOPS {
+        let hop_decay = HOP_DECAY.powi(hop as i32 + 1);
+        let mut next_frontier: Vec<(u64, f32)> = Vec::new();
+
+        for &(node_id, parent_activation) in &frontier {
+            for edge in &long_term.edges {
+                let neighbor_id = if edge.from == node_id {
+                    Some(edge.to)
+                } else if edge.to == node_id {
+                    Some(edge.from)
+                } else {
+                    None
+                };
+
+                if let Some(nid) = neighbor_id {
+                    if !visited.contains(&nid) {
+                        if let Some(neighbor) = long_term.nodes.get(&nid) {
+                            let kind_mult = edge_kind_multiplier(query_mode, &edge.kind);
+                            let effective_weight =
+                                edge.weight * edge.stability.sqrt() * kind_mult;
+                            let activation = parent_activation * effective_weight * hop_decay;
+
+                            if activation >= MIN_ACTIVATION {
+                                let entry = activations.entry(nid).or_insert(0.0);
+                                if activation > *entry {
+                                    *entry = activation;
+                                }
+                                if visited.insert(nid) {
+                                    // Only continue spreading from non-query entities
+                                    let label_lower = neighbor.label.to_lowercase();
+                                    if !query_labels.contains(&label_lower) {
+                                        next_frontier.push((nid, activation));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if next_frontier.is_empty() {
+            break;
+        }
+        frontier = next_frontier;
+    }
+
+    // Collect (label, specificity-weighted bonus) for activated non-query entities.
+    // Specificity = 1 / max(0.1, node_weight) — rare entities get higher bonus.
+    let mut graph_labels: Vec<(String, f32)> = Vec::new();
+    for (&nid, &activation) in &activations {
+        if let Some(node) = long_term.nodes.get(&nid) {
+            let label_lower = node.label.to_lowercase();
+            if label_lower.len() > 2 && !query_labels.contains(&label_lower) {
+                // Specificity: inverse of node weight (IDF-like)
+                let specificity = 1.0 / node.weight.max(0.1);
+                let weighted_bonus = BONUS_BASE * activation * specificity;
+                graph_labels.push((label_lower, weighted_bonus));
+            }
+        }
+    }
+
+    // Apply boost to L2 candidates
+    for candidate in candidates.iter_mut() {
+        let entry_lower = candidate.text.to_lowercase();
+        let bonus: f32 = graph_labels
+            .iter()
+            .filter(|(label, _)| entry_lower.contains(label.as_str()))
+            .map(|(_, b)| b)
+            .sum::<f32>()
+            .min(BONUS_CAP);
+        if bonus > 0.0 {
+            candidate.similarity = (candidate.similarity + bonus).min(1.0);
+        }
+    }
 }
 
 /// Remove low-weight graph nodes and orphaned/excess edges.
@@ -374,7 +527,7 @@ pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
 
     for &id in &remove_ids {
         if let Some(node) = long_term.nodes.remove(&id) {
-            long_term.index.remove(&node.label);
+            long_term.index.remove(&node.label.to_lowercase());
         }
     }
 
@@ -390,7 +543,7 @@ pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
         let to_remove = long_term.nodes.len() - GRAPH_NODE_CAPACITY;
         for &(id, _) in sorted.iter().take(to_remove) {
             if let Some(node) = long_term.nodes.remove(&id) {
-                long_term.index.remove(&node.label);
+                long_term.index.remove(&node.label.to_lowercase());
             }
         }
     }
@@ -449,10 +602,10 @@ pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, 
                 let spacing_ratio = edge.recent_interval_avg / edge.historical_interval_avg;
                 if spacing_ratio > 1.0 {
                     // Intervals are growing → spaced reinforcement
-                    edge.stability = (edge.stability * 1.3).min(10.0);
+                    edge.stability = soft_cap_stability(edge.stability * 1.3);
                 } else {
                     // Intervals are shrinking or constant → cramming
-                    edge.stability = (edge.stability * 1.05).min(10.0);
+                    edge.stability = soft_cap_stability(edge.stability * 1.05);
                 }
             }
         } else if edge.activation_count == 0 {
@@ -479,6 +632,7 @@ pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, 
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
         long_term.edge_index.insert(key, new_idx);
     }
@@ -510,56 +664,89 @@ pub fn hebbian_reinforce(long_term: &mut GraphMemory, co_retrieved_ids: &[u64], 
     }
 }
 
-/// CPEB-inspired synaptic tagging: recently active edges capture the global
-/// valence signal and receive extra stability for long-term retention.
-pub fn cpeb_tag_edges(
+/// Soft cap on stability — diminishing returns above the knee point.
+/// f(x) = knee + (max - knee) * tanh((x - knee) / scale)
+/// At knee (10.0), growth slows but never stops entirely.
+/// At 2× knee, stability ≈ 14.5 (vs hard cap of 10.0).
+pub fn soft_cap_stability(raw: f32) -> f32 {
+    if raw <= STABILITY_KNEE {
+        raw
+    } else {
+        STABILITY_KNEE
+            + (STABILITY_MAX - STABILITY_KNEE)
+                * ((raw - STABILITY_KNEE) / STABILITY_SCALE).tanh()
+    }
+}
+
+/// CPEB-inspired synaptic tagging scoped to edges connected to nodes
+/// that were actually touched during this tick's processing.
+///
+/// Unlike the old `cpeb_tag_edges` which tagged ALL recently-active edges
+/// within a time window, this only tags edges connected to `touched_node_ids`,
+/// preventing unrelated edges from receiving emotional boosts.
+pub fn cpeb_tag_edges_scoped(
     long_term: &mut GraphMemory,
-    clock: u64,
+    _clock: u64,
     valence_magnitude: f32,
-    tag_window: u64,
     stability_boost: f32,
+    touched_node_ids: &[u64],
 ) -> u32 {
     let mut tagged_count = 0u32;
-
     for edge in &mut long_term.edges {
-        if clock.saturating_sub(edge.last_seen) <= tag_window {
-            edge.stability = (edge.stability + stability_boost * valence_magnitude).min(10.0);
+        if touched_node_ids.contains(&edge.from) || touched_node_ids.contains(&edge.to) {
+            let boost = stability_boost * valence_magnitude;
+            edge.cpeb_boost += boost;
+            edge.stability = soft_cap_stability(edge.stability + boost);
             tagged_count += 1;
         }
     }
-
     tagged_count
 }
 
 /// Apply L3 decay to graph nodes and edges.
-pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64) {
+/// `decay_rate_mod`: neurochemical multiplier (Phase C) — >1.0 accelerates decay.
+pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64, decay_rate_mod: f32) {
     for node in long_term.nodes.values_mut() {
-        let decay = (-(clock.saturating_sub(node.last_seen) as f32) * NEOCORTICAL_DECAY_RATE).exp();
+        let decay =
+            (-(clock.saturating_sub(node.last_seen) as f32) * NEOCORTICAL_DECAY_RATE * decay_rate_mod).exp();
         node.weight *= decay;
         node.salience *= decay;
     }
     // Edge decay: edges that haven't been reinforced recently lose weight
     for edge in &mut long_term.edges {
-        let effective_decay_rate = NEOCORTICAL_DECAY_RATE / edge.stability.max(1.0);
+        let effective_decay_rate = NEOCORTICAL_DECAY_RATE * decay_rate_mod / edge.stability.max(1.0);
         let decay = (-(clock.saturating_sub(edge.last_seen) as f32) * effective_decay_rate).exp();
         edge.weight *= decay;
+
+        // CPEB boost decays faster than base stability — emotional urgency fades
+        if edge.cpeb_boost > 0.01 {
+            let decay_amount = edge.cpeb_boost * (1.0 - CPEB_DECAY_RATE);
+            edge.cpeb_boost -= decay_amount;
+            edge.stability = (edge.stability - decay_amount).max(1.0);
+        } else {
+            edge.cpeb_boost = 0.0;
+        }
     }
 }
 
 // ── Wide-param functions (operate on &mut BrainState) ──────────────────
 
 /// Extract entities from text and insert/update nodes and edges in the knowledge graph.
-pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) {
+/// Returns the node IDs that were created or updated.
+pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u64> {
     let entities = extract_entities(text, &state.keyword_cache);
     if entities.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let mut node_ids = Vec::new();
     let mut edge_contexts = Vec::new();
 
     for entity in &entities {
-        let id = if let Some(&existing) = state.long_term.index.get(&entity.label) {
+        // Normalize index key to lowercase so "Samsung" and "samsung" share one node.
+        // Display label keeps original casing of first insertion.
+        let index_key = entity.label.to_lowercase();
+        let id = if let Some(&existing) = state.long_term.index.get(&index_key) {
             existing
         } else {
             let id = state.next_id;
@@ -578,7 +765,7 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) {
                     full_text: None,
                 },
             );
-            state.long_term.index.insert(entity.label.clone(), id);
+            state.long_term.index.insert(index_key, id);
             id
         };
 
@@ -663,6 +850,8 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) {
             }
         }
     }
+
+    node_ids
 }
 
 /// Replay consolidation: reinforce L3 edges between entities that co-occur

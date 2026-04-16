@@ -53,24 +53,6 @@ pub fn truncate_text(s: &str, max: usize) -> String {
     }
 }
 
-/// Detect known noise patterns that should be rejected before storage.
-pub fn is_noise_tick(text: &str) -> bool {
-    let t = text.trim();
-    if t.len() < 10 {
-        return true;
-    }
-    if t.contains("Executed tool") && t.contains("with status") {
-        return true;
-    }
-    if t.starts_with("EXPERIENCE:") && t.contains("Completed an agent turn") {
-        return true;
-    }
-    if t.starts_with("EXPERIENCE:") && t.contains("''") {
-        return true;
-    }
-    false
-}
-
 pub(crate) fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
@@ -110,38 +92,4 @@ pub(super) fn ts_to_iso_date(ts: u64) -> String {
     }
     let day = remaining + 1;
     format!("{:04}-{:02}-{:02}", year, month, day)
-}
-
-/// Append a summary line to ARCHITECTURE.md after an ARCHITECTURE-tagged tick.
-/// Creates ARCHITECTURE.md if it doesn't exist.
-pub fn append_to_architecture_md(tick_text: &str) {
-    use std::io::Write;
-
-    let date = {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        ts_to_iso_date(ts)
-    };
-
-    let summary = if tick_text.len() > 200 {
-        let end = tick_text.floor_char_boundary(200);
-        format!("{}…", &tick_text[..end])
-    } else {
-        tick_text.to_string()
-    };
-
-    let entry = format!("- **{}** — {}\n", date, summary);
-
-    let path = std::path::Path::new("ARCHITECTURE.md");
-    if path.exists() {
-        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
-            let _ = f.write_all(entry.as_bytes());
-        }
-    } else {
-        let header = "# Architecture Notes\n\nAuto-generated from ARCHITECTURE: memory ticks.\n\n";
-        let content = format!("{}{}", header, entry);
-        let _ = std::fs::write(path, content);
-    }
 }

@@ -5,22 +5,20 @@
 //!
 //! - **Working memory (L1)**: A capacity-limited buffer (~7±2 items, matching
 //!   Miller's Law) that holds recent tick content. Queried first during retrieval.
-//! - **Attention gate**: Only ticks with salience above `ATTENTION_GATE_THRESHOLD`
-//!   are promoted from L1 to L2 (hippocampus). This prevents noise from polluting
-//!   episodic memory — like how the prefrontal cortex filters irrelevant stimuli.
-//! - **Displacement**: When L1 is full, the oldest entry is displaced.
-//!   If it was never promoted, it may be pushed to L2 as a last chance.
+//! - **Attention gate**: Ticks with salience above `ATTENTION_GATE_THRESHOLD`
+//!   are fast-tracked from L1 directly to L2 (hippocampus) during encoding.
+//! - **Displacement**: When L1 is full, the oldest entry is displaced and
+//!   always promoted to L2 (if not already promoted). No data is silently lost.
 //! - **Flushing**: On context switch (detected by cosine drop between consecutive
-//!   ticks), L1 is flushed — unpromoted entries get a final promotion opportunity.
-//!   This models how a change in task context triggers working memory clearance.
+//!   ticks), L1 is flushed — all unpromoted entries are promoted to L2.
 //!
 //! The `WorkingMemoryEntry` struct lives here as the canonical prefrontal type.
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    hippocampus, hippocampus::extract_memory_refs_from_text, neocortex, BrainState,
-    ATTENTION_GATE_THRESHOLD,
+    hippocampus, hippocampus::extract_memory_refs_from_text, neocortex,
+    neurochemistry::ChemicalStamp, BrainState, PRUNE_THRESHOLD,
 };
 
 /// A working memory entry — limited capacity, queried first, gates L2 encoding.
@@ -39,8 +37,7 @@ pub struct WorkingMemoryEntry {
 }
 
 /// Push an entry into working memory (L1).
-/// When at capacity, the oldest entry is displaced and evaluated for L2 promotion.
-/// Displaced entries with high salience or rehearsal are promoted to short-term (L2).
+/// When at capacity, the oldest entry is displaced and always promoted to L2.
 pub fn push_working_memory(
     state: &mut BrainState,
     text: &str,
@@ -51,23 +48,27 @@ pub fn push_working_memory(
     let id = state.next_id;
     state.next_id += 1;
 
-    // Displace oldest if at capacity
+    // Displace oldest if at capacity — always promote to L2 (no data loss)
     if state.working_memory.len() >= state.config.immediate_capacity {
         let displaced = state.working_memory.remove(0);
-        // Promotion gate: displaced entry gets L2 if high salience or rehearsed
-        if !displaced.promoted
-            && (displaced.salience >= ATTENTION_GATE_THRESHOLD || displaced.rehearsal_count >= 1)
-        {
+        if !displaced.promoted {
+            // Floor salience so displaced entries survive decay + pruning.
+            // PRUNE_THRESHOLD alone is borderline — add margin for decay headroom.
+            let promotion_salience = displaced.salience.max(PRUNE_THRESHOLD * 2.0);
             let refs = extract_memory_refs_from_text(&displaced.text);
             hippocampus::insert_short_term(
                 state,
                 &displaced.text,
                 displaced.embedding,
-                displaced.salience,
+                promotion_salience,
                 refs,
                 displaced.emotional_valence,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
             );
-            neocortex::update_graph(state, &displaced.text, displaced.salience);
+            let _ = neocortex::update_graph(state, &displaced.text, promotion_salience);
         }
     }
 
@@ -85,25 +86,26 @@ pub fn push_working_memory(
 }
 
 /// Flush working memory on session boundary.
-/// Every remaining entry is evaluated for L2 promotion before clearing.
-/// Entries that pass the gate (high salience or rehearsed) get promoted to L2.
-/// Entries that don't pass are discarded — nothing is silently lost.
+/// All unpromoted entries are promoted to L2 — no data is silently lost.
 pub fn flush_working_memory(state: &mut BrainState) {
     let entries: Vec<WorkingMemoryEntry> = state.working_memory.drain(..).collect();
     for entry in entries {
-        if !entry.promoted
-            && (entry.salience >= ATTENTION_GATE_THRESHOLD || entry.rehearsal_count >= 1)
-        {
+        if !entry.promoted {
+            let promotion_salience = entry.salience.max(PRUNE_THRESHOLD * 2.0);
             let refs = extract_memory_refs_from_text(&entry.text);
             hippocampus::insert_short_term(
                 state,
                 &entry.text,
                 entry.embedding,
-                entry.salience,
+                promotion_salience,
                 refs,
                 entry.emotional_valence,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
             );
-            neocortex::update_graph(state, &entry.text, entry.salience);
+            let _ = neocortex::update_graph(state, &entry.text, promotion_salience);
         }
     }
 }

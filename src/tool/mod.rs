@@ -18,7 +18,7 @@ pub use persistence::{
 pub use types::*;
 
 use crate::memory::{
-    add_node_if_new, classify_text, retrieve_context, safe_truncate, tick_impl, GraphNode,
+    add_node_if_new, classify_text, retrieve_context, tick_impl, GraphNode,
     MemoryState, ShortTermEntry,
 };
 use std::collections::HashSet;
@@ -95,7 +95,7 @@ pub fn get_git_summary(state: &mut MemoryState) -> GitSyncInfo {
 /// Ingest text: chunk -> embed -> reconsolidate or match/merge/insert -> update graph.
 /// Returns a TickResult describing what action was taken.
 pub fn tick(state: &mut MemoryState, text: &str) -> TickResult {
-    let result = tick_impl(&mut state.brain, text, false);
+    let result = tick_impl(&mut state.brain, text);
     // Session log lives in tool layer — append after brain processing
     state.session_log.push(SessionEntry {
         timestamp: state.brain.clock,
@@ -105,14 +105,6 @@ pub fn tick(state: &mut MemoryState, text: &str) -> TickResult {
         state.session_log.remove(0);
     }
     result
-}
-
-/// Like tick(), but does not count toward consolidation and does not appear in
-/// the session log. Used for automated/hook-generated ticks that should influence
-/// L2/L3 (dedup, reconsolidation) but must not pollute session history or
-/// trigger premature auto-consolidation.
-pub fn tick_passive(state: &mut MemoryState, text: &str) -> TickResult {
-    tick_impl(&mut state.brain, text, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -147,13 +139,10 @@ pub fn build_start_summary_with_options(
 
     let git_sync = get_git_summary(state);
 
-    // Get recent sessions — skip passive (EXPERIENCE:) entries so Recent Activity
-    // only shows meaningful user-initiated ticks, not tool telemetry noise.
     let recent_sessions: Vec<&str> = state
         .session_log
         .iter()
         .rev()
-        .filter(|s| !s.text.starts_with("EXPERIENCE:"))
         .take(5)
         .collect::<Vec<_>>()
         .into_iter()
@@ -173,13 +162,11 @@ pub fn build_start_summary_with_options(
 
         // Build item based on compact mode
         let item = if compact {
-            // Compact: just the text, truncated shorter
-            serde_json::json!(safe_truncate(&entry.text, 80))
+            serde_json::json!(&entry.text)
         } else {
-            // Default: id and text only (removed salience/reconsolidations)
             serde_json::json!({
                 "id": entry.id,
-                "text": safe_truncate(&entry.text, 120),
+                "text": &entry.text,
             })
         };
 
@@ -281,10 +268,44 @@ pub fn build_start_summary_with_options(
         });
     }
 
+    // Include neurochemistry if any chemical is significantly elevated
+    let chem = &state.brain.chemistry;
+    let mut elevated: Vec<(&str, f32)> = Vec::new();
+    if chem.norepinephrine > 0.3 { elevated.push(("norepinephrine", chem.norepinephrine)); }
+    if chem.cortisol > 0.3 { elevated.push(("cortisol", chem.cortisol)); }
+    if chem.dopamine > 0.3 { elevated.push(("dopamine", chem.dopamine)); }
+    if (chem.serotonin - 0.5).abs() > 0.2 { elevated.push(("serotonin", chem.serotonin)); }
+    if chem.acetylcholine > 0.3 { elevated.push(("acetylcholine", chem.acetylcholine)); }
+    if chem.endocannabinoid > 0.3 { elevated.push(("endocannabinoid", chem.endocannabinoid)); }
+
+    let chemistry = if elevated.is_empty() {
+        None
+    } else {
+        let map: serde_json::Map<String, serde_json::Value> = elevated
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), serde_json::json!(round3(v))))
+            .collect();
+        Some(serde_json::Value::Object(map))
+    };
+
+    // Plans from anterior PFC
+    let plans_json = crate::memory::anterior_pfc::format_plans_for_summary(&state.brain.plans);
+
+    // Auto-sync current_task from plan if not manually set
+    if state.current_task.is_none() {
+        if let Some((plan_name, item_text)) =
+            crate::memory::anterior_pfc::find_next_plan_action(&state.brain.plans)
+        {
+            state.current_task = Some(format!("[{}] {}", plan_name, item_text));
+        }
+    }
+
     serde_json::json!({
         "current_task": state.current_task,
+        "plans": plans_json,
         "git_sync": git_sync,
         "recent_sessions": recent_sessions,
+        "chemistry": chemistry,
         "categorized": {
             "decisions": build_category(&decisions, decisions_total),
             "architecture": build_category(&architecture, architecture_total),
@@ -335,7 +356,7 @@ pub fn merge_from_log(state: &mut MemoryState, other: MemoryState) {
             to_replay.len()
         );
         for entry in to_replay {
-            tick_passive(state, &entry.text);
+            tick(state, &entry.text);
         }
     }
 
@@ -359,8 +380,9 @@ pub fn get_task(state: &MemoryState) -> Option<&str> {
 
 /// Check if consolidation should be suggested.
 pub fn should_suggest_consolidation(state: &MemoryState) -> bool {
+    let effective = crate::memory::neurochemistry::compute_effective(&state.brain.chemistry);
     state.brain.ticks_since_consolidation >= crate::memory::CONSOLIDATION_SUGGESTION_THRESHOLD
-        || state.brain.recent_valence_sum >= crate::memory::EMOTIONAL_CONSOLIDATION_THRESHOLD
+        || effective.consolidation_pressure >= crate::memory::CONSOLIDATION_PRESSURE_THRESHOLD
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +455,8 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
                 "from": e.from, "to": e.to,
                 "weight": round3(e.weight),
                 "kind": e.kind,
+                "stability": round3(e.stability),
+                "cpeb_boost": round3(e.cpeb_boost),
             })
         })
         .collect();
@@ -475,8 +499,18 @@ pub fn build_dump(state: &MemoryState) -> serde_json::Value {
         .map(|s| serde_json::json!({"timestamp": s.timestamp, "text": s.text}))
         .collect();
 
+    let chemistry = serde_json::json!({
+        "norepinephrine": round3(state.brain.chemistry.norepinephrine),
+        "cortisol": round3(state.brain.chemistry.cortisol),
+        "dopamine": round3(state.brain.chemistry.dopamine),
+        "serotonin": round3(state.brain.chemistry.serotonin),
+        "acetylcholine": round3(state.brain.chemistry.acetylcholine),
+        "endocannabinoid": round3(state.brain.chemistry.endocannabinoid),
+    });
+
     serde_json::json!({
         "clock": state.brain.clock,
+        "chemistry": chemistry,
         "working_memory": working_memory,
         "short_term": short_term,
         "graph": { "nodes": nodes, "edges": edges },

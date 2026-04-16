@@ -3,6 +3,7 @@ use super::{
     entorhinal::cosine_similarity,
     entorhinal::embed_text,
     entorhinal::{summarize_single, summarize_text},
+    neurochemistry::{self, ChemicalStamp, Neurochemistry, STATE_DEPENDENT_BONUS},
     wernicke::{self, extract_entities},
     BrainState, CONSOLIDATED_EVICTION_REDUCTION, EVICTION_DECAY_RATE, HIPPOCAMPAL_DECAY_RATE,
     KEYWORD_MATCH_BONUS, KEYWORD_MATCH_BONUS_CAP, MIN_QUERY_SIMILARITY, PRUNE_AGE_WEIGHT,
@@ -79,6 +80,21 @@ pub struct ShortTermEntry {
     /// Used to detect spaced vs massed retrieval patterns.
     #[serde(default)]
     pub last_retrieval_interval: u64,
+    /// Monotonic clock tick when this entry was created (never updated).
+    #[serde(default)]
+    pub created_at_clock: u64,
+    /// Unix timestamp (seconds since epoch) when this entry was recorded.
+    #[serde(default)]
+    pub wall_clock: u64,
+    /// Date references extracted from memory text (e.g., "March 15th", "yesterday").
+    #[serde(default)]
+    pub extracted_dates: Vec<String>,
+    /// TCM temporal context snapshot at encoding time (64-dim).
+    #[serde(default)]
+    pub temporal_context: Vec<f32>,
+    /// Neurochemical state at encoding time (Phase B).
+    #[serde(default)]
+    pub chemical_stamp: ChemicalStamp,
 }
 
 impl Default for ShortTermEntry {
@@ -100,6 +116,11 @@ impl Default for ShortTermEntry {
             emotional_valence: 0.0,
             stability: 1.0,
             last_retrieval_interval: 0,
+            created_at_clock: 0,
+            wall_clock: 0,
+            extracted_dates: Vec::new(),
+            temporal_context: Vec::new(),
+            chemical_stamp: ChemicalStamp::default(),
         }
     }
 }
@@ -123,6 +144,18 @@ pub struct MemorySnippet {
     pub similarity: f32,
     #[serde(default)]
     pub refs: Vec<MemoryRef>,
+    /// Unix timestamp when recorded (0 = unknown).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wall_clock: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extracted_dates: Vec<String>,
+    /// Monotonic creation order for chronological sorting.
+    #[serde(default)]
+    pub created_at_clock: u64,
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 /// Maximum source references per memory entry.
@@ -160,6 +193,7 @@ pub fn top_k_similar(
     embedding: &[f32],
     k: usize,
     query: &str,
+    current_chemistry: &Neurochemistry,
 ) -> Vec<MemorySnippet> {
     // Pre-compute query keywords (lowercased, non-stopword, len > 1)
     let query_keywords: Vec<String> = query
@@ -173,7 +207,8 @@ pub fn top_k_similar(
 
     let mut scored: Vec<MemorySnippet> = short_term
         .iter()
-        .filter(|e| !e.consolidated)
+        // No consolidated filter — episodic facts must remain retrievable
+        // even after L3 summary creation. L3 summaries supplement, not replace.
         .map(|e| {
             let cosine = cosine_similarity(&e.embedding, embedding);
             let keyword_bonus = if !query_keywords.is_empty() {
@@ -188,21 +223,32 @@ pub fn top_k_similar(
             };
             // Amygdala boost: emotionally charged memories surface more readily
             let emotional_boost = e.emotional_valence.abs() * 0.05;
+            // State-dependent retrieval: memories encoded under similar chemistry surface more readily
+            let state_bonus =
+                neurochemistry::chemical_state_match(&e.chemical_stamp, current_chemistry)
+                    * STATE_DEPENDENT_BONUS;
             MemorySnippet {
                 id: e.id,
                 text: e.text.clone(),
-                similarity: cosine + keyword_bonus + emotional_boost,
+                similarity: cosine + keyword_bonus + emotional_boost + state_bonus,
                 refs: e.refs.clone(),
+                wall_clock: e.wall_clock.clone(),
+                extracted_dates: e.extracted_dates.clone(),
+                created_at_clock: e.created_at_clock,
             }
         })
         .collect();
     scored.retain(|s| s.similarity >= MIN_QUERY_SIMILARITY);
     scored.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
-    scored.truncate(k);
+    // No hard cap — threshold-based filtering above is sufficient.
+    // Safety cap only to prevent unbounded memory in degenerate cases.
+    scored.truncate(k.max(50));
     scored
 }
 
 /// Clear labile state from entries whose labile window has expired.
+/// Kept for potential L3 reuse — currently disconnected from tick pipeline.
+#[allow(dead_code)]
 pub fn stabilize_labile_entries(short_term: &mut [ShortTermEntry], clock: u64) {
     for entry in short_term.iter_mut() {
         if entry.labile_until > 0 && entry.labile_until < clock {
@@ -212,21 +258,27 @@ pub fn stabilize_labile_entries(short_term: &mut [ShortTermEntry], clock: u64) {
 }
 
 /// Remove short-term entries whose composite score has fallen below threshold.
-pub fn prune_short_term(short_term: &mut Vec<ShortTermEntry>, clock: u64) {
+/// `pruning_pressure`: neurochemical multiplier (Phase C) — higher eCB lowers
+/// the threshold, making pruning more aggressive.
+pub fn prune_short_term(short_term: &mut Vec<ShortTermEntry>, clock: u64, pruning_pressure: f32) {
+    // Lower threshold when pruning pressure is high → more aggressive pruning
+    let dynamic_threshold = PRUNE_THRESHOLD * (1.0 - pruning_pressure * 0.5).max(0.3);
     short_term.retain(|entry| {
         let age = clock.saturating_sub(entry.last_access) as f32;
         entry.salience + (entry.usage as f32 * PRUNE_USAGE_WEIGHT) - (age * PRUNE_AGE_WEIGHT)
-            > PRUNE_THRESHOLD
+            > dynamic_threshold
     });
 }
 
 /// L2 exponential decay: salience decays modulated by density and Ebbinghaus stability.
 /// Emotional valence decays at half rate (amygdala persistence).
-pub fn apply_l2_decay(short_term: &mut [ShortTermEntry], clock: u64) {
+/// `decay_rate_mod`: neurochemical multiplier (Phase C) — >1.0 accelerates decay (eCB),
+/// <1.0 slows it (serotonin stability).
+pub fn apply_l2_decay(short_term: &mut [ShortTermEntry], clock: u64, decay_rate_mod: f32) {
     for entry in short_term.iter_mut() {
         // Semantic density reduces decay rate. High-density entries (many symbols/paths) persist longer.
         let density_factor = (1.0 + entry.density * 0.1).min(2.0);
-        let base_decay_rate = HIPPOCAMPAL_DECAY_RATE / density_factor;
+        let base_decay_rate = HIPPOCAMPAL_DECAY_RATE * decay_rate_mod / density_factor;
 
         // Ebbinghaus: stability slows the forgetting curve. Higher stability → slower decay.
         let effective_decay_rate = base_decay_rate / entry.stability;
@@ -236,7 +288,9 @@ pub fn apply_l2_decay(short_term: &mut [ShortTermEntry], clock: u64) {
         entry.salience *= decay;
 
         // Amygdala: emotional valence decays at half rate (emotional memories persist longer)
-        let emotional_decay = (-age * effective_decay_rate * 0.5).exp();
+        // NE at encoding slows emotional decay (flashbulb memory effect)
+        let ne_protection = 1.0 + entry.chemical_stamp.ne_at_encoding * 0.5; // 1.0–1.5x
+        let emotional_decay = (-age * effective_decay_rate * 0.5 / ne_protection).exp();
         entry.emotional_valence *= emotional_decay;
     }
 }
@@ -247,6 +301,8 @@ pub fn apply_l2_decay(short_term: &mut [ShortTermEntry], clock: u64) {
 
 /// Try to reconsolidate a new tick into an existing labile memory.
 /// Returns the target entry ID if reconsolidation occurred.
+/// Kept for potential L3 reuse — currently disconnected from tick pipeline.
+#[allow(dead_code)]
 pub fn try_reconsolidate(
     state: &mut BrainState,
     text: &str,
@@ -312,8 +368,21 @@ pub fn insert_short_term(
     salience: f32,
     refs: Vec<MemoryRef>,
     emotional_valence: f32,
+    wall_clock: u64,
+    extracted_dates: Vec<String>,
+    temporal_context: Vec<f32>,
+    chemical_stamp: ChemicalStamp,
 ) {
     if state.short_term.len() >= state.config.short_term_capacity {
+        // Sharp-wave ripple (SWR) analog: emergency consolidation before eviction.
+        // The brain fires micro-consolidation bursts under hippocampal load.
+        // This ensures evicted entries have L3 backup before they're removed.
+        // Guard: skip if we just consolidated (ticks_since_consolidation == 0)
+        // to prevent infinite loop.
+        if state.ticks_since_consolidation > 0 {
+            super::consolidate(state);
+        }
+
         let now = state.clock;
         // Systems consolidation: consolidated entries whose Summary node
         // has a valid embedding in L3 get reduced eviction resistance,
@@ -369,6 +438,11 @@ pub fn insert_short_term(
         emotional_valence,
         stability: 1.0,
         last_retrieval_interval: 0,
+        created_at_clock: state.clock,
+        wall_clock,
+        extracted_dates,
+        temporal_context,
+        chemical_stamp,
     });
     state.next_id += 1;
 }
@@ -385,14 +459,14 @@ pub fn pattern_complete(
     let mut seed_ids: Vec<u64> = Vec::new();
     let query_entities = extract_entities(query, &state.keyword_cache);
     for entity in &query_entities {
-        if let Some(&id) = state.long_term.index.get(&entity.label) {
+        if let Some(&id) = state.long_term.index.get(&entity.label.to_lowercase()) {
             seed_ids.push(id);
         }
     }
     for snippet in partial_matches {
         let entities = extract_entities(&snippet.text, &state.keyword_cache);
         for entity in &entities {
-            if let Some(&id) = state.long_term.index.get(&entity.label) {
+            if let Some(&id) = state.long_term.index.get(&entity.label.to_lowercase()) {
                 seed_ids.push(id);
             }
         }
@@ -423,7 +497,7 @@ pub fn pattern_complete(
     let mut completed: Vec<MemorySnippet> = Vec::new();
 
     for entry in &state.short_term {
-        if existing_ids.contains(&entry.id) || entry.consolidated {
+        if existing_ids.contains(&entry.id) {
             continue;
         }
         // Check if this entry's text matches any activated source_text
@@ -444,12 +518,15 @@ pub fn pattern_complete(
                 text: entry.text.clone(),
                 similarity: completion_score,
                 refs: entry.refs.clone(),
+                wall_clock: entry.wall_clock.clone(),
+                extracted_dates: entry.extracted_dates.clone(),
+                created_at_clock: entry.created_at_clock,
             });
         }
     }
 
     completed.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
-    completed.truncate(3);
+    // No truncation — return all pattern-completed entries above threshold.
     completed
 }
 

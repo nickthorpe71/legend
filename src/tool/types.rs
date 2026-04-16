@@ -87,17 +87,11 @@ pub struct SessionEntry {
 /// Result of a tick operation, providing feedback on what action was taken.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TickResult {
-    /// What action was taken: "created", "merged", or "reconsolidated"
+    /// What action was taken: "created", "merged", or "working_memory_only"
     pub action: String,
     /// The ID of the entry that was created or modified
     pub entry_id: u64,
-    /// If merged or reconsolidated, the ID of the existing entry that was matched
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub matched_existing: Option<u64>,
-    /// The similarity score if merged (0.0-1.0)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub similarity: Option<f32>,
-    /// Related context from the tick
+    /// Related context from associative binding (lightweight, no side effects)
     pub context: MemoryContext,
 }
 

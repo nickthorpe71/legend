@@ -29,7 +29,7 @@ pub struct BrainSnapshot {
     pub l3_node_count: usize,
     pub l3_edge_count: usize,
     pub ticks_since_consolidation: u32,
-    pub recent_valence_sum: f32,
+    pub consolidation_pressure: f32,
     pub next_id: u64,
     pub keyword_cache_size: usize,
     pub embedding_dim: usize,
@@ -37,6 +37,7 @@ pub struct BrainSnapshot {
 }
 
 fn snapshot_from_brain(b: &legend::memory::BrainState) -> BrainSnapshot {
+    let effective = legend::memory::neurochemistry::compute_effective(&b.chemistry);
     let kw_size = b.keyword_cache.code.len()
         + b.keyword_cache.decision.len()
         + b.keyword_cache.action.len()
@@ -51,7 +52,7 @@ fn snapshot_from_brain(b: &legend::memory::BrainState) -> BrainSnapshot {
         l3_node_count: b.long_term.nodes.len(),
         l3_edge_count: b.long_term.edges.len(),
         ticks_since_consolidation: b.ticks_since_consolidation,
-        recent_valence_sum: b.recent_valence_sum,
+        consolidation_pressure: effective.consolidation_pressure,
         next_id: b.next_id,
         keyword_cache_size: kw_size,
         embedding_dim: b.config.embedding_dim,

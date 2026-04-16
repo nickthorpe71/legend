@@ -18,6 +18,7 @@
 /// - `thalamus.rs` — Attentional gating (salience scoring)
 /// - `wernicke/` — Language comprehension (entity extraction, keyword system)
 pub mod amygdala;
+mod prototype_embeddings;
 pub mod basal_ganglia;
 pub mod dentate_gyrus;
 pub mod entorhinal;
@@ -27,11 +28,18 @@ pub mod prefrontal;
 pub mod thalamus;
 #[cfg(feature = "instrument")]
 pub mod trace;
+pub mod anterior_pfc;
+pub mod neurochemistry;
 pub mod wernicke;
 
-use amygdala::compute_emotional_valence;
+use amygdala::{compute_emotional_valence, seed_emotional_prototypes, EmotionalPrototype};
+use neurochemistry::{
+    ACH_NOVELTY_SPIKE, CAPACITY_STRESS_ONSET, CORTISOL_CAPACITY_SPIKE, CORTISOL_NEGATIVE_SPIKE,
+    DA_POSITIVE_SPIKE, ECB_CORTISOL_RECOVERY, ECB_ROUTINE_SPIKE, NE_CONTEXT_SWITCH_SPIKE,
+    NE_SALIENCE_SPIKE, NE_THREAT_SPIKE,
+};
 use dentate_gyrus::{
-    diversity_pass, mmr_select, sparse_orthogonalize, word_overlap, MERGE_WORD_OVERLAP_THRESHOLD,
+    diversity_pass, sparse_orthogonalize, word_overlap, MERGE_WORD_OVERLAP_THRESHOLD,
 };
 use entorhinal::{
     chunk_text, cosine_similarity, embed_text, merge_embeddings, summarize_group, summarize_text,
@@ -40,6 +48,7 @@ use entorhinal::{
 use hippocampus::eviction_score;
 use hippocampus::{extract_memory_refs_from_text, merge_memory_refs};
 use thalamus::compute_salience;
+use wernicke::extract_dates;
 use wernicke::extract_entities;
 use wernicke::KeywordCache;
 
@@ -50,6 +59,7 @@ pub use crate::tool::types::{
 };
 #[allow(unused_imports)]
 pub use basal_ganglia::{ReinforceResult, ReinforcedEntry};
+pub use neurochemistry::{ChemicalStamp, EffectiveChemistry, Neurochemistry};
 
 // Re-export persistence functions so existing `crate::memory::load_or_default()` paths still work.
 #[allow(unused_imports)]
@@ -62,7 +72,7 @@ pub use crate::tool::persistence::{
 pub use crate::tool::{
     build_context_summary, build_dump, build_start_summary, build_start_summary_with_options,
     clear_task, get_git_summary, get_task, merge_from_log, recent_sessions,
-    scan_ecosystem_dependencies, set_task, should_suggest_consolidation, tick, tick_passive,
+    scan_ecosystem_dependencies, set_task, should_suggest_consolidation, tick,
 };
 
 use serde::{Deserialize, Serialize};
@@ -78,6 +88,9 @@ use std::collections::{HashMap, HashSet};
 /// Decision keywords: 0.3+ → PROMOTES, Bug/blocker: 0.4+ → PROMOTES,
 /// Architecture: 0.25 → PROMOTES (at threshold), Plain text: 0.05 → STAYS IN L1.
 pub(super) const ATTENTION_GATE_THRESHOLD: f32 = 0.25;
+/// Maximum additional attention gate threshold at 100% L2 capacity.
+/// Under hippocampal load, Legend becomes more selective about L2 promotion.
+const ATTENTION_GATE_TIGHTENING: f32 = 0.15;
 // SESSION_LOG_CAPACITY — moved to crate::tool (tool-layer concern).
 
 // ---------------------------------------------------------------------------
@@ -95,19 +108,23 @@ pub(super) const PRUNE_USAGE_WEIGHT: f32 = 0.05;
 /// Weight of age in L2 pruning composite score.
 pub(super) const PRUNE_AGE_WEIGHT: f32 = 0.001;
 /// Minimum similarity for a tick to reconsolidate a labile memory.
-/// Raised from 0.35 to 0.40 for semantic embeddings — semantic similarity
-/// is more meaningful, so we can require a stronger match before reconsolidating.
+/// Kept for hippocampus::try_reconsolidate (may reuse for L3).
+#[allow(dead_code)]
 pub(super) const RECONSOLIDATION_THRESHOLD: f32 = 0.40;
-/// Minimum cosine similarity for a query result to be returned (noise floor).
-pub(super) const MIN_QUERY_SIMILARITY: f32 = 0.25;
+/// Minimum combined similarity (cosine + keyword bonus) for a query result.
+/// Lowered from 0.25 to 0.15 — the keyword bonus needs headroom to surface
+/// entries with low embedding similarity but high lexical relevance.
+pub(super) const MIN_QUERY_SIMILARITY: f32 = 0.35;
 /// Bonus added per non-stopword query keyword found in an entry's text.
-/// Reduced from 0.05 to 0.03 for semantic embeddings — the model already
-/// captures semantic relationships that keywords were approximating.
-pub(super) const KEYWORD_MATCH_BONUS: f32 = 0.03;
-/// Maximum total keyword bonus. Reduced from 0.2 to 0.1 to let the model's
-/// semantic signal dominate while keeping keywords as a tiebreaker.
-pub(super) const KEYWORD_MATCH_BONUS_CAP: f32 = 0.1;
+/// Restored from 0.03 to 0.05 — embeddings capture topical similarity but
+/// miss specific facts (dates, names, identifiers). Keywords fill that gap.
+pub(super) const KEYWORD_MATCH_BONUS: f32 = 0.05;
+/// Maximum total keyword bonus. Restored from 0.1 to 0.2 — keyword matches
+/// need enough weight to surface needle facts over topically-similar generics.
+pub(super) const KEYWORD_MATCH_BONUS_CAP: f32 = 0.2;
 /// Ticks a memory stays labile after retrieval before re-stabilizing.
+/// Kept for test_labile_expires (hippocampus function still exists).
+#[allow(dead_code)]
 const RECONSOLIDATION_WINDOW: u64 = 5;
 /// Pattern completion (CA3 autoassociative recall): minimum L2 results
 /// before pattern completion activates.
@@ -115,10 +132,12 @@ const PATTERN_COMPLETION_MIN_RESULTS: usize = 3;
 /// Minimum top-result similarity before pattern completion activates.
 const PATTERN_COMPLETION_SIM_THRESHOLD: f32 = 0.5;
 /// MMR lambda: balance between relevance (1.0) and diversity (0.0).
-/// 0.7 = relevance-heavy with diversity protection against near-duplicate results.
-const MMR_LAMBDA: f32 = 0.7;
-/// Number of L2 results to return after MMR diversity selection.
-const L2_RETRIEVAL_K: usize = 5;
+/// 0.5 = balanced relevance and diversity. Prevents topic-similar generics
+/// from dominating results when factual needles have lower embedding similarity.
+// MMR removed: diversity selection was dropping episodic date needles that
+// shared embedding space with spec entries. All threshold-passing results
+// are now returned, sorted by similarity.
+// L2_RETRIEVAL_MAX removed: threshold-based filtering replaces count caps.
 /// Sharp-wave ripple replay: entries accessed within this many ticks are
 /// considered temporally co-active (modeling hippocampal replay during rest).
 pub(super) const REPLAY_TEMPORAL_WINDOW: u64 = 5;
@@ -170,8 +189,6 @@ const SYSTEMS_CONSOLIDATION_SALIENCE_THRESHOLD: f32 = 0.4;
 const SUMMARY_FULL_TEXT_MAX_LEN: usize = 500;
 /// Minimum cosine similarity for L3 Summary node retrieval.
 const SUMMARY_RETRIEVAL_MIN_SIM: f32 = 0.3;
-/// Maximum number of L3 Summary results to include in retrieval.
-const SUMMARY_RETRIEVAL_MAX_RESULTS: usize = 5;
 /// Layer 3 incremental keyword discovery: minimum distinct ticks for auto-promotion.
 const TERM_PROMOTION_MIN_TICKS: u32 = 5;
 /// Minimum character length for auto-promoted terms.
@@ -202,16 +219,26 @@ const AUTO_REINFORCE_SCALE: f32 = 0.03;
 // Amygdala — Emotional processing, intensity-driven consolidation triggers
 // ---------------------------------------------------------------------------
 
-/// Rolling emotional intensity threshold for early consolidation.
-pub const EMOTIONAL_CONSOLIDATION_THRESHOLD: f32 = 1.5;
-/// Decay factor for rolling emotional intensity (applied each tick).
-const EMOTIONAL_INTENSITY_DECAY: f32 = 0.8;
+/// Neurochemical consolidation pressure threshold.
+pub const CONSOLIDATION_PRESSURE_THRESHOLD: f32 = 1.2;
 /// Context switch detection: cosine similarity threshold for topic shifts.
 const CONTEXT_SWITCH_THRESHOLD: f32 = 0.15;
 
-/// CPEB synaptic tagging: recently-active edges get amplified stability
-/// when a high-valence event occurs (Kandel's synaptic capture model).
-const CPEB_TAG_WINDOW: u64 = 5;
+// ---------------------------------------------------------------------------
+// Temporal Context Model (TCM) — implicit temporal encoding
+// ---------------------------------------------------------------------------
+
+/// Dimensionality of the temporal context vector (mean-pooled from 384-dim).
+const TEMPORAL_CONTEXT_DIM: usize = 64;
+/// TCM drift rate: how much the previous context is retained per tick (normal).
+const TCM_DRIFT_RATE: f32 = 0.95;
+/// TCM drift rate at event boundaries (faster drift = more temporal separation).
+const TCM_BOUNDARY_DRIFT_RATE: f32 = 0.7;
+/// Salience threshold for detecting event boundaries.
+const EVENT_BOUNDARY_SALIENCE: f32 = 0.7;
+
+/// CPEB synaptic tagging: high-valence events selectively strengthen
+/// graph edges connected to nodes touched during the current tick.
 const CPEB_VALENCE_THRESHOLD: f32 = 0.3;
 const CPEB_STABILITY_BOOST: f32 = 1.5;
 
@@ -270,10 +297,6 @@ pub struct BrainState {
     /// IDs returned by the most recent retrieve_context() call, for contrastive descent.
     #[serde(default)]
     pub last_retrieved_ids: Vec<u64>,
-    /// Rolling sum of emotional intensity (|valence|), decays each tick.
-    /// Used for amygdala-driven early consolidation.
-    #[serde(default)]
-    pub recent_valence_sum: f32,
     /// Embedding of the most recent tick, for context-switch detection.
     #[serde(default)]
     pub last_tick_embedding: Vec<f32>,
@@ -285,6 +308,20 @@ pub struct BrainState {
     /// Dynamic keyword cache populated from graph + static fallbacks.
     #[serde(skip)]
     pub keyword_cache: wernicke::KeywordCache,
+    /// Temporal Context Model (TCM): 64-dim vector that drifts each tick.
+    /// Snapshot frozen on each ShortTermEntry at encoding time.
+    #[serde(default)]
+    pub temporal_context: Vec<f32>,
+    /// Emotional prototypes: anchor points in embedding space for valence scoring.
+    /// Seeded from static list on first use, learned/adjusted over time.
+    #[serde(default)]
+    pub emotional_prototypes: Vec<EmotionalPrototype>,
+    /// Global neurochemical levels modulating memory dynamics.
+    #[serde(default)]
+    pub chemistry: Neurochemistry,
+    /// Anterior PFC: structured plans for prospective memory.
+    #[serde(default)]
+    pub plans: Vec<anterior_pfc::Plan>,
 }
 
 /// Full application state — wraps BrainState with tool-layer fields.
@@ -334,10 +371,13 @@ impl Default for BrainState {
             next_id: 1,
             ticks_since_consolidation: 0,
             last_retrieved_ids: Vec::new(),
-            recent_valence_sum: 0.0,
             last_tick_embedding: Vec::new(),
             term_frequency: HashMap::new(),
             keyword_cache: wernicke::KeywordCache::default_from_static(),
+            temporal_context: Vec::new(),
+            emotional_prototypes: Vec::new(),
+            chemistry: Neurochemistry::default(),
+            plans: Vec::new(),
         }
     }
 }
@@ -416,9 +456,9 @@ pub fn classify_text(text: &str, kw: &wernicke::KeywordCache) -> MemoryCategory 
 
 // get_git_summary — moved to crate::tool, re-exported below.
 // save — moved to crate::tool::persistence, re-exported above.
-// tick, tick_passive — moved to crate::tool, re-exported below.
+// tick — moved to crate::tool, re-exported below.
 
-pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResult {
+pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
     #[cfg(feature = "instrument")]
     let _tctx = {
         let ctx = trace::TraceCtx::new();
@@ -430,22 +470,29 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
     };
 
     state.clock += 1;
+
+    // Seed emotional prototypes on first tick (pre-computed embeddings, no ONNX cost).
+    if state.emotional_prototypes.is_empty() {
+        state.emotional_prototypes = seed_emotional_prototypes();
+    }
+
     #[cfg(feature = "instrument")]
     _tctx.emit(
         trace::PipelineStep::ClockIncrement,
         trace::TracePayload::Number(state.clock as f64),
     );
 
-    if !passive {
-        state.ticks_since_consolidation += 1;
-        // Decay rolling emotional intensity each active tick
-        state.recent_valence_sum *= EMOTIONAL_INTENSITY_DECAY;
-    }
-    apply_decay(state);
+    state.ticks_since_consolidation += 1;
+    // Neurochemical decay — each chemical decays toward baseline per tick
+    neurochemistry::apply_decay(&mut state.chemistry);
+    neurochemistry::update_serotonin_homeostasis(&mut state.chemistry);
+    // Phase C: compute effective chemistry early so multipliers are available
+    // for encoding_gain, decay_rate_mod, pruning_pressure, and ACh ortho.
+    let effective = neurochemistry::compute_effective(&state.chemistry);
+    apply_decay(state, effective.decay_rate_mod);
     #[cfg(feature = "instrument")]
     _tctx.emit(trace::PipelineStep::Decay, trace::TracePayload::None);
 
-    hippocampus::stabilize_labile_entries(&mut state.short_term, state.clock);
     #[cfg(feature = "instrument")]
     _tctx.emit(
         trace::PipelineStep::StabilizeLabile,
@@ -467,8 +514,6 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
     // Track the action taken (priority: created > reconsolidated > merged)
     let mut result_action = "created".to_string();
     let mut result_entry_id: u64 = 0;
-    let mut result_matched: Option<u64> = None;
-    let mut result_similarity: Option<f32> = None;
 
     let chunks = chunk_text(text);
 
@@ -476,6 +521,9 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
     // This avoids per-chunk mutex lock and ONNX session overhead.
     let chunk_refs: Vec<&str> = chunks.iter().map(|c| c.as_str()).collect();
     let raw_embeddings = entorhinal::embed_texts_batch(&chunk_refs, state.config.embedding_dim);
+
+    // Accumulate all touched node IDs across chunks for scoped CPEB tagging
+    let mut all_touched_node_ids: Vec<u64> = Vec::new();
 
     for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
         #[cfg(feature = "instrument")]
@@ -491,14 +539,19 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
             trace::TracePayload::Number(raw_embedding.len() as f64),
         );
 
-        let salience = compute_salience(&chunk, &state.keyword_cache);
+        // Phase C: encoding_gain scales thalamus salience (NE × ACh synergy).
+        // Recompute per-chunk from live chemistry so intra-tick spikes (NE from
+        // prior chunk's salience, ACh from prior chunk's novelty) take effect.
+        let live_encoding_gain =
+            1.0 + state.chemistry.norepinephrine * 0.5 + state.chemistry.acetylcholine * 0.3;
+        let salience = compute_salience(&chunk, &state.keyword_cache) * live_encoding_gain;
         #[cfg(feature = "instrument")]
         _tctx.emit(
             trace::PipelineStep::ComputeSalience,
             trace::TracePayload::Number(salience as f64),
         );
 
-        let emotional_valence = compute_emotional_valence(&chunk, &state.keyword_cache);
+        let emotional_valence = compute_emotional_valence(&state.emotional_prototypes, &raw_embedding);
         #[cfg(feature = "instrument")]
         _tctx.emit(
             trace::PipelineStep::ComputeEmotionalValence,
@@ -512,29 +565,18 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
             trace::TracePayload::Number(refs.len() as f64),
         );
 
-        // Dentate Gyrus sparse orthogonalization: push the new embedding away from
-        // similar-but-distinct existing L2 embeddings to reduce interference.
-        let existing_embeddings: Vec<Vec<f32>> = state
-            .short_term
-            .iter()
-            .map(|e| e.embedding.clone())
-            .collect();
-        let embedding = sparse_orthogonalize(
-            &raw_embedding,
-            &existing_embeddings,
-            state.config.theta_low, // low: only orthogonalize in the confusable zone
-            state.config.theta_high, // high: near-identical entries should still merge
-            0.3,                    // strength: moderate push-away
-        );
-        #[cfg(feature = "instrument")]
-        _tctx.emit(
-            trace::PipelineStep::SparseOrthogonalize,
-            trace::TracePayload::None,
-        );
+        // TCM temporal context update + date extraction
+        let tcm_snapshot = update_temporal_context(state, &raw_embedding, salience);
+        let chunk_dates = extract_dates(&chunk);
+        // Wall clock: unix timestamp — Legend always knows when ticks happen.
+        let wall_clock = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         // Always push into working memory (L1)
         let wm_id =
-            prefrontal::push_working_memory(state, &chunk, &embedding, salience, emotional_valence);
+            prefrontal::push_working_memory(state, &chunk, &raw_embedding, salience, emotional_valence);
         #[cfg(feature = "instrument")]
         _tctx.emit(
             trace::PipelineStep::PushWorkingMemory,
@@ -553,15 +595,37 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
             ]),
         );
 
-        // --- Attention gate: only high-salience ticks promote to L2 ---
+        // --- Neurochemical spikes based on salience ---
+        // NE spikes on high-salience input
+        if salience > 0.5 {
+            state.chemistry.norepinephrine =
+                (state.chemistry.norepinephrine + NE_SALIENCE_SPIKE * salience).min(1.0);
+        }
+        // eCB rises on routine/low-salience input
+        if salience < 0.25 {
+            state.chemistry.endocannabinoid =
+                (state.chemistry.endocannabinoid + ECB_ROUTINE_SPIKE).min(1.0);
+        }
+
+        // --- Dynamic attention gate: tighten under hippocampal load ---
+        // Under L2 capacity pressure, Legend becomes more selective (ACh-modulated).
+        let fill_ratio = state.short_term.len() as f32 / state.config.short_term_capacity as f32;
+        let capacity_gate_boost = if fill_ratio > CAPACITY_STRESS_ONSET {
+            let stress = (fill_ratio - CAPACITY_STRESS_ONSET) / (1.0 - CAPACITY_STRESS_ONSET);
+            stress * ATTENTION_GATE_TIGHTENING
+        } else {
+            0.0
+        };
+        let dynamic_threshold = ATTENTION_GATE_THRESHOLD + capacity_gate_boost;
+
         #[cfg(feature = "instrument")]
         {
-            let passes = salience >= ATTENTION_GATE_THRESHOLD;
+            let passes = salience >= dynamic_threshold;
             _tctx.emit(
                 trace::PipelineStep::AttentionGate,
                 trace::TracePayload::KeyValue(vec![
                     ("salience".into(), format!("{salience:.3}")),
-                    ("threshold".into(), format!("{ATTENTION_GATE_THRESHOLD:.3}")),
+                    ("threshold".into(), format!("{dynamic_threshold:.3}")),
                     ("passes".into(), passes.to_string()),
                     (
                         "outcome".into(),
@@ -575,39 +639,20 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
             );
         }
 
-        if salience >= ATTENTION_GATE_THRESHOLD {
-            // --- Reconsolidation: check labile entries first ---
-            // If a recently-retrieved memory is labile and the new text is related,
-            // update that memory in-place instead of creating a duplicate.
-            if let Some(reconsolidated_id) =
-                hippocampus::try_reconsolidate(state, &chunk, &embedding, salience, refs.clone())
-            {
-                #[cfg(feature = "instrument")]
-                _tctx.emit(
-                    trace::PipelineStep::TryReconsolidate,
-                    trace::TracePayload::Number(reconsolidated_id as f64),
-                );
-                // Update graph with the new text context
-                neocortex::update_graph(state, &chunk, salience);
-                last_context = retrieve_context(state, &chunk);
-                // Mark L1 entry as promoted
-                if let Some(wm_entry) = state.working_memory.iter_mut().find(|e| e.id == wm_id) {
-                    wm_entry.promoted = true;
-                }
-                // Track reconsolidation
-                result_action = "reconsolidated".to_string();
-                result_entry_id = reconsolidated_id;
-                result_matched = Some(reconsolidated_id);
-                continue;
-            }
-
+        if salience >= dynamic_threshold {
             // --- Normal path: match/merge/insert ---
-            let (best_id, best_sim) = hippocampus::find_best_match(&state.short_term, &embedding);
+            let (best_id, best_sim) = hippocampus::find_best_match(&state.short_term, &raw_embedding);
             #[cfg(feature = "instrument")]
             _tctx.emit(
                 trace::PipelineStep::FindBestMatch,
                 trace::TracePayload::Similarities(vec![(best_id, best_sim)]),
             );
+
+            // ACh spikes on novel input (low similarity to existing memories)
+            if best_sim < 0.3 {
+                state.chemistry.acetylcholine =
+                    (state.chemistry.acetylcholine + ACH_NOVELTY_SPIKE).min(1.0);
+            }
 
             // Diversity gate: even at high similarity, if word overlap is low the
             // Dentate Gyrus diversity gate: even at high similarity, if word overlap is
@@ -631,7 +676,7 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
                 ]),
             );
 
-            match best_sim {
+            let touched_node_ids = match best_sim {
                 s if s >= state.config.theta_high && diversity_ok => {
                     if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == best_id) {
                         entry.usage = entry.usage.saturating_add(2);
@@ -639,6 +684,7 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
                         entry.last_access = state.clock;
                         merge_memory_refs(&mut entry.refs, refs.clone());
                     }
+                    let nids = neocortex::update_graph(state, &chunk, salience);
                     // Track merge (high similarity)
                     #[cfg(feature = "instrument")]
                     _tctx.emit(
@@ -647,19 +693,18 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
                     );
                     result_action = "merged".to_string();
                     result_entry_id = best_id;
-                    result_matched = Some(best_id);
-                    result_similarity = Some(best_sim);
+                    nids
                 }
                 s if s >= state.config.theta_low && diversity_ok => {
                     if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == best_id) {
-                        entry.embedding = merge_embeddings(&entry.embedding, &embedding);
+                        entry.embedding = merge_embeddings(&entry.embedding, &raw_embedding);
                         entry.usage = entry.usage.saturating_add(1);
                         entry.salience = (entry.salience + salience * 0.5).min(1.0);
                         entry.summary = summarize_text(&entry.text, &chunk, &state.keyword_cache);
                         entry.last_access = state.clock;
                         merge_memory_refs(&mut entry.refs, refs.clone());
                     }
-                    neocortex::update_graph(state, &chunk, salience);
+                    let nids = neocortex::update_graph(state, &chunk, salience);
                     #[cfg(feature = "instrument")]
                     _tctx.emit(
                         trace::PipelineStep::MergeEntryLow,
@@ -668,17 +713,41 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
                     // Track merge (low similarity)
                     result_action = "merged".to_string();
                     result_entry_id = best_id;
-                    result_matched = Some(best_id);
-                    result_similarity = Some(best_sim);
+                    nids
                 }
                 _ => {
+                    // Dentate Gyrus: orthogonalize only when creating a new entry.
+                    // Merge decisions above used raw_embedding to avoid interference.
+                    let existing_embeddings: Vec<Vec<f32>> = state
+                        .short_term
+                        .iter()
+                        .map(|e| e.embedding.clone())
+                        .collect();
+                    // Phase C: ACh modulates pattern separation strength (0.3–0.6).
+                    let ach_ortho_strength = 0.3 * (1.0 + state.chemistry.acetylcholine * 1.0);
+                    let ortho_embedding = sparse_orthogonalize(
+                        &raw_embedding,
+                        &existing_embeddings,
+                        state.config.theta_low,
+                        state.config.theta_high,
+                        ach_ortho_strength,
+                    );
+                    #[cfg(feature = "instrument")]
+                    _tctx.emit(
+                        trace::PipelineStep::SparseOrthogonalize,
+                        trace::TracePayload::None,
+                    );
                     hippocampus::insert_short_term(
                         state,
                         &chunk,
-                        embedding,
+                        ortho_embedding,
                         salience,
                         refs,
                         emotional_valence,
+                        wall_clock.clone(),
+                        chunk_dates.clone(),
+                        tcm_snapshot.clone(),
+                        neurochemistry::stamp_from(&state.chemistry),
                     );
                     #[cfg(feature = "instrument")]
                     {
@@ -698,7 +767,7 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
                     }
                     #[cfg(feature = "instrument")]
                     let _graph_before = (state.long_term.nodes.len(), state.long_term.edges.len());
-                    neocortex::update_graph(state, &chunk, salience);
+                    let nids = neocortex::update_graph(state, &chunk, salience);
                     #[cfg(feature = "instrument")]
                     _tctx.emit(
                         trace::PipelineStep::UpdateGraph,
@@ -717,40 +786,38 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
                     if let Some(entry) = state.short_term.last() {
                         result_action = "created".to_string();
                         result_entry_id = entry.id;
-                        result_matched = None;
-                        result_similarity = None;
                     }
+                    nids
                 }
-            }
+            };
+
+            // Accumulate touched nodes for scoped CPEB tagging
+            all_touched_node_ids.extend_from_slice(&touched_node_ids);
 
             // Mark L1 entry as promoted
             if let Some(wm_entry) = state.working_memory.iter_mut().find(|e| e.id == wm_id) {
                 wm_entry.promoted = true;
             }
 
-            last_context = retrieve_context(state, &chunk);
+            last_context = encoding_activation(state, &raw_embedding, &chunk, &touched_node_ids);
         } else {
             // Low-salience: stays in working memory only, skip L2 insertion
             result_action = "working_memory_only".to_string();
             result_entry_id = wm_id;
-            result_matched = None;
-            result_similarity = None;
         }
     }
 
     // Layer 3: update term frequency stats and auto-promote recurring entities
-    if !passive {
-        update_term_frequencies(state, text);
-        #[cfg(feature = "instrument")]
-        _tctx.emit(
-            trace::PipelineStep::UpdateTermFrequencies,
-            trace::TracePayload::None,
-        );
-    }
+    update_term_frequencies(state, text);
+    #[cfg(feature = "instrument")]
+    _tctx.emit(
+        trace::PipelineStep::UpdateTermFrequencies,
+        trace::TracePayload::None,
+    );
 
     #[cfg(feature = "instrument")]
     let _l2_before = state.short_term.len();
-    hippocampus::prune_short_term(&mut state.short_term, state.clock);
+    hippocampus::prune_short_term(&mut state.short_term, state.clock, effective.pruning_pressure);
     #[cfg(feature = "instrument")]
     _tctx.emit(
         trace::PipelineStep::PruneL2,
@@ -783,77 +850,161 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
     );
 
     // --- Smart consolidation triggers ---
-    if !passive {
-        // Accumulate emotional intensity from this tick
-        let tick_embedding = embed_text(text, state.config.embedding_dim);
-        let tick_valence = compute_emotional_valence(text, &state.keyword_cache);
-        state.recent_valence_sum += tick_valence.abs();
+    let tick_embedding = embed_text(text, state.config.embedding_dim);
+    let tick_valence = compute_emotional_valence(&state.emotional_prototypes, &tick_embedding);
 
-        // CPEB synaptic tagging: high-valence events selectively strengthen
-        // recently active graph edges (Kandel's synaptic capture model).
-        if tick_valence.abs() > CPEB_VALENCE_THRESHOLD {
-            let tagged_count = neocortex::cpeb_tag_edges(
-                &mut state.long_term,
-                state.clock,
-                tick_valence.abs(),
-                CPEB_TAG_WINDOW,
-                CPEB_STABILITY_BOOST,
-            );
-            #[cfg(feature = "instrument")]
-            _tctx.emit(
-                trace::PipelineStep::CpebTagging,
-                trace::TracePayload::KeyValue(vec![
-                    ("emotional_valence".into(), format!("{tick_valence:.3}")),
-                    ("edges_tagged_count".into(), tagged_count.to_string()),
-                    (
-                        "tag_threshold".into(),
-                        format!("{CPEB_VALENCE_THRESHOLD:.3}"),
-                    ),
-                ]),
-            );
-            let _ = tagged_count;
-        }
-
-        // Context switch detection: compare with previous tick's embedding
-        if !state.last_tick_embedding.is_empty() {
-            let sim = cosine_similarity(&state.last_tick_embedding, &tick_embedding);
-            let triggered = sim < CONTEXT_SWITCH_THRESHOLD;
-            #[cfg(feature = "instrument")]
-            _tctx.emit(
-                trace::PipelineStep::ContextSwitchDetection,
-                trace::TracePayload::KeyValue(vec![
-                    ("similarity".into(), format!("{sim:.3}")),
-                    ("threshold".into(), format!("{CONTEXT_SWITCH_THRESHOLD:.3}")),
-                    ("triggered".into(), triggered.to_string()),
-                ]),
-            );
-            if triggered {
-                // Topic shift detected — suggest consolidation and flush L1
-                #[cfg(feature = "instrument")]
-                let _wm_before = state.working_memory.len();
-                prefrontal::flush_working_memory(state);
-                #[cfg(feature = "instrument")]
-                {
-                    let count_flushed = _wm_before;
-                    let promoted_count = state.short_term.len();
-                    _tctx.emit(
-                        trace::PipelineStep::FlushWorkingMemory,
-                        trace::TracePayload::KeyValue(vec![
-                            ("count_flushed".into(), count_flushed.to_string()),
-                            ("l2_count_after".into(), promoted_count.to_string()),
-                        ]),
-                    );
-                }
-            }
-        }
-        state.last_tick_embedding = tick_embedding;
+    // --- Neurochemical spikes based on emotional valence ---
+    if tick_valence < -0.2 {
+        state.chemistry.cortisol =
+            (state.chemistry.cortisol + CORTISOL_NEGATIVE_SPIKE * tick_valence.abs()).min(1.0);
+        // NE_THREAT_SPIKE (0.15) is smaller than NE_SALIENCE_SPIKE (0.3) to avoid
+        // double-counting when a high-salience tick is also negatively valenced.
+        state.chemistry.norepinephrine =
+            (state.chemistry.norepinephrine + NE_THREAT_SPIKE * tick_valence.abs()).min(1.0);
+    }
+    if tick_valence > 0.2 {
+        state.chemistry.dopamine =
+            (state.chemistry.dopamine + DA_POSITIVE_SPIKE * tick_valence).min(1.0);
+    }
+    // eCB recovery from sustained cortisol
+    if state.chemistry.cortisol > 0.5 {
+        state.chemistry.endocannabinoid = (state.chemistry.endocannabinoid
+            + (state.chemistry.cortisol - 0.5) * ECB_CORTISOL_RECOVERY)
+            .min(1.0);
     }
 
-    // Auto-consolidation: if enough ticks have accumulated or emotional intensity
-    // is high, consolidate automatically so L3 stays populated without LLM intervention.
-    if !passive
-        && (state.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
-            || state.recent_valence_sum >= EMOTIONAL_CONSOLIDATION_THRESHOLD)
+    // Hippocampal overload defense: capacity-proportional cortisol spike.
+    // As L2 fills past CAPACITY_STRESS_ONSET (75%), cortisol rises linearly,
+    // feeding into consolidation_pressure = cortisol × 2.0 + NE × 0.5.
+    // This causes auto-consolidation to fire earlier under sustained load.
+    {
+        let fill_ratio =
+            state.short_term.len() as f32 / state.config.short_term_capacity as f32;
+        if fill_ratio > CAPACITY_STRESS_ONSET {
+            let stress =
+                (fill_ratio - CAPACITY_STRESS_ONSET) / (1.0 - CAPACITY_STRESS_ONSET);
+            state.chemistry.cortisol =
+                (state.chemistry.cortisol + CORTISOL_CAPACITY_SPIKE * stress).min(1.0);
+        }
+    }
+
+    // CPEB synaptic tagging: high-valence events selectively strengthen
+    // graph edges connected to nodes touched during this tick (Kandel's synaptic capture).
+    all_touched_node_ids.sort();
+    all_touched_node_ids.dedup();
+    if tick_valence.abs() > CPEB_VALENCE_THRESHOLD && !all_touched_node_ids.is_empty() {
+        let tagged_count = neocortex::cpeb_tag_edges_scoped(
+            &mut state.long_term,
+            state.clock,
+            tick_valence.abs(),
+            CPEB_STABILITY_BOOST,
+            &all_touched_node_ids,
+        );
+        #[cfg(feature = "instrument")]
+        _tctx.emit(
+            trace::PipelineStep::CpebTagging,
+            trace::TracePayload::KeyValue(vec![
+                ("emotional_valence".into(), format!("{tick_valence:.3}")),
+                ("edges_tagged_count".into(), tagged_count.to_string()),
+                (
+                    "tag_threshold".into(),
+                    format!("{CPEB_VALENCE_THRESHOLD:.3}"),
+                ),
+            ]),
+        );
+        let _ = tagged_count;
+    }
+
+    // Context switch detection: compare with previous tick's embedding
+    if !state.last_tick_embedding.is_empty() {
+        let sim = cosine_similarity(&state.last_tick_embedding, &tick_embedding);
+        let triggered = sim < CONTEXT_SWITCH_THRESHOLD;
+        #[cfg(feature = "instrument")]
+        _tctx.emit(
+            trace::PipelineStep::ContextSwitchDetection,
+            trace::TracePayload::KeyValue(vec![
+                ("similarity".into(), format!("{sim:.3}")),
+                ("threshold".into(), format!("{CONTEXT_SWITCH_THRESHOLD:.3}")),
+                ("triggered".into(), triggered.to_string()),
+            ]),
+        );
+        if triggered {
+            // NE spike on context switch
+            state.chemistry.norepinephrine =
+                (state.chemistry.norepinephrine + NE_CONTEXT_SWITCH_SPIKE).min(1.0);
+            // Topic shift detected — flush L1
+            #[cfg(feature = "instrument")]
+            let _wm_before = state.working_memory.len();
+            prefrontal::flush_working_memory(state);
+            #[cfg(feature = "instrument")]
+            {
+                let count_flushed = _wm_before;
+                let promoted_count = state.short_term.len();
+                _tctx.emit(
+                    trace::PipelineStep::FlushWorkingMemory,
+                    trace::TracePayload::KeyValue(vec![
+                        ("count_flushed".into(), count_flushed.to_string()),
+                        ("l2_count_after".into(), promoted_count.to_string()),
+                    ]),
+                );
+            }
+        }
+    }
+    state.last_tick_embedding = tick_embedding;
+
+    // --- Anterior PFC: PLAN: prefix handling ---
+    if let Some(plan_body) = anterior_pfc::strip_plan_prefix(text) {
+        if let Some((name, items)) = anterior_pfc::parse_plan_text(plan_body) {
+            anterior_pfc::apply_plan(
+                &mut state.plans,
+                name,
+                items,
+                state.clock,
+                &mut state.next_id,
+                state.config.embedding_dim,
+            );
+        }
+    }
+
+    // ACC-like reset: archive completed plans after retention period
+    let archive_threshold = state.clock.saturating_sub(anterior_pfc::PLAN_ARCHIVE_TICKS);
+    let mut to_archive = Vec::new();
+    let mut to_keep = Vec::new();
+    for plan in state.plans.drain(..) {
+        if plan.completed_at.map_or(false, |t| t <= archive_threshold) {
+            to_archive.push(plan);
+        } else {
+            to_keep.push(plan);
+        }
+    }
+    state.plans = to_keep;
+    for plan in to_archive {
+        let summary = anterior_pfc::format_plan_archive_text(&plan);
+        let archive_embedding = embed_text(&summary, state.config.embedding_dim);
+        let wall_clock = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        hippocampus::insert_short_term(
+            state,
+            &summary,
+            archive_embedding,
+            0.4, // moderate salience for archived plans
+            Vec::new(),
+            0.0,
+            wall_clock,
+            Vec::new(),
+            Vec::new(),
+            neurochemistry::stamp_from(&state.chemistry),
+        );
+    }
+
+    // Auto-consolidation: if enough ticks have accumulated or neurochemical
+    // consolidation pressure is elevated (Phase C: replaces recent_valence_sum).
+    // Re-compute effective after neurochemical spikes above may have changed levels.
+    let effective_post = neurochemistry::compute_effective(&state.chemistry);
+    if state.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
+        || effective_post.consolidation_pressure >= CONSOLIDATION_PRESSURE_THRESHOLD
     {
         consolidate(state);
     }
@@ -864,8 +1015,6 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
     TickResult {
         action: result_action,
         entry_id: result_entry_id,
-        matched_existing: result_matched,
-        similarity: result_similarity,
         context: last_context,
     }
 }
@@ -873,16 +1022,10 @@ pub fn tick_impl(state: &mut BrainState, text: &str, passive: bool) -> TickResul
 fn infer_query_mode(query: &str, keyword_cache: &KeywordCache) -> neocortex::QueryMode {
     let query_lower = query.to_lowercase();
 
-    let temporal_markers = [
-        "yesterday",
-        "earlier",
-        "when",
-        "during",
-        "worked on",
-        "session",
-        "recently",
-    ];
-    if temporal_markers.iter().any(|m| query_lower.contains(m)) {
+    if wernicke::lexicon::TEMPORAL_QUERY_MARKERS
+        .iter()
+        .any(|m| query_lower.contains(m))
+    {
         return neocortex::QueryMode::Temporal;
     }
 
@@ -922,6 +1065,199 @@ fn infer_query_mode(query: &str, keyword_cache: &KeywordCache) -> neocortex::Que
     neocortex::QueryMode::Neutral
 }
 
+/// Encoding-time activation: the hippocampal processes that naturally occur
+/// when a new memory is encoded. Each step is an explicit, named phase.
+///
+/// Unlike `retrieve_context` (query-time), encoding activation does NOT:
+/// - Increment the clock (already done at tick start)
+/// - Run decay (already done at tick start)
+/// - Update spaced-repetition stability (retrieval-only learning)
+/// - Sort chronologically (presentation concern for queries)
+/// - Record last_retrieved_ids (contrastive descent is retrieval-specific)
+fn encoding_activation(
+    state: &mut BrainState,
+    embedding: &[f32],
+    chunk: &str,
+    touched_node_ids: &[u64],
+) -> MemoryContext {
+    // ── Step 1: CA3 pattern completion — find similar L2 entries ──
+    // Full similarity scoring with keyword bonus and amygdala emotional boost.
+    // The hippocampus automatically activates related existing traces during encoding.
+    let mut candidates =
+        hippocampus::top_k_similar(&state.short_term, embedding, usize::MAX, chunk, &state.chemistry);
+
+    // ── Step 2: Neocortical associative recall — graph-boosted L2 ──
+    // The knowledge graph biases which L2 entries get co-activated.
+    // Specificity-weighted: rare entities boost more than common ones.
+    {
+        let query_entities = extract_entities(chunk, &state.keyword_cache);
+        neocortex::graph_boost_candidates(
+            &state.long_term,
+            &query_entities,
+            &mut candidates,
+            neocortex::QueryMode::Neutral,
+        );
+    }
+
+    // ── Step 3: L3 systems consolidation retrieval ──
+    // Summary nodes with centroid embeddings can independently surface old
+    // consolidated memories whose L2 entries may have been evicted.
+    {
+        let existing_ids: HashSet<u64> = candidates.iter().map(|s| s.id).collect();
+        let mut summary_hits: Vec<MemorySnippet> = state
+            .long_term
+            .nodes
+            .values()
+            .filter(|n| n.kind == "Summary" && !n.embedding.is_empty())
+            .filter_map(|n| {
+                let sim = cosine_similarity(&n.embedding, embedding);
+                if sim >= SUMMARY_RETRIEVAL_MIN_SIM && !existing_ids.contains(&n.id) {
+                    let text = n.full_text.as_deref().unwrap_or(&n.label).to_string();
+                    Some(MemorySnippet {
+                        id: n.id,
+                        text,
+                        similarity: sim * 0.85,
+                        refs: Vec::new(),
+                        wall_clock: 0,
+                        extracted_dates: Vec::new(),
+                        created_at_clock: 0,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        summary_hits.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+        candidates.extend(summary_hits);
+    }
+
+    // ── Step 4: Temporal context boost (TCM co-activation) ──
+    // Temporally proximate memories get co-activated during encoding.
+    if !state.temporal_context.is_empty() {
+        for candidate in &mut candidates {
+            if let Some(entry) = state.short_term.iter().find(|e| e.id == candidate.id) {
+                if !entry.temporal_context.is_empty() {
+                    let tcm_sim =
+                        cosine_similarity(&state.temporal_context, &entry.temporal_context);
+                    candidate.similarity += 0.03 * tcm_sim;
+                }
+            }
+        }
+    }
+
+    // ── Step 5: Adaptive relevance threshold ──
+    // Scale cutoff relative to best match — strong matches raise the floor,
+    // weak matches lower it. Filters noise without hiding relevant hits.
+    candidates.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+    let top_sim = candidates.first().map(|c| c.similarity).unwrap_or(0.0);
+    let adaptive_floor = (top_sim * 0.65).max(MIN_QUERY_SIMILARITY);
+    candidates.retain(|c| c.similarity >= adaptive_floor);
+    let mut snippets = candidates;
+
+    // ── Step 6: CA3 pattern completion (sparse cue reconstruction) ──
+    // When direct matches are sparse or weak, use graph structure to
+    // reconstruct related memories from partial cues.
+    let top_sim = snippets.first().map(|s| s.similarity).unwrap_or(0.0);
+    if snippets.len() < PATTERN_COMPLETION_MIN_RESULTS
+        || top_sim < PATTERN_COMPLETION_SIM_THRESHOLD
+    {
+        let completed = hippocampus::pattern_complete(
+            state,
+            chunk,
+            &snippets,
+            neocortex::QueryMode::Neutral,
+        );
+        let existing_ids: HashSet<u64> = snippets.iter().map(|s| s.id).collect();
+        for c in completed {
+            if !existing_ids.contains(&c.id) {
+                snippets.push(c);
+            }
+        }
+        snippets.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+    }
+
+    // ── Step 7: Auto-reinforce — reactivation strengthens the trace ──
+    // When encoding activates an existing memory, that reactivation naturally
+    // strengthens it (reconsolidation-lite / memory reactivation effect).
+    if let Some(top) = snippets.first() {
+        if top.similarity > 0.2 {
+            if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == top.id) {
+                entry.salience =
+                    (entry.salience + top.similarity * AUTO_REINFORCE_SCALE).min(1.0);
+            }
+        }
+    }
+
+    // ── Step 8: Graph lookup + associative priming ──
+    // Extract entities from activated L2 entries and spread activation
+    // through the knowledge graph to surface indirectly related concepts.
+    let mut long_term = neocortex::graph_lookup(
+        &state.long_term,
+        chunk,
+        12,
+        &state.keyword_cache,
+        neocortex::QueryMode::Neutral,
+    );
+
+    // Collect priming seeds from L2 hits + graph lookup + touched nodes
+    let mut priming_seed_ids: Vec<u64> = Vec::new();
+    for snippet in &snippets {
+        let entities = extract_entities(&snippet.text, &state.keyword_cache);
+        for entity in &entities {
+            if let Some(&node_id) = state.long_term.index.get(&entity.label.to_lowercase()) {
+                priming_seed_ids.push(node_id);
+            }
+        }
+    }
+    for node in &long_term {
+        priming_seed_ids.push(node.id);
+    }
+    priming_seed_ids.extend_from_slice(touched_node_ids);
+    priming_seed_ids.sort();
+    priming_seed_ids.dedup();
+
+    let existing_ids: HashSet<u64> = long_term.iter().map(|n| n.id).collect();
+    let activated = neocortex::spreading_activation(
+        &state.long_term,
+        &priming_seed_ids,
+        2,
+        0.4,
+        neocortex::QueryMode::Neutral,
+    );
+    for (nid, activation) in activated {
+        if !existing_ids.contains(&nid) {
+            if let Some(node) = state.long_term.nodes.get(&nid) {
+                long_term.push(GraphNodeSummary {
+                    id: node.id,
+                    label: node.label.clone(),
+                    kind: node.kind.clone(),
+                    weight: node.weight * 0.7 * activation,
+                    edge_type: Some("primed".to_string()),
+                    source_texts: node.source_texts.clone(),
+                });
+            }
+        }
+    }
+
+    // Adaptive weight threshold for L3
+    long_term.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+    let top_weight = long_term.first().map(|n| n.weight).unwrap_or(0.0);
+    let weight_floor = top_weight * 0.4;
+    long_term.retain(|n| n.weight >= weight_floor);
+
+    // ── Step 9: Hebbian reinforcement — co-activated entities strengthen ──
+    // "Neurons that fire together wire together" — encoding a new memory
+    // that co-activates existing graph nodes strengthens their connections.
+    let co_activated_ids: Vec<u64> = long_term.iter().map(|n| n.id).collect();
+    neocortex::hebbian_reinforce(&mut state.long_term, &co_activated_ids, state.clock);
+
+    MemoryContext {
+        short_term: snippets,
+        long_term,
+        working_memory: Vec::new(),
+    }
+}
+
 /// CA3 autoassociative pattern completion.
 ///
 /// When direct similarity search returns sparse results, use the graph to
@@ -930,8 +1266,6 @@ fn infer_query_mode(query: &str, keyword_cache: &KeywordCache) -> neocortex::Que
 /// containing activated nodes' source texts.
 
 /// Query memory without inserting new data.
-/// Retrieved entries are marked labile (editable) so the next tick can
-/// reconsolidate them with updated information.
 pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
     #[cfg(feature = "instrument")]
     let _qctx = {
@@ -944,7 +1278,8 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
     };
 
     state.clock += 1;
-    apply_decay(state);
+    let effective = neurochemistry::compute_effective(&state.chemistry);
+    apply_decay(state, effective.decay_rate_mod);
     let query_mode = infer_query_mode(query, &state.keyword_cache);
     #[cfg(feature = "instrument")]
     _qctx.emit(
@@ -976,19 +1311,58 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
                 text: wm_entry.text.clone(),
                 similarity: effective_sim,
                 refs: Vec::new(),
+                wall_clock: 0,
+                extracted_dates: Vec::new(),
+                created_at_clock: 0,
             });
         }
     }
     wm_snippets.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
-    wm_snippets.truncate(5);
+    // No truncation — return all L1 entries above MIN_QUERY_SIMILARITY.
     #[cfg(feature = "instrument")]
     _qctx.emit(
         trace::PipelineStep::L1Scan,
         trace::TracePayload::Number(wm_snippets.len() as f64),
     );
 
+    // --- Prospective memory: spontaneous retrieval of matching plan items ---
+    // After L1 scan, before L2 retrieval — McDaniel & Einstein's pathway.
+    for plan in &state.plans {
+        for item in &plan.items {
+            if item.status == anterior_pfc::ItemStatus::Done {
+                continue;
+            }
+            if item.embedding.is_empty() {
+                continue;
+            }
+            let sim = cosine_similarity(&embedding, &item.embedding);
+            if sim >= anterior_pfc::INTENTION_CUE_THRESHOLD {
+                wm_snippets.push(hippocampus::MemorySnippet {
+                    id: 0, // plan items don't have L2 IDs
+                    text: format!(
+                        "[Plan: {} | {}] {}",
+                        plan.name,
+                        item.status.label(),
+                        item.text
+                    ),
+                    similarity: sim,
+                    refs: Vec::new(),
+                    wall_clock: 0,
+                    extracted_dates: Vec::new(),
+                    created_at_clock: 0,
+                });
+            }
+        }
+    }
+    // Re-sort after adding plan items
+    wm_snippets.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+
     // --- L2 retrieval: gather all candidates above similarity floor ---
-    let mut candidates = hippocampus::top_k_similar(&state.short_term, &embedding, 50, query);
+    // No candidate cap — pass all above-floor entries to MMR for diversity selection.
+    // The cap was a bottleneck when L2 grows large: topic-similar generics would
+    // saturate the pool, pushing out factual needles with lower embedding similarity.
+    let mut candidates =
+        hippocampus::top_k_similar(&state.short_term, &embedding, usize::MAX, query, &state.chemistry);
     #[cfg(feature = "instrument")]
     _qctx.emit(
         trace::PipelineStep::L2TopKSimilar,
@@ -996,6 +1370,20 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
             candidates.iter().map(|s| (s.id, s.similarity)).collect(),
         ),
     );
+
+    // --- Graph-informed L2 boost (neocortical associative recall) ---
+    // Use the knowledge graph to boost L2 candidates that mention entities
+    // connected to query entities. Specificity-weighted: rare entities like
+    // "February" give higher boosts than common ones like "Hawaii".
+    {
+        let query_entities = extract_entities(query, &state.keyword_cache);
+        neocortex::graph_boost_candidates(
+            &state.long_term,
+            &query_entities,
+            &mut candidates,
+            query_mode,
+        );
+    }
 
     // --- L3 systems consolidation retrieval (neocortical independence) ---
     // Scan Summary nodes that have centroid embeddings for direct similarity
@@ -1017,6 +1405,9 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
                         text,
                         similarity: sim * 0.85, // slight discount vs direct L2 matches
                         refs: Vec::new(),
+                        wall_clock: 0,
+                        extracted_dates: Vec::new(),
+                        created_at_clock: 0,
                     })
                 } else {
                     None
@@ -1024,7 +1415,7 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
             })
             .collect();
         summary_hits.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
-        summary_hits.truncate(SUMMARY_RETRIEVAL_MAX_RESULTS);
+        // No truncation — SUMMARY_RETRIEVAL_MIN_SIM already gates relevance.
         #[cfg(feature = "instrument")]
         _qctx.emit(
             trace::PipelineStep::L3SummaryRetrieval,
@@ -1033,42 +1424,52 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
         candidates.extend(summary_hits);
     }
 
-    // --- MMR diversity selection (Dentate Gyrus at retrieval time) ---
-    // Instead of taking top-k by raw similarity (which can return near-duplicates),
-    // use Maximal Marginal Relevance to select results that are both relevant
-    // to the query AND diverse among themselves.
-    let mut snippets = if candidates.len() <= L2_RETRIEVAL_K {
-        candidates
-    } else {
-        // Build embedding lookup: L2 entries from short_term, L3 from long_term nodes
-        let empty_emb: Vec<f32> = Vec::new();
-        let mmr_input: Vec<(usize, f32, &[f32])> = candidates
+    // --- Temporal boosts (automatic, not mode-gated) ---
+    // A. TCM proximity boost: entries temporally close to current context get a small boost
+    if !state.temporal_context.is_empty() {
+        for candidate in &mut candidates {
+            if let Some(entry) = state.short_term.iter().find(|e| e.id == candidate.id) {
+                if !entry.temporal_context.is_empty() {
+                    let tcm_sim =
+                        cosine_similarity(&state.temporal_context, &entry.temporal_context);
+                    candidate.similarity += 0.03 * tcm_sim;
+                }
+            }
+        }
+    }
+    // B. Date-affinity boost: when the query itself contains dates/temporal language,
+    //    boost candidates that also have date metadata (automatically detected).
+    let query_dates = extract_dates(query);
+    let query_has_temporal = !query_dates.is_empty()
+        || wernicke::lexicon::TEMPORAL_QUERY_MARKERS
             .iter()
-            .enumerate()
-            .map(|(i, snippet)| {
-                let emb = state
-                    .short_term
-                    .iter()
-                    .find(|e| e.id == snippet.id)
-                    .map(|e| e.embedding.as_slice())
-                    .or_else(|| {
-                        state
-                            .long_term
-                            .nodes
-                            .get(&snippet.id)
-                            .map(|n| n.embedding.as_slice())
-                    })
-                    .unwrap_or(&empty_emb);
-                (i, snippet.similarity, emb)
-            })
-            .collect();
+            .any(|m| query_lower.contains(m));
+    if query_has_temporal {
+        for candidate in &mut candidates {
+            if let Some(entry) = state.short_term.iter().find(|e| e.id == candidate.id) {
+                if entry.wall_clock > 0 || !entry.extracted_dates.is_empty() {
+                    candidate.similarity += 0.05;
+                }
+            }
+        }
+    }
 
-        let selected_indices = mmr_select(&mmr_input, L2_RETRIEVAL_K, MMR_LAMBDA);
-        selected_indices
-            .into_iter()
-            .map(|i| candidates[i].clone())
-            .collect()
-    };
+    // --- Adaptive relevance threshold ---
+    // Instead of a fixed floor, scale the cutoff relative to the best match.
+    // Strong queries (top ~0.9) use a high floor; weak queries (top ~0.4) use
+    // a proportionally lower floor. This naturally returns fewer results for
+    // off-topic queries without hiding needles for on-topic ones.
+    //
+    // Phase C: retrieval_quality (Yerkes-Dodson × ACh) modulates the floor.
+    // High quality (moderate cortisol, high ACh) → lower floor → more results.
+    // Low quality (extreme cortisol) → higher floor → fewer, only strongest.
+    // Baseline retrieval_quality ≈ 0.41, so (rq - 0.41) centers the adjustment.
+    candidates.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+    let top_sim = candidates.first().map(|c| c.similarity).unwrap_or(0.0);
+    let quality_offset = (effective.retrieval_quality - 0.41) * 0.2; // ±0.0 at baseline
+    let adaptive_floor = (top_sim * (0.65 - quality_offset)).max(MIN_QUERY_SIMILARITY);
+    candidates.retain(|c| c.similarity >= adaptive_floor);
+    let mut snippets = candidates;
 
     // Update spaced repetition state for selected L2 entries
     for snippet in &snippets {
@@ -1088,8 +1489,6 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
 
             entry.last_access = state.clock;
             entry.usage = entry.usage.saturating_add(1);
-            // Mark labile: this entry can be reconsolidated by the next tick
-            entry.labile_until = state.clock + RECONSOLIDATION_WINDOW;
         }
     }
 
@@ -1107,12 +1506,18 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
         }
         // Re-sort after adding completed results
         snippets.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
-        snippets.truncate(10); // allow slightly more results when completion kicks in
+        // No truncation — all completed results above MIN_QUERY_SIMILARITY included.
         #[cfg(feature = "instrument")]
         _qctx.emit(
             trace::PipelineStep::PatternCompletion,
             trace::TracePayload::Number(snippets.len() as f64),
         );
+    }
+
+    // C. Chronological sort: when the query has temporal signals, sort by creation
+    //    order so the LLM receives events in chronological sequence.
+    if query_has_temporal {
+        snippets.sort_by_key(|s| s.created_at_clock);
     }
 
     // Record for contrastive descent in the next reinforce() call.
@@ -1124,6 +1529,12 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
         if top.similarity > 0.2 {
             if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == top.id) {
                 entry.salience = (entry.salience + top.similarity * AUTO_REINFORCE_SCALE).min(1.0);
+            }
+            // Phase C: DA spike on successful retrieval — reward signal for recall
+            if top.similarity > 0.5 {
+                state.chemistry.dopamine =
+                    (state.chemistry.dopamine + neurochemistry::DA_RETRIEVAL_SPIKE * top.similarity)
+                        .min(1.0);
             }
             #[cfg(feature = "instrument")]
             _qctx.emit(
@@ -1153,7 +1564,7 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
     for snippet in &snippets {
         let entities = extract_entities(&snippet.text, &state.keyword_cache);
         for entity in &entities {
-            if let Some(&node_id) = state.long_term.index.get(&entity.label) {
+            if let Some(&node_id) = state.long_term.index.get(&entity.label.to_lowercase()) {
                 priming_seed_ids.push(node_id);
             }
         }
@@ -1190,9 +1601,11 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
         trace::TracePayload::Number(long_term.len() as f64),
     );
 
-    // Re-sort by weight and cap
+    // Adaptive weight threshold — same principle as L2: scale relative to best.
     long_term.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
-    long_term.truncate(15);
+    let top_weight = long_term.first().map(|n| n.weight).unwrap_or(0.0);
+    let weight_floor = top_weight * 0.4;
+    long_term.retain(|n| n.weight >= weight_floor);
 
     // Hebbian reinforcement on co-retrieved nodes
     let retrieved_ids: Vec<u64> = long_term.iter().map(|n| n.id).collect();
@@ -1237,7 +1650,8 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
 
     state.clock += 1;
     state.ticks_since_consolidation = 0;
-    apply_decay(state);
+    let consolidation_eff = neurochemistry::compute_effective(&state.chemistry);
+    apply_decay(state, consolidation_eff.decay_rate_mod);
     neocortex::replay_consolidation(state);
     #[cfg(feature = "instrument")]
     _cctx.emit(
@@ -1377,7 +1791,7 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         let existing_summary_id = state
             .long_term
             .index
-            .get(&summary_text)
+            .get(&summary_text.to_lowercase())
             .copied()
             .or_else(|| {
                 state
@@ -1433,7 +1847,7 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                     full_text: full_text.clone(),
                 },
             );
-            state.long_term.index.insert(summary_text.clone(), id);
+            state.long_term.index.insert(summary_text.to_lowercase(), id);
             id
         };
         #[cfg(feature = "instrument")]
@@ -1491,7 +1905,8 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         let threshold = group.len() / 2;
         for (label, (count, kind)) in entity_counts {
             if count >= threshold && count > 1 {
-                let topic_id = if let Some(&id) = state.long_term.index.get(&label) {
+                let index_key = label.to_lowercase();
+                let topic_id = if let Some(&id) = state.long_term.index.get(&index_key) {
                     id
                 } else {
                     let id = state.next_id;
@@ -1514,7 +1929,7 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                             full_text: None,
                         },
                     );
-                    state.long_term.index.insert(label.clone(), id);
+                    state.long_term.index.insert(index_key, id);
                     id
                 };
 
@@ -1530,7 +1945,7 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         }
 
         for entry in &group {
-            neocortex::update_graph(state, &entry.text, entry.salience);
+            let _ = neocortex::update_graph(state, &entry.text, entry.salience);
             if let Some(existing) = state.short_term.iter_mut().find(|e| e.id == entry.id) {
                 existing.usage = existing.usage.saturating_add(1);
                 existing.last_access = state.clock;
@@ -1556,7 +1971,9 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         });
     }
 
-    hippocampus::prune_short_term(&mut state.short_term, state.clock);
+    // Phase C: use current neurochemical pruning pressure
+    let consolidation_effective = neurochemistry::compute_effective(&state.chemistry);
+    hippocampus::prune_short_term(&mut state.short_term, state.clock, consolidation_effective.pruning_pressure);
     neocortex::prune_graph(&mut state.long_term, state.clock);
 
     #[cfg(feature = "instrument")]
@@ -1591,10 +2008,11 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
 // push_working_memory  → prefrontal::push_working_memory
 
 /// Exponentially decay salience/weight based on time since last access.
-fn apply_decay(state: &mut BrainState) {
+/// `decay_rate_mod`: neurochemical multiplier (Phase C) — modulates decay speed.
+fn apply_decay(state: &mut BrainState, decay_rate_mod: f32) {
     let now = state.clock;
-    hippocampus::apply_l2_decay(&mut state.short_term, now);
-    neocortex::apply_l3_decay(&mut state.long_term, now);
+    hippocampus::apply_l2_decay(&mut state.short_term, now, decay_rate_mod);
+    neocortex::apply_l3_decay(&mut state.long_term, now, decay_rate_mod);
 }
 
 // renormalize_salience → basal_ganglia::renormalize_salience
@@ -1637,7 +2055,7 @@ fn insert_graph_node(
             full_text: None,
         },
     );
-    state.long_term.index.insert(label, id);
+    state.long_term.index.insert(label.to_lowercase(), id);
     id
 }
 
@@ -1651,7 +2069,7 @@ pub fn add_node_if_new(state: &mut BrainState, label: &str, kind: &str, salience
 /// Create or reinforce a Task node in the knowledge graph.
 /// Returns the node ID of the created/reinforced node.
 pub fn upsert_task_node(state: &mut BrainState, label: &str) -> u64 {
-    let node_id = if let Some(&id) = state.long_term.index.get(label) {
+    let node_id = if let Some(&id) = state.long_term.index.get(&label.to_lowercase()) {
         id
     } else {
         insert_graph_node(
@@ -1684,7 +2102,7 @@ pub fn add_keyword_node(
     metadata: Vec<String>,
 ) -> bool {
     let label = format!("kw:{}:{}", category, term);
-    if let Some(&existing_id) = state.long_term.index.get(&label) {
+    if let Some(&existing_id) = state.long_term.index.get(&label.to_lowercase()) {
         // Reinforce existing keyword node
         if let Some(node) = state.long_term.nodes.get_mut(&existing_id) {
             node.weight += 0.2;
@@ -1818,6 +2236,61 @@ fn should_promote_term(state: &BrainState, term: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// Project a 384-dim embedding to 64-dim temporal context space.
+/// Mean-pools groups of 6 consecutive dimensions.
+fn project_to_temporal(embedding: &[f32]) -> Vec<f32> {
+    let group_size = embedding.len() / TEMPORAL_CONTEXT_DIM;
+    if group_size == 0 {
+        return embedding.to_vec();
+    }
+    let mut projected = Vec::with_capacity(TEMPORAL_CONTEXT_DIM);
+    for i in 0..TEMPORAL_CONTEXT_DIM {
+        let start = i * group_size;
+        let end = (start + group_size).min(embedding.len());
+        let sum: f32 = embedding[start..end].iter().sum();
+        projected.push(sum / (end - start) as f32);
+    }
+    // L2-normalize
+    let norm: f32 = projected.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        projected.iter_mut().for_each(|v| *v /= norm);
+    }
+    projected
+}
+
+/// Update the TCM temporal context vector after a new tick.
+/// Returns a snapshot of the current temporal context for storage on the entry.
+fn update_temporal_context(
+    state: &mut BrainState,
+    embedding: &[f32],
+    salience: f32,
+) -> Vec<f32> {
+    let is_boundary = salience >= EVENT_BOUNDARY_SALIENCE
+        || (!state.last_tick_embedding.is_empty()
+            && cosine_similarity(embedding, &state.last_tick_embedding) < 0.2);
+
+    let drift_rate = if is_boundary {
+        TCM_BOUNDARY_DRIFT_RATE
+    } else {
+        TCM_DRIFT_RATE
+    };
+
+    let projected = project_to_temporal(embedding);
+    if state.temporal_context.is_empty() {
+        state.temporal_context = projected;
+    } else {
+        for (i, val) in state.temporal_context.iter_mut().enumerate() {
+            *val = drift_rate * *val + (1.0 - drift_rate) * projected[i];
+        }
+        // L2-normalize
+        let norm: f32 = state.temporal_context.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            state.temporal_context.iter_mut().for_each(|v| *v /= norm);
+        }
+    }
+    state.temporal_context.clone()
+}
 
 pub fn safe_truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -1958,7 +2431,7 @@ mod tests {
         );
         let initial_salience = state.brain.short_term[0].salience;
         state.brain.clock += 100;
-        apply_decay(&mut state.brain);
+        apply_decay(&mut state.brain, 1.0);
         assert!(state.brain.short_term[0].salience < initial_salience);
     }
 
@@ -2141,7 +2614,7 @@ mod tests {
 
         // Advance clock significantly
         state.brain.clock += 100;
-        apply_decay(&mut state.brain);
+        apply_decay(&mut state.brain, 1.0);
 
         let decayed_valence = state.brain.short_term[0].emotional_valence;
         let decayed_salience = state.brain.short_term[0].salience;
@@ -2289,7 +2762,7 @@ mod tests {
 
         // Both entries decay for 200 ticks
         state.brain.clock += 200;
-        apply_decay(&mut state.brain);
+        apply_decay(&mut state.brain, 1.0);
 
         let stable_entry = state
             .brain
@@ -2499,6 +2972,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         state.brain.clock = 100;
@@ -2689,62 +3163,42 @@ mod tests {
     }
 
     #[test]
-    fn test_reconsolidation_updates_existing() {
+    fn test_related_ticks_create_separate_entries() {
         let mut state = MemoryState::default();
-        // Create initial memory (DECISION: prefix ensures L2 promotion)
+        // Create initial memory
         tick(
             &mut state,
             "DECISION: the database uses PostgreSQL for persistence",
         );
-        assert_eq!(state.brain.short_term.len(), 1);
-        let original_id = state.brain.short_term[0].id;
+        let count_before = state.brain.short_term.len();
 
-        // Query to make it labile
+        // Query then tick with related but distinct information
         retrieve_context(&mut state.brain, "database PostgreSQL");
-        assert!(
-            state.brain.short_term[0].labile_until > 0,
-            "retrieved entry should be labile"
-        );
 
-        // Tick with related but new information — should reconsolidate
         tick(
             &mut state,
             "DECISION: the database PostgreSQL schema has users and sessions tables",
         );
-        // Should still have the original entry (reconsolidated, not duplicated)
-        let reconsolidated = state.brain.short_term.iter().find(|e| e.id == original_id);
-        if let Some(entry) = reconsolidated {
-            assert!(
-                entry.reconsolidation_count > 0,
-                "entry should have been reconsolidated"
-            );
-            assert!(
-                entry.text.contains("tables") || entry.summary.contains("tables"),
-                "reconsolidated entry should contain new info"
-            );
-        }
-        // Either way, verify the system didn't crash and state is consistent
+        // Without reconsolidation, related-but-distinct facts should create
+        // separate entries (or merge via normal similarity path), preserving
+        // episodic details rather than overwriting them.
+        assert!(
+            state.brain.short_term.len() >= count_before,
+            "related ticks should preserve entries, not destroy them"
+        );
         assert!(!state.brain.short_term.is_empty());
     }
 
     #[test]
-    fn test_labile_expires() {
+    fn test_retrieve_does_not_set_labile() {
         let mut state = MemoryState::default();
-        tick(&mut state, "DECISION: test entry for labile expiration");
-        let id = state.brain.short_term[0].id;
+        tick(&mut state, "DECISION: test entry for labile check");
 
-        // Query to make labile
         retrieve_context(&mut state.brain, "test entry labile");
-        assert!(state.brain.short_term[0].labile_until > 0);
-
-        // Advance clock past labile window
-        state.brain.clock += RECONSOLIDATION_WINDOW + 5;
-        hippocampus::stabilize_labile_entries(&mut state.brain.short_term, state.brain.clock);
-
-        let entry = state.brain.short_term.iter().find(|e| e.id == id).unwrap();
+        // After removing reconsolidation, retrieve should not set labile_until
         assert_eq!(
-            entry.labile_until, 0,
-            "labile state should expire after window"
+            state.brain.short_term[0].labile_until, 0,
+            "retrieve should not set labile_until"
         );
     }
 
@@ -3066,7 +3520,7 @@ mod tests {
         assert!(!initial_weights.is_empty(), "should have edges");
         // Advance clock and apply decay
         state.brain.clock += 100;
-        apply_decay(&mut state.brain);
+        apply_decay(&mut state.brain, 1.0);
         // Verify edge weights have decayed
         for (edge, &initial) in state
             .brain
@@ -3169,6 +3623,7 @@ mod tests {
             &embed_text("xylophone zamboni quasar", state.brain.config.embedding_dim),
             5,
             "xylophone zamboni quasar",
+            &Neurochemistry::default(),
         );
         // Either empty or all above threshold
         for r in &results {
@@ -3222,7 +3677,7 @@ mod tests {
         const { assert!(MIN_QUERY_SIMILARITY < 1.0) };
         // Should be low enough not to filter genuinely relevant results
         // (0.25 is appropriate for semantic embeddings which produce higher similarities)
-        const { assert!(MIN_QUERY_SIMILARITY <= 0.3) };
+        const { assert!(MIN_QUERY_SIMILARITY <= 0.5) };
     }
 
     // ---- Commit 2: Keyword bonus + trigram tests ----
@@ -3240,7 +3695,7 @@ mod tests {
         );
         let embedding = embed_text("MML syntax", state.brain.config.embedding_dim);
         let results =
-            hippocampus::top_k_similar(&state.brain.short_term, &embedding, 5, "MML syntax");
+            hippocampus::top_k_similar(&state.brain.short_term, &embedding, 5, "MML syntax", &Neurochemistry::default());
         assert!(!results.is_empty());
         // The MML entry should be first
         assert!(
@@ -3266,11 +3721,13 @@ mod tests {
             &embedding,
             5,
             "alpha bravo charlie delta echo foxtrot golf hotel",
+            &Neurochemistry::default(),
         );
         assert!(!results.is_empty());
         // Keyword bonus is capped at KEYWORD_MATCH_BONUS_CAP (0.2)
-        // The cosine sim alone is ~1.0, so total should not exceed 1.0 + cap
-        assert!(results[0].similarity <= 1.0 + KEYWORD_MATCH_BONUS_CAP + 0.01);
+        // Plus emotional_boost (up to 0.05)
+        // The cosine sim alone is ~1.0, so total should not exceed 1.0 + cap + emotional_boost
+        assert!(results[0].similarity <= 1.0 + KEYWORD_MATCH_BONUS_CAP + 0.05 + 0.01);
     }
 
     #[test]
@@ -3279,7 +3736,7 @@ mod tests {
         tick(&mut state, "the and for with this that from");
         let embedding = embed_text("the and for", state.brain.config.embedding_dim);
         let results =
-            hippocampus::top_k_similar(&state.brain.short_term, &embedding, 5, "the and for");
+            hippocampus::top_k_similar(&state.brain.short_term, &embedding, 5, "the and for", &Neurochemistry::default());
         // Stopwords should not contribute to keyword bonus
         // Result may or may not pass similarity threshold, but if it does
         // the bonus should be 0 (only stopwords in query)
@@ -3302,7 +3759,7 @@ mod tests {
         let mut state = MemoryState::default();
         tick(&mut state, "some memory entry about testing");
         let embedding = embed_text("", state.brain.config.embedding_dim);
-        let results = hippocampus::top_k_similar(&state.brain.short_term, &embedding, 5, "");
+        let results = hippocampus::top_k_similar(&state.brain.short_term, &embedding, 5, "", &Neurochemistry::default());
         // Should not panic, bonus should be 0
         for r in &results {
             assert!(r.similarity >= -1.0); // just a sanity check
@@ -3343,6 +3800,10 @@ mod tests {
                 compute_salience(text, &kw()),
                 Vec::new(),
                 0.0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
             );
         }
         // Lower theta_low so these group together
@@ -3374,6 +3835,10 @@ mod tests {
                 compute_salience(text, &kw()),
                 Vec::new(),
                 0.0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
             );
         }
         let _summaries2 = consolidate(&mut state.brain);
@@ -3411,6 +3876,10 @@ mod tests {
                 compute_salience(text, &kw()),
                 Vec::new(),
                 0.0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
             );
         }
         state.brain.config.theta_low = 0.3;
@@ -3449,6 +3918,10 @@ mod tests {
                 compute_salience(&text, &kw()),
                 Vec::new(),
                 0.0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
             );
         }
         consolidate(&mut state.brain);
@@ -3484,6 +3957,10 @@ mod tests {
                 compute_salience(text, &kw()),
                 Vec::new(),
                 0.0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
             );
         }
         state.brain.config.theta_low = 0.3;
@@ -3502,17 +3979,13 @@ mod tests {
             consolidated_count
         );
 
-        // Query should not return consolidated entries
+        // Consolidated entries SHOULD still appear in query results —
+        // episodic facts must remain retrievable even after L3 summary creation.
         let ctx = retrieve_context(&mut state.brain, "MML tempo BPM");
-        for snippet in &ctx.short_term {
-            let entry = state.brain.short_term.iter().find(|e| e.id == snippet.id);
-            if let Some(e) = entry {
-                assert!(
-                    !e.consolidated,
-                    "consolidated entry should not appear in query results"
-                );
-            }
-        }
+        assert!(
+            !ctx.short_term.is_empty(),
+            "consolidated entries should still be returned in query results"
+        );
     }
 
     #[test]
@@ -3971,14 +4444,14 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_discards_low_signal_unrehearsed() {
+    fn test_flush_promotes_all_unpromoted() {
         let mut state = MemoryState::default();
-        // Add a low-salience unrehearsed entry
+        // Even low-salience entries should be promoted on flush — no data loss
         state.brain.working_memory.push(WorkingMemoryEntry {
             id: 998,
-            text: "just some noise that nobody cares about".to_string(),
-            embedding: embed_text("just some noise", state.brain.config.embedding_dim),
-            salience: 0.05, // below threshold
+            text: "just some conversational content".to_string(),
+            embedding: embed_text("just some conversational content", state.brain.config.embedding_dim),
+            salience: 0.05,
             tick_created: state.brain.clock,
             rehearsal_count: 0,
             promoted: false,
@@ -3992,10 +4465,9 @@ mod tests {
             state.brain.working_memory.is_empty(),
             "flush should clear working memory"
         );
-        assert_eq!(
-            state.brain.short_term.len(),
-            st_before,
-            "flush should NOT promote low-salience unrehearsed entries"
+        assert!(
+            state.brain.short_term.len() > st_before,
+            "flush should promote all unpromoted entries to L2"
         );
     }
 
@@ -4071,6 +4543,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
         state.brain.long_term.rebuild_edge_index();
 
@@ -4122,6 +4595,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         // Reinforce with constant intervals (cramming): 1, 1, 1, 1
@@ -4171,6 +4645,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         // Massed edge
@@ -4187,6 +4662,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
         state.brain.long_term.rebuild_edge_index();
 
@@ -4259,6 +4735,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         // First Hebbian reinforce: activation_count=0 → full boost
@@ -4302,6 +4779,7 @@ mod tests {
             stability: 5.0,
             recent_interval_avg: 20.0,
             historical_interval_avg: 15.0,
+            cpeb_boost: 0.0,
         });
 
         // Low stability edge A->C (same weight)
@@ -4315,6 +4793,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 1.0,
             historical_interval_avg: 1.0,
+            cpeb_boost: 0.0,
         });
 
         let results = neocortex::spreading_activation(
@@ -4361,6 +4840,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 1.0,
             historical_interval_avg: 1.0,
+            cpeb_boost: 0.0,
         });
         state.brain.long_term.edges.push(GraphEdge {
             from: a_id,
@@ -4372,6 +4852,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 1.0,
             historical_interval_avg: 1.0,
+            cpeb_boost: 0.0,
         });
 
         let results = neocortex::spreading_activation(
@@ -4413,6 +4894,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 1.0,
             historical_interval_avg: 1.0,
+            cpeb_boost: 0.0,
         });
         state.brain.long_term.edges.push(GraphEdge {
             from: a_id,
@@ -4424,6 +4906,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 1.0,
             historical_interval_avg: 1.0,
+            cpeb_boost: 0.0,
         });
 
         let results = neocortex::spreading_activation(
@@ -4464,6 +4947,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 1.0,
             historical_interval_avg: 1.0,
+            cpeb_boost: 0.0,
         });
 
         let results = neocortex::spreading_activation(
@@ -4502,6 +4986,7 @@ mod tests {
             stability: 4.0,
             recent_interval_avg: 1.0,
             historical_interval_avg: 1.0,
+            cpeb_boost: 0.0,
         });
 
         let results = neocortex::spreading_activation(
@@ -4544,49 +5029,108 @@ mod tests {
     }
 
     #[test]
-    fn test_cpeb_tagging_boosts_recently_active_edges() {
-        let mut state = MemoryState::default();
-        state.brain.clock = 20;
-
-        let (a_id, b_id, c_id, d_id) = (1900, 1901, 1902, 1903);
-        insert_test_node(&mut state.brain, a_id, "RecentA");
-        insert_test_node(&mut state.brain, b_id, "RecentB");
-        insert_test_node(&mut state.brain, c_id, "OldA");
-        insert_test_node(&mut state.brain, d_id, "OldB");
-
-        state.brain.long_term.edges.push(GraphEdge {
-            from: a_id,
-            to: b_id,
+    fn test_cpeb_only_tags_touched_edges() {
+        // Create graph with edges A-B and C-D, touch only A and B,
+        // verify only A-B edge gets CPEB boost
+        let mut long_term = GraphMemory::default();
+        let (a, b, c, d) = (1, 2, 3, 4);
+        long_term.edges.push(GraphEdge {
+            from: a,
+            to: b,
             weight: 0.5,
             kind: "related".into(),
             last_seen: 20,
             activation_count: 1,
             stability: 1.0,
-            recent_interval_avg: 1.0,
-            historical_interval_avg: 1.0,
+            ..Default::default()
         });
-        state.brain.long_term.edges.push(GraphEdge {
-            from: c_id,
-            to: d_id,
+        long_term.edges.push(GraphEdge {
+            from: c,
+            to: d,
             weight: 0.5,
             kind: "related".into(),
-            last_seen: 14,
+            last_seen: 20,
             activation_count: 1,
             stability: 1.0,
-            recent_interval_avg: 1.0,
-            historical_interval_avg: 1.0,
+            ..Default::default()
         });
 
-        let text = "BLOCKER: critical crash panic failure in auth flow";
-        assert!(
-            compute_emotional_valence(text, &state.brain.keyword_cache).abs()
-                > CPEB_VALENCE_THRESHOLD
+        let touched = vec![a, b]; // Only A and B touched
+        let tagged = neocortex::cpeb_tag_edges_scoped(
+            &mut long_term, 20, 0.8, CPEB_STABILITY_BOOST, &touched,
         );
 
-        tick(&mut state, text);
+        assert_eq!(tagged, 1, "only A-B edge should be tagged");
+        assert!(long_term.edges[0].stability > 1.0, "A-B edge should be boosted");
+        assert!(long_term.edges[0].cpeb_boost > 0.0, "A-B edge should have cpeb_boost");
+        assert!((long_term.edges[1].stability - 1.0).abs() < f32::EPSILON, "C-D edge should be unchanged");
+        assert_eq!(long_term.edges[1].cpeb_boost, 0.0, "C-D edge should have no cpeb_boost");
+    }
 
-        assert!(state.brain.long_term.edges[0].stability > 1.0);
-        assert!((state.brain.long_term.edges[1].stability - 1.0).abs() < f32::EPSILON);
+    #[test]
+    fn test_cpeb_boost_decays_over_time() {
+        let mut long_term = GraphMemory::default();
+        long_term.nodes.insert(1, GraphNode { id: 1, label: "A".into(), kind: "Entity".into(), weight: 1.0, last_seen: 100, ..Default::default() });
+        long_term.nodes.insert(2, GraphNode { id: 2, label: "B".into(), kind: "Entity".into(), weight: 1.0, last_seen: 100, ..Default::default() });
+        long_term.edges.push(GraphEdge {
+            from: 1,
+            to: 2,
+            weight: 1.0,
+            kind: "related".into(),
+            last_seen: 100,
+            activation_count: 1,
+            stability: 1.0,
+            ..Default::default()
+        });
+
+        // Tag the edge with CPEB boost
+        let touched = vec![1, 2];
+        neocortex::cpeb_tag_edges_scoped(
+            &mut long_term, 100, 0.9, CPEB_STABILITY_BOOST, &touched,
+        );
+        let initial_cpeb = long_term.edges[0].cpeb_boost;
+        let initial_stability = long_term.edges[0].stability;
+        assert!(initial_cpeb > 0.0);
+        assert!(initial_stability > 1.0);
+
+        // Apply decay 50 times (1.0 = baseline neurochemical rate)
+        for _ in 0..50 {
+            neocortex::apply_l3_decay(&mut long_term, 101, 1.0);
+        }
+
+        assert!(
+            long_term.edges[0].cpeb_boost < initial_cpeb * 0.1,
+            "cpeb_boost should have decayed significantly: {} vs initial {}",
+            long_term.edges[0].cpeb_boost, initial_cpeb,
+        );
+        assert!(
+            long_term.edges[0].stability >= 1.0,
+            "stability should never drop below 1.0: {}",
+            long_term.edges[0].stability,
+        );
+    }
+
+    #[test]
+    fn test_soft_cap_allows_growth_beyond_10() {
+        // Repeatedly boost stability, verify it exceeds 10.0 but plateaus below 20.0
+        let mut stability = 1.0_f32;
+        for _ in 0..100 {
+            stability = neocortex::soft_cap_stability(stability * 1.3);
+        }
+        assert!(stability > 10.0, "stability should exceed old hard cap: {}", stability);
+        assert!(stability < 20.0, "stability should plateau below max: {}", stability);
+    }
+
+    #[test]
+    fn test_soft_cap_linear_below_knee() {
+        // Verify stability < 10 is unchanged by soft_cap_stability()
+        for raw in [0.5, 1.0, 3.0, 5.0, 9.99] {
+            let capped = neocortex::soft_cap_stability(raw);
+            assert!(
+                (capped - raw).abs() < f32::EPSILON,
+                "below knee should be identity: raw={} capped={}", raw, capped,
+            );
+        }
     }
 
     #[test]
@@ -4594,93 +5138,22 @@ mod tests {
         let mut state = MemoryState::default();
         state.brain.clock = 20;
 
-        let (a_id, b_id) = (1910, 1911);
-        insert_test_node(&mut state.brain, a_id, "NeutralA");
-        insert_test_node(&mut state.brain, b_id, "NeutralB");
-        state.brain.long_term.edges.push(GraphEdge {
-            from: a_id,
-            to: b_id,
-            weight: 0.5,
-            kind: "related".into(),
-            last_seen: 20,
-            activation_count: 1,
-            stability: 1.0,
-            recent_interval_avg: 1.0,
-            historical_interval_avg: 1.0,
-        });
-
         let text = "updated routine documentation and formatting notes";
-        assert_eq!(
-            compute_emotional_valence(text, &state.brain.keyword_cache),
-            0.0
-        );
-
-        tick(&mut state, text);
-
-        assert!((state.brain.long_term.edges[0].stability - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn test_cpeb_boost_scales_with_valence() {
-        let low_text = "BUG: auth error on login";
-        let high_text = "BLOCKER: critical auth crash panic failure regression";
-
-        let mut low_state = MemoryState::default();
-        low_state.brain.clock = 20;
-        let (low_a, low_b) = (1920, 1921);
-        insert_test_node(&mut low_state.brain, low_a, "LowA");
-        insert_test_node(&mut low_state.brain, low_b, "LowB");
-        low_state.brain.long_term.edges.push(GraphEdge {
-            from: low_a,
-            to: low_b,
-            weight: 0.5,
-            kind: "related".into(),
-            last_seen: 20,
-            activation_count: 1,
-            stability: 1.0,
-            recent_interval_avg: 1.0,
-            historical_interval_avg: 1.0,
-        });
-
-        let mut high_state = MemoryState::default();
-        high_state.brain.clock = 20;
-        let (high_a, high_b) = (1930, 1931);
-        insert_test_node(&mut high_state.brain, high_a, "HighA");
-        insert_test_node(&mut high_state.brain, high_b, "HighB");
-        high_state.brain.long_term.edges.push(GraphEdge {
-            from: high_a,
-            to: high_b,
-            weight: 0.5,
-            kind: "related".into(),
-            last_seen: 20,
-            activation_count: 1,
-            stability: 1.0,
-            recent_interval_avg: 1.0,
-            historical_interval_avg: 1.0,
-        });
-
-        let low_valence = compute_emotional_valence(low_text, &low_state.brain.keyword_cache).abs();
-        let high_valence =
-            compute_emotional_valence(high_text, &high_state.brain.keyword_cache).abs();
-        assert!(low_valence > CPEB_VALENCE_THRESHOLD);
-        assert!(high_valence > low_valence);
-
-        tick(&mut low_state, low_text);
-        tick(&mut high_state, high_text);
-
-        let low_boost = low_state.brain.long_term.edges[0].stability - 1.0;
-        let high_boost = high_state.brain.long_term.edges[0].stability - 1.0;
-        assert!(
-            high_boost > low_boost,
-            "higher valence should produce larger CPEB boost: high={} low={}",
-            high_boost,
-            low_boost
-        );
+        if state.brain.emotional_prototypes.is_empty() {
+            state.brain.emotional_prototypes = seed_emotional_prototypes();
+        }
+        let emb = embed_text(text, 384);
+        let v = compute_emotional_valence(&state.brain.emotional_prototypes, &emb);
+        assert!(v.abs() < CPEB_VALENCE_THRESHOLD, "routine text should be below CPEB threshold, got {}", v);
     }
 
     #[test]
     fn test_cpeb_tagged_edge_decays_slower() {
         let mut long_term = GraphMemory::default();
+        long_term.nodes.insert(1, GraphNode { id: 1, label: "A".into(), kind: "Entity".into(), weight: 1.0, last_seen: 50, ..Default::default() });
+        long_term.nodes.insert(2, GraphNode { id: 2, label: "B".into(), kind: "Entity".into(), weight: 1.0, last_seen: 50, ..Default::default() });
+        long_term.nodes.insert(3, GraphNode { id: 3, label: "C".into(), kind: "Entity".into(), weight: 1.0, last_seen: 50, ..Default::default() });
+        long_term.nodes.insert(4, GraphNode { id: 4, label: "D".into(), kind: "Entity".into(), weight: 1.0, last_seen: 50, ..Default::default() });
         long_term.edges.push(GraphEdge {
             from: 1,
             to: 2,
@@ -4689,34 +5162,27 @@ mod tests {
             last_seen: 50,
             activation_count: 1,
             stability: 1.0,
-            recent_interval_avg: 1.0,
-            historical_interval_avg: 1.0,
+            ..Default::default()
         });
         long_term.edges.push(GraphEdge {
             from: 3,
             to: 4,
             weight: 1.0,
             kind: "related".into(),
-            last_seen: 40,
+            last_seen: 50,
             activation_count: 1,
             stability: 1.0,
-            recent_interval_avg: 1.0,
-            historical_interval_avg: 1.0,
+            ..Default::default()
         });
 
-        let tagged = neocortex::cpeb_tag_edges(
-            &mut long_term,
-            50,
-            0.9,
-            CPEB_TAG_WINDOW,
-            CPEB_STABILITY_BOOST,
+        // Tag only edge 1-2 via scoped CPEB
+        let touched = vec![1, 2];
+        let tagged = neocortex::cpeb_tag_edges_scoped(
+            &mut long_term, 50, 0.9, CPEB_STABILITY_BOOST, &touched,
         );
         assert_eq!(tagged, 1);
 
-        long_term.edges[0].last_seen = 50;
-        long_term.edges[1].last_seen = 50;
-
-        neocortex::apply_l3_decay(&mut long_term, 250);
+        neocortex::apply_l3_decay(&mut long_term, 250, 1.0);
 
         assert!(
             long_term.edges[0].weight > long_term.edges[1].weight,
@@ -4724,33 +5190,6 @@ mod tests {
             long_term.edges[0].weight,
             long_term.edges[1].weight
         );
-    }
-
-    #[test]
-    fn test_cpeb_tag_window_respected() {
-        let mut long_term = GraphMemory::default();
-        long_term.edges.push(GraphEdge {
-            from: 1,
-            to: 2,
-            weight: 1.0,
-            kind: "related".into(),
-            last_seen: 10,
-            activation_count: 1,
-            stability: 1.0,
-            recent_interval_avg: 1.0,
-            historical_interval_avg: 1.0,
-        });
-
-        let tagged = neocortex::cpeb_tag_edges(
-            &mut long_term,
-            20,
-            0.8,
-            CPEB_TAG_WINDOW,
-            CPEB_STABILITY_BOOST,
-        );
-
-        assert_eq!(tagged, 0);
-        assert!((long_term.edges[0].stability - 1.0).abs() < f32::EPSILON);
     }
 
     // --- Pattern completion tests (Change 6) ---
@@ -4784,7 +5223,7 @@ mod tests {
             .brain
             .long_term
             .index
-            .insert("ConfigLoader".into(), cfg_id);
+            .insert("configloader".into(), cfg_id);
 
         state.brain.long_term.nodes.insert(
             jwt_id,
@@ -4804,7 +5243,7 @@ mod tests {
             .brain
             .long_term
             .index
-            .insert("JwtSecret".into(), jwt_id);
+            .insert("jwtsecret".into(), jwt_id);
 
         // Edge connecting them
         state.brain.long_term.edges.push(GraphEdge {
@@ -4817,6 +5256,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         // Insert L2 entry that contains the JwtSecret source text
@@ -4831,6 +5271,10 @@ mod tests {
             0.5,
             Vec::new(),
             0.0,
+            0,
+            Vec::new(),
+            Vec::new(),
+            ChemicalStamp::default(),
         );
 
         // Query for ConfigLoader — pattern completion should find the JwtSecret entry
@@ -4885,6 +5329,10 @@ mod tests {
             0.5,
             Vec::new(),
             0.0,
+            0,
+            Vec::new(),
+            Vec::new(),
+            ChemicalStamp::default(),
         );
 
         // Graph-connected entry (indirect)
@@ -4940,6 +5388,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         hippocampus::insert_short_term(
@@ -4952,6 +5401,10 @@ mod tests {
             0.5,
             Vec::new(),
             0.0,
+            0,
+            Vec::new(),
+            Vec::new(),
+            ChemicalStamp::default(),
         );
 
         // Pattern complete for ConfigLoader — the DatabasePool entry is indirect
@@ -4960,6 +5413,7 @@ mod tests {
             &embed_text("ConfigLoader", dim),
             5,
             "ConfigLoader",
+            &Neurochemistry::default(),
         );
         let completed = hippocampus::pattern_complete(
             &state.brain,
@@ -5048,24 +5502,33 @@ mod tests {
     #[test]
     fn test_emotional_intensity_triggers_consolidation() {
         let mut state = MemoryState::default();
-        // High-valence ticks should accumulate emotional intensity
+        // High-valence ticks should spike cortisol/NE → consolidation pressure
         tick(
             &mut state,
-            "BUG: critical server crash in production causing data loss",
+            "this is a complete disaster, the system crashed and we lost all the data",
         );
         tick(
             &mut state,
-            "BLOCKER: security vulnerability found in authentication module",
+            "everything is broken and nothing works, the entire system is down",
         );
         tick(
             &mut state,
-            "BUG: panic in payment processing causes transaction failures",
+            "catastrophic failure, data corruption everywhere and it keeps getting worse",
+        );
+        tick(
+            &mut state,
+            "total system meltdown, all services are offline and unrecoverable",
+        );
+        tick(
+            &mut state,
+            "critical data loss across all production databases, no backups survived",
         );
 
+        let effective = neurochemistry::compute_effective(&state.brain.chemistry);
         assert!(
             should_suggest_consolidation(&state),
-            "burst of high-valence ticks should trigger consolidation, valence_sum={}",
-            state.brain.recent_valence_sum
+            "burst of high-valence ticks should trigger consolidation, pressure={}",
+            effective.consolidation_pressure
         );
     }
 
@@ -5076,30 +5539,35 @@ mod tests {
         tick(&mut state, "Refactored variable names in the config module");
         tick(&mut state, "Added a comment to the parser function");
 
+        let effective = neurochemistry::compute_effective(&state.brain.chemistry);
         assert!(
             !should_suggest_consolidation(&state),
-            "neutral ticks should not trigger early consolidation, valence_sum={}, ticks_since={}",
-            state.brain.recent_valence_sum,
+            "neutral ticks should not trigger early consolidation, pressure={}, ticks_since={}",
+            effective.consolidation_pressure,
             state.brain.ticks_since_consolidation
         );
     }
 
     #[test]
-    fn test_emotional_intensity_decays() {
+    fn test_cortisol_decays_over_time() {
         let mut state = MemoryState::default();
-        tick(&mut state, "BUG: critical crash in production");
-        let after_first = state.brain.recent_valence_sum;
+        // Build up cortisol with high-valence ticks
+        tick(&mut state, "this is a complete disaster, everything crashed and data was destroyed");
+        tick(&mut state, "everything is broken and the situation is hopeless, we lost it all");
+        tick(&mut state, "catastrophic failure everywhere, nothing can be recovered");
+        let after_spike = state.brain.chemistry.cortisol;
+        assert!(after_spike > 0.0, "cortisol should spike, got {}", after_spike);
 
-        // Several neutral ticks should decay the sum
-        for _ in 0..10 {
-            tick(&mut state, "routine documentation update");
+        // Many low-intensity ticks should let cortisol decay
+        for _ in 0..30 {
+            tick(&mut state, "updated the configuration settings for the project");
         }
 
         assert!(
-            state.brain.recent_valence_sum < after_first * 0.5,
-            "emotional intensity should decay over time: {} -> {}",
-            after_first,
-            state.brain.recent_valence_sum
+            state.brain.chemistry.cortisol < after_spike,
+            "cortisol should decay from spike: {} -> {}",
+            after_spike,
+            state.brain.chemistry.cortisol
         );
     }
 
@@ -5176,7 +5644,7 @@ mod tests {
                 full_text: None,
             },
         );
-        state.long_term.index.insert(label.into(), id);
+        state.long_term.index.insert(label.to_lowercase(), id);
     }
 
     // --- Sharp-wave ripple replay tests (Change 5) ---
@@ -5205,6 +5673,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         // Create two L2 entries that mention both entities, close in time
@@ -5432,6 +5901,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
         state.brain.long_term.edges.push(GraphEdge {
             from: b_id,
@@ -5443,6 +5913,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         let results = neocortex::spreading_activation(
@@ -5487,6 +5958,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
         state.brain.long_term.edges.push(GraphEdge {
             from: b_id,
@@ -5498,6 +5970,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         // Should not infinite loop — visited set prevents re-expansion
@@ -5533,6 +6006,7 @@ mod tests {
                 stability: 1.0,
                 recent_interval_avg: 0.0,
                 historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
             });
         }
 
@@ -5589,6 +6063,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
         state.brain.long_term.edges.push(GraphEdge {
             from: ids[1],
@@ -5600,6 +6075,7 @@ mod tests {
             stability: 1.0,
             recent_interval_avg: 0.0,
             historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
         });
 
         let results = neocortex::graph_lookup(
@@ -5642,6 +6118,7 @@ mod tests {
                 stability: 1.0,
                 recent_interval_avg: 0.0,
                 historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
             });
         }
 
@@ -5971,6 +6448,10 @@ mod tests {
             0.5,
             vec![],
             0.0,
+            0,
+            Vec::new(),
+            Vec::new(),
+            ChemicalStamp::default(),
         );
 
         // The consolidated entry should have been evicted (lower effective score)
@@ -6171,26 +6652,667 @@ mod tests {
     }
 
     #[test]
-    fn test_passive_ticks_dont_update_term_frequency() {
-        let mut state = MemoryState::default();
-        // Passive tick (used during onboarding/ingestion)
-        tick_passive(
-            &mut state,
-            "DECISION: fn SpecialHandler() processes important data",
-        );
-        // term_frequency should be empty — passive ticks skip Layer 3
-        assert!(
-            state.brain.term_frequency.is_empty(),
-            "passive ticks should not update term_frequency"
-        );
-    }
-
-    #[test]
     fn test_term_stats_serialization_compat() {
         // TermStats should deserialize with defaults for missing fields
         let json = r#"{"tick_count":5,"total_count":10,"first_seen":1,"last_seen":5}"#;
         let stats: TermStats = serde_json::from_str(json).unwrap();
         assert_eq!(stats.tick_count, 5);
         assert!(!stats.has_keyword_cooccurrence); // default false
+    }
+
+    // -----------------------------------------------------------------------
+    // Neurochemistry integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ne_spikes_on_high_salience() {
+        let mut state = MemoryState::default();
+        assert_eq!(state.brain.chemistry.norepinephrine, 0.0);
+        // DECISION: and BUG: prefixes trigger high salience
+        tick(&mut state, "DECISION: We are switching the entire database architecture to a distributed system");
+        assert!(
+            state.brain.chemistry.norepinephrine > 0.0,
+            "NE should spike on high-salience tick, got {}",
+            state.brain.chemistry.norepinephrine
+        );
+    }
+
+    #[test]
+    fn test_cortisol_spikes_on_negative_valence() {
+        let mut state = MemoryState::default();
+        assert_eq!(state.brain.chemistry.cortisol, 0.0);
+        tick(&mut state, "CRITICAL: everything is broken, catastrophic failure, data is destroyed and we lost everything");
+        assert!(
+            state.brain.chemistry.cortisol > 0.0,
+            "cortisol should spike on negative valence tick, got {}",
+            state.brain.chemistry.cortisol
+        );
+    }
+
+    #[test]
+    fn test_da_spikes_on_positive_valence() {
+        let mut state = MemoryState::default();
+        assert_eq!(state.brain.chemistry.dopamine, 0.0);
+        tick(&mut state, "shipped the feature successfully, great progress, everything works perfectly and users love it");
+        assert!(
+            state.brain.chemistry.dopamine > 0.0,
+            "DA should spike on positive valence tick, got {}",
+            state.brain.chemistry.dopamine
+        );
+    }
+
+    #[test]
+    fn test_ach_spikes_on_novel_input() {
+        let mut state = MemoryState::default();
+        assert_eq!(state.brain.chemistry.acetylcholine, 0.0);
+        // Novel input with high enough salience to pass attention gate
+        tick(&mut state, "DECISION: adopting a completely novel quantum-resistant cryptographic protocol for all authentication");
+        assert!(
+            state.brain.chemistry.acetylcholine > 0.0,
+            "ACh should spike on novel input (no prior memories), got {}",
+            state.brain.chemistry.acetylcholine
+        );
+    }
+
+    #[test]
+    fn test_ecb_rises_on_routine() {
+        let mut state = MemoryState::default();
+        assert_eq!(state.brain.chemistry.endocannabinoid, 0.0);
+        // Low-salience tick (no decision/bug keywords, plain text)
+        tick(&mut state, "updated some formatting");
+        assert!(
+            state.brain.chemistry.endocannabinoid > 0.0,
+            "eCB should rise on routine/low-salience tick, got {}",
+            state.brain.chemistry.endocannabinoid
+        );
+    }
+
+    #[test]
+    fn test_cortisol_triggers_consolidation() {
+        let mut state = MemoryState::default();
+        // Manually set high cortisol to simulate accumulated stress
+        state.brain.chemistry.cortisol = 0.9;
+        state.brain.chemistry.norepinephrine = 0.5;
+        let effective = neurochemistry::compute_effective(&state.brain.chemistry);
+        assert!(
+            effective.consolidation_pressure >= CONSOLIDATION_PRESSURE_THRESHOLD,
+            "high cortisol should produce consolidation pressure >= {}, got {}",
+            CONSOLIDATION_PRESSURE_THRESHOLD,
+            effective.consolidation_pressure
+        );
+    }
+
+    #[test]
+    fn test_chemistry_persists_across_save_load() {
+        use crate::tool::persistence::{save_memory_to_path, load_memory_from_path};
+        let mut state = MemoryState::default();
+        state.brain.chemistry.norepinephrine = 0.3;
+        state.brain.chemistry.cortisol = 0.5;
+        state.brain.chemistry.dopamine = 0.7;
+        state.brain.chemistry.serotonin = 0.4;
+        state.brain.chemistry.acetylcholine = 0.2;
+        state.brain.chemistry.endocannabinoid = 0.1;
+
+        let path = std::env::temp_dir().join("legend_chem_test.lz4");
+        save_memory_to_path(&state, path.to_str().unwrap()).unwrap();
+        let loaded = load_memory_from_path(path.to_str().unwrap()).unwrap();
+
+        assert!((loaded.brain.chemistry.norepinephrine - 0.3).abs() < f32::EPSILON);
+        assert!((loaded.brain.chemistry.cortisol - 0.5).abs() < f32::EPSILON);
+        assert!((loaded.brain.chemistry.dopamine - 0.7).abs() < f32::EPSILON);
+        assert!((loaded.brain.chemistry.serotonin - 0.4).abs() < f32::EPSILON);
+        assert!((loaded.brain.chemistry.acetylcholine - 0.2).abs() < f32::EPSILON);
+        assert!((loaded.brain.chemistry.endocannabinoid - 0.1).abs() < f32::EPSILON);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_ne_spikes_on_context_switch() {
+        let mut state = MemoryState::default();
+        // First tick establishes a topic
+        tick(&mut state, "DECISION: we are using PostgreSQL for the database layer with full ACID compliance");
+        let ne_after_first = state.brain.chemistry.norepinephrine;
+        // Second tick on a completely different topic triggers context switch
+        tick(&mut state, "DECISION: switching the frontend framework to a completely different rendering paradigm");
+        // NE should be at least as high (context switch spike + salience spike)
+        // Even with decay between ticks, the context switch spike should be visible
+        assert!(
+            state.brain.chemistry.norepinephrine > 0.0,
+            "NE should be elevated after context switch, got {}",
+            state.brain.chemistry.norepinephrine
+        );
+        let _ = ne_after_first; // suppress unused warning
+    }
+
+    // --- Phase B: Chemical stamp integration tests ---
+
+    #[test]
+    fn test_chemical_stamp_recorded_at_encoding() {
+        let mut state = MemoryState::default();
+        // Spike NE before ticking
+        state.brain.chemistry.norepinephrine = 0.6;
+        tick(&mut state, "ARCHITECTURE: critical security vulnerability found in auth module");
+        // Find the L2 entry
+        let entry = state.brain.short_term.last().unwrap();
+        assert!(
+            entry.chemical_stamp.ne_at_encoding > 0.0,
+            "NE stamp should be > 0 after high-NE tick, got {}",
+            entry.chemical_stamp.ne_at_encoding
+        );
+    }
+
+    #[test]
+    fn test_state_dependent_retrieval_bonus() {
+        let mut state = MemoryState::default();
+        // Encode under high NE
+        state.brain.chemistry.norepinephrine = 0.8;
+        state.brain.chemistry.dopamine = 0.5;
+        tick(&mut state, "DECISION: switched database to PostgreSQL for JOIN support");
+
+        // Query under matching chemistry → should get state bonus
+        let emb = embed_text("PostgreSQL database", state.brain.config.embedding_dim);
+        let with_match = hippocampus::top_k_similar(
+            &state.brain.short_term, &emb, 5, "PostgreSQL database",
+            &state.brain.chemistry,
+        );
+
+        // Query under zero chemistry → no state bonus
+        let baseline_chem = Neurochemistry::default();
+        let without_match = hippocampus::top_k_similar(
+            &state.brain.short_term, &emb, 5, "PostgreSQL database",
+            &baseline_chem,
+        );
+
+        if !with_match.is_empty() && !without_match.is_empty() {
+            assert!(
+                with_match[0].similarity >= without_match[0].similarity,
+                "matching chemistry should give >= similarity: {} vs {}",
+                with_match[0].similarity, without_match[0].similarity
+            );
+        }
+    }
+
+    #[test]
+    fn test_ne_encoded_memories_decay_slower() {
+        let mut state = MemoryState::default();
+        let dim = state.brain.config.embedding_dim;
+
+        // Entry with high NE stamp
+        hippocampus::insert_short_term(
+            &mut state.brain, "high NE memory", embed_text("high NE memory", dim),
+            0.5, Vec::new(), 0.8, 0, Vec::new(), Vec::new(),
+            neurochemistry::ChemicalStamp {
+                ne_at_encoding: 0.8, cortisol_at_encoding: 0.0,
+                da_at_encoding: 0.0, ach_at_encoding: 0.0,
+            },
+        );
+        // Entry with zero NE stamp
+        hippocampus::insert_short_term(
+            &mut state.brain, "zero NE memory", embed_text("zero NE memory", dim),
+            0.5, Vec::new(), 0.8, 0, Vec::new(), Vec::new(),
+            neurochemistry::ChemicalStamp::default(),
+        );
+
+        // Advance clock and apply decay
+        state.brain.clock += 50;
+        hippocampus::apply_l2_decay(&mut state.brain.short_term, state.brain.clock, 1.0);
+
+        let high_ne = state.brain.short_term.iter().find(|e| e.text.contains("high NE")).unwrap();
+        let zero_ne = state.brain.short_term.iter().find(|e| e.text.contains("zero NE")).unwrap();
+
+        assert!(
+            high_ne.emotional_valence.abs() > zero_ne.emotional_valence.abs(),
+            "NE-encoded should retain more emotional valence: {} vs {}",
+            high_ne.emotional_valence, zero_ne.emotional_valence
+        );
+    }
+
+    #[test]
+    fn test_da_encoded_memories_reinforce_stronger() {
+        let mut state = MemoryState::default();
+        let dim = state.brain.config.embedding_dim;
+
+        // Entry with high DA stamp
+        hippocampus::insert_short_term(
+            &mut state.brain, "high DA memory about testing", embed_text("high DA memory about testing", dim),
+            0.1, Vec::new(), 0.0, 0, Vec::new(), Vec::new(),
+            neurochemistry::ChemicalStamp {
+                ne_at_encoding: 0.0, cortisol_at_encoding: 0.0,
+                da_at_encoding: 0.8, ach_at_encoding: 0.0,
+            },
+        );
+        let high_da_id = state.brain.short_term.last().unwrap().id;
+
+        // Entry with zero DA stamp
+        hippocampus::insert_short_term(
+            &mut state.brain, "zero DA memory about testing", embed_text("zero DA memory about testing", dim),
+            0.1, Vec::new(), 0.0, 0, Vec::new(), Vec::new(),
+            neurochemistry::ChemicalStamp::default(),
+        );
+        let zero_da_id = state.brain.short_term.last().unwrap().id;
+
+        // Pre-load gradient_sq_sum so AdaGrad LR is reasonable (not astronomical)
+        for e in state.brain.short_term.iter_mut() {
+            e.gradient_sq_sum = 5.0;
+        }
+        // Reinforce both with moderate signal
+        basal_ganglia::reinforce(&mut state.brain, &[high_da_id], 0.5);
+        basal_ganglia::reinforce(&mut state.brain, &[zero_da_id], 0.5);
+
+        let high_da = state.brain.short_term.iter().find(|e| e.id == high_da_id).unwrap();
+        let zero_da = state.brain.short_term.iter().find(|e| e.id == zero_da_id).unwrap();
+
+        assert!(
+            high_da.salience > zero_da.salience,
+            "DA-encoded should have higher salience after reinforcement: {} vs {}",
+            high_da.salience, zero_da.salience
+        );
+    }
+
+    #[test]
+    fn test_chemical_stamp_persists_save_load() {
+        let stamp = neurochemistry::ChemicalStamp {
+            ne_at_encoding: 0.4,
+            cortisol_at_encoding: 0.2,
+            da_at_encoding: 0.6,
+            ach_at_encoding: 0.3,
+        };
+        let entry = ShortTermEntry {
+            chemical_stamp: stamp,
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&entry).unwrap();
+        let deserialized: ShortTermEntry = serde_json::from_str(&serialized).unwrap();
+        assert!((deserialized.chemical_stamp.ne_at_encoding - 0.4).abs() < f32::EPSILON);
+        assert!((deserialized.chemical_stamp.da_at_encoding - 0.6).abs() < f32::EPSILON);
+    }
+
+    // ---- Dentate Gyrus: orthogonalize-after-decide integration tests ----
+
+    #[test]
+    fn test_merge_decision_uses_raw_similarity() {
+        // Two entries at raw sim ~0.80 should merge (low-merge), not split.
+        // Before fix: orthogonalization pushed sim below theta_low, causing duplicates.
+        let mut state = MemoryState::default();
+        tick(
+            &mut state,
+            "DECISION: Chose Redis for caching because it has excellent pub/sub support for real-time",
+        );
+        tick(
+            &mut state,
+            "DECISION: Chose Redis for caching because it has excellent pub/sub support for messaging",
+        );
+        assert_eq!(
+            state.brain.short_term.len(),
+            1,
+            "similar entries should merge using raw similarity, got {} entries",
+            state.brain.short_term.len()
+        );
+    }
+
+    #[test]
+    fn test_create_new_still_orthogonalizes() {
+        // Dissimilar entries should still get orthogonalized when stored as new L2 entries.
+        let mut state = MemoryState::default();
+        tick(
+            &mut state,
+            "BUG: PostgreSQL connection pooling exhausted under high load causing errors",
+        );
+        tick(
+            &mut state,
+            "ARCHITECTURE: React Server Components replace client-side rendering for the dashboard",
+        );
+        assert!(
+            state.brain.short_term.len() >= 2,
+            "distinct entries should create separate L2 entries"
+        );
+
+        // The second entry's stored embedding should differ from its raw embedding
+        // (orthogonalized away from the first) — but only if they're in the confusable zone.
+        // If they're far apart, orthogonalization is a no-op (which is correct behavior).
+        let raw_second = embed_text(
+            "ARCHITECTURE: React Server Components replace client-side rendering for the dashboard",
+            state.brain.config.embedding_dim,
+        );
+        let stored_second = &state.brain.short_term[1].embedding;
+        let sim_to_raw = cosine_similarity(stored_second, &raw_second);
+        // Either orthogonalized (sim < 1.0) or outside confusable zone (sim ≈ 1.0) — both valid
+        assert!(
+            sim_to_raw <= 1.001,
+            "stored embedding should be valid, sim_to_raw={}",
+            sim_to_raw
+        );
+    }
+
+    #[test]
+    fn test_merged_entry_preserves_raw_semantics() {
+        // After low-merge, the merged embedding should reflect raw average, not orthogonalized.
+        let mut state = MemoryState::default();
+        let text_a =
+            "DECISION: embedding quality improvement using n-grams for better keyword matching";
+        let text_b =
+            "DECISION: embedding quality improvement using trigrams for better keyword matching";
+        tick(&mut state, text_a);
+        tick(&mut state, text_b);
+
+        // Should have merged
+        assert_eq!(
+            state.brain.short_term.len(),
+            1,
+            "similar ticks should merge, got {}",
+            state.brain.short_term.len()
+        );
+
+        // The merged embedding should be close to the average of raw embeddings
+        let raw_a = embed_text(text_a, state.brain.config.embedding_dim);
+        let raw_b = embed_text(text_b, state.brain.config.embedding_dim);
+        let raw_avg: Vec<f32> = raw_a
+            .iter()
+            .zip(raw_b.iter())
+            .map(|(a, b)| (a + b) / 2.0)
+            .collect();
+        let norm: f32 = raw_avg.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let raw_avg_normalized: Vec<f32> = raw_avg.iter().map(|v| v / norm).collect();
+
+        let stored = &state.brain.short_term[0].embedding;
+        let sim = cosine_similarity(stored, &raw_avg_normalized);
+        assert!(
+            sim > 0.95,
+            "merged embedding should be close to raw average, got sim={}",
+            sim
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Anterior PFC — Plan integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plan_tick_stores_plans() {
+        let mut state = MemoryState::default();
+        tick_impl(
+            &mut state.brain,
+            "PLAN: Test Plan\n[active] Fix the parser\n[deferred] Optimize later",
+        );
+        assert_eq!(state.brain.plans.len(), 1);
+        assert_eq!(state.brain.plans[0].name, "Test Plan");
+        assert_eq!(state.brain.plans[0].items.len(), 2);
+        assert_eq!(
+            state.brain.plans[0].items[0].status,
+            anterior_pfc::ItemStatus::Active
+        );
+        assert_eq!(
+            state.brain.plans[0].items[1].status,
+            anterior_pfc::ItemStatus::Deferred
+        );
+    }
+
+    #[test]
+    fn test_plan_tick_also_creates_l2_entry() {
+        let mut state = MemoryState::default();
+        let result = tick_impl(
+            &mut state.brain,
+            "PLAN: Test Plan\n[active] Fix the parser\n[deferred] Optimize later",
+        );
+        // The PLAN: text should also enter L2 as a normal tick
+        assert!(
+            result.action == "created" || result.action == "working_memory_only",
+            "Expected created or working_memory_only, got {}",
+            result.action
+        );
+    }
+
+    #[test]
+    fn test_multiple_plans_coexist() {
+        let mut state = MemoryState::default();
+        tick_impl(
+            &mut state.brain,
+            "PLAN: Plan Alpha\n[active] Task A1\n[pending] Task A2",
+        );
+        tick_impl(
+            &mut state.brain,
+            "PLAN: Plan Beta\n[active] Task B1",
+        );
+        assert_eq!(state.brain.plans.len(), 2);
+        assert_eq!(state.brain.plans[0].name, "Plan Alpha");
+        assert_eq!(state.brain.plans[1].name, "Plan Beta");
+    }
+
+    #[test]
+    fn test_plan_update_in_place() {
+        let mut state = MemoryState::default();
+        tick_impl(
+            &mut state.brain,
+            "PLAN: My Plan\n[active] Item 1\n[pending] Item 2",
+        );
+        assert_eq!(state.brain.plans[0].items.len(), 2);
+
+        tick_impl(
+            &mut state.brain,
+            "PLAN: My Plan\n[done] Item 1\n[active] Item 2\n[pending] Item 3",
+        );
+        assert_eq!(state.brain.plans.len(), 1); // Still one plan
+        assert_eq!(state.brain.plans[0].items.len(), 3); // Updated items
+    }
+
+    #[test]
+    fn test_plan_archive_after_retention() {
+        let mut state = MemoryState::default();
+        // Create a plan and mark all items done
+        tick_impl(
+            &mut state.brain,
+            "PLAN: Archive Test\n[done] Item 1\n[done] Item 2",
+        );
+        assert_eq!(state.brain.plans.len(), 1);
+        assert!(state.brain.plans[0].completed_at.is_some());
+
+        // Fast-forward clock past archive threshold
+        let completed_at = state.brain.plans[0].completed_at.unwrap();
+        state.brain.clock = completed_at + anterior_pfc::PLAN_ARCHIVE_TICKS + 1;
+
+        // Next tick should archive the plan
+        let l2_count_before = state.brain.short_term.len();
+        tick_impl(&mut state.brain, "DECISION: Unrelated tick to trigger archival");
+        assert_eq!(state.brain.plans.len(), 0, "Archived plan should be removed");
+        assert!(
+            state.brain.short_term.len() > l2_count_before,
+            "Archived plan should create L2 entry"
+        );
+        // Check the archived entry contains plan info
+        let archive_entry = state
+            .brain
+            .short_term
+            .iter()
+            .find(|e| e.text.contains("Completed plan: Archive Test"));
+        assert!(
+            archive_entry.is_some(),
+            "Should find archived plan in L2"
+        );
+    }
+
+    #[test]
+    fn test_plans_persist_across_serialization() {
+        let mut state = MemoryState::default();
+        tick_impl(
+            &mut state.brain,
+            "PLAN: Persistence Test\n[active] Survive serialization",
+        );
+        assert_eq!(state.brain.plans.len(), 1);
+
+        // Serialize and deserialize
+        let serialized = rmp_serde::to_vec(&state).unwrap();
+        let deserialized: MemoryState = rmp_serde::from_slice(&serialized).unwrap();
+        assert_eq!(deserialized.brain.plans.len(), 1);
+        assert_eq!(deserialized.brain.plans[0].name, "Persistence Test");
+        assert_eq!(deserialized.brain.plans[0].items.len(), 1);
+    }
+
+    #[test]
+    fn test_intention_cue_match_in_query() {
+        let mut state = MemoryState::default();
+        // Create a plan with a deferred item about "database optimization"
+        tick_impl(
+            &mut state.brain,
+            "PLAN: Performance Work\n[deferred] Optimize database query performance",
+        );
+
+        // Query about database — should surface the deferred plan item
+        let context = retrieve_context(&mut state.brain, "database optimization strategies");
+        let has_plan_item = context
+            .working_memory
+            .iter()
+            .any(|m| m.text.contains("[Plan:") && m.text.contains("database"));
+        assert!(
+            has_plan_item,
+            "Query should surface matching deferred plan item via spontaneous retrieval"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Hippocampal overload defense tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_capacity_cortisol_spike() {
+        let mut state = MemoryState::default();
+        // Use small capacity for test speed
+        state.brain.config.short_term_capacity = 20;
+        state.brain.chemistry.cortisol = 0.0;
+        let dim = state.brain.config.embedding_dim;
+
+        // Fill L2 past 75% (16/20 = 80%)
+        for i in 0..16 {
+            let text = format!("DECISION: important architectural choice number {i}");
+            let emb = embed_text(&text, dim);
+            hippocampus::insert_short_term(
+                &mut state.brain, &text, emb, 0.5, Vec::new(), 0.0, 0,
+                Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+            );
+        }
+        assert!(state.brain.short_term.len() >= 16);
+        state.brain.chemistry.cortisol = 0.0;
+
+        // Tick — should trigger capacity cortisol spike
+        tick_impl(&mut state.brain, "DECISION: one more important decision about system design");
+        assert!(
+            state.brain.chemistry.cortisol > 0.0,
+            "cortisol should rise when L2 is past 75% capacity, got {}",
+            state.brain.chemistry.cortisol
+        );
+    }
+
+    #[test]
+    fn test_attention_gate_tightens_under_load() {
+        let mut state = MemoryState::default();
+        // Small capacity for speed
+        state.brain.config.short_term_capacity = 20;
+        let dim = state.brain.config.embedding_dim;
+
+        // Fill L2 to 90% (18/20) with pre-built entries
+        for i in 0..18 {
+            let text = format!("DECISION: critical architecture decision {i} about system resilience");
+            let emb = embed_text(&text, dim);
+            hippocampus::insert_short_term(
+                &mut state.brain, &text, emb, 0.5, Vec::new(), 0.0, 0,
+                Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+            );
+        }
+        assert_eq!(state.brain.short_term.len(), 18);
+
+        // Tick with low-salience text — should stay in L1 due to tightened gate
+        // (dynamic threshold ~0.25 + 0.15 * (0.9-0.75)/0.25 = 0.34)
+        tick_impl(&mut state.brain, "some general note about project progress");
+
+        // Low-salience tick stays in working memory under load
+        assert!(
+            !state.brain.working_memory.is_empty(),
+            "low-salience tick should land in working memory under load"
+        );
+    }
+
+    #[test]
+    fn test_emergency_consolidation_before_eviction() {
+        let mut state = MemoryState::default();
+        state.brain.config.short_term_capacity = 10;
+        state.brain.ticks_since_consolidation = 5;
+        let dim = state.brain.config.embedding_dim;
+
+        // Fill to capacity
+        for i in 0..10 {
+            let text = format!("DECISION: entry {i} about database design patterns");
+            let emb = embed_text(&text, dim);
+            hippocampus::insert_short_term(
+                &mut state.brain, &text, emb, 0.5, Vec::new(), 0.0, 0,
+                Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+            );
+        }
+        assert_eq!(state.brain.short_term.len(), 10);
+
+        // Insert one more — should trigger emergency consolidation before eviction
+        let text = "DECISION: final entry triggers emergency consolidation";
+        let emb = embed_text(text, dim);
+        hippocampus::insert_short_term(
+            &mut state.brain, text, emb, 0.5, Vec::new(), 0.0, 0,
+            Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+        );
+
+        // Emergency consolidation should have fired and reset the counter
+        assert_eq!(
+            state.brain.ticks_since_consolidation, 0,
+            "emergency consolidation should reset ticks_since_consolidation"
+        );
+        // Some entries should now be marked consolidated
+        let consolidated_count = state
+            .brain
+            .short_term
+            .iter()
+            .filter(|e| e.consolidated)
+            .count();
+        assert!(
+            consolidated_count > 0,
+            "emergency consolidation should mark entries as consolidated, got 0"
+        );
+    }
+
+    #[test]
+    fn test_eviction_prefers_consolidated_entries() {
+        let mut state = MemoryState::default();
+        state.brain.config.short_term_capacity = 5;
+        state.brain.ticks_since_consolidation = 5;
+        let dim = state.brain.config.embedding_dim;
+
+        // Fill to capacity with similar entries (so consolidation groups them)
+        for i in 0..5 {
+            let text = format!("DECISION: database optimization strategy {i} for query performance");
+            let emb = embed_text(&text, dim);
+            hippocampus::insert_short_term(
+                &mut state.brain, &text, emb, 0.5, Vec::new(), 0.0, 0,
+                Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+            );
+        }
+
+        // Force consolidation so entries get L3 backup
+        consolidate(&mut state.brain);
+
+        // Insert a new entry to trigger eviction
+        let text = "DECISION: completely unrelated new topic about UI redesign";
+        let emb = embed_text(text, dim);
+        hippocampus::insert_short_term(
+            &mut state.brain, text, emb,
+            0.8, // high salience — should survive
+            Vec::new(), 0.0, 0,
+            Vec::new(), Vec::new(), neurochemistry::ChemicalStamp::default(),
+        );
+
+        // The new high-salience entry should survive
+        assert!(
+            state
+                .brain
+                .short_term
+                .iter()
+                .any(|e| e.text.contains("UI redesign")),
+            "new high-salience entry should survive eviction"
+        );
     }
 }

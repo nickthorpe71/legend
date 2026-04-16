@@ -151,8 +151,39 @@ fn print_context(context: MemoryContext) {
         .iter()
         .map(|m| m.text.as_str())
         .collect();
-    let memories: Vec<&str> = context.short_term.iter().map(|m| m.text.as_str()).collect();
     let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
+
+    // Emit rich objects when any memory has temporal metadata.
+    let has_any_temporal = context
+        .short_term
+        .iter()
+        .any(|m| m.wall_clock > 0 || !m.extracted_dates.is_empty() || m.created_at_clock > 0);
+
+    let memories: Vec<serde_json::Value> = if has_any_temporal {
+        context
+            .short_term
+            .iter()
+            .map(|m| {
+                let mut obj = serde_json::json!({ "text": m.text });
+                if m.wall_clock > 0 {
+                    obj["wall_clock"] = serde_json::json!(m.wall_clock);
+                }
+                if !m.extracted_dates.is_empty() {
+                    obj["dates"] = serde_json::json!(m.extracted_dates);
+                }
+                if m.created_at_clock > 0 {
+                    obj["seq"] = serde_json::json!(m.created_at_clock);
+                }
+                obj
+            })
+            .collect()
+    } else {
+        context
+            .short_term
+            .iter()
+            .map(|m| serde_json::json!(m.text))
+            .collect()
+    };
 
     let result = serde_json::json!({
         "working_memory": working_memory,

@@ -89,10 +89,10 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
 
     // Substantive text (not too short)
     let word_count = text.split_whitespace().count();
-    if word_count > 25 {
-        score += 0.15;
-    } else if word_count > 50 {
+    if word_count > 50 {
         score += 0.2;
+    } else if word_count > 25 {
+        score += 0.15;
     }
 
     // Error mentions
