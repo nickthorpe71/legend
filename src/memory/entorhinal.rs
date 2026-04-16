@@ -1,41 +1,46 @@
+use std::io::Cursor;
 use std::sync::Mutex;
+
+use tract_onnx::prelude::*;
 
 use crate::memory::wernicke::KeywordCache;
 
+type TractModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+
+struct SentenceModel {
+    tokenizer: tokenizers::Tokenizer,
+    model: TractModel,
+}
+
 /// Lazy-initialized sentence embedding model (all-MiniLM-L6-v2 quantized, 384-dim).
 /// The model is embedded directly in the binary — no network download required.
+/// Inference runs via tract-onnx (pure Rust, no C/C++ ONNX Runtime dependency).
 ///
 /// # Model choice
 /// We use all-MiniLM-L6-v2 quantized (~23MB) over BAAI/bge-small-en-v1.5 (~45MB)
 /// for faster inference (6 layers vs 12) and smaller binary size. Both produce
 /// 384-dim embeddings. If retrieval quality degrades (measured via LongMemEval),
 /// swap to BGE-small-en-v1.5 by changing the model files — no code changes needed.
-static SENTENCE_MODEL: std::sync::LazyLock<Mutex<fastembed::TextEmbedding>> =
+static SENTENCE_MODEL: std::sync::LazyLock<Mutex<SentenceModel>> =
     std::sync::LazyLock::new(|| {
-        let model_def = fastembed::UserDefinedEmbeddingModel::new(
-            include_bytes!("../../models/all-MiniLM-L6-v2-q/model.onnx").to_vec(),
-            fastembed::TokenizerFiles {
-                tokenizer_file: include_bytes!("../../models/all-MiniLM-L6-v2-q/tokenizer.json")
-                    .to_vec(),
-                config_file: include_bytes!("../../models/all-MiniLM-L6-v2-q/config.json")
-                    .to_vec(),
-                special_tokens_map_file: include_bytes!(
-                    "../../models/all-MiniLM-L6-v2-q/special_tokens_map.json"
-                )
-                .to_vec(),
-                tokenizer_config_file: include_bytes!(
-                    "../../models/all-MiniLM-L6-v2-q/tokenizer_config.json"
-                )
-                .to_vec(),
-            },
-        );
+        let tokenizer = tokenizers::Tokenizer::from_bytes(include_bytes!(
+            "../../models/all-MiniLM-L6-v2-q/tokenizer.json"
+        ))
+        .expect("Failed to load embedded tokenizer");
 
-        let model = fastembed::TextEmbedding::try_new_from_user_defined(
-            model_def,
-            fastembed::InitOptionsUserDefined::default(),
-        )
-        .expect("Failed to initialize embedded MiniLM model");
-        Mutex::new(model)
+        let onnx_bytes = include_bytes!("../../models/all-MiniLM-L6-v2-q/model.onnx");
+        let mut cursor = Cursor::new(onnx_bytes.as_slice());
+        let model = tract_onnx::onnx()
+            .model_for_read(&mut cursor)
+            .expect("Failed to parse ONNX model")
+            .into_typed()
+            .expect("Failed to type ONNX model")
+            .into_optimized()
+            .expect("Failed to optimize ONNX model")
+            .into_runnable()
+            .expect("Failed to make ONNX model runnable");
+
+        Mutex::new(SentenceModel { tokenizer, model })
     });
 
 /// Entorhinal Cortex — Representational encoding and compression gateway.
@@ -100,25 +105,50 @@ const TOPIC_SHIFT_MARKERS: &[&str] = &[
 
 // ── Representational encoding ───────────────────────────────────────────
 
-/// Compute a semantic embedding vector using all-MiniLM-L6-v2 quantized (384-dim).
-///
-/// The model is embedded in the binary — no download or network access needed.
-/// Panics if the model cannot be initialized (no silent degradation).
-pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
-    if text.trim().is_empty() {
-        return vec![0.0f32; dim];
-    }
+/// Run inference on a single tokenizer encoding and return the L2-normalized
+/// CLS embedding (first token's hidden state).
+fn infer_embedding(model: &TractModel, encoding: &tokenizers::Encoding, dim: usize) -> Vec<f32> {
+    let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+    let attention_mask: Vec<i64> = encoding
+        .get_attention_mask()
+        .iter()
+        .map(|&m| m as i64)
+        .collect();
+    let token_type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&t| t as i64).collect();
+    let seq_len = input_ids.len();
 
-    let mut guard = SENTENCE_MODEL.lock().expect("fastembed mutex poisoned");
-    let embeddings = guard
-        .embed(vec![text], None)
-        .expect("fastembed embedding failed");
-    let emb = embeddings.into_iter().next().expect("no embedding returned");
+    let ids = tract_ndarray::Array2::from_shape_vec((1, seq_len), input_ids)
+        .unwrap()
+        .into_tensor();
+    let mask = tract_ndarray::Array2::from_shape_vec((1, seq_len), attention_mask)
+        .unwrap()
+        .into_tensor();
+    let types = tract_ndarray::Array2::from_shape_vec((1, seq_len), token_type_ids)
+        .unwrap()
+        .into_tensor();
 
+    let outputs = model
+        .run(tvec![ids.into(), mask.into(), types.into()])
+        .expect("ONNX inference failed");
+
+    // Output shape: [1, seq_len, hidden_size]. CLS pooling: take first token.
+    let view = outputs[0].to_array_view::<f32>().expect("output not f32");
+    let hidden_size = view.shape()[2];
+
+    let cls: Vec<f32> = (0..hidden_size).map(|i| view[[0, 0, i]]).collect();
+    let emb = l2_normalize(&cls);
+    fit_to_dim(&emb, dim)
+}
+
+fn l2_normalize(v: &[f32]) -> Vec<f32> {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    v.iter().map(|&x| x / (norm + 1e-12)).collect()
+}
+
+fn fit_to_dim(emb: &[f32], dim: usize) -> Vec<f32> {
     if emb.len() == dim {
-        return emb;
+        return emb.to_vec();
     }
-    // Dimension mismatch: truncate or pad to requested dim
     let mut result = vec![0.0f32; dim];
     for (i, &v) in emb.iter().enumerate().take(dim) {
         result[i] = v;
@@ -126,17 +156,31 @@ pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
     result
 }
 
-/// Batch-embed multiple texts in a single model forward pass.
+/// Compute a semantic embedding vector using all-MiniLM-L6-v2 quantized (384-dim).
 ///
-/// More efficient than calling `embed_text` in a loop — the model processes
-/// all inputs together, avoiding per-call mutex lock and ONNX session overhead.
-/// Empty texts get zero vectors without being sent to the model.
+/// The model is embedded in the binary — no download or network access needed.
+/// Inference runs via tract-onnx (pure Rust). Panics on model init failure.
+pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
+    if text.trim().is_empty() {
+        return vec![0.0f32; dim];
+    }
+
+    let guard = SENTENCE_MODEL.lock().expect("sentence model mutex poisoned");
+    let encoding = guard
+        .tokenizer
+        .encode(text, true)
+        .expect("tokenization failed");
+    infer_embedding(&guard.model, &encoding, dim)
+}
+
+/// Batch-embed multiple texts. Each text gets its own forward pass (tract
+/// doesn't support dynamic batch sizes after optimization). The mutex is
+/// held once for the entire batch. Empty texts get zero vectors.
 pub fn embed_texts_batch(texts: &[&str], dim: usize) -> Vec<Vec<f32>> {
     if texts.is_empty() {
         return Vec::new();
     }
 
-    // Separate empty/non-empty texts, tracking original indices
     let mut results = vec![vec![0.0f32; dim]; texts.len()];
     let non_empty: Vec<(usize, &str)> = texts
         .iter()
@@ -149,20 +193,13 @@ pub fn embed_texts_batch(texts: &[&str], dim: usize) -> Vec<Vec<f32>> {
         return results;
     }
 
-    let batch: Vec<&str> = non_empty.iter().map(|(_, t)| *t).collect();
-    let mut guard = SENTENCE_MODEL.lock().expect("fastembed mutex poisoned");
-    let embeddings = guard.embed(batch, None).expect("fastembed batch embedding failed");
-
-    for ((orig_idx, _), emb) in non_empty.into_iter().zip(embeddings.into_iter()) {
-        if emb.len() == dim {
-            results[orig_idx] = emb;
-        } else {
-            let mut padded = vec![0.0f32; dim];
-            for (i, &v) in emb.iter().enumerate().take(dim) {
-                padded[i] = v;
-            }
-            results[orig_idx] = padded;
-        }
+    let guard = SENTENCE_MODEL.lock().expect("sentence model mutex poisoned");
+    for (orig_idx, text) in non_empty {
+        let encoding = guard
+            .tokenizer
+            .encode(text, true)
+            .expect("tokenization failed");
+        results[orig_idx] = infer_embedding(&guard.model, &encoding, dim);
     }
 
     results
@@ -664,7 +701,7 @@ mod tests {
     fn test_embed_is_normalized() {
         let vec = embed_text("the quick brown fox jumps over the lazy dog", 384);
         let norm: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
-        // fastembed embeddings are approximately normalized
+        // sentence-transformer embeddings are approximately normalized
         assert!(norm > 0.5 && norm < 1.5, "norm={}", norm);
     }
 

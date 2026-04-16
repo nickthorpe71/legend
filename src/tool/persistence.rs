@@ -115,7 +115,7 @@ pub fn save_memory_to_path<P: AsRef<Path>>(
 const TARGET_EMBEDDING_DIM: usize = 384;
 
 /// Re-embed all stored entries when embedding dimensions don't match the current model.
-/// Runs once on first load after upgrading from n-gram (256-dim) to fastembed (384-dim).
+/// Runs once on first load after upgrading from n-gram (256-dim) to sentence-transformer (384-dim).
 fn migrate_embeddings(state: &mut MemoryState) -> Result<(), Box<dyn std::error::Error>> {
     let needs_migration = state.brain.config.embedding_dim != TARGET_EMBEDDING_DIM
         || state
