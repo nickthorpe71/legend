@@ -14,21 +14,8 @@ use cli::{ArgDef, CommandDef, FlagDef};
 static MEMORY_TICK: CommandDef = CommandDef {
     name: "tick",
     about: "Record a memory (decision, progress, discovery)",
-    usage: "legend memory tick [--blocker] [--passive] <text>",
-    flags: &[
-        FlagDef {
-            long: "--blocker",
-            short: Some('b'),
-            about: "Mark as blocker",
-            takes_value: false,
-        },
-        FlagDef {
-            long: "--passive",
-            short: Some('p'),
-            about: "Passive observation",
-            takes_value: false,
-        },
-    ],
+    usage: "legend memory tick <text>",
+    flags: &[],
     positionals: &[],
     children: &[],
 };

@@ -15,7 +15,7 @@ export function BrainStats() {
     { label: 'L3 Nodes', value: snapshot.l3_node_count, color: 'var(--green)' },
     { label: 'L3 Edges', value: snapshot.l3_edge_count, color: 'var(--green)' },
     { label: 'Ticks/Consol', value: snapshot.ticks_since_consolidation, color: 'var(--orange)' },
-    { label: 'Valence Sum', value: snapshot.recent_valence_sum.toFixed(2), color: 'var(--rose)' },
+    { label: 'Consol Pressure', value: snapshot.consolidation_pressure.toFixed(2), color: 'var(--rose)' },
     { label: 'Next ID', value: snapshot.next_id, color: 'var(--text)' },
     { label: 'Keywords', value: snapshot.keyword_cache_size, color: 'var(--text)' },
     { label: 'Embed Dim', value: snapshot.embedding_dim, color: 'var(--text)' },

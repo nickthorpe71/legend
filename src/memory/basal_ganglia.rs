@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use super::{
+    neurochemistry,
     wernicke::extract_entities, BrainState, ShortTermEntry, ADAGRAD_BASE_LR, ADAGRAD_EPSILON,
     ADAGRAD_SQ_SUM_CAP, CONTRASTIVE_PENALTY, REINFORCE_GRAPH_SCALE, RENORM_BLEND,
 };
@@ -56,6 +57,9 @@ pub fn reinforce(state: &mut BrainState, ids: &[u64], signal: f32) -> ReinforceR
     let mut reinforced = Vec::new();
     let mut graph_nodes_affected = 0usize;
 
+    // Phase C: global neurochemical reinforcement gain
+    let effective = neurochemistry::compute_effective(&state.chemistry);
+
     // Contrastive descent: entries retrieved in the prior retrieve_context() call
     // but not in the current reinforced set receive a small salience penalty.
     if signal > 0.0 {
@@ -80,7 +84,9 @@ pub fn reinforce(state: &mut BrainState, ids: &[u64], signal: f32) -> ReinforceR
             // AdaGrad-style adaptive salience update: frequently-reinforced entries
             // get smaller future updates, preventing saturation.
             let adaptive_lr = ADAGRAD_BASE_LR / (entry.gradient_sq_sum + ADAGRAD_EPSILON).sqrt();
-            let delta = signal * adaptive_lr;
+            // DA at encoding enhances reinforcement sensitivity
+            let da_boost = 1.0 + entry.chemical_stamp.da_at_encoding * 0.3; // 1.0–1.3x
+            let delta = signal * adaptive_lr * da_boost * effective.reinforcement_gain;
             entry.gradient_sq_sum =
                 (entry.gradient_sq_sum + signal * signal).min(ADAGRAD_SQ_SUM_CAP);
             entry.salience = (entry.salience + delta).clamp(0.0, 1.0);
@@ -102,7 +108,7 @@ pub fn reinforce(state: &mut BrainState, ids: &[u64], signal: f32) -> ReinforceR
             // Cascade into graph: boost/demote entities from this entry's text
             let entities = extract_entities(&entry.text.clone(), &state.keyword_cache);
             for entity in &entities {
-                if let Some(&node_id) = state.long_term.index.get(&entity.label) {
+                if let Some(&node_id) = state.long_term.index.get(&entity.label.to_lowercase()) {
                     if let Some(node) = state.long_term.nodes.get_mut(&node_id) {
                         node.weight = (node.weight + signal * REINFORCE_GRAPH_SCALE).max(0.01);
                         node.last_seen = state.clock;

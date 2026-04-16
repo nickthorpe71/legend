@@ -4,7 +4,7 @@ use legend::memory::{BrainState, GraphNodeSummary, TickResult};
 /// Tick a thought through the brain pipeline.
 /// Trace events are emitted automatically by the instrumented functions.
 pub fn traced_tick(brain: &mut BrainState, text: &str) -> TickResult {
-    tick_impl(brain, text, false)
+    tick_impl(brain, text)
 }
 
 /// Query memory for context.

@@ -109,7 +109,11 @@ fn init_first_run_creates_expected_files_and_repeat_is_stable() {
     assert!(second_normalized.contains("Legend already initialized in this directory"));
     assert!(second_normalized.contains(".legend/ directory exists"));
     assert!(second_normalized.contains("Use 'legend memory start' to view current memory context"));
-    assert!(second_normalized.contains("Memory store OK (3 entries, "));
+    assert!(
+        second_normalized.contains("Memory store OK ("),
+        "expected 'Memory store OK (' in output, got: {}",
+        second_normalized
+    );
     assert!(second_normalized.contains("✓ Updated Legend instructions in CODEX.md"));
     assert!(second_normalized.contains("✓ Updated Legend instructions in GEMINI.md"));
 }

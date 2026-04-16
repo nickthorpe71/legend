@@ -1,7 +1,6 @@
 use super::memory::{
-    append_to_architecture_md, format_start_summary_markdown, is_noise_tick, log_event_rich,
-    truncate_text, EventData, GraphHit, MatchedEntry, QueryEventData, StartEventData,
-    TickEventData,
+    format_start_summary_markdown, log_event_rich, truncate_text, EventData, GraphHit,
+    MatchedEntry, QueryEventData, StartEventData, TickEventData,
 };
 use crate::cli::{parse_args, CommandDef};
 use serde_json::{json, Value};
@@ -74,7 +73,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_tick",
-            "description": "Record a decision, discovery, or insight into long-term memory. Call this frequently — after completing work, making decisions, or discovering something. Use prefixes: DECISION:, BUG:, ARCHITECTURE:, BLOCKER:, COMPLETED:. Example: 'DECISION: Chose SQLite over Postgres because the app is single-user'. Include rationale — the 'why' is more valuable than the 'what'.",
+            "description": "Record a decision, discovery, or insight into long-term memory. Call this frequently — after completing work, making decisions, or discovering something. Use prefixes: DECISION:, BUG:, ARCHITECTURE:, BLOCKER:, COMPLETED:, PLAN:. Example: 'DECISION: Chose SQLite over Postgres because the app is single-user'. Include rationale — the 'why' is more valuable than the 'what'. Use PLAN: prefix for structured plans with [active], [pending], [deferred], [done] status markers on each item.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -99,6 +98,20 @@ fn handle_tools_list(id: &Value) -> Value {
                 },
                 "required": ["topic"]
             }
+        },
+        {
+            "name": "legend_memory_plan",
+            "description": "View and manage structured plans. ALWAYS call this tool when the user says anything about plans, next steps, what to work on, where we left off, or continuing previous work. Also call proactively at session start if the start summary shows current plans. Returns all active plans with item statuses and highlights the next action.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "Optional: 'list' (default) to view plans. Plans are advanced by ticking with PLAN: prefix."
+                    }
+                },
+                "required": []
+            }
         }
     ]);
 
@@ -115,6 +128,7 @@ fn dispatch_tool(name: &str, arguments: &Value) -> Result<String, String> {
         "legend_memory_start" => tool_memory_start(arguments),
         "legend_memory_tick" => tool_memory_tick(arguments),
         "legend_memory_query" => tool_memory_query(arguments),
+        "legend_memory_plan" => tool_memory_plan(arguments),
         _ => Err(format!("Unknown tool: {}", name)),
     }
 }
@@ -169,12 +183,14 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
     output.push_str("## Legend Protocol\n");
     output.push_str("- **Tick frequently** — after decisions, discoveries, blockers, completed work, architecture changes\n");
     output.push_str(
-        "- **Use prefixes**: `DECISION:`, `BUG:`, `ARCHITECTURE:`, `BLOCKER:`, `COMPLETED:`\n",
+        "- **Use prefixes**: `DECISION:`, `BUG:`, `ARCHITECTURE:`, `BLOCKER:`, `COMPLETED:`, `PLAN:`\n",
     );
+    output.push_str("- **Use PLAN: prefix** to store structured plans that persist across sessions. Include [active], [deferred], [done] status markers.\n");
     output.push_str(
         "- **Include rationale** — \"Chose X over Y because Z\" is better than \"Using X\"\n",
     );
     output.push_str("- **Query before new topics** — check what Legend already knows\n");
+    output.push_str("- **Plans are first-class** — when the user mentions \"plan\", \"next\", \"where we left off\", or \"what should I work on\", ALWAYS call `legend_memory_plan`. Advance plans by ticking: `PLAN: Plan Name\\n[done] Completed\\n[active] Now working on\\n[pending] Remaining`\n");
     output.push_str("- **Don't tick noise** — avoid restating what the user just said or trivial status updates\n");
 
     Ok(output)
@@ -191,16 +207,9 @@ fn tool_memory_tick(arguments: &Value) -> Result<String, String> {
         return Err("Description cannot be empty".to_string());
     }
 
-    if is_noise_tick(text) {
-        return Err("Tick rejected: low-quality content detected".to_string());
-    }
-
     let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
     let tick_result = crate::memory::tick(&mut memory, text);
     crate::memory::save(&memory).map_err(|e| e.to_string())?;
-
-    // Reset pending-tick counter
-    let _ = std::fs::write(".legend/.pending_ticks", "0");
 
     // Log rich event data
     let event_data = EventData::Tick(TickEventData {
@@ -231,40 +240,30 @@ fn tool_memory_tick(arguments: &Value) -> Result<String, String> {
     });
     log_event_rich("tick", text, Some(event_data));
 
-    // Auto-append to ARCHITECTURE.md when tick is tagged with ARCHITECTURE:
-    if text.to_uppercase().starts_with("ARCHITECTURE:") {
-        append_to_architecture_md(text);
-    }
-
-    // Build rich response with matched context
-    let mut related: Vec<String> = tick_result
+    // Build lean response from associative binding
+    let related: Vec<String> = tick_result
         .context
         .short_term
         .iter()
-        .take(3)
-        .map(|m| {
-            format!(
-                "- [sim:{:.2}] {}",
-                m.similarity,
-                truncate_text(&m.text, 100)
-            )
-        })
+        .map(|m| format!("- {}", truncate_text(&m.text, 120)))
         .collect();
     let graph_topics: Vec<String> = tick_result
         .context
         .long_term
         .iter()
-        .take(5)
         .map(|n| n.label.clone())
         .collect();
 
-    let mut output = format!("Recorded ({}).", tick_result.action);
+    let mut output = String::from("Recorded.");
     if !related.is_empty() {
-        output.push_str("\n\nRelated memories:\n");
-        output.push_str(&related.drain(..).collect::<Vec<_>>().join("\n"));
+        output.push_str(" Related memories:\n");
+        output.push_str(&related.join("\n"));
     }
     if !graph_topics.is_empty() {
-        output.push_str("\n\nGraph topics: ");
+        if !related.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(" Topics: ");
         output.push_str(&graph_topics.join(", "));
     }
     Ok(output)
@@ -353,6 +352,31 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
     if output.is_empty() {
         output.push_str("No memories found for this topic.");
     }
+
+    Ok(output)
+}
+
+fn tool_memory_plan(_arguments: &Value) -> Result<String, String> {
+    let memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
+
+    let mut output = String::new();
+
+    // Next Action callout
+    if let Some((plan_name, item_text)) =
+        crate::memory::anterior_pfc::find_next_plan_action(&memory.brain.plans)
+    {
+        output.push_str("## Next Action\n");
+        output.push_str(&format!("> **{}**: {}\n\n", plan_name, item_text));
+    }
+
+    // Full plan listing
+    let plans_text = crate::memory::anterior_pfc::format_plans_cli(&memory.brain.plans);
+    output.push_str(&plans_text);
+
+    // Usage hint
+    output.push_str("\n\n---\n");
+    output.push_str("*To advance a plan, tick with PLAN: prefix:*\n");
+    output.push_str("```\nPLAN: Plan Name\n[done] Completed item\n[active] Now working on\n[pending] Remaining items\n```\n");
 
     Ok(output)
 }
@@ -496,15 +520,16 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_tools_list_returns_3_core_tools() {
+    fn test_handle_tools_list_returns_4_core_tools() {
         let resp = handle_tools_list(&json!(1));
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"legend_memory_start"));
         assert!(names.contains(&"legend_memory_tick"));
         assert!(names.contains(&"legend_memory_query"));
+        assert!(names.contains(&"legend_memory_plan"));
 
         // Verify each tool has inputSchema
         for tool in tools {

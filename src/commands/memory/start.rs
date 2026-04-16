@@ -150,6 +150,112 @@ pub fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
         out.push_str(&format!("> {}\n\n", task));
     }
 
+    // Plans from anterior PFC
+    if let Some(plans) = summary.get("plans") {
+        if !plans.is_null() {
+            let active = plans.get("active").and_then(|a| a.as_array());
+            let completed = plans.get("completed").and_then(|c| c.as_array());
+            let has_plans = active.map_or(false, |a| !a.is_empty())
+                || completed.map_or(false, |c| !c.is_empty());
+            if has_plans {
+                out.push_str("## Current Plans\n\n");
+                if let Some(active_plans) = active {
+                    for plan in active_plans {
+                        if let Some(name) = plan.get("name").and_then(|n| n.as_str()) {
+                            out.push_str(&format!("### {}\n", name));
+                        }
+                        if let Some(items) = plan.get("items").and_then(|i| i.as_array()) {
+                            // Group by status
+                            let mut by_status: std::collections::BTreeMap<&str, Vec<&str>> =
+                                std::collections::BTreeMap::new();
+                            for item in items {
+                                let status =
+                                    item.get("status").and_then(|s| s.as_str()).unwrap_or("pending");
+                                let text =
+                                    item.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                by_status.entry(status).or_default().push(text);
+                            }
+                            let order = ["active", "pending", "deferred", "done"];
+                            for status in &order {
+                                if let Some(texts) = by_status.get(status) {
+                                    let label = match *status {
+                                        "active" => "Active",
+                                        "pending" => "Pending",
+                                        "deferred" => "Deferred",
+                                        "done" => "Done",
+                                        _ => status,
+                                    };
+                                    out.push_str(&format!("**{}:**\n", label));
+                                    for text in texts {
+                                        if *status == "done" {
+                                            out.push_str(&format!("- ~~{}~~\n", text));
+                                        } else {
+                                            out.push_str(&format!("- {}\n", text));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        out.push('\n');
+                    }
+                }
+                if let Some(completed_plans) = completed {
+                    if !completed_plans.is_empty() {
+                        out.push_str("### Completed Plans\n");
+                        for plan in completed_plans {
+                            if let Some(name) = plan.get("name").and_then(|n| n.as_str()) {
+                                out.push_str(&format!("- ~~{}~~\n", name));
+                            }
+                        }
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+    }
+
+    // Next Action callout — extracted from plans JSON
+    if let Some(plans) = summary.get("plans") {
+        if !plans.is_null() {
+            if let Some(active_plans) = plans.get("active").and_then(|a| a.as_array()) {
+                // Find first active item, fallback to first pending
+                let mut next_action: Option<(&str, &str)> = None;
+                'active_search: for plan in active_plans {
+                    if let Some(items) = plan.get("items").and_then(|i| i.as_array()) {
+                        for item in items {
+                            if item.get("status").and_then(|s| s.as_str()) == Some("active") {
+                                let name = plan.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                next_action = Some((name, text));
+                                break 'active_search;
+                            }
+                        }
+                    }
+                }
+                if next_action.is_none() {
+                    'pending_search: for plan in active_plans {
+                        if let Some(items) = plan.get("items").and_then(|i| i.as_array()) {
+                            for item in items {
+                                if item.get("status").and_then(|s| s.as_str()) == Some("pending") {
+                                    let name =
+                                        plan.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                                    let text =
+                                        item.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                    next_action = Some((name, text));
+                                    break 'pending_search;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some((name, text)) = next_action {
+                    out.push_str("## Next Action\n");
+                    out.push_str(&format!("> **{}**: {}\n\n", name, text));
+                }
+            }
+        }
+    }
+
     if let Some(git_sync) = summary.get("git_sync") {
         let commits = git_sync.get("new_commits").and_then(|c| c.as_array());
         let uncommitted = git_sync.get("uncommitted_summary").and_then(|u| u.as_str());
@@ -245,6 +351,7 @@ pub fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
 
     out.push_str("\n---\n");
     out.push_str("*Use heredoc for tick/query: `legend memory tick <<'EOF'` ... `EOF`*\n");
+    out.push_str("*Plans are first-class in Legend. When the user mentions \"plan\", \"next\", \"where we left off\", or \"what to work on\" — ALWAYS call `legend_memory_plan`. To advance: `PLAN: Plan Name\\n[done] Completed item\\n[active] Next item\\n[pending] Remaining`*\n");
     out
 }
 

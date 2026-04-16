@@ -35,28 +35,6 @@ fn tick_rejects_no_argument() {
 }
 
 #[test]
-fn tick_rejects_noise() {
-    let harness = Harness::new();
-    seed_basic_repo(&harness);
-    harness.cmd_ok(&["init"]);
-
-    // Short content (< 10 chars) is noise
-    let output = harness.cmd(&["memory", "tick", "hi"]);
-    assert!(
-        output.status.success(),
-        "noise rejection exits 0: {:?}",
-        output.stderr
-    );
-    assert!(
-        output
-            .stderr
-            .contains("[tick rejected: low-quality content detected]"),
-        "stderr should indicate noise rejection: {}",
-        output.stderr
-    );
-}
-
-#[test]
 fn query_rejects_empty_input() {
     let harness = Harness::new();
     seed_basic_repo(&harness);
@@ -125,47 +103,6 @@ fn consolidate_on_empty_store_returns_empty_array() {
     assert_eq!(parsed, serde_json::json!([]));
 }
 
-#[test]
-fn tick_rejects_tool_telemetry_noise() {
-    let harness = Harness::new();
-    seed_basic_repo(&harness);
-    harness.cmd_ok(&["init"]);
-
-    let output = harness.cmd(&[
-        "memory",
-        "tick",
-        "Executed tool read_file with status success",
-    ]);
-    assert!(output.status.success(), "tool telemetry noise exits 0");
-    assert!(
-        output
-            .stderr
-            .contains("[tick rejected: low-quality content detected]"),
-        "tool telemetry should be rejected as noise: {}",
-        output.stderr
-    );
-}
-
-#[test]
-fn tick_rejects_agent_turn_noise() {
-    let harness = Harness::new();
-    seed_basic_repo(&harness);
-    harness.cmd_ok(&["init"]);
-
-    let output = harness.cmd(&[
-        "memory",
-        "tick",
-        "EXPERIENCE: Completed an agent turn with no changes",
-    ]);
-    assert!(output.status.success(), "agent turn noise exits 0");
-    assert!(
-        output
-            .stderr
-            .contains("[tick rejected: low-quality content detected]"),
-        "agent turn noise should be rejected: {}",
-        output.stderr
-    );
-}
 
 #[test]
 fn reinforce_rejects_invalid_entry_id() {

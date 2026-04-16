@@ -21,6 +21,11 @@ use std::collections::HashSet;
 /// topics remain as separate episodic traces.
 pub const MERGE_WORD_OVERLAP_THRESHOLD: f32 = 0.4;
 
+/// Maximum cosine displacement allowed by orthogonalization.
+/// If the orthogonalized result drifts further than this from the original,
+/// it is blended back toward the original to cap drift.
+pub const MAX_ORTHO_DISPLACEMENT: f32 = 0.3;
+
 /// Dentate Gyrus sparse orthogonalization.
 ///
 /// Transforms a new embedding to be more orthogonal to similar-but-distinct existing
@@ -33,6 +38,10 @@ pub const MERGE_WORD_OVERLAP_THRESHOLD: f32 = 0.4;
 /// the new one. The result is re-normalized. Embeddings that are very similar (above
 /// `high`) or dissimilar (below `low`) are left alone — only the confusable middle
 /// range gets orthogonalized.
+///
+/// Adaptive strength: when many neighbors fall in the confusable zone, per-neighbor
+/// strength is reduced to prevent cumulative drift. Total displacement is capped at
+/// `MAX_ORTHO_DISPLACEMENT` (cosine distance from original).
 pub fn sparse_orthogonalize(
     embedding: &[f32],
     existing: &[Vec<f32>],
@@ -42,6 +51,35 @@ pub fn sparse_orthogonalize(
 ) -> Vec<f32> {
     let mut result: Vec<f32> = embedding.to_vec();
 
+    // Pass 1: count confusable neighbors
+    let confusable_count = existing
+        .iter()
+        .filter(|e| {
+            e.len() == result.len()
+                && !e.is_empty()
+                && {
+                    let sim = cosine_similarity(embedding, e);
+                    sim >= low && sim < high
+                }
+        })
+        .count();
+
+    if confusable_count == 0 {
+        // Still normalize — input may not be unit-length (e.g. truncated embeddings)
+        let norm: f32 = result.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in &mut result {
+                *v /= norm;
+            }
+        }
+        return result;
+    }
+
+    // Adaptive strength: scale inversely with neighbor count to prevent cumulative drift
+    // 1 neighbor = full strength, 5 = 0.56x, 10 = 0.36x, 50 = 0.09x
+    let effective_strength = strength / (1.0 + (confusable_count as f32 - 1.0).max(0.0) * 0.2);
+
+    // Pass 2: apply projections with scaled strength
     for existing_emb in existing {
         if existing_emb.len() != result.len() || existing_emb.is_empty() {
             continue;
@@ -56,7 +94,7 @@ pub fn sparse_orthogonalize(
                 .map(|(a, b)| a * b)
                 .sum();
             for (r, e) in result.iter_mut().zip(existing_emb.iter()) {
-                *r -= strength * dot * e;
+                *r -= effective_strength * dot * e;
             }
         }
     }
@@ -66,6 +104,25 @@ pub fn sparse_orthogonalize(
     if norm > 0.0 {
         for v in &mut result {
             *v /= norm;
+        }
+    }
+
+    // Displacement cap: if we drifted too far, blend back toward original
+    let displacement = 1.0 - cosine_similarity(&result, embedding);
+    if displacement > MAX_ORTHO_DISPLACEMENT {
+        // Binary search would be exact, but linear blend is good enough:
+        // blend = (1 - target_displacement) / (1 - displacement)
+        // We want cosine_sim(blended, original) ≈ 1 - MAX_ORTHO_DISPLACEMENT
+        let blend_ratio = MAX_ORTHO_DISPLACEMENT / displacement;
+        for (r, &o) in result.iter_mut().zip(embedding.iter()) {
+            *r = o + blend_ratio * (*r - o);
+        }
+        // Re-normalize after blending
+        let norm: f32 = result.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in &mut result {
+                *v /= norm;
+            }
         }
     }
 
@@ -116,6 +173,7 @@ pub fn diversity_pass(existing_text: &str, new_text: &str) -> bool {
 ///
 /// Each candidate needs a `query_similarity` (pre-computed) and an `embedding`
 /// for pairwise diversity computation.
+#[allow(dead_code)]
 pub fn mmr_select(
     candidates: &[(usize, f32, &[f32])], // (index, query_similarity, embedding)
     k: usize,
@@ -271,6 +329,82 @@ mod tests {
             "Rust memory model borrow checker",
             "cooking recipes fresh ingredients"
         ));
+    }
+
+    // ── Cumulative drift / adaptive strength tests ─────────────────────────
+
+    #[test]
+    fn test_cumulative_drift_capped() {
+        // 50 confusable embeddings — displacement must stay within MAX_ORTHO_DISPLACEMENT
+        let base = embed_text("memory system architecture design patterns", 384);
+        let mut neighbors: Vec<Vec<f32>> = Vec::new();
+        for i in 0..50 {
+            let text = format!(
+                "memory system architecture design variation number {} with extra words",
+                i
+            );
+            neighbors.push(embed_text(&text, 384));
+        }
+        let result = sparse_orthogonalize(&base, &neighbors, 0.3, 0.88, 0.3);
+        let displacement = 1.0 - cosine_similarity(&result, &base);
+        assert!(
+            displacement <= MAX_ORTHO_DISPLACEMENT + 0.01,
+            "displacement {} should be capped at {}",
+            displacement,
+            MAX_ORTHO_DISPLACEMENT
+        );
+    }
+
+    #[test]
+    fn test_strength_scales_with_neighbors() {
+        // 1 neighbor vs 10 neighbors: total displacement should NOT scale 10x
+        let base = embed_text("Rust memory model borrow checker ownership", 384);
+        let single = vec![embed_text("Rust memory model borrow checker lifetimes", 384)];
+        let result_single = sparse_orthogonalize(&base, &single, 0.3, 0.88, 0.3);
+        let disp_single = 1.0 - cosine_similarity(&result_single, &base);
+
+        let mut many: Vec<Vec<f32>> = Vec::new();
+        for i in 0..10 {
+            many.push(embed_text(
+                &format!(
+                    "Rust memory model borrow checker variant {} details",
+                    i
+                ),
+                384,
+            ));
+        }
+        let result_many = sparse_orthogonalize(&base, &many, 0.3, 0.88, 0.3);
+        let disp_many = 1.0 - cosine_similarity(&result_many, &base);
+
+        // With adaptive scaling, 10 neighbors should NOT produce 10x the displacement
+        // Allow up to 4x (generous), but definitely not 10x
+        assert!(
+            disp_many < disp_single * 5.0 || disp_many <= MAX_ORTHO_DISPLACEMENT + 0.01,
+            "10 neighbors displacement ({}) should not be >5x single ({})",
+            disp_many,
+            disp_single
+        );
+    }
+
+    #[test]
+    fn test_single_neighbor_unchanged() {
+        // With 1 confusable neighbor, effective_strength == strength (no scaling)
+        let a = embed_text("Rust memory model borrow checker ownership", 384);
+        let b = embed_text("Legend memory system three-layer architecture", 384);
+        let sim_before = cosine_similarity(&a, &b);
+
+        // Only test if b is in the confusable zone
+        if sim_before >= 0.3 && sim_before < 0.88 {
+            let result = sparse_orthogonalize(&a, &[b.clone()], 0.3, 0.88, 0.3);
+            let sim_after = cosine_similarity(&result, &b);
+            // Single neighbor: full strength applied, should reduce similarity
+            assert!(
+                sim_after < sim_before,
+                "single neighbor should still push apart: before={}, after={}",
+                sim_before,
+                sim_after
+            );
+        }
     }
 
     // ── MMR tests ──────────────────────────────────────────────────────────

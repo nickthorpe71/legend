@@ -5,7 +5,7 @@ export interface BrainSnapshot {
   l3_node_count: number;
   l3_edge_count: number;
   ticks_since_consolidation: number;
-  recent_valence_sum: number;
+  consolidation_pressure: number;
   next_id: number;
   keyword_cache_size: number;
   embedding_dim: number;

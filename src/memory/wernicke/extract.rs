@@ -2,6 +2,239 @@ use super::cache::KeywordCache;
 /// Entity extraction from text (code-aware + plain identifiers).
 use std::collections::HashMap;
 
+// ---------------------------------------------------------------------------
+// Date extraction — temporal perception for the memory system
+// ---------------------------------------------------------------------------
+
+/// Month name → number mapping (full and abbreviated).
+const MONTHS: &[(&str, &str)] = &[
+    ("january", "01"),
+    ("february", "02"),
+    ("march", "03"),
+    ("april", "04"),
+    ("may", "05"),
+    ("june", "06"),
+    ("july", "07"),
+    ("august", "08"),
+    ("september", "09"),
+    ("october", "10"),
+    ("november", "11"),
+    ("december", "12"),
+    ("jan", "01"),
+    ("feb", "02"),
+    ("mar", "03"),
+    ("apr", "04"),
+    ("jun", "06"),
+    ("jul", "07"),
+    ("aug", "08"),
+    ("sep", "09"),
+    ("oct", "10"),
+    ("nov", "11"),
+    ("dec", "12"),
+];
+
+/// Extract date references from text. Returns deduplicated date strings
+/// preserving the original surface form (e.g. "2023/01/15", "March 15th").
+pub fn extract_dates(text: &str) -> Vec<String> {
+    let mut dates: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Pass 1: ISO-like dates — 2023/01/15, 2023-01-15 (with optional day-of-week suffix)
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    while i < len {
+        // Look for 4-digit year
+        if i + 9 < len && chars[i].is_ascii_digit() {
+            let year_str: String = chars[i..i + 4].iter().collect();
+            if let Ok(year) = year_str.parse::<u32>() {
+                if (1900..=2100).contains(&year) {
+                    let sep = chars[i + 4];
+                    if (sep == '/' || sep == '-') && i + 9 < len {
+                        let month_str: String = chars[i + 5..i + 7].iter().collect();
+                        let sep2 = chars[i + 7];
+                        let day_str: String = chars[i + 8..i + 10].iter().collect();
+                        if sep2 == sep {
+                            if let (Ok(m), Ok(d)) = (month_str.parse::<u32>(), day_str.parse::<u32>())
+                            {
+                                if (1..=12).contains(&m) && (1..=31).contains(&d) {
+                                    // Capture the base date
+                                    let mut end = i + 10;
+                                    // Optionally skip " (Mon)" suffix
+                                    if end + 6 <= len
+                                        && chars[end] == ' '
+                                        && chars[end + 1] == '('
+                                    {
+                                        if let Some(close) =
+                                            chars[end + 2..].iter().position(|&c| c == ')')
+                                        {
+                                            let close_idx = end + 2 + close;
+                                            if close_idx - (end + 2) <= 4 {
+                                                end = close_idx + 1;
+                                            }
+                                        }
+                                    }
+                                    let date: String = chars[i..end].iter().collect();
+                                    let key = date.to_lowercase();
+                                    if seen.insert(key) {
+                                        dates.push(date);
+                                    }
+                                    i = end;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Pass 2: Bracket-wrapped timestamps like [2023/01/15 10:39] or [2023/01/15 (Sun) 10:39]
+    // These are already captured by Pass 1 (the date part), so skip.
+
+    // Pass 3: Month-based patterns — "January 15th", "March 2023", "mid-February"
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    let orig_words: Vec<&str> = text.split_whitespace().collect();
+
+    for (wi, word) in words.iter().enumerate() {
+        let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
+
+        // Check for qualified months: "mid-February", "early March", "late January"
+        let qualifiers = ["mid-", "early ", "late "];
+        for q in &qualifiers {
+            if let Some(rest) = clean.strip_prefix(q.trim()) {
+                let rest_clean = rest.trim_matches('-');
+                if MONTHS.iter().any(|(name, _)| rest_clean == *name) {
+                    let orig: String = if wi < orig_words.len() {
+                        orig_words[wi].trim_matches(|c: char| matches!(c, ',' | '.' | ';')).to_string()
+                    } else {
+                        clean.to_string()
+                    };
+                    let key = orig.to_lowercase();
+                    if seen.insert(key) {
+                        dates.push(orig);
+                    }
+                }
+            }
+        }
+
+        // Match month name
+        if let Some((_, _num)) = MONTHS.iter().find(|(name, _)| clean == *name) {
+            // Look ahead for day or year
+            if wi + 1 < words.len() {
+                let next = words[wi + 1].trim_matches(|c: char| !c.is_alphanumeric());
+                // Strip ordinal suffix
+                let next_num = next
+                    .trim_end_matches("st")
+                    .trim_end_matches("nd")
+                    .trim_end_matches("rd")
+                    .trim_end_matches("th");
+                if let Ok(n) = next_num.parse::<u32>() {
+                    if (1..=31).contains(&n) {
+                        // "January 15th" — month + day
+                        let orig = format!(
+                            "{} {}",
+                            orig_words.get(wi).unwrap_or(&clean),
+                            orig_words.get(wi + 1).unwrap_or(&next)
+                        )
+                        .trim_matches(|c: char| matches!(c, ',' | '.' | ';'))
+                        .to_string();
+                        let key = orig.to_lowercase();
+                        if seen.insert(key) {
+                            dates.push(orig);
+                        }
+                    } else if (1900..=2100).contains(&n) {
+                        // "March 2023" — month + year
+                        let orig = format!(
+                            "{} {}",
+                            orig_words.get(wi).unwrap_or(&clean),
+                            orig_words.get(wi + 1).unwrap_or(&next)
+                        )
+                        .trim_matches(|c: char| matches!(c, ',' | '.' | ';'))
+                        .to_string();
+                        let key = orig.to_lowercase();
+                        if seen.insert(key) {
+                            dates.push(orig);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 4: Relative dates — "yesterday", "today", "last week", "3 days ago", etc.
+    let relative_single = [
+        "yesterday", "today", "tomorrow",
+    ];
+    for rel in &relative_single {
+        if lower.contains(rel) {
+            let key = rel.to_string();
+            if seen.insert(key.clone()) {
+                dates.push(key);
+            }
+        }
+    }
+
+    // "last <unit>" patterns
+    let last_units = [
+        "last week",
+        "last month",
+        "last year",
+        "last monday",
+        "last tuesday",
+        "last wednesday",
+        "last thursday",
+        "last friday",
+        "last saturday",
+        "last sunday",
+    ];
+    for pat in &last_units {
+        if lower.contains(pat) {
+            let key = pat.to_string();
+            if seen.insert(key.clone()) {
+                dates.push(key);
+            }
+        }
+    }
+
+    // "N <unit> ago" patterns
+    let ago_units = ["day", "days", "week", "weeks", "month", "months", "year", "years"];
+    for (wi, word) in words.iter().enumerate() {
+        if *word == "ago" && wi >= 2 {
+            let unit = words[wi - 1].trim_matches(|c: char| !c.is_alphanumeric());
+            if ago_units.contains(&unit) {
+                let quantity = words[wi - 2].trim_matches(|c: char| !c.is_alphanumeric());
+                // Accept numeric or word quantities
+                let is_quantity = quantity.parse::<u32>().is_ok()
+                    || matches!(
+                        quantity,
+                        "a" | "one" | "two" | "three" | "four" | "five" | "six" | "seven"
+                            | "eight" | "nine" | "ten"
+                    );
+                if is_quantity {
+                    let phrase = format!("{} {} ago", quantity, unit);
+                    if seen.insert(phrase.clone()) {
+                        dates.push(phrase);
+                    }
+                }
+            }
+        }
+        // Also handle "a month ago", "a week ago"
+        if *word == "ago" && wi >= 2 {
+            let unit = words[wi - 1].trim_matches(|c: char| !c.is_alphanumeric());
+            let article = words[wi - 2].trim_matches(|c: char| !c.is_alphanumeric());
+            if article == "a" && ago_units.contains(&unit) {
+                // Already handled above via "a" in is_quantity
+            }
+        }
+    }
+
+    dates
+}
+
 pub struct ExtractedEntity {
     pub label: String,
     pub kind: String,
@@ -12,6 +245,15 @@ pub struct ExtractedEntity {
 /// Extract entities from text — multi-pass: code keywords, paths, actions, environments, and identifiers.
 pub fn extract_entities(text: &str, kw: &KeywordCache) -> Vec<ExtractedEntity> {
     let mut entities = Vec::new();
+
+    // Pass 0: Date extraction (before other entity types)
+    for date in extract_dates(text) {
+        entities.push(ExtractedEntity {
+            label: date,
+            kind: "Date".to_string(),
+            context: "mentions".to_string(),
+        });
+    }
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -750,5 +992,113 @@ mod tests {
         assert!(ids.contains(&"parser".to_string()));
         assert!(ids.contains(&"api".to_string()));
         assert!(ids.contains(&"handler".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Date extraction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_dates_iso_slash() {
+        let dates = extract_dates("Visited museum on 2023/01/15 and returned 2023/02/20");
+        assert!(dates.contains(&"2023/01/15".to_string()), "got: {:?}", dates);
+        assert!(dates.contains(&"2023/02/20".to_string()), "got: {:?}", dates);
+    }
+
+    #[test]
+    fn test_extract_dates_iso_dash() {
+        let dates = extract_dates("Event on 2024-03-10 was great");
+        assert!(dates.contains(&"2024-03-10".to_string()), "got: {:?}", dates);
+    }
+
+    #[test]
+    fn test_extract_dates_iso_with_day_suffix() {
+        let dates = extract_dates("[2023/01/15 (Sun) 10:39] Visited the Science Museum");
+        assert!(
+            dates.iter().any(|d| d.starts_with("2023/01/15")),
+            "got: {:?}",
+            dates
+        );
+    }
+
+    #[test]
+    fn test_extract_dates_month_day() {
+        let dates = extract_dates("We met on January 15th and again March 3rd");
+        assert!(
+            dates.iter().any(|d| d.contains("January") && d.contains("15")),
+            "got: {:?}",
+            dates
+        );
+        assert!(
+            dates.iter().any(|d| d.contains("March") && d.contains("3")),
+            "got: {:?}",
+            dates
+        );
+    }
+
+    #[test]
+    fn test_extract_dates_month_year() {
+        let dates = extract_dates("Started in March 2023 and ended in January 2024");
+        assert!(
+            dates.iter().any(|d| d.contains("March") && d.contains("2023")),
+            "got: {:?}",
+            dates
+        );
+        assert!(
+            dates.iter().any(|d| d.contains("January") && d.contains("2024")),
+            "got: {:?}",
+            dates
+        );
+    }
+
+    #[test]
+    fn test_extract_dates_relative() {
+        let dates = extract_dates("I did it yesterday and will finish today");
+        assert!(dates.contains(&"yesterday".to_string()), "got: {:?}", dates);
+        assert!(dates.contains(&"today".to_string()), "got: {:?}", dates);
+    }
+
+    #[test]
+    fn test_extract_dates_ago() {
+        let dates = extract_dates("That happened 3 days ago and two months ago");
+        assert!(
+            dates.iter().any(|d| d.contains("3 days ago")),
+            "got: {:?}",
+            dates
+        );
+        assert!(
+            dates.iter().any(|d| d.contains("two months ago")),
+            "got: {:?}",
+            dates
+        );
+    }
+
+    #[test]
+    fn test_extract_dates_last_patterns() {
+        let dates = extract_dates("We discussed it last week and again last Saturday");
+        assert!(dates.contains(&"last week".to_string()), "got: {:?}", dates);
+        assert!(dates.contains(&"last saturday".to_string()), "got: {:?}", dates);
+    }
+
+    #[test]
+    fn test_extract_dates_deduplication() {
+        let dates = extract_dates("On 2023/01/15 we met. Again on 2023/01/15 we talked.");
+        let count = dates.iter().filter(|d| d.contains("2023/01/15")).count();
+        assert_eq!(count, 1, "should deduplicate: {:?}", dates);
+    }
+
+    #[test]
+    fn test_extract_dates_no_false_positives() {
+        let dates = extract_dates("The function returns 42 and processes 1024 items");
+        assert!(dates.is_empty(), "should not extract non-dates: {:?}", dates);
+    }
+
+    #[test]
+    fn test_extract_dates_entities_include_date_kind() {
+        let entities = extract_entities("Visited museum on 2023/01/15", &kw());
+        let date_entities: Vec<&ExtractedEntity> =
+            entities.iter().filter(|e| e.kind == "Date").collect();
+        assert!(!date_entities.is_empty(), "should have Date entities: {:?}",
+            entities.iter().map(|e| (&e.label, &e.kind)).collect::<Vec<_>>());
     }
 }

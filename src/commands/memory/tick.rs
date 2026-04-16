@@ -3,57 +3,32 @@ use super::helpers::*;
 use crate::cli::{parse_args, CommandDef};
 use crate::memory::TickResult;
 
-struct TickOptions {
-    text: String,
-    is_blocker: bool,
-    is_passive: bool,
-}
-
-fn parse_tick_args(
+fn parse_tick_text(
     args: &[String],
     def: &CommandDef,
-) -> Result<TickOptions, Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
     let parsed = parse_args(args, def);
 
-    let text = if parsed.positional.is_empty() {
-        read_stdin()?
+    if parsed.positional.is_empty() {
+        read_stdin()
     } else {
-        parsed.positional.join(" ")
-    };
-
-    Ok(TickOptions {
-        text,
-        is_blocker: parsed.has("blocker"),
-        is_passive: parsed.has("passive"),
-    })
+        Ok(parsed.positional.join(" "))
+    }
 }
 
 pub(super) fn handle_tick(
     args: &[String],
     def: &CommandDef,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let opts = parse_tick_args(args, def)?;
+    let text = parse_tick_text(args, def)?;
 
-    if opts.text.trim().is_empty() {
+    if text.trim().is_empty() {
         return Err("No input provided for tick".into());
     }
 
-    if is_noise_tick(opts.text.trim()) {
-        eprintln!("[tick rejected: low-quality content detected]");
-        return Ok(());
-    }
-
-    let text = if opts.is_blocker {
-        format!("BLOCKER: {}", opts.text.trim())
-    } else if opts.is_passive {
-        format!("EXPERIENCE: {}", opts.text.trim())
-    } else {
-        opts.text.trim().to_string()
-    };
-
     let (clean_text, keyword_directives) = extract_keyword_directives(&text);
     let text = if keyword_directives.is_empty() {
-        text
+        text.trim().to_string()
     } else {
         clean_text.trim().to_string()
     };
@@ -80,7 +55,7 @@ pub(super) fn handle_tick(
         crate::memory::rebuild_keyword_cache(&mut memory.brain);
     }
 
-    let tick_result = if text.trim().is_empty() && !keyword_directives.is_empty() {
+    if text.is_empty() && !keyword_directives.is_empty() {
         crate::memory::save(&memory)?;
         for directive in &keyword_directives {
             log_event(
@@ -93,29 +68,11 @@ pub(super) fn handle_tick(
             keyword_directives.len()
         );
         return Ok(());
-    } else if opts.is_passive {
-        crate::memory::tick_passive(&mut memory, &text)
-    } else {
-        crate::memory::tick(&mut memory, &text)
-    };
-    let should_consolidate = crate::memory::should_suggest_consolidation(&memory);
-
-    if let Some(entry) = memory
-        .brain
-        .short_term
-        .iter_mut()
-        .find(|e| e.id == tick_result.entry_id)
-    {
-        if opts.is_blocker {
-            entry.salience = (entry.salience + 0.4).min(1.0);
-        } else if opts.is_passive {
-            entry.salience *= 0.5;
-        }
     }
 
-    crate::memory::save(&memory)?;
+    let tick_result = crate::memory::tick(&mut memory, &text);
 
-    let _ = std::fs::write(".legend/.pending_ticks", "0");
+    crate::memory::save(&memory)?;
 
     let event_data = EventData::Tick(TickEventData {
         entry_id: Some(tick_result.entry_id),
@@ -147,35 +104,6 @@ pub(super) fn handle_tick(
 
     print_tick_result(&tick_result);
 
-    if text.trim().to_uppercase().starts_with("ARCHITECTURE:") {
-        append_to_architecture_md(text.trim());
-    }
-
-    if should_consolidate {
-        let summaries = crate::memory::consolidate(&mut memory.brain);
-        crate::memory::save(&memory)?;
-        if !summaries.is_empty() {
-            let consolidate_data = EventData::Consolidate(ConsolidateEventData {
-                groups_merged: summaries.len(),
-                summaries: summaries
-                    .iter()
-                    .map(|s| ConsolidatedGroup {
-                        node_id: s.id,
-                        label: truncate_text(&s.label, 60),
-                    })
-                    .collect(),
-            });
-            log_event_rich(
-                "auto_consolidate",
-                &format!("{} groups merged", summaries.len()),
-                Some(consolidate_data),
-            );
-            eprintln!(
-                "[auto-consolidated {} group(s) into long-term memory]",
-                summaries.len()
-            );
-        }
-    }
     Ok(())
 }
 
@@ -195,67 +123,20 @@ fn print_tick_result(result: &TickResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::FlagDef;
 
     static TEST_TICK_DEF: CommandDef = CommandDef {
         name: "tick",
         about: "Record a memory",
-        usage: "legend memory tick [--blocker] [--passive] <text>",
-        flags: &[
-            FlagDef {
-                long: "--blocker",
-                short: Some('b'),
-                about: "Mark as blocker",
-                takes_value: false,
-            },
-            FlagDef {
-                long: "--passive",
-                short: Some('p'),
-                about: "Passive observation",
-                takes_value: false,
-            },
-        ],
+        usage: "legend memory tick <text>",
+        flags: &[],
         positionals: &[],
         children: &[],
     };
 
     #[test]
-    fn test_parse_tick_args_simple_text() {
+    fn test_parse_tick_text_simple() {
         let args = vec!["hello".to_string(), "world".to_string()];
-        let opts = parse_tick_args(&args, &TEST_TICK_DEF).unwrap();
-        assert_eq!(opts.text, "hello world");
-        assert!(!opts.is_blocker);
-        assert!(!opts.is_passive);
-    }
-
-    #[test]
-    fn test_parse_tick_args_blocker_flag() {
-        let args = vec![
-            "--blocker".to_string(),
-            "can't".to_string(),
-            "proceed".to_string(),
-        ];
-        let opts = parse_tick_args(&args, &TEST_TICK_DEF).unwrap();
-        assert!(opts.is_blocker);
-        assert_eq!(opts.text, "can't proceed");
-    }
-
-    #[test]
-    fn test_parse_tick_args_passive_flag() {
-        let args = vec![
-            "--passive".to_string(),
-            "observed".to_string(),
-            "event".to_string(),
-        ];
-        let opts = parse_tick_args(&args, &TEST_TICK_DEF).unwrap();
-        assert!(opts.is_passive);
-        assert_eq!(opts.text, "observed event");
-    }
-
-    #[test]
-    fn test_parse_tick_args_short_flags() {
-        let args = vec!["-b".to_string(), "stuck".to_string()];
-        let opts = parse_tick_args(&args, &TEST_TICK_DEF).unwrap();
-        assert!(opts.is_blocker);
+        let text = parse_tick_text(&args, &TEST_TICK_DEF).unwrap();
+        assert_eq!(text, "hello world");
     }
 }

@@ -84,7 +84,19 @@ use crate::memory::ShortTermEntry;
 
 const MAX_SUMMARY_LEN: usize = 200;
 const MAX_GROUP_SUMMARY_LEN: usize = 300;
-const CHUNK_TARGET_LEN: usize = 200;
+/// Discourse markers that signal a topic shift within a single turn.
+const TOPIC_SHIFT_MARKERS: &[&str] = &[
+    "by the way",
+    "also,",
+    "on another note",
+    "speaking of",
+    "separately",
+    "btw",
+    "BTW",
+    "incidentally",
+    "oh and",
+    "one more thing",
+];
 
 // ── Representational encoding ───────────────────────────────────────────
 
@@ -279,24 +291,83 @@ pub fn summarize_group(group: &[ShortTermEntry], kw: &KeywordCache) -> String {
     }
 }
 
-/// Split text into chunks of roughly CHUNK_TARGET_LEN chars.
+/// Split text into chunks on sentence boundaries, topic-shift markers,
+/// paragraph breaks, and `|` separators. Every boundary produces a chunk,
+/// maximising preservation of individual facts (needle retrieval).
 pub fn chunk_text(text: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-
-    for line in text.lines() {
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(line.trim());
-        if current.len() > CHUNK_TARGET_LEN {
-            chunks.push(current.clone());
-            current.clear();
+    // Phase 1: split on paragraph breaks and pipe separators
+    let mut segments: Vec<String> = Vec::new();
+    for part in text.split("\n\n") {
+        for sub in part.split('|') {
+            let trimmed = sub.trim();
+            if !trimmed.is_empty() {
+                segments.push(trimmed.to_string());
+            }
         }
     }
 
-    if !current.trim().is_empty() {
-        chunks.push(current);
+    // Phase 2: split each segment on topic-shift markers (case-insensitive)
+    let mut after_topic: Vec<String> = Vec::new();
+    for seg in segments {
+        let remaining = seg.as_str();
+        let lower = seg.to_lowercase();
+        let mut last_cut = 0;
+        for marker in TOPIC_SHIFT_MARKERS {
+            let marker_lower = marker.to_lowercase();
+            let mut search_from = 0;
+            while let Some(pos) = lower[search_from..].find(&marker_lower) {
+                let abs_pos = search_from + pos;
+                if abs_pos > last_cut {
+                    let before = remaining[last_cut..abs_pos].trim();
+                    if !before.is_empty() {
+                        after_topic.push(before.to_string());
+                    }
+                }
+                last_cut = abs_pos;
+                search_from = abs_pos + marker_lower.len();
+            }
+        }
+        // Remainder after the last marker (or the whole segment if none matched)
+        let tail = remaining[last_cut..].trim();
+        if !tail.is_empty() {
+            after_topic.push(tail.to_string());
+        }
+    }
+
+    // Phase 3: split on sentence boundaries (.!? followed by whitespace or end)
+    let mut chunks: Vec<String> = Vec::new();
+    for seg in after_topic {
+        let bytes = seg.as_bytes();
+        let mut start = 0;
+        let len = bytes.len();
+        let mut i = 0;
+        while i < len {
+            let b = bytes[i];
+            if (b == b'.' || b == b'!' || b == b'?')
+                && (i + 1 >= len || bytes[i + 1].is_ascii_whitespace())
+            {
+                // Don't split on common abbreviations like "e.g." "i.e." "Dr." etc.
+                let is_abbrev = i >= 1
+                    && i + 1 < len
+                    && bytes[i - 1].is_ascii_alphabetic()
+                    && bytes[i + 1] == b' '
+                    && i + 2 < len
+                    && bytes[i + 2].is_ascii_lowercase()
+                    && (i < 2 || bytes[i - 2] == b'.' || bytes[i - 2] == b' ');
+                if !is_abbrev {
+                    let sentence = seg[start..=i].trim();
+                    if !sentence.is_empty() {
+                        chunks.push(sentence.to_string());
+                    }
+                    start = i + 1;
+                }
+            }
+            i += 1;
+        }
+        let tail = seg[start..].trim();
+        if !tail.is_empty() {
+            chunks.push(tail.to_string());
+        }
     }
 
     if chunks.is_empty() {
@@ -334,13 +405,51 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_text_long() {
-        let lines: Vec<String> = (0..20)
-            .map(|i| format!("Line {} has some content here.", i))
-            .collect();
-        let text = lines.join("\n");
-        let chunks = chunk_text(&text);
-        assert!(chunks.len() > 1);
+    fn test_chunk_text_sentences() {
+        let text = "First sentence about databases. Second sentence about caching. Third one about logging.";
+        let chunks = chunk_text(text);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0], "First sentence about databases.");
+        assert_eq!(chunks[1], "Second sentence about caching.");
+        assert_eq!(chunks[2], "Third one about logging.");
+    }
+
+    #[test]
+    fn test_chunk_text_topic_shift() {
+        let text = "We discussed the car detailing. By the way, the GPS had an issue on 3/22.";
+        let chunks = chunk_text(text);
+        assert!(
+            chunks.len() >= 2,
+            "topic shift marker should split chunks, got {:?}",
+            chunks
+        );
+        // The GPS fact should be in its own chunk
+        assert!(
+            chunks.iter().any(|c| c.contains("GPS")),
+            "GPS detail should be preserved in a chunk"
+        );
+    }
+
+    #[test]
+    fn test_chunk_text_pipe_separator() {
+        let text = "fact one about Redis | fact two about PostgreSQL | fact three about MongoDB";
+        let chunks = chunk_text(text);
+        assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn test_chunk_text_paragraph_break() {
+        let text = "First paragraph about topic A.\n\nSecond paragraph about topic B.";
+        let chunks = chunk_text(text);
+        assert_eq!(chunks.len(), 2);
+    }
+
+    #[test]
+    fn test_chunk_text_no_split_mid_sentence() {
+        // A long sentence with no boundary markers should stay as one chunk
+        let text = "This is a very long sentence about many things including databases and caching and logging and networking and serialization without any period";
+        let chunks = chunk_text(text);
+        assert_eq!(chunks.len(), 1);
     }
 
     #[test]
@@ -393,6 +502,7 @@ mod tests {
             emotional_valence: 0.0,
             stability: 1.0,
             last_retrieval_interval: 0,
+            ..Default::default()
         };
         let result = summarize_group(&[entry][..], &kw());
         assert!(!result.is_empty());
@@ -419,6 +529,7 @@ mod tests {
                 emotional_valence: 0.0,
                 stability: 1.0,
                 last_retrieval_interval: 0,
+                ..Default::default()
             })
             .collect();
         let result = summarize_group(&entries, &kw());
@@ -447,6 +558,7 @@ mod tests {
                 emotional_valence: 0.0,
                 stability: 1.0,
                 last_retrieval_interval: 0,
+                ..Default::default()
             })
             .collect();
         let result = summarize_group(&entries, &kw());
@@ -472,6 +584,7 @@ mod tests {
             emotional_valence: 0.0,
             stability: 1.0,
             last_retrieval_interval: 0,
+            ..Default::default()
         };
         let result = summarize_group(&[entry][..], &kw());
         assert!(result.contains("Pre-computed summary"));

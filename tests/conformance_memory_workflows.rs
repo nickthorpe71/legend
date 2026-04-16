@@ -44,24 +44,72 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
     ));
     assert!(normalized_start.contains("*Use heredoc for tick/query:"));
 
+    // Strip wall_clock from memories for snapshot stability (wall_clock = SystemTime::now())
+    let memories_stable: Vec<serde_json::Value> = query["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            let mut obj = m.clone();
+            if let Some(map) = obj.as_object_mut() {
+                map.remove("wall_clock");
+            }
+            obj
+        })
+        .collect();
     let query_projection = json!({
-        "memories": query["memories"],
+        "memories": memories_stable,
         "related_topics_len": query["related_topics"].as_array().map(|v| v.len()).unwrap_or(0),
     });
     insta::assert_json_snapshot!(
         query_projection,
-        @r#"
+        @r##"
     {
       "memories": [
-        "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix.",
-        "ONBOARDING TASKS: The following investigations are recommended to complete the mental model: - [read_readme] The project has a README.md. Read it to understand the core goals and onboarding flow.. Tool hint: read_file { \"file_path\": \"README.md\" }",
-        "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming.",
-        "ONBOARDING: Discovery report for fixture-app Version: 0.1.0 Tech Stack: Rust",
-        "CONTEXT: High-signal file 'README.md' (Documentation)  # Fixture App | CONTEXT: High-signal file 'Cargo.toml' (Manifest)  [package] name = \"fixture-app\" version = \"0.1.0\" edition = \"2021\""
+        {
+          "seq": 6,
+          "text": "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming."
+        },
+        {
+          "seq": 4,
+          "text": "ONBOARDING TASKS: The following investigations are recommended to complete the mental model:\n- [read_readme] The project has a README.md."
+        },
+        {
+          "seq": 7,
+          "text": "BUG: UTF-8 truncation panicked on multi-byte text before floor_char_boundary fix."
+        },
+        {
+          "seq": 7,
+          "text": "Read it to understand the core goals and onboarding flow.."
+        },
+        {
+          "seq": 2,
+          "text": "CONTEXT: High-signal file 'README.md' (Documentation)"
+        },
+        {
+          "seq": 1,
+          "text": "ONBOARDING: Discovery report for fixture-app\nVersion: 0.1.0\nTech Stack: Rust"
+        },
+        {
+          "seq": 5,
+          "text": "DECISION: Chose graph index because it keeps lookups cheap."
+        },
+        {
+          "seq": 3,
+          "text": "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\nedition = \"2021\""
+        },
+        {
+          "seq": 7,
+          "text": "Tool hint: read_file { \"file_path\": \"README.md\" }"
+        },
+        {
+          "seq": 2,
+          "text": "# Fixture App"
+        }
       ],
-      "related_topics_len": 15
+      "related_topics_len": 12
     }
-    "#
+    "##
     );
 
     let recent_sessions = context["recent_sessions"]
