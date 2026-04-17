@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Mutex;
 
@@ -21,27 +22,26 @@ struct SentenceModel {
 /// for faster inference (6 layers vs 12) and smaller binary size. Both produce
 /// 384-dim embeddings. If retrieval quality degrades (measured via LongMemEval),
 /// swap to BGE-small-en-v1.5 by changing the model files — no code changes needed.
-static SENTENCE_MODEL: std::sync::LazyLock<Mutex<SentenceModel>> =
-    std::sync::LazyLock::new(|| {
-        let tokenizer = tokenizers::Tokenizer::from_bytes(include_bytes!(
-            "../../models/all-MiniLM-L6-v2-q/tokenizer.json"
-        ))
-        .expect("Failed to load embedded tokenizer");
+static SENTENCE_MODEL: std::sync::LazyLock<Mutex<SentenceModel>> = std::sync::LazyLock::new(|| {
+    let tokenizer = tokenizers::Tokenizer::from_bytes(include_bytes!(
+        "../../models/all-MiniLM-L6-v2-q/tokenizer.json"
+    ))
+    .expect("Failed to load embedded tokenizer");
 
-        let onnx_bytes = include_bytes!("../../models/all-MiniLM-L6-v2-q/model.onnx");
-        let mut cursor = Cursor::new(onnx_bytes.as_slice());
-        let model = tract_onnx::onnx()
-            .model_for_read(&mut cursor)
-            .expect("Failed to parse ONNX model")
-            .into_typed()
-            .expect("Failed to type ONNX model")
-            .into_optimized()
-            .expect("Failed to optimize ONNX model")
-            .into_runnable()
-            .expect("Failed to make ONNX model runnable");
+    let onnx_bytes = include_bytes!("../../models/all-MiniLM-L6-v2-q/model.onnx");
+    let mut cursor = Cursor::new(onnx_bytes.as_slice());
+    let model = tract_onnx::onnx()
+        .model_for_read(&mut cursor)
+        .expect("Failed to parse ONNX model")
+        .into_typed()
+        .expect("Failed to type ONNX model")
+        .into_optimized()
+        .expect("Failed to optimize ONNX model")
+        .into_runnable()
+        .expect("Failed to make ONNX model runnable");
 
-        Mutex::new(SentenceModel { tokenizer, model })
-    });
+    Mutex::new(SentenceModel { tokenizer, model })
+});
 
 /// Entorhinal Cortex — Representational encoding and compression gateway.
 ///
@@ -78,9 +78,9 @@ static SENTENCE_MODEL: std::sync::LazyLock<Mutex<SentenceModel>> =
 ///   best-sentence selection, boosted by decision rationale, code references,
 ///   and architecture keywords.
 ///
-/// - **Group summarization (`summarize_group`)** — picks the top 3 entries
-///   from a cluster (by salience + usage), joins their summaries, and
-///   truncates to 300 characters.
+/// - **Group summarization (`summarize_group`)** — picks up to 3 entries
+///   from a cluster using salience, usage, and diversity, joins their
+///   summaries, and truncates to 300 characters.
 ///
 /// Like the biological entorhinal cortex, this module is a pure transform
 /// layer — it encodes and compresses information but doesn't store or
@@ -165,7 +165,9 @@ pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
         return vec![0.0f32; dim];
     }
 
-    let guard = SENTENCE_MODEL.lock().expect("sentence model mutex poisoned");
+    let guard = SENTENCE_MODEL
+        .lock()
+        .expect("sentence model mutex poisoned");
     let encoding = guard
         .tokenizer
         .encode(text, true)
@@ -193,7 +195,9 @@ pub fn embed_texts_batch(texts: &[&str], dim: usize) -> Vec<Vec<f32>> {
         return results;
     }
 
-    let guard = SENTENCE_MODEL.lock().expect("sentence model mutex poisoned");
+    let guard = SENTENCE_MODEL
+        .lock()
+        .expect("sentence model mutex poisoned");
     for (orig_idx, text) in non_empty {
         let encoding = guard
             .tokenizer
@@ -297,17 +301,96 @@ pub fn summarize_text(existing: &str, incoming: &str, kw: &KeywordCache) -> Stri
     summarize_single(&format!("{} {}", existing, incoming), kw)
 }
 
-/// Summarize a group of short-term entries (pick top 3 by salience+usage).
+const GROUP_SUMMARY_ENTRY_LIMIT: usize = 3;
+const GROUP_SUMMARY_DIVERSITY_WEIGHT: f32 = 0.6;
+
+fn summary_entry_importance(entry: &ShortTermEntry) -> f32 {
+    entry.salience + entry.usage as f32 * 0.1
+}
+
+fn lexical_similarity(a: &str, b: &str) -> f32 {
+    let tokens_a: HashSet<String> = a
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| w.len() > 1)
+        .collect();
+    let tokens_b: HashSet<String> = b
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| w.len() > 1)
+        .collect();
+
+    if tokens_a.is_empty() || tokens_b.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = tokens_a.intersection(&tokens_b).count() as f32;
+    let union = tokens_a.union(&tokens_b).count() as f32;
+    intersection / union
+}
+
+fn summary_entry_similarity(a: &ShortTermEntry, b: &ShortTermEntry) -> f32 {
+    if !a.embedding.is_empty() && !b.embedding.is_empty() {
+        cosine_similarity(&a.embedding, &b.embedding).clamp(0.0, 1.0)
+    } else {
+        lexical_similarity(&a.text, &b.text)
+    }
+}
+
+/// Summarize a group of short-term entries by balancing importance and diversity.
 pub fn summarize_group(group: &[ShortTermEntry], kw: &KeywordCache) -> String {
-    let mut sorted: Vec<&ShortTermEntry> = group.iter().collect();
-    sorted.sort_by(|a, b| {
-        let score_a = a.salience + a.usage as f32 * 0.1;
-        let score_b = b.salience + b.usage as f32 * 0.1;
-        score_b.partial_cmp(&score_a).unwrap()
+    let mut candidates: Vec<&ShortTermEntry> = group.iter().collect();
+    candidates.sort_by(|a, b| {
+        summary_entry_importance(b)
+            .partial_cmp(&summary_entry_importance(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.id.cmp(&b.id))
     });
 
+    let mut selected: Vec<&ShortTermEntry> = Vec::new();
+    while selected.len() < GROUP_SUMMARY_ENTRY_LIMIT && !candidates.is_empty() {
+        let best_idx = candidates
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                let score_a = if selected.is_empty() {
+                    summary_entry_importance(a)
+                } else {
+                    let max_similarity = selected
+                        .iter()
+                        .map(|selected| summary_entry_similarity(a, selected))
+                        .fold(0.0_f32, f32::max);
+                    summary_entry_importance(a)
+                        + (1.0 - max_similarity) * GROUP_SUMMARY_DIVERSITY_WEIGHT
+                };
+                let score_b = if selected.is_empty() {
+                    summary_entry_importance(b)
+                } else {
+                    let max_similarity = selected
+                        .iter()
+                        .map(|selected| summary_entry_similarity(b, selected))
+                        .fold(0.0_f32, f32::max);
+                    summary_entry_importance(b)
+                        + (1.0 - max_similarity) * GROUP_SUMMARY_DIVERSITY_WEIGHT
+                };
+                score_a
+                    .partial_cmp(&score_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.id.cmp(&a.id))
+            })
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        selected.push(candidates.remove(best_idx));
+    }
+
     let mut combined = String::new();
-    for entry in sorted.iter().take(3) {
+    for entry in selected {
         if !combined.is_empty() {
             combined.push_str(" | ");
         }
@@ -576,6 +659,55 @@ mod tests {
     }
 
     #[test]
+    fn test_summarize_group_includes_distinct_lower_salience_fact() {
+        let entries = vec![
+            ShortTermEntry {
+                id: 1,
+                text: "database migration primary plan".to_string(),
+                summary: "primary database migration plan".to_string(),
+                embedding: vec![1.0, 0.0],
+                salience: 1.0,
+                usage: 0,
+                ..Default::default()
+            },
+            ShortTermEntry {
+                id: 2,
+                text: "database migration duplicate detail alpha".to_string(),
+                summary: "duplicate database migration alpha".to_string(),
+                embedding: vec![1.0, 0.0],
+                salience: 0.95,
+                usage: 0,
+                ..Default::default()
+            },
+            ShortTermEntry {
+                id: 3,
+                text: "database migration duplicate detail beta".to_string(),
+                summary: "duplicate database migration beta".to_string(),
+                embedding: vec![1.0, 0.0],
+                salience: 0.9,
+                usage: 0,
+                ..Default::default()
+            },
+            ShortTermEntry {
+                id: 4,
+                text: "rollback requires point in time restore validation".to_string(),
+                summary: "rollback requires restore validation".to_string(),
+                embedding: vec![0.0, 1.0],
+                salience: 0.5,
+                usage: 0,
+                ..Default::default()
+            },
+        ];
+
+        let result = summarize_group(&entries, &kw());
+
+        assert!(
+            result.contains("rollback requires restore validation"),
+            "distinct lower-salience fact should survive summary selection, got: {result}"
+        );
+    }
+
+    #[test]
     fn test_summarize_group_respects_max_length() {
         let entries: Vec<ShortTermEntry> = (0..3)
             .map(|i| ShortTermEntry {
@@ -785,7 +917,11 @@ mod tests {
         assert_eq!(batch[0].len(), 384);
         // Should produce identical embeddings
         let sim = cosine_similarity(&single, &batch[0]);
-        assert!((sim - 1.0).abs() < 0.001, "batch should match single: {}", sim);
+        assert!(
+            (sim - 1.0).abs() < 0.001,
+            "batch should match single: {}",
+            sim
+        );
     }
 
     #[test]
