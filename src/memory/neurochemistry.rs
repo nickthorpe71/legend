@@ -318,10 +318,7 @@ mod tests {
             peak > high,
             "peak ({peak}) should exceed high cortisol ({high})"
         );
-        assert!(
-            (peak - 1.0).abs() < 0.01,
-            "peak should be ~1.0, got {peak}"
-        );
+        assert!((peak - 1.0).abs() < 0.01, "peak should be ~1.0, got {peak}");
     }
 
     #[test]

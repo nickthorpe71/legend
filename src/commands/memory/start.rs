@@ -169,10 +169,11 @@ pub fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
                             let mut by_status: std::collections::BTreeMap<&str, Vec<&str>> =
                                 std::collections::BTreeMap::new();
                             for item in items {
-                                let status =
-                                    item.get("status").and_then(|s| s.as_str()).unwrap_or("pending");
-                                let text =
-                                    item.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                let status = item
+                                    .get("status")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("pending");
+                                let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
                                 by_status.entry(status).or_default().push(text);
                             }
                             let order = ["active", "pending", "deferred", "done"];
