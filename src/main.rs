@@ -159,6 +159,19 @@ static MERGE: CommandDef = CommandDef {
     children: &[],
 };
 
+static MERGE_LOCAL: CommandDef = CommandDef {
+    name: "merge-local",
+    about: "Merge a pre-merge memory.lz4 into current state",
+    usage: "legend merge-local <path>",
+    flags: &[],
+    positionals: &[ArgDef {
+        name: "PATH",
+        about: "Path to pre-merge memory.lz4 file",
+        required: true,
+    }],
+    children: &[],
+};
+
 static DASHBOARD: CommandDef = CommandDef {
     name: "dashboard",
     about: "Launch TUI dashboard (--3d for Bevy 3D view)",
@@ -219,6 +232,11 @@ static COMMANDS: &[TopCommand] = &[
         handler: commands::merge::handle_git_merge_driver,
     },
     TopCommand {
+        def: &MERGE_LOCAL,
+        usage_hint: "merge-local <path>",
+        handler: commands::merge::handle_merge_local,
+    },
+    TopCommand {
         def: &DASHBOARD,
         usage_hint: "dashboard [--3d]",
         handler: commands::dashboard::handle_dashboard_dispatch,
@@ -272,7 +290,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn print_help() {
     let help_entries: Vec<(&CommandDef, &str)> = COMMANDS
         .iter()
-        .filter(|c| c.def.name != "dev" && c.def.name != "git-merge-driver")
+        .filter(|c| {
+            c.def.name != "dev" && c.def.name != "git-merge-driver" && c.def.name != "merge-local"
+        })
         .map(|c| (c.def, c.usage_hint))
         .collect();
 

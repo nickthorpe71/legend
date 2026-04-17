@@ -178,9 +178,9 @@ impl Default for FixtureMemoryConfig {
 
 #[derive(Clone, Default, Serialize)]
 pub struct FixtureGraphMemory {
-    nodes: HashMap<u64, FixtureGraphNode>,
-    edges: Vec<FixtureGraphEdge>,
-    index: HashMap<String, u64>,
+    pub nodes: HashMap<u64, FixtureGraphNode>,
+    pub edges: Vec<FixtureGraphEdge>,
+    pub index: HashMap<String, u64>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -422,6 +422,33 @@ pub fn write_msgpack_memory_fixture(
         next_id: 100,
         session_log,
         current_task: None,
+        ticks_since_consolidation: 0,
+        last_retrieved_ids: vec![],
+        last_synced_sha: None,
+    };
+
+    write_msgpack_state_to_path(path, &state);
+}
+
+/// Extended fixture builder for merge tests — supports graph nodes and custom clock/next_id.
+pub fn write_msgpack_memory_fixture_extended(
+    path: &Path,
+    short_term: Vec<FixtureShortTermEntry>,
+    session_log: Vec<FixtureSessionEntry>,
+    long_term: FixtureGraphMemory,
+    clock: u64,
+    next_id: u64,
+    current_task: Option<String>,
+) {
+    let state = FixtureMemoryState {
+        config: FixtureMemoryConfig::default(),
+        immediate: VecDeque::new(),
+        short_term,
+        long_term,
+        clock,
+        next_id,
+        session_log,
+        current_task,
         ticks_since_consolidation: 0,
         last_retrieved_ids: vec![],
         last_synced_sha: None,
