@@ -193,8 +193,12 @@ pub(super) const SPREADING_ACTIVATION_DECAY: f32 = 0.5;
 pub(super) const SPREADING_ACTIVATION_MAX_HOPS: usize = 3;
 /// Number of ticks before suggesting a consolidation.
 pub const CONSOLIDATION_SUGGESTION_THRESHOLD: u32 = 15;
-/// Systems consolidation: minimum average salience for neocortical encoding.
+/// Systems consolidation: minimum composite salience for neocortical encoding.
 const SYSTEMS_CONSOLIDATION_SALIENCE_THRESHOLD: f32 = 0.4;
+/// Systems consolidation score blend: average salience captures broad group
+/// importance, while max salience preserves a strong anchor with supporting facts.
+const SYSTEMS_CONSOLIDATION_AVG_WEIGHT: f32 = 0.7;
+const SYSTEMS_CONSOLIDATION_MAX_WEIGHT: f32 = 0.3;
 /// Maximum length of full_text stored on consolidated Summary nodes.
 const SUMMARY_FULL_TEXT_MAX_LEN: usize = 500;
 /// Minimum cosine similarity for L3 Summary node retrieval.
@@ -1733,6 +1737,18 @@ fn consolidation_groups(
     components.into_iter().map(|(_, group)| group).collect()
 }
 
+fn systems_consolidation_score(group: &[ShortTermEntry]) -> f32 {
+    if group.is_empty() {
+        return 0.0;
+    }
+
+    let avg_salience = group.iter().map(|e| e.salience).sum::<f32>() / group.len() as f32;
+    let max_salience = group.iter().map(|e| e.salience).fold(0.0, f32::max);
+
+    avg_salience * SYSTEMS_CONSOLIDATION_AVG_WEIGHT
+        + max_salience * SYSTEMS_CONSOLIDATION_MAX_WEIGHT
+}
+
 /// Merge similar short-term entries into long-term graph summaries.
 pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
     #[cfg(feature = "instrument")]
@@ -1804,9 +1820,9 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         // Systems consolidation: compute centroid embedding and rich text
         // for high-salience groups (hippocampus flags important memories
         // for full neocortical encoding).
-        let avg_salience = group.iter().map(|e| e.salience).sum::<f32>() / group.len() as f32;
+        let consolidation_score = systems_consolidation_score(&group);
         let (centroid_embedding, full_text) =
-            if avg_salience >= SYSTEMS_CONSOLIDATION_SALIENCE_THRESHOLD {
+            if consolidation_score >= SYSTEMS_CONSOLIDATION_SALIENCE_THRESHOLD {
                 // Centroid = average of group embeddings, renormalized
                 let dim = group[0].embedding.len();
                 let mut centroid = vec![0.0f32; dim];
@@ -1855,7 +1871,10 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                     trace::PipelineStep::SystemsConsolidation,
                     trace::TracePayload::KeyValue(vec![
                         ("embedding_dim".into(), centroid.len().to_string()),
-                        ("avg_salience".into(), format!("{avg_salience:.3}")),
+                        (
+                            "consolidation_score".into(),
+                            format!("{consolidation_score:.3}"),
+                        ),
                         ("source_count".into(), source_texts.len().to_string()),
                     ]),
                 );
@@ -6557,6 +6576,44 @@ mod tests {
                 "low-salience group should NOT get full_text"
             );
         }
+    }
+
+    #[test]
+    fn test_salient_anchor_gets_systems_consolidation_with_low_salience_support() {
+        let mut state = MemoryState::default();
+
+        for (id, text, salience) in [
+            (1, "Critical rollback decision for database migration", 0.8),
+            (2, "Routine note about database migration checklist", 0.1),
+            (3, "Routine note about database migration owner", 0.1),
+        ] {
+            state.brain.short_term.push(ShortTermEntry {
+                id,
+                text: text.into(),
+                embedding: vec![1.0, 0.0],
+                salience,
+                ..Default::default()
+            });
+        }
+
+        consolidate(&mut state.brain);
+
+        let summary_node = state
+            .brain
+            .long_term
+            .nodes
+            .values()
+            .find(|n| n.kind == "Summary")
+            .expect("should have Summary node");
+
+        assert!(
+            !summary_node.embedding.is_empty(),
+            "strong anchor plus supporting facts should get centroid embedding"
+        );
+        assert!(
+            summary_node.full_text.is_some(),
+            "strong anchor plus supporting facts should get full_text"
+        );
     }
 
     #[test]
