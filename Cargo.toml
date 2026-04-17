@@ -51,3 +51,9 @@ instrument = []
 [profile.release]
 strip = true
 lto = "thin"
+
+# Optimize dependencies (notably tract-onnx) in dev/test builds.
+# Our own crate stays at opt-level=0 for fast rebuilds and debuggability;
+# deps compile once at opt-3 and then run at release speed during tests.
+[profile.dev.package."*"]
+opt-level = 3
