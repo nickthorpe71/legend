@@ -163,7 +163,10 @@ pub fn strip_plan_prefix(text: &str) -> Option<&str> {
 pub fn find_matching_plan(plans: &[Plan], name: &str, embedding_dim: usize) -> Option<usize> {
     // 1. Exact name match (case-insensitive)
     let name_lower = name.to_lowercase();
-    if let Some(idx) = plans.iter().position(|p| p.name.to_lowercase() == name_lower) {
+    if let Some(idx) = plans
+        .iter()
+        .position(|p| p.name.to_lowercase() == name_lower)
+    {
         return Some(idx);
     }
 
@@ -412,7 +415,8 @@ mod tests {
 
     #[test]
     fn test_parse_plan_basic() {
-        let text = "PLAN: Test Plan\n[active] Fix the bug\n[deferred] Optimize later\n[done] Write tests";
+        let text =
+            "PLAN: Test Plan\n[active] Fix the bug\n[deferred] Optimize later\n[done] Write tests";
         let (name, items) = parse_plan_text(text).unwrap();
         assert_eq!(name, "Test Plan");
         assert_eq!(items.len(), 3);
@@ -455,7 +459,10 @@ mod tests {
             Some("My Plan\n[active] item")
         );
         assert_eq!(strip_plan_prefix("DECISION: chose X"), None);
-        assert_eq!(strip_plan_prefix("  PLAN: Leading spaces"), Some("Leading spaces"));
+        assert_eq!(
+            strip_plan_prefix("  PLAN: Leading spaces"),
+            Some("Leading spaces")
+        );
     }
 
     #[test]

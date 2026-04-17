@@ -55,15 +55,14 @@ pub fn extract_dates(text: &str) -> Vec<String> {
                         let sep2 = chars[i + 7];
                         let day_str: String = chars[i + 8..i + 10].iter().collect();
                         if sep2 == sep {
-                            if let (Ok(m), Ok(d)) = (month_str.parse::<u32>(), day_str.parse::<u32>())
+                            if let (Ok(m), Ok(d)) =
+                                (month_str.parse::<u32>(), day_str.parse::<u32>())
                             {
                                 if (1..=12).contains(&m) && (1..=31).contains(&d) {
                                     // Capture the base date
                                     let mut end = i + 10;
                                     // Optionally skip " (Mon)" suffix
-                                    if end + 6 <= len
-                                        && chars[end] == ' '
-                                        && chars[end + 1] == '('
+                                    if end + 6 <= len && chars[end] == ' ' && chars[end + 1] == '('
                                     {
                                         if let Some(close) =
                                             chars[end + 2..].iter().position(|&c| c == ')')
@@ -109,7 +108,9 @@ pub fn extract_dates(text: &str) -> Vec<String> {
                 let rest_clean = rest.trim_matches('-');
                 if MONTHS.iter().any(|(name, _)| rest_clean == *name) {
                     let orig: String = if wi < orig_words.len() {
-                        orig_words[wi].trim_matches(|c: char| matches!(c, ',' | '.' | ';')).to_string()
+                        orig_words[wi]
+                            .trim_matches(|c: char| matches!(c, ',' | '.' | ';'))
+                            .to_string()
                     } else {
                         clean.to_string()
                     };
@@ -166,9 +167,7 @@ pub fn extract_dates(text: &str) -> Vec<String> {
     }
 
     // Pass 4: Relative dates — "yesterday", "today", "last week", "3 days ago", etc.
-    let relative_single = [
-        "yesterday", "today", "tomorrow",
-    ];
+    let relative_single = ["yesterday", "today", "tomorrow"];
     for rel in &relative_single {
         if lower.contains(rel) {
             let key = rel.to_string();
@@ -201,7 +200,9 @@ pub fn extract_dates(text: &str) -> Vec<String> {
     }
 
     // "N <unit> ago" patterns
-    let ago_units = ["day", "days", "week", "weeks", "month", "months", "year", "years"];
+    let ago_units = [
+        "day", "days", "week", "weeks", "month", "months", "year", "years",
+    ];
     for (wi, word) in words.iter().enumerate() {
         if *word == "ago" && wi >= 2 {
             let unit = words[wi - 1].trim_matches(|c: char| !c.is_alphanumeric());
@@ -211,8 +212,16 @@ pub fn extract_dates(text: &str) -> Vec<String> {
                 let is_quantity = quantity.parse::<u32>().is_ok()
                     || matches!(
                         quantity,
-                        "a" | "one" | "two" | "three" | "four" | "five" | "six" | "seven"
-                            | "eight" | "nine" | "ten"
+                        "a" | "one"
+                            | "two"
+                            | "three"
+                            | "four"
+                            | "five"
+                            | "six"
+                            | "seven"
+                            | "eight"
+                            | "nine"
+                            | "ten"
                     );
                 if is_quantity {
                     let phrase = format!("{} {} ago", quantity, unit);
@@ -1001,14 +1010,26 @@ mod tests {
     #[test]
     fn test_extract_dates_iso_slash() {
         let dates = extract_dates("Visited museum on 2023/01/15 and returned 2023/02/20");
-        assert!(dates.contains(&"2023/01/15".to_string()), "got: {:?}", dates);
-        assert!(dates.contains(&"2023/02/20".to_string()), "got: {:?}", dates);
+        assert!(
+            dates.contains(&"2023/01/15".to_string()),
+            "got: {:?}",
+            dates
+        );
+        assert!(
+            dates.contains(&"2023/02/20".to_string()),
+            "got: {:?}",
+            dates
+        );
     }
 
     #[test]
     fn test_extract_dates_iso_dash() {
         let dates = extract_dates("Event on 2024-03-10 was great");
-        assert!(dates.contains(&"2024-03-10".to_string()), "got: {:?}", dates);
+        assert!(
+            dates.contains(&"2024-03-10".to_string()),
+            "got: {:?}",
+            dates
+        );
     }
 
     #[test]
@@ -1025,7 +1046,9 @@ mod tests {
     fn test_extract_dates_month_day() {
         let dates = extract_dates("We met on January 15th and again March 3rd");
         assert!(
-            dates.iter().any(|d| d.contains("January") && d.contains("15")),
+            dates
+                .iter()
+                .any(|d| d.contains("January") && d.contains("15")),
             "got: {:?}",
             dates
         );
@@ -1040,12 +1063,16 @@ mod tests {
     fn test_extract_dates_month_year() {
         let dates = extract_dates("Started in March 2023 and ended in January 2024");
         assert!(
-            dates.iter().any(|d| d.contains("March") && d.contains("2023")),
+            dates
+                .iter()
+                .any(|d| d.contains("March") && d.contains("2023")),
             "got: {:?}",
             dates
         );
         assert!(
-            dates.iter().any(|d| d.contains("January") && d.contains("2024")),
+            dates
+                .iter()
+                .any(|d| d.contains("January") && d.contains("2024")),
             "got: {:?}",
             dates
         );
@@ -1077,7 +1104,11 @@ mod tests {
     fn test_extract_dates_last_patterns() {
         let dates = extract_dates("We discussed it last week and again last Saturday");
         assert!(dates.contains(&"last week".to_string()), "got: {:?}", dates);
-        assert!(dates.contains(&"last saturday".to_string()), "got: {:?}", dates);
+        assert!(
+            dates.contains(&"last saturday".to_string()),
+            "got: {:?}",
+            dates
+        );
     }
 
     #[test]
@@ -1090,7 +1121,11 @@ mod tests {
     #[test]
     fn test_extract_dates_no_false_positives() {
         let dates = extract_dates("The function returns 42 and processes 1024 items");
-        assert!(dates.is_empty(), "should not extract non-dates: {:?}", dates);
+        assert!(
+            dates.is_empty(),
+            "should not extract non-dates: {:?}",
+            dates
+        );
     }
 
     #[test]
@@ -1098,7 +1133,13 @@ mod tests {
         let entities = extract_entities("Visited museum on 2023/01/15", &kw());
         let date_entities: Vec<&ExtractedEntity> =
             entities.iter().filter(|e| e.kind == "Date").collect();
-        assert!(!date_entities.is_empty(), "should have Date entities: {:?}",
-            entities.iter().map(|e| (&e.label, &e.kind)).collect::<Vec<_>>());
+        assert!(
+            !date_entities.is_empty(),
+            "should have Date entities: {:?}",
+            entities
+                .iter()
+                .map(|e| (&e.label, &e.kind))
+                .collect::<Vec<_>>()
+        );
     }
 }

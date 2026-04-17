@@ -19,9 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use super::{
-    neurochemistry,
-    wernicke::extract_entities, BrainState, ShortTermEntry, ADAGRAD_BASE_LR, ADAGRAD_EPSILON,
-    ADAGRAD_SQ_SUM_CAP, CONTRASTIVE_PENALTY, REINFORCE_GRAPH_SCALE, RENORM_BLEND,
+    neurochemistry, wernicke::extract_entities, BrainState, ShortTermEntry, ADAGRAD_BASE_LR,
+    ADAGRAD_EPSILON, ADAGRAD_SQ_SUM_CAP, CONTRASTIVE_PENALTY, REINFORCE_GRAPH_SCALE, RENORM_BLEND,
 };
 
 // ---------------------------------------------------------------------------

@@ -55,12 +55,10 @@ pub fn sparse_orthogonalize(
     let confusable_count = existing
         .iter()
         .filter(|e| {
-            e.len() == result.len()
-                && !e.is_empty()
-                && {
-                    let sim = cosine_similarity(embedding, e);
-                    sim >= low && sim < high
-                }
+            e.len() == result.len() && !e.is_empty() && {
+                let sim = cosine_similarity(embedding, e);
+                sim >= low && sim < high
+            }
         })
         .count();
 
@@ -359,17 +357,17 @@ mod tests {
     fn test_strength_scales_with_neighbors() {
         // 1 neighbor vs 10 neighbors: total displacement should NOT scale 10x
         let base = embed_text("Rust memory model borrow checker ownership", 384);
-        let single = vec![embed_text("Rust memory model borrow checker lifetimes", 384)];
+        let single = vec![embed_text(
+            "Rust memory model borrow checker lifetimes",
+            384,
+        )];
         let result_single = sparse_orthogonalize(&base, &single, 0.3, 0.88, 0.3);
         let disp_single = 1.0 - cosine_similarity(&result_single, &base);
 
         let mut many: Vec<Vec<f32>> = Vec::new();
         for i in 0..10 {
             many.push(embed_text(
-                &format!(
-                    "Rust memory model borrow checker variant {} details",
-                    i
-                ),
+                &format!("Rust memory model borrow checker variant {} details", i),
                 384,
             ));
         }
@@ -426,10 +424,7 @@ mod tests {
     fn test_mmr_select_picks_highest_first() {
         let emb_a = embed_text("authentication system login", 384);
         let emb_b = embed_text("cooking pasta recipes", 384);
-        let candidates = vec![
-            (0, 0.5, emb_a.as_slice()),
-            (1, 0.9, emb_b.as_slice()),
-        ];
+        let candidates = vec![(0, 0.5, emb_a.as_slice()), (1, 0.9, emb_b.as_slice())];
         let selected = mmr_select(&candidates, 1, 0.7);
         assert_eq!(selected, vec![1], "should pick highest similarity first");
     }
@@ -458,7 +453,10 @@ mod tests {
 
         // With diversity (lambda=0.7), should pick A then C (skipping near-duplicate B)
         let with_diversity = mmr_select(&candidates, 2, 0.7);
-        assert_eq!(with_diversity[0], 0, "first pick should still be most relevant");
+        assert_eq!(
+            with_diversity[0], 0,
+            "first pick should still be most relevant"
+        );
         assert_eq!(
             with_diversity[1], 2,
             "second pick should be diverse C, not near-duplicate B"

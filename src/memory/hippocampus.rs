@@ -595,7 +595,10 @@ fn fast_map_trace(state: &mut BrainState, victim_idx: usize) {
             // Clean index entry if it pointed to this node
             state.long_term.index.retain(|_, &mut v| v != weakest_id);
             // Remove edges involving this node
-            state.long_term.edges.retain(|e| e.from != weakest_id && e.to != weakest_id);
+            state
+                .long_term
+                .edges
+                .retain(|e| e.from != weakest_id && e.to != weakest_id);
             state.long_term.rebuild_edge_index();
         }
     }
@@ -616,10 +619,7 @@ fn fast_map_trace(state: &mut BrainState, victim_idx: usize) {
             full_text: Some(victim.text.clone()),
         },
     );
-    state
-        .long_term
-        .index
-        .insert(label.to_lowercase(), trace_id);
+    state.long_term.index.insert(label.to_lowercase(), trace_id);
 
     // Link Trace to extracted entities (same as consolidation topic extraction)
     let entities = extract_entities(&victim.text, &state.keyword_cache);

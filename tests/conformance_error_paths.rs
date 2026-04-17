@@ -103,7 +103,6 @@ fn consolidate_on_empty_store_returns_empty_array() {
     assert_eq!(parsed, serde_json::json!([]));
 }
 
-
 #[test]
 fn reinforce_rejects_invalid_entry_id() {
     let harness = Harness::new();

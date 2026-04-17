@@ -78,7 +78,11 @@ impl GraphMemory {
 
     /// Canonical edge key for index lookups.
     fn edge_key(a: u64, b: u64) -> (u64, u64) {
-        if a <= b { (a, b) } else { (b, a) }
+        if a <= b {
+            (a, b)
+        } else {
+            (b, a)
+        }
     }
 }
 
@@ -452,8 +456,7 @@ pub fn graph_boost_candidates(
                     if !visited.contains(&nid) {
                         if let Some(neighbor) = long_term.nodes.get(&nid) {
                             let kind_mult = edge_kind_multiplier(query_mode, &edge.kind);
-                            let effective_weight =
-                                edge.weight * edge.stability.sqrt() * kind_mult;
+                            let effective_weight = edge.weight * edge.stability.sqrt() * kind_mult;
                             let activation = parent_activation * effective_weight * hop_decay;
 
                             if activation >= MIN_ACTIVATION {
@@ -673,8 +676,7 @@ pub fn soft_cap_stability(raw: f32) -> f32 {
         raw
     } else {
         STABILITY_KNEE
-            + (STABILITY_MAX - STABILITY_KNEE)
-                * ((raw - STABILITY_KNEE) / STABILITY_SCALE).tanh()
+            + (STABILITY_MAX - STABILITY_KNEE) * ((raw - STABILITY_KNEE) / STABILITY_SCALE).tanh()
     }
 }
 
@@ -707,14 +709,17 @@ pub fn cpeb_tag_edges_scoped(
 /// `decay_rate_mod`: neurochemical multiplier (Phase C) — >1.0 accelerates decay.
 pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64, decay_rate_mod: f32) {
     for node in long_term.nodes.values_mut() {
-        let decay =
-            (-(clock.saturating_sub(node.last_seen) as f32) * NEOCORTICAL_DECAY_RATE * decay_rate_mod).exp();
+        let decay = (-(clock.saturating_sub(node.last_seen) as f32)
+            * NEOCORTICAL_DECAY_RATE
+            * decay_rate_mod)
+            .exp();
         node.weight *= decay;
         node.salience *= decay;
     }
     // Edge decay: edges that haven't been reinforced recently lose weight
     for edge in &mut long_term.edges {
-        let effective_decay_rate = NEOCORTICAL_DECAY_RATE * decay_rate_mod / edge.stability.max(1.0);
+        let effective_decay_rate =
+            NEOCORTICAL_DECAY_RATE * decay_rate_mod / edge.stability.max(1.0);
         let decay = (-(clock.saturating_sub(edge.last_seen) as f32) * effective_decay_rate).exp();
         edge.weight *= decay;
 
