@@ -26,12 +26,66 @@ pub fn handle_git_merge_driver(
         let mut ours = load_memory_from_path(ours_path)?;
         let theirs = load_memory_from_path(theirs_path)?;
 
-        crate::memory::merge_from_log(&mut ours, theirs);
+        let stats = crate::tool::merge_states(&mut ours, &theirs);
         save_memory_to_path(&ours, ours_path)?;
+        eprintln!(
+            "[LEGEND] Structural merge complete: {} entries merged",
+            stats.total()
+        );
     } else if filename.ends_with("events.jsonl") {
         merge_jsonl_events(ancestor_path, ours_path, theirs_path)?;
     } else {
         return Err(format!("Unsupported file type for merge: {}", filename).into());
+    }
+
+    Ok(())
+}
+
+/// Merge a pre-merge memory.lz4 file into the current state.
+///
+/// Used by the post-merge git hook to recover state that would otherwise
+/// be lost during fast-forward pulls.
+///
+/// Usage: legend merge-local <path-to-pre-merge-memory.lz4>
+pub fn handle_merge_local(
+    args: &[String],
+    _def: &crate::cli::CommandDef,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if args.is_empty() {
+        return Err("Usage: legend merge-local <path-to-pre-merge-memory.lz4>".into());
+    }
+
+    let pre_merge_path = &args[0];
+
+    // Load the pre-merge state from the provided file
+    let pre_merge = match load_memory_from_path(pre_merge_path) {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("[LEGEND] Could not load pre-merge state: {}", e);
+            return Ok(()); // Non-fatal: hook should not break git pull
+        }
+    };
+
+    // Load current (post-pull) state
+    let mut current = match crate::memory::load_or_default() {
+        Ok(state) => state,
+        Err(e) => {
+            eprintln!("[LEGEND] Could not load current state: {}", e);
+            return Ok(());
+        }
+    };
+
+    let stats = crate::tool::merge_states(&mut current, &pre_merge);
+
+    if stats.total() > 0 {
+        if let Err(e) = crate::memory::save(&current) {
+            eprintln!("[LEGEND] Failed to save merged state: {}", e);
+            return Ok(());
+        }
+        eprintln!(
+            "[LEGEND] Post-merge recovery: merged {} entries from pre-pull state",
+            stats.total()
+        );
     }
 
     Ok(())

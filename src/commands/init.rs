@@ -201,6 +201,77 @@ fn setup_git_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(attr_path, content)?;
     println!("✓ Updated .gitattributes with Legend merge driver rules");
 
+    setup_post_merge_hook()?;
+
+    Ok(())
+}
+
+/// Set up a Git post-merge hook that detects memory.lz4 changes
+/// and merges the pre-pull state to prevent data loss on fast-forward pulls.
+fn setup_post_merge_hook() -> Result<(), Box<dyn std::error::Error>> {
+    let hooks_dir = Path::new(".git/hooks");
+    if !hooks_dir.exists() {
+        return Ok(()); // Not a git repo or bare repo
+    }
+
+    let hook_path = hooks_dir.join("post-merge");
+    let cmd = get_legend_command();
+
+    let legend_block = format!(
+        r#"
+# --- Legend post-merge: recover pre-pull state on fast-forward ---
+if git diff --name-only ORIG_HEAD HEAD 2>/dev/null | grep -q '.legend/memory.lz4'; then
+    _LEGEND_OLD=$(mktemp)
+    git show ORIG_HEAD:.legend/memory.lz4 > "$_LEGEND_OLD" 2>/dev/null
+    if [ -s "$_LEGEND_OLD" ]; then
+        {cmd} merge-local "$_LEGEND_OLD" 2>/dev/null
+    fi
+    rm -f "$_LEGEND_OLD"
+fi
+# --- End Legend post-merge ---"#,
+        cmd = cmd
+    );
+
+    if hook_path.exists() {
+        let existing = fs::read_to_string(&hook_path)?;
+        if existing.contains("Legend post-merge") {
+            // Already installed — replace existing block
+            if let (Some(start), Some(end)) = (
+                existing.find("# --- Legend post-merge:"),
+                existing.find("# --- End Legend post-merge ---"),
+            ) {
+                let end = end + "# --- End Legend post-merge ---".len();
+                let mut updated = String::new();
+                updated.push_str(&existing[..start]);
+                updated.push_str(&legend_block.trim_start());
+                updated.push_str(&existing[end..]);
+                fs::write(&hook_path, updated)?;
+                println!("✓ Updated Legend post-merge hook");
+            }
+            return Ok(());
+        }
+        // Append to existing hook
+        let mut updated = existing;
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str(&legend_block);
+        updated.push('\n');
+        fs::write(&hook_path, updated)?;
+    } else {
+        let content = format!("#!/bin/bash\n{}\n", legend_block);
+        fs::write(&hook_path, content)?;
+    }
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&hook_path, perms)?;
+    }
+
+    println!("✓ Installed Git post-merge hook for Legend state recovery");
     Ok(())
 }
 

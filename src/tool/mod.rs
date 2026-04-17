@@ -18,10 +18,10 @@ pub use persistence::{
 pub use types::*;
 
 use crate::memory::{
-    add_node_if_new, classify_text, retrieve_context, tick_impl, GraphNode,
+    add_node_if_new, anterior_pfc, classify_text, retrieve_context, tick_impl, GraphNode,
     MemoryState, ShortTermEntry,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 /// Maximum number of session log entries to keep.
@@ -271,12 +271,24 @@ pub fn build_start_summary_with_options(
     // Include neurochemistry if any chemical is significantly elevated
     let chem = &state.brain.chemistry;
     let mut elevated: Vec<(&str, f32)> = Vec::new();
-    if chem.norepinephrine > 0.3 { elevated.push(("norepinephrine", chem.norepinephrine)); }
-    if chem.cortisol > 0.3 { elevated.push(("cortisol", chem.cortisol)); }
-    if chem.dopamine > 0.3 { elevated.push(("dopamine", chem.dopamine)); }
-    if (chem.serotonin - 0.5).abs() > 0.2 { elevated.push(("serotonin", chem.serotonin)); }
-    if chem.acetylcholine > 0.3 { elevated.push(("acetylcholine", chem.acetylcholine)); }
-    if chem.endocannabinoid > 0.3 { elevated.push(("endocannabinoid", chem.endocannabinoid)); }
+    if chem.norepinephrine > 0.3 {
+        elevated.push(("norepinephrine", chem.norepinephrine));
+    }
+    if chem.cortisol > 0.3 {
+        elevated.push(("cortisol", chem.cortisol));
+    }
+    if chem.dopamine > 0.3 {
+        elevated.push(("dopamine", chem.dopamine));
+    }
+    if (chem.serotonin - 0.5).abs() > 0.2 {
+        elevated.push(("serotonin", chem.serotonin));
+    }
+    if chem.acetylcholine > 0.3 {
+        elevated.push(("acetylcholine", chem.acetylcholine));
+    }
+    if chem.endocannabinoid > 0.3 {
+        elevated.push(("endocannabinoid", chem.endocannabinoid));
+    }
 
     let chemistry = if elevated.is_empty() {
         None
@@ -366,6 +378,258 @@ pub fn merge_from_log(state: &mut MemoryState, other: MemoryState) {
 
     state.brain.clock = state.brain.clock.max(other.brain.clock);
     state.brain.next_id = state.brain.next_id.max(other.brain.next_id);
+}
+
+/// Deep structural merge: union two MemoryStates field-by-field.
+///
+/// Unlike `merge_from_log` which replays session entries (re-embedding them),
+/// this preserves all existing entries, embeddings, and metadata intact.
+/// Designed for cross-machine git sync where both sides have valid state.
+pub fn merge_states(ours: &mut MemoryState, theirs: &MemoryState) -> MergeStats {
+    let mut stats = MergeStats::default();
+
+    // --- L2 short_term: union by ID, on collision keep higher salience ---
+    let mut our_id_map: HashMap<u64, usize> = ours
+        .brain
+        .short_term
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.id, i))
+        .collect();
+    for their_entry in &theirs.brain.short_term {
+        if let Some(&idx) = our_id_map.get(&their_entry.id) {
+            // Collision: keep higher salience
+            if their_entry.salience > ours.brain.short_term[idx].salience {
+                ours.brain.short_term[idx] = their_entry.clone();
+                stats.l2_updated += 1;
+            }
+        } else {
+            our_id_map.insert(their_entry.id, ours.brain.short_term.len());
+            ours.brain.short_term.push(their_entry.clone());
+            stats.l2_added += 1;
+        }
+    }
+
+    // --- L1 working_memory: union by ID ---
+    let our_wm_ids: HashSet<u64> = ours.brain.working_memory.iter().map(|e| e.id).collect();
+    for their_entry in &theirs.brain.working_memory {
+        if !our_wm_ids.contains(&their_entry.id) {
+            ours.brain.working_memory.push(their_entry.clone());
+            stats.l1_added += 1;
+        }
+    }
+
+    // --- L3 nodes: union by ID, on collision take higher weight + merge source_texts ---
+    for (id, their_node) in &theirs.brain.long_term.nodes {
+        if let Some(our_node) = ours.brain.long_term.nodes.get_mut(id) {
+            // Collision: take higher weight, merge source_texts
+            let mut changed = false;
+            if their_node.weight > our_node.weight {
+                our_node.weight = their_node.weight;
+                our_node.salience = their_node.salience;
+                our_node.last_seen = our_node.last_seen.max(their_node.last_seen);
+                changed = true;
+            }
+            // Merge source_texts
+            let existing: HashSet<String> = our_node.source_texts.iter().cloned().collect();
+            for text in &their_node.source_texts {
+                if !existing.contains(text) {
+                    our_node.source_texts.push(text.clone());
+                    changed = true;
+                }
+            }
+            // Prefer non-empty embedding and full_text
+            if our_node.embedding.is_empty() && !their_node.embedding.is_empty() {
+                our_node.embedding = their_node.embedding.clone();
+                changed = true;
+            }
+            if our_node.full_text.is_none() && their_node.full_text.is_some() {
+                our_node.full_text = their_node.full_text.clone();
+                changed = true;
+            }
+            if changed {
+                stats.l3_nodes_updated += 1;
+            }
+        } else {
+            ours.brain.long_term.nodes.insert(*id, their_node.clone());
+            stats.l3_nodes_added += 1;
+        }
+    }
+
+    // Rebuild label→id index after node merge
+    ours.brain.long_term.index.clear();
+    for (id, node) in &ours.brain.long_term.nodes {
+        ours.brain.long_term.index.insert(node.label.clone(), *id);
+    }
+
+    // --- L3 edges: union by (from, to, kind), on collision take higher weight ---
+    {
+        let mut edge_map: HashMap<(u64, u64, String), usize> = HashMap::new();
+        for (i, edge) in ours.brain.long_term.edges.iter().enumerate() {
+            let key = (
+                edge.from.min(edge.to),
+                edge.from.max(edge.to),
+                edge.kind.clone(),
+            );
+            edge_map.insert(key, i);
+        }
+        for their_edge in &theirs.brain.long_term.edges {
+            let key = (
+                their_edge.from.min(their_edge.to),
+                their_edge.from.max(their_edge.to),
+                their_edge.kind.clone(),
+            );
+            if let Some(&idx) = edge_map.get(&key) {
+                if their_edge.weight > ours.brain.long_term.edges[idx].weight {
+                    ours.brain.long_term.edges[idx] = their_edge.clone();
+                }
+            } else {
+                edge_map.insert(key, ours.brain.long_term.edges.len());
+                ours.brain.long_term.edges.push(their_edge.clone());
+                stats.l3_edges_added += 1;
+            }
+        }
+    }
+    ours.brain.long_term.rebuild_edge_index();
+
+    // --- Plans: union by name (case-insensitive), items unioned by text ---
+    // Status priority: Done > Active > Deferred > Pending
+    {
+        let our_plan_indices: HashMap<String, usize> = ours
+            .brain
+            .plans
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.name.to_lowercase(), i))
+            .collect();
+
+        for their_plan in &theirs.brain.plans {
+            let key = their_plan.name.to_lowercase();
+            if let Some(&idx) = our_plan_indices.get(&key) {
+                let our_plan = &mut ours.brain.plans[idx];
+                // Union items by text (case-insensitive)
+                for their_item in &their_plan.items {
+                    let item_key = their_item.text.to_lowercase();
+                    if let Some(our_item) = our_plan
+                        .items
+                        .iter_mut()
+                        .find(|i| i.text.to_lowercase() == item_key)
+                    {
+                        // Status: take most advanced
+                        if item_status_rank(&their_item.status) > item_status_rank(&our_item.status)
+                        {
+                            our_item.status = their_item.status.clone();
+                            stats.plan_items_updated += 1;
+                        }
+                    } else {
+                        our_plan.items.push(their_item.clone());
+                        stats.plan_items_added += 1;
+                    }
+                }
+                // Take later updated_at
+                our_plan.updated_at = our_plan.updated_at.max(their_plan.updated_at);
+                our_plan.update_completion_status(ours.brain.clock.max(theirs.brain.clock));
+            } else {
+                ours.brain.plans.push(their_plan.clone());
+                stats.plans_added += 1;
+            }
+        }
+    }
+
+    // --- session_log: union by text, sort by timestamp ---
+    {
+        let our_texts: HashSet<String> = ours.session_log.iter().map(|s| s.text.clone()).collect();
+        for their_entry in &theirs.session_log {
+            if !our_texts.contains(&their_entry.text) {
+                ours.session_log.push(their_entry.clone());
+                stats.session_entries_added += 1;
+            }
+        }
+        ours.session_log.sort_by_key(|e| e.timestamp);
+    }
+
+    // --- term_frequency: union keys, on collision take higher count ---
+    for (term, their_stats) in &theirs.brain.term_frequency {
+        if let Some(our_stats) = ours.brain.term_frequency.get_mut(term) {
+            if their_stats.total_count > our_stats.total_count {
+                *our_stats = their_stats.clone();
+            }
+        } else {
+            ours.brain
+                .term_frequency
+                .insert(term.clone(), their_stats.clone());
+        }
+    }
+
+    // --- chemistry: take from state with higher clock ---
+    if theirs.brain.clock > ours.brain.clock {
+        ours.brain.chemistry = theirs.brain.chemistry.clone();
+    }
+
+    // --- temporal_context: take from state with higher clock ---
+    if theirs.brain.clock > ours.brain.clock && !theirs.brain.temporal_context.is_empty() {
+        ours.brain.temporal_context = theirs.brain.temporal_context.clone();
+    }
+
+    // --- current_task: prefer non-None, then higher-clock state ---
+    if ours.current_task.is_none() {
+        ours.current_task = theirs.current_task.clone();
+    } else if theirs.current_task.is_some() && theirs.brain.clock > ours.brain.clock {
+        ours.current_task = theirs.current_task.clone();
+    }
+
+    // --- clock / next_id: max(a, b) ---
+    // Updated after clock-gated comparisons above so they compare against the pre-merge clock.
+    ours.brain.clock = ours.brain.clock.max(theirs.brain.clock);
+    ours.brain.next_id = ours.brain.next_id.max(theirs.brain.next_id);
+
+    // --- ticks_since_consolidation: max ---
+    ours.brain.ticks_since_consolidation = ours
+        .brain
+        .ticks_since_consolidation
+        .max(theirs.brain.ticks_since_consolidation);
+
+    stats
+}
+
+/// Rank an ItemStatus for merge conflict resolution (higher = more advanced).
+fn item_status_rank(status: &anterior_pfc::ItemStatus) -> u8 {
+    match status {
+        anterior_pfc::ItemStatus::Pending => 0,
+        anterior_pfc::ItemStatus::Deferred => 1,
+        anterior_pfc::ItemStatus::Active => 2,
+        anterior_pfc::ItemStatus::Done => 3,
+    }
+}
+
+/// Statistics from a merge_states() call.
+#[derive(Debug, Default)]
+pub struct MergeStats {
+    pub l1_added: usize,
+    pub l2_added: usize,
+    pub l2_updated: usize,
+    pub l3_nodes_added: usize,
+    pub l3_nodes_updated: usize,
+    pub l3_edges_added: usize,
+    pub plans_added: usize,
+    pub plan_items_added: usize,
+    pub plan_items_updated: usize,
+    pub session_entries_added: usize,
+}
+
+impl MergeStats {
+    pub fn total(&self) -> usize {
+        self.l1_added
+            + self.l2_added
+            + self.l2_updated
+            + self.l3_nodes_added
+            + self.l3_nodes_updated
+            + self.l3_edges_added
+            + self.plans_added
+            + self.plan_items_added
+            + self.plan_items_updated
+            + self.session_entries_added
+    }
 }
 
 /// Clear the current task.
