@@ -346,12 +346,6 @@ fn summary_entry_similarity(a: &ShortTermEntry, b: &ShortTermEntry) -> f32 {
 /// Summarize a group of short-term entries by balancing importance and diversity.
 pub fn summarize_group(group: &[ShortTermEntry], kw: &KeywordCache) -> String {
     let mut candidates: Vec<&ShortTermEntry> = group.iter().collect();
-    candidates.sort_by(|a, b| {
-        summary_entry_importance(b)
-            .partial_cmp(&summary_entry_importance(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.id.cmp(&b.id))
-    });
 
     let mut selected: Vec<&ShortTermEntry> = Vec::new();
     while selected.len() < GROUP_SUMMARY_ENTRY_LIMIT && !candidates.is_empty() {
@@ -386,7 +380,7 @@ pub fn summarize_group(group: &[ShortTermEntry], kw: &KeywordCache) -> String {
             })
             .map(|(idx, _)| idx)
             .unwrap_or(0);
-        selected.push(candidates.remove(best_idx));
+        selected.push(candidates.swap_remove(best_idx));
     }
 
     let mut combined = String::new();
