@@ -203,6 +203,9 @@ const SYSTEMS_CONSOLIDATION_MAX_WEIGHT: f32 = 0.3;
 const SUMMARY_FULL_TEXT_MAX_LEN: usize = 500;
 /// Minimum cosine similarity for L3 Summary node retrieval.
 const SUMMARY_RETRIEVAL_MIN_SIM: f32 = 0.3;
+/// Minimum centroid similarity for treating two Summary nodes as the same
+/// consolidated memory even when their extractive labels use different words.
+const SUMMARY_MERGE_EMBEDDING_SIM: f32 = 0.75;
 /// Layer 3 incremental keyword discovery: minimum distinct ticks for auto-promotion.
 const TERM_PROMOTION_MIN_TICKS: u32 = 5;
 /// Minimum character length for auto-promoted terms.
@@ -1749,6 +1752,36 @@ fn systems_consolidation_score(group: &[ShortTermEntry]) -> f32 {
         + max_salience * SYSTEMS_CONSOLIDATION_MAX_WEIGHT
 }
 
+fn find_existing_summary_node(
+    long_term: &GraphMemory,
+    summary_text: &str,
+    centroid_embedding: &[f32],
+    source_texts: &[String],
+) -> Option<u64> {
+    long_term
+        .index
+        .get(&summary_text.to_lowercase())
+        .copied()
+        .or_else(|| {
+            long_term
+                .nodes
+                .iter()
+                .find(|(_, n)| {
+                    if n.kind != "Summary" {
+                        return false;
+                    }
+
+                    word_overlap(&n.label, summary_text) >= MERGE_WORD_OVERLAP_THRESHOLD
+                        || source_texts.iter().any(|st| n.source_texts.contains(st))
+                        || (!centroid_embedding.is_empty()
+                            && !n.embedding.is_empty()
+                            && cosine_similarity(&n.embedding, centroid_embedding)
+                                >= SUMMARY_MERGE_EMBEDDING_SIM)
+                })
+                .map(|(&id, _)| id)
+        })
+}
+
 /// Merge similar short-term entries into long-term graph summaries.
 pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
     #[cfg(feature = "instrument")]
@@ -1884,23 +1917,13 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 (Vec::new(), None)
             };
 
-        // 1. Dedup: check for existing Summary node with exact label or high word overlap
-        let existing_summary_id = state
-            .long_term
-            .index
-            .get(&summary_text.to_lowercase())
-            .copied()
-            .or_else(|| {
-                state
-                    .long_term
-                    .nodes
-                    .iter()
-                    .find(|(_, n)| {
-                        n.kind == "Summary"
-                            && word_overlap(&n.label, &summary_text) >= MERGE_WORD_OVERLAP_THRESHOLD
-                    })
-                    .map(|(&id, _)| id)
-            });
+        // 1. Dedup: prefer exact label, then source/label overlap, then centroid similarity.
+        let existing_summary_id = find_existing_summary_node(
+            &state.long_term,
+            &summary_text,
+            &centroid_embedding,
+            &source_texts,
+        );
 
         let node_id = if let Some(eid) = existing_summary_id {
             // Merge into existing: update weight/salience, extend source_texts
@@ -4063,6 +4086,87 @@ mod tests {
             node.source_texts.len() >= 2,
             "Summary should contain source texts from group members, got {}",
             node.source_texts.len()
+        );
+    }
+
+    #[test]
+    fn test_consolidate_merges_summary_by_centroid_embedding() {
+        let mut state = MemoryState::default();
+        state.brain.config.theta_low = 0.9;
+
+        let existing_id = 1_000;
+        state.brain.next_id = existing_id + 1;
+        state.brain.long_term.nodes.insert(
+            existing_id,
+            neocortex::GraphNode {
+                id: existing_id,
+                label: "session security overview".to_string(),
+                kind: "Summary".to_string(),
+                weight: 1.2,
+                last_seen: 1,
+                salience: 0.5,
+                source_texts: vec!["legacy access-control note".to_string()],
+                embedding: vec![1.0, 0.0],
+                full_text: Some("legacy access-control note".to_string()),
+            },
+        );
+        state
+            .brain
+            .long_term
+            .index
+            .insert("session security overview".to_string(), existing_id);
+
+        let texts = [
+            "token validation middleware",
+            "signing key rotation",
+            "credential expiry enforcement",
+        ];
+        for text in &texts {
+            hippocampus::insert_short_term(
+                &mut state.brain,
+                text,
+                vec![1.0, 0.0],
+                0.8,
+                Vec::new(),
+                0.0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
+            );
+        }
+
+        consolidate(&mut state.brain);
+
+        let summaries: Vec<_> = state
+            .brain
+            .long_term
+            .nodes
+            .values()
+            .filter(|n| n.kind == "Summary")
+            .collect();
+        assert_eq!(
+            summaries.len(),
+            1,
+            "centroid-matched consolidation should merge instead of creating a duplicate Summary"
+        );
+
+        let node = state
+            .brain
+            .long_term
+            .nodes
+            .get(&existing_id)
+            .expect("existing Summary should be reused");
+        assert!(
+            texts.iter().all(|text| node.source_texts.contains(&text.to_string())),
+            "merged Summary should retain new evidence in source_texts"
+        );
+        assert_eq!(node.embedding, vec![1.0, 0.0]);
+        assert!(
+            node.full_text
+                .as_ref()
+                .is_some_and(|full_text| full_text.contains("signing key rotation")),
+            "merged Summary should refresh full_text from the new consolidation group"
         );
     }
 
