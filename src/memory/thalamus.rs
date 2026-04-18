@@ -9,9 +9,10 @@
 ///
 /// - **Salience scoring (`compute_salience`)** — assigns an importance prior
 ///   to each incoming chunk based on domain-general cognitive signals
-///   (decisions, bugs, preferences, blockers) plus learned domain vocabulary.
-///   This determines whether the prefrontal attention gate promotes the input
-///   to episodic memory (L2) or lets it fade in working memory (L1).
+///   (decisions, bugs, preferences, blockers, prediction-error cues) plus
+///   learned domain vocabulary. This determines whether the prefrontal
+///   attention gate promotes the input to episodic memory (L2) or lets it fade
+///   in working memory (L1).
 ///
 /// The thalamus is deliberately stateless: it scores input and returns
 /// values without mutating `BrainState`.  All side effects happen in the
@@ -68,6 +69,10 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
         score += 0.3;
     }
 
+    // Lexical prediction-error cues approximate surprise until graph-aware
+    // contradiction detection can compare incoming facts against L3 beliefs.
+    score += lexical_prediction_error_score(&lowered, kw);
+
     // Domain-specific vocabulary learned from the workspace. Repeated,
     // meaningful domain terms should outweigh syntax cues from any single
     // domain (including code), but the contribution stays bounded so learned
@@ -112,6 +117,46 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
     }
 
     score.clamp(0.05, 1.0)
+}
+
+fn lexical_prediction_error_score(lowered: &str, kw: &KeywordCache) -> f32 {
+    let correction_hits = kw
+        .prediction_error_correction
+        .iter()
+        .filter(|cue| contains_keyword(lowered, cue))
+        .count();
+
+    let surprise_hits = kw
+        .prediction_error_surprise
+        .iter()
+        .filter(|cue| contains_keyword(lowered, cue))
+        .count();
+
+    let mut score: f32 = 0.0;
+    if correction_hits > 0 {
+        score += (0.2 + 0.05 * (correction_hits.saturating_sub(1) as f32)).min(0.3);
+    }
+    if surprise_hits > 0 {
+        score += (0.12 + 0.04 * (surprise_hits.saturating_sub(1) as f32)).min(0.22);
+    }
+
+    score.min(0.4)
+}
+
+fn contains_keyword(text: &str, keyword: &str) -> bool {
+    if keyword
+        .chars()
+        .any(|ch| ch.is_whitespace() || !ch.is_ascii_alphanumeric())
+    {
+        return text.contains(keyword);
+    }
+
+    text.match_indices(keyword).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + keyword.len()..].chars().next();
+        !before.is_some_and(|ch| ch.is_ascii_alphanumeric())
+            && !after.is_some_and(|ch| ch.is_ascii_alphanumeric())
+    })
 }
 
 #[cfg(test)]
@@ -167,6 +212,68 @@ mod tests {
             s >= 0.4,
             "code-related bug should stay high through bug salience, got {}",
             s
+        );
+    }
+
+    #[test]
+    fn test_compute_salience_correction_language_boosts_surprise() {
+        let mut kw = kw();
+        kw.domain = vec!["project alpha".to_string(), "sqlite".to_string()];
+
+        let repeated = compute_salience("Project Alpha uses SQLite as the datastore.", &kw);
+        let correction = compute_salience(
+            "Correction: Project Alpha no longer uses SQLite; it now uses Postgres instead.",
+            &kw,
+        );
+
+        assert!(
+            correction > repeated,
+            "correction should score above repeated fact: {} vs {}",
+            correction,
+            repeated
+        );
+        assert!(
+            correction >= 0.45,
+            "correction should be high salience, got {}",
+            correction
+        );
+    }
+
+    #[test]
+    fn test_compute_salience_unexpected_regression_is_high() {
+        let s = compute_salience(
+            "Unexpected regression: SQLite restore validation now fails after checkpoint cleanup.",
+            &kw(),
+        );
+        assert!(
+            s >= 0.45,
+            "unexpected regression should combine surprise and bug salience, got {}",
+            s
+        );
+    }
+
+    #[test]
+    fn test_lexical_prediction_error_is_bounded() {
+        let s = lexical_prediction_error_score(
+            "correction actually no longer instead changed replaced revised updated turns out unexpected surprising regression contrary exception but however",
+            &kw(),
+        );
+        assert!(
+            s <= 0.4,
+            "prediction-error lexical score should be bounded, got {s}"
+        );
+    }
+
+    #[test]
+    fn test_prediction_error_short_cues_require_word_boundaries() {
+        let button = lexical_prediction_error_score("The button remains visible.", &kw());
+        let contrast =
+            lexical_prediction_error_score("The plan looked stable, but it changed.", &kw());
+
+        assert_eq!(button, 0.0, "short cue should not match inside button");
+        assert!(
+            contrast > button,
+            "standalone contrast cue should still score"
         );
     }
 

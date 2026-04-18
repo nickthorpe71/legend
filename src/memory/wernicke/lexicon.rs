@@ -113,6 +113,95 @@ pub const DECISION_KEYWORDS: &[&str] = &[
     "too complex",
 ];
 
+/// Prediction-error correction/revision cues — domain-independent update markers.
+///
+/// These approximate surprise lexically until graph-aware contradiction
+/// detection can compare new facts against stable L3 beliefs.
+pub const PREDICTION_ERROR_CORRECTION_KEYWORDS: &[&str] = &[
+    "correction",
+    "corrected",
+    "correcting",
+    "actually",
+    "in fact",
+    "previously",
+    "formerly",
+    "mistaken",
+    "mistakenly",
+    "wrong",
+    "incorrect",
+    "not true",
+    "false alarm",
+    "no longer",
+    "instead",
+    "rather than",
+    "changed",
+    "change of plan",
+    "change in plan",
+    "changed plan",
+    "changed our mind",
+    "replaced",
+    "replaces",
+    "replacement",
+    "revised",
+    "revision",
+    "updated",
+    "update",
+    "superseded",
+    "supersedes",
+    "deprecated",
+    "deprecates",
+    "removed",
+    "renamed",
+    "switched",
+    "switched from",
+    "switched to",
+    "migrated from",
+    "migrated to",
+    "now uses",
+    "now requires",
+    "now depends on",
+    "turns out",
+    "turns out that",
+];
+
+/// Prediction-error surprise/exception cues — domain-independent novelty markers.
+pub const PREDICTION_ERROR_SURPRISE_KEYWORDS: &[&str] = &[
+    "unexpected",
+    "unexpectedly",
+    "surprising",
+    "surprisingly",
+    "unusual",
+    "unusually",
+    "anomaly",
+    "anomalous",
+    "outlier",
+    "regression",
+    "regressed",
+    "contrary",
+    "contradiction",
+    "contradicts",
+    "conflicts with",
+    "inconsistent with",
+    "exception",
+    "except",
+    "edge case",
+    "corner case",
+    "special case",
+    "only happens",
+    "reproduces only",
+    "fails only",
+    "suddenly",
+    "spike",
+    "drop",
+    "deviation",
+    "deviates",
+    "but",
+    "however",
+    "although",
+    "despite",
+    "nevertheless",
+];
+
 /// Action verbs — domain-independent progress markers.
 pub const ACTION_KEYWORDS: &[(&str, &str)] = &[
     // Building
@@ -677,6 +766,8 @@ mod tests {
         assert!(!PREFERENCE_KEYWORDS.is_empty());
         assert!(!ENVIRONMENT_KEYWORDS.is_empty());
         assert!(!URGENCY_KEYWORDS.is_empty());
+        assert!(!PREDICTION_ERROR_CORRECTION_KEYWORDS.is_empty());
+        assert!(!PREDICTION_ERROR_SURPRISE_KEYWORDS.is_empty());
     }
 
     #[test]
@@ -758,6 +849,14 @@ mod tests {
         assert!(
             !has_duplicates(URGENCY_KEYWORDS),
             "Duplicate in URGENCY_KEYWORDS"
+        );
+        assert!(
+            !has_duplicates(PREDICTION_ERROR_CORRECTION_KEYWORDS),
+            "Duplicate in PREDICTION_ERROR_CORRECTION_KEYWORDS"
+        );
+        assert!(
+            !has_duplicates(PREDICTION_ERROR_SURPRISE_KEYWORDS),
+            "Duplicate in PREDICTION_ERROR_SURPRISE_KEYWORDS"
         );
     }
 

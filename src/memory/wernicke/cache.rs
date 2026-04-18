@@ -6,7 +6,9 @@
 use super::lexicon::{
     ACTION_KEYWORDS, ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, CODE_KEYWORDS, DECISION_KEYWORDS,
     DOMAIN_KEYWORDS, ENTITY_KIND_PRIORITY, ENVIRONMENT_KEYWORDS, NEGATIVE_VALENCE_KEYWORDS,
-    POSITIVE_VALENCE_KEYWORDS, PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS, URGENCY_KEYWORDS,
+    POSITIVE_VALENCE_KEYWORDS, PREDICTION_ERROR_CORRECTION_KEYWORDS,
+    PREDICTION_ERROR_SURPRISE_KEYWORDS, PREFERENCE_KEYWORDS, TODO_KEYWORDS, TOOL_KEYWORDS,
+    URGENCY_KEYWORDS,
 };
 use crate::memory::GraphMemory;
 
@@ -30,6 +32,10 @@ pub struct KeywordCache {
     pub positive_valence: Vec<(String, f32)>,
     /// Urgency keywords that amplify emotional magnitude.
     pub urgency: Vec<String>,
+    /// Lexical prediction-error cues for corrections/revisions.
+    pub prediction_error_correction: Vec<String>,
+    /// Lexical prediction-error cues for surprise/exceptions.
+    pub prediction_error_surprise: Vec<String>,
     /// Domain-specific keywords learned from workspace (Layer 2/3).
     pub domain: Vec<String>,
 }
@@ -73,6 +79,14 @@ impl KeywordCache {
                 .map(|(kw, w)| (kw.to_string(), *w))
                 .collect(),
             urgency: URGENCY_KEYWORDS.iter().map(|s| s.to_string()).collect(),
+            prediction_error_correction: PREDICTION_ERROR_CORRECTION_KEYWORDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            prediction_error_surprise: PREDICTION_ERROR_SURPRISE_KEYWORDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             domain: DOMAIN_KEYWORDS.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -94,6 +108,8 @@ impl KeywordCache {
             negative_valence: Vec::new(),
             positive_valence: Vec::new(),
             urgency: Vec::new(),
+            prediction_error_correction: Vec::new(),
+            prediction_error_surprise: Vec::new(),
             domain: Vec::new(),
         };
 
@@ -127,6 +143,12 @@ impl KeywordCache {
                         cache.positive_valence.push((term.to_string(), weight));
                     }
                     "urgency" => cache.urgency.push(term.to_string()),
+                    "prediction_error_correction" => {
+                        cache.prediction_error_correction.push(term.to_string())
+                    }
+                    "prediction_error_surprise" => {
+                        cache.prediction_error_surprise.push(term.to_string())
+                    }
                     "domain" => cache.domain.push(term.to_string()),
                     _ => {} // Unknown category, skip
                 }
@@ -166,6 +188,8 @@ impl KeywordCache {
             &self.architecture,
             &self.preference,
             &self.tool,
+            &self.prediction_error_correction,
+            &self.prediction_error_surprise,
             &self.domain,
         ]
         .iter()
@@ -226,6 +250,18 @@ impl KeywordCache {
         }
         if self.urgency.is_empty() {
             self.urgency = URGENCY_KEYWORDS.iter().map(|s| s.to_string()).collect();
+        }
+        if self.prediction_error_correction.is_empty() {
+            self.prediction_error_correction = PREDICTION_ERROR_CORRECTION_KEYWORDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        }
+        if self.prediction_error_surprise.is_empty() {
+            self.prediction_error_surprise = PREDICTION_ERROR_SURPRISE_KEYWORDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         }
         if self.domain.is_empty() {
             self.domain = DOMAIN_KEYWORDS.iter().map(|s| s.to_string()).collect();
@@ -299,6 +335,8 @@ mod tests {
         assert!(!cache.negative_valence.is_empty());
         assert!(!cache.positive_valence.is_empty());
         assert!(!cache.urgency.is_empty());
+        assert!(!cache.prediction_error_correction.is_empty());
+        assert!(!cache.prediction_error_surprise.is_empty());
     }
 
     #[test]
@@ -531,5 +569,45 @@ mod tests {
             POSITIVE_VALENCE_KEYWORDS.len()
         );
         assert_eq!(cache.urgency.len(), URGENCY_KEYWORDS.len());
+    }
+
+    #[test]
+    fn test_prediction_error_graph_nodes() {
+        let mut graph = GraphMemory::default();
+        graph.nodes.insert(
+            1,
+            GraphNode {
+                id: 1,
+                label: "kw:prediction_error_correction:overridden".to_string(),
+                kind: "Keyword".to_string(),
+                weight: 1.0,
+                last_seen: 10,
+                salience: 0.5,
+                source_texts: vec![],
+                embedding: Vec::new(),
+                full_text: None,
+            },
+        );
+        graph.nodes.insert(
+            2,
+            GraphNode {
+                id: 2,
+                label: "kw:prediction_error_surprise:anomaly".to_string(),
+                kind: "Keyword".to_string(),
+                weight: 1.0,
+                last_seen: 10,
+                salience: 0.5,
+                source_texts: vec![],
+                embedding: Vec::new(),
+                full_text: None,
+            },
+        );
+
+        let cache = KeywordCache::from_graph(&graph);
+        assert_eq!(
+            cache.prediction_error_correction,
+            vec!["overridden".to_string()]
+        );
+        assert_eq!(cache.prediction_error_surprise, vec!["anomaly".to_string()]);
     }
 }
