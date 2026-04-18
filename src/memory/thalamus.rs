@@ -20,7 +20,13 @@
 ///
 /// Representational encoding (embeddings, cosine similarity) lives in
 /// `entorhinal.rs`, which owns the full encoding-and-compression pipeline.
+use crate::memory::signal::normalize_positive_signal;
 use crate::memory::wernicke::KeywordCache;
+
+const SALIENCE_FLOOR: f32 = 0.05;
+const SALIENCE_CEILING: f32 = 1.0;
+const SALIENCE_MIDPOINT: f32 = 0.45;
+const SALIENCE_STEEPNESS: f32 = 1.4;
 
 /// Compute salience score from text content heuristics.
 pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
@@ -116,7 +122,17 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
         score += 0.15;
     }
 
-    score.clamp(0.05, 1.0)
+    normalize_salience(score)
+}
+
+fn normalize_salience(raw: f32) -> f32 {
+    normalize_positive_signal(
+        raw,
+        SALIENCE_FLOOR,
+        SALIENCE_CEILING,
+        SALIENCE_MIDPOINT,
+        SALIENCE_STEEPNESS,
+    )
 }
 
 fn lexical_prediction_error_score(lowered: &str, kw: &KeywordCache) -> f32 {
@@ -342,6 +358,23 @@ mod tests {
     #[test]
     fn test_compute_salience_capped_at_one() {
         let s = compute_salience("DECISION: Chose X because crash bug regression BLOCKER TODO architecture API schema module user prefers convention fn main() {} ``` code ```", &kw());
-        assert!(s <= 1.0, "should cap at 1.0, got {}", s);
+        assert!(s < 1.0, "should smoothly normalize below 1.0, got {}", s);
+    }
+
+    #[test]
+    fn test_compute_salience_preserves_high_end_rank() {
+        let high = compute_salience(
+            "Correction: Project Alpha no longer uses SQLite; it now uses Postgres instead.",
+            &kw(),
+        );
+        let higher = compute_salience(
+            "CRITICAL DECISION: Correction because unexpected crash regression BLOCKER TODO user prefers replacing the old plan immediately.",
+            &kw(),
+        );
+
+        assert!(
+            higher > high,
+            "stronger high-salience text should remain distinguishable: {higher} vs {high}"
+        );
     }
 }

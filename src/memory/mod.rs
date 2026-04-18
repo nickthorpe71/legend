@@ -27,6 +27,7 @@ pub mod neocortex;
 pub mod neurochemistry;
 pub mod prefrontal;
 mod prototype_embeddings;
+pub mod signal;
 pub mod thalamus;
 #[cfg(feature = "instrument")]
 pub mod trace;
