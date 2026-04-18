@@ -359,3 +359,24 @@ fn events_jsonl_records_ticks_and_queries() {
         events
     );
 }
+
+#[test]
+fn events_jsonl_rotates_large_log_before_append() {
+    let harness = Harness::new();
+    seed_basic_repo(&harness);
+    harness.cmd_ok(&["init"]);
+
+    harness.write_file(".legend/events.jsonl", &"x".repeat(5 * 1024 * 1024));
+    harness.cmd_ok(&["memory", "tick", "DECISION: Rotated event log before append."]);
+
+    assert!(
+        harness.exists(".legend/events.jsonl.1"),
+        "large events.jsonl should be rotated"
+    );
+    let events = harness.read_file(".legend/events.jsonl");
+    assert!(
+        events.contains("Rotated event log before append"),
+        "new event should be written after rotation: {}",
+        events
+    );
+}

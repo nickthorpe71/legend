@@ -82,26 +82,28 @@ pub struct StartEventData {
 // Event logging
 // ---------------------------------------------------------------------------
 
-/// Maximum lines in events.jsonl before rotation.
-const EVENT_LOG_MAX_LINES: usize = 10_000;
+/// Maximum bytes in events.jsonl before rotation.
+///
+/// Rotation runs on the hot command path, so it must be metadata-only. A line
+/// count would scan the whole log on every tick/query once observability data
+/// grows large.
+const EVENT_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 pub const EVENT_LOG_PATH: &str = ".legend/events.jsonl";
 const EVENT_LOG_ARCHIVE: &str = ".legend/events.jsonl.1";
 
-/// Rotate event log if it exceeds the max line count.
+/// Rotate event log if it exceeds the max byte count.
 fn maybe_rotate_event_log() {
-    use std::io::BufRead;
-    let Ok(file) = std::fs::File::open(EVENT_LOG_PATH) else {
+    let Ok(metadata) = std::fs::metadata(EVENT_LOG_PATH) else {
         return;
     };
-    let line_count = std::io::BufReader::new(file).lines().count();
-    if line_count >= EVENT_LOG_MAX_LINES {
+    if metadata.len() >= EVENT_LOG_MAX_BYTES {
         let _ = std::fs::rename(EVENT_LOG_PATH, EVENT_LOG_ARCHIVE);
     }
 }
 
 /// Append a structured event to `.legend/events.jsonl` for dashboard streaming.
 /// Includes optional rich data payload for detailed observability.
-/// Automatically rotates the log when it exceeds EVENT_LOG_MAX_LINES.
+/// Automatically rotates the log when it exceeds EVENT_LOG_MAX_BYTES.
 pub fn log_event_rich(cmd: &str, detail: &str, data: Option<EventData>) {
     maybe_rotate_event_log();
 
