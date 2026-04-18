@@ -2075,11 +2075,16 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         }
 
         for entry in &group {
-            let _ = neocortex::update_graph(state, &entry.text, entry.salience);
             if let Some(existing) = state.short_term.iter_mut().find(|e| e.id == entry.id) {
+                if existing.consolidated {
+                    continue;
+                }
+                let text = existing.text.clone();
+                let salience = existing.salience;
                 existing.usage = existing.usage.saturating_add(1);
                 existing.last_access = state.clock;
                 existing.consolidated = true;
+                let _ = neocortex::update_graph(state, &text, salience);
             }
         }
         #[cfg(feature = "instrument")]
@@ -4251,6 +4256,51 @@ mod tests {
         assert!(
             has_summary_represents_label(&state, "RecurringAnchor"),
             "an entity present in a strict majority of a group should link the Summary to that topic"
+        );
+    }
+
+    #[test]
+    fn test_consolidation_does_not_reencode_already_consolidated_entries() {
+        let mut state = MemoryState::default();
+        state.brain.config.theta_low = 0.9;
+
+        insert_semantic_topic_entry(&mut state, "StableAnchor apple");
+        insert_semantic_topic_entry(&mut state, "StableAnchor banana");
+        insert_semantic_topic_entry(&mut state, "StableAnchor carrot");
+
+        consolidate(&mut state.brain);
+
+        let anchor_weight_after_first = state
+            .brain
+            .long_term
+            .nodes
+            .values()
+            .find(|node| node.label.eq_ignore_ascii_case("StableAnchor"))
+            .expect("StableAnchor node should exist after first consolidation")
+            .weight;
+        let usage_after_first: Vec<u32> =
+            state.brain.short_term.iter().map(|entry| entry.usage).collect();
+
+        consolidate(&mut state.brain);
+
+        let anchor_weight_after_second = state
+            .brain
+            .long_term
+            .nodes
+            .values()
+            .find(|node| node.label.eq_ignore_ascii_case("StableAnchor"))
+            .expect("StableAnchor node should still exist after second consolidation")
+            .weight;
+        let usage_after_second: Vec<u32> =
+            state.brain.short_term.iter().map(|entry| entry.usage).collect();
+
+        assert!(
+            anchor_weight_after_second <= anchor_weight_after_first,
+            "already-consolidated entries should not be re-encoded as fresh graph evidence"
+        );
+        assert_eq!(
+            usage_after_first, usage_after_second,
+            "already-consolidated entries should not receive another consolidation usage bump"
         );
     }
 
