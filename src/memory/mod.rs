@@ -7225,7 +7225,7 @@ mod tests {
         // DECISION: and BUG: prefixes trigger high salience
         tick(
             &mut state,
-            "DECISION: We are switching the entire database architecture to a distributed system",
+            "DECISION: Chose distributed architecture because of horizontal scaling needs",
         );
         assert!(
             state.brain.chemistry.norepinephrine > 0.0,

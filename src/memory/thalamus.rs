@@ -8,10 +8,10 @@
 /// In Legend, `thalamus.rs` implements this attentional gating role:
 ///
 /// - **Salience scoring (`compute_salience`)** — assigns an importance prior
-///   to each incoming chunk based on keyword heuristics (decisions, bugs,
-///   architecture, preferences, code definitions).  This determines whether
-///   the prefrontal attention gate promotes the input to episodic memory (L2)
-///   or lets it fade in working memory (L1).
+///   to each incoming chunk based on domain-general cognitive signals
+///   (decisions, bugs, preferences, blockers) plus learned domain vocabulary.
+///   This determines whether the prefrontal attention gate promotes the input
+///   to episodic memory (L2) or lets it fade in working memory (L1).
 ///
 /// The thalamus is deliberately stateless: it scores input and returns
 /// values without mutating `BrainState`.  All side effects happen in the
@@ -56,9 +56,11 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
         score += 0.3;
     }
 
-    // Architecture/structural statements
+    // Architecture/structural statements. This is intentionally modest:
+    // domain-specific architecture should become salient through learned
+    // vocabulary instead of hardcoded software terms.
     if kw.architecture.iter().any(|k| lowered.contains(k.as_str())) {
-        score += 0.25;
+        score += 0.15;
     }
 
     // Preference/convention
@@ -66,14 +68,24 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
         score += 0.3;
     }
 
-    // Domain-specific vocabulary (learned from workspace)
-    if !kw.domain.is_empty() && kw.domain.iter().any(|k| lowered.contains(k.as_str())) {
-        score += 0.1;
+    // Domain-specific vocabulary learned from the workspace. Repeated,
+    // meaningful domain terms should outweigh syntax cues from any single
+    // domain (including code), but the contribution stays bounded so learned
+    // noise cannot saturate salience by itself.
+    let domain_hits = kw
+        .domain
+        .iter()
+        .filter(|k| lowered.contains(k.as_str()))
+        .count();
+    if domain_hits > 0 {
+        score += (0.18 + 0.08 * (domain_hits.saturating_sub(1) as f32)).min(0.4);
     }
 
-    // Code references — distinguish definitions from mere mentions
+    // Code syntax is a weak density cue, not an innate priority. Code remains
+    // important when paired with generic cognitive signals such as decisions,
+    // bugs, blockers, or learned domain vocabulary.
     if text.contains("```") {
-        score += 0.15;
+        score += 0.03;
     }
     let code_def_hits = kw
         .code
@@ -81,10 +93,9 @@ pub fn compute_salience(text: &str, kw: &KeywordCache) -> f32 {
         .filter(|(trigger, _, _, _)| lowered.contains(trigger.as_str()))
         .count();
     if code_def_hits >= 2 {
-        // Multiple code definitions (e.g. "fn foo uses struct Bar") — high signal
-        score += 0.3;
+        score += 0.05;
     } else if code_def_hits == 1 {
-        score += 0.2;
+        score += 0.03;
     }
 
     // Substantive text (not too short)
@@ -113,10 +124,49 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_salience_code() {
+    fn test_compute_salience_code_syntax_is_weak_by_itself() {
+        let s = compute_salience("fn main() { struct Foo {} }", &kw());
         assert!(
-            compute_salience("fn main() { struct Foo {} }", &kw())
-                > compute_salience("regular text", &kw())
+            s < 0.25,
+            "code syntax alone should not cross the attention gate, got {}",
+            s
+        );
+    }
+
+    #[test]
+    fn test_compute_salience_learned_domain_beats_code_syntax() {
+        let mut kw = kw();
+        kw.domain = vec!["project alpha".to_string(), "sqlite".to_string()];
+
+        let domain = compute_salience(
+            "Project Alpha stores session history in SQLite for local recall",
+            &kw,
+        );
+        let code = compute_salience("fn main() { struct SessionStore {} }", &kw);
+
+        assert!(
+            domain > code,
+            "learned domain vocabulary should dominate code syntax: {} vs {}",
+            domain,
+            code
+        );
+        assert!(
+            domain >= 0.25,
+            "two learned domain terms should cross the attention gate, got {}",
+            domain
+        );
+    }
+
+    #[test]
+    fn test_compute_salience_code_with_generic_importance_stays_high() {
+        let s = compute_salience(
+            "Bug: fn load_memory() panics when SQLite returns an empty row",
+            &kw(),
+        );
+        assert!(
+            s >= 0.4,
+            "code-related bug should stay high through bug salience, got {}",
+            s
         );
     }
 
@@ -162,8 +212,12 @@ mod tests {
 
     #[test]
     fn test_compute_salience_architecture() {
-        let s = compute_salience("The API layer interfaces with the schema module", &kw());
-        assert!(s >= 0.25, "architecture text should score, got {}", s);
+        let s = compute_salience("The system boundary separates intake from storage", &kw());
+        assert!(
+            (0.15..0.3).contains(&s),
+            "generic structure should score moderately, got {}",
+            s
+        );
     }
 
     #[test]
