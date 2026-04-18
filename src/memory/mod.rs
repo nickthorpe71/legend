@@ -1752,6 +1752,10 @@ fn systems_consolidation_score(group: &[ShortTermEntry]) -> f32 {
         + max_salience * SYSTEMS_CONSOLIDATION_MAX_WEIGHT
 }
 
+fn semantic_topic_promotion_threshold(group_len: usize) -> usize {
+    group_len / 2 + 1
+}
+
 fn find_existing_summary_node(
     long_term: &GraphMemory,
     summary_text: &str,
@@ -2019,15 +2023,18 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 trace::TracePayload::KeyValue(vec![
                     ("unique_entities".into(), entity_counts.len().to_string()),
                     ("top_entities".into(), top_entities.join(", ")),
-                    ("promotion_threshold".into(), (group.len() / 2).to_string()),
+                    (
+                        "promotion_threshold".into(),
+                        semantic_topic_promotion_threshold(group.len()).to_string(),
+                    ),
                 ]),
             );
         }
 
         // If an entity appears in >50% of the group, it's a strong Topic/Anchor for this milestone
-        let threshold = group.len() / 2;
+        let threshold = semantic_topic_promotion_threshold(group.len());
         for (label, (count, kind)) in entity_counts {
-            if count >= threshold && count > 1 {
+            if count >= threshold {
                 let index_key = label.to_lowercase();
                 let topic_id = if let Some(&id) = state.long_term.index.get(&index_key) {
                     id
@@ -4167,6 +4174,83 @@ mod tests {
                 .as_ref()
                 .is_some_and(|full_text| full_text.contains("signing key rotation")),
             "merged Summary should refresh full_text from the new consolidation group"
+        );
+    }
+
+    fn insert_semantic_topic_entry(state: &mut MemoryState, text: &str) {
+        hippocampus::insert_short_term(
+            &mut state.brain,
+            text,
+            vec![1.0, 0.0],
+            0.8,
+            Vec::new(),
+            0.0,
+            0,
+            Vec::new(),
+            Vec::new(),
+            ChemicalStamp::default(),
+        );
+    }
+
+    fn has_summary_represents_label(state: &MemoryState, label: &str) -> bool {
+        let label = label.to_lowercase();
+        let topic_ids: Vec<u64> = state
+            .brain
+            .long_term
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label.to_lowercase() == label)
+            .map(|(&id, _)| id)
+            .collect();
+        let summary_ids: Vec<u64> = state
+            .brain
+            .long_term
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.kind == "Summary")
+            .map(|(&id, _)| id)
+            .collect();
+
+        state.brain.long_term.edges.iter().any(|edge| {
+            edge.kind == "represents"
+                && ((summary_ids.contains(&edge.from) && topic_ids.contains(&edge.to))
+                    || (summary_ids.contains(&edge.to) && topic_ids.contains(&edge.from)))
+        })
+    }
+
+    #[test]
+    fn test_semantic_topic_requires_strict_majority() {
+        let mut state = MemoryState::default();
+        state.brain.config.theta_low = 0.9;
+
+        insert_semantic_topic_entry(&mut state, "RecurringAnchor apple");
+        insert_semantic_topic_entry(&mut state, "RecurringAnchor banana");
+        insert_semantic_topic_entry(&mut state, "DistinctOne carrot");
+        insert_semantic_topic_entry(&mut state, "DistinctTwo celery");
+
+        consolidate(&mut state.brain);
+
+        assert!(
+            !has_summary_represents_label(&state, "RecurringAnchor"),
+            "an entity present in exactly half of a group should not become a Summary topic"
+        );
+    }
+
+    #[test]
+    fn test_semantic_topic_links_summary_on_strict_majority() {
+        let mut state = MemoryState::default();
+        state.brain.config.theta_low = 0.9;
+
+        insert_semantic_topic_entry(&mut state, "RecurringAnchor apple");
+        insert_semantic_topic_entry(&mut state, "RecurringAnchor banana");
+        insert_semantic_topic_entry(&mut state, "RecurringAnchor carrot");
+        insert_semantic_topic_entry(&mut state, "DistinctOne celery");
+
+        consolidate(&mut state.brain);
+
+        assert!(
+            has_summary_represents_label(&state, "RecurringAnchor"),
+            "an entity present in a strict majority of a group should link the Summary to that topic"
         );
     }
 
