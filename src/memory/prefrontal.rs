@@ -34,6 +34,18 @@ pub struct WorkingMemoryEntry {
     pub promoted: bool,
     /// Amygdala emotional valence carried from encoding.
     pub emotional_valence: f32,
+    /// Unix timestamp when this content entered working memory.
+    #[serde(default)]
+    pub wall_clock: u64,
+    /// Explicit dates extracted at encoding time.
+    #[serde(default)]
+    pub extracted_dates: Vec<String>,
+    /// Temporal Context Model snapshot from encoding time.
+    #[serde(default)]
+    pub temporal_context: Vec<f32>,
+    /// Neurochemical state stamped at encoding time.
+    #[serde(default)]
+    pub chemical_stamp: ChemicalStamp,
 }
 
 /// Push an entry into working memory (L1).
@@ -44,6 +56,32 @@ pub fn push_working_memory(
     embedding: &[f32],
     salience: f32,
     emotional_valence: f32,
+) -> u64 {
+    push_working_memory_with_metadata(
+        state,
+        text,
+        embedding,
+        salience,
+        emotional_valence,
+        0,
+        Vec::new(),
+        Vec::new(),
+        ChemicalStamp::default(),
+    )
+}
+
+/// Push an entry into working memory (L1), preserving encoding metadata for
+/// later displacement/flush promotion into L2.
+pub fn push_working_memory_with_metadata(
+    state: &mut BrainState,
+    text: &str,
+    embedding: &[f32],
+    salience: f32,
+    emotional_valence: f32,
+    wall_clock: u64,
+    extracted_dates: Vec<String>,
+    temporal_context: Vec<f32>,
+    chemical_stamp: ChemicalStamp,
 ) -> u64 {
     let id = state.next_id;
     state.next_id += 1;
@@ -63,10 +101,10 @@ pub fn push_working_memory(
                 promotion_salience,
                 refs,
                 displaced.emotional_valence,
-                0,
-                Vec::new(),
-                Vec::new(),
-                ChemicalStamp::default(),
+                displaced.wall_clock,
+                displaced.extracted_dates.clone(),
+                displaced.temporal_context.clone(),
+                displaced.chemical_stamp.clone(),
             );
             let _ = neocortex::update_graph(state, &displaced.text, promotion_salience);
         }
@@ -81,6 +119,10 @@ pub fn push_working_memory(
         rehearsal_count: 0,
         promoted: false,
         emotional_valence,
+        wall_clock,
+        extracted_dates,
+        temporal_context,
+        chemical_stamp,
     });
     id
 }
@@ -100,10 +142,10 @@ pub fn flush_working_memory(state: &mut BrainState) {
                 promotion_salience,
                 refs,
                 entry.emotional_valence,
-                0,
-                Vec::new(),
-                Vec::new(),
-                ChemicalStamp::default(),
+                entry.wall_clock,
+                entry.extracted_dates.clone(),
+                entry.temporal_context.clone(),
+                entry.chemical_stamp.clone(),
             );
             let _ = neocortex::update_graph(state, &entry.text, promotion_salience);
         }

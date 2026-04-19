@@ -210,6 +210,8 @@ const SUMMARY_RETRIEVAL_MIN_SIM: f32 = 0.3;
 const SUMMARY_MERGE_EMBEDDING_SIM: f32 = 0.75;
 /// Layer 3 incremental keyword discovery: minimum distinct ticks for auto-promotion.
 const TERM_PROMOTION_MIN_TICKS: u32 = 5;
+/// Minimum distinct meaningful-context ticks before a term can become learned vocabulary.
+const TERM_PROMOTION_MIN_KEYWORD_COOCCURRENCE_TICKS: u32 = 2;
 /// Minimum character length for auto-promoted terms.
 const TERM_PROMOTION_MIN_LEN: usize = 3;
 
@@ -620,12 +622,16 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
             .as_secs();
 
         // Always push into working memory (L1)
-        let wm_id = prefrontal::push_working_memory(
+        let wm_id = prefrontal::push_working_memory_with_metadata(
             state,
             &chunk,
             &raw_embedding,
             salience,
             emotional_valence,
+            wall_clock,
+            chunk_dates.clone(),
+            tcm_snapshot.clone(),
+            neurochemistry::stamp_from(&state.chemistry),
         );
         #[cfg(feature = "instrument")]
         _tctx.emit(
@@ -1795,6 +1801,22 @@ fn semantic_topic_promotion_threshold(group_len: usize) -> usize {
     group_len / 2 + 1
 }
 
+fn average_chemical_stamp(group: &[ShortTermEntry]) -> ChemicalStamp {
+    if group.is_empty() {
+        return ChemicalStamp::default();
+    }
+
+    let mut stamp = ChemicalStamp::default();
+    let len = group.len() as f32;
+    for entry in group {
+        stamp.ne_at_encoding += entry.chemical_stamp.ne_at_encoding / len;
+        stamp.cortisol_at_encoding += entry.chemical_stamp.cortisol_at_encoding / len;
+        stamp.da_at_encoding += entry.chemical_stamp.da_at_encoding / len;
+        stamp.ach_at_encoding += entry.chemical_stamp.ach_at_encoding / len;
+    }
+    stamp
+}
+
 fn find_existing_summary_node(
     long_term: &GraphMemory,
     summary_text: &str,
@@ -2072,6 +2094,7 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
 
         // If an entity appears in >50% of the group, it's a strong Topic/Anchor for this milestone
         let threshold = semantic_topic_promotion_threshold(group.len());
+        let group_chemical_stamp = average_chemical_stamp(&group);
         for (label, (count, kind)) in entity_counts {
             if count >= threshold {
                 let index_key = label.to_lowercase();
@@ -2103,12 +2126,13 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 };
 
                 // Create/strengthen edge between Summary and Topic
-                neocortex::upsert_edge(
+                neocortex::upsert_edge_with_chemical_stamp(
                     &mut state.long_term,
                     node_id,
                     topic_id,
                     "represents",
                     state.clock,
+                    &group_chemical_stamp,
                 );
             }
         }
@@ -2326,19 +2350,24 @@ fn update_term_frequencies(state: &mut BrainState, text: &str) -> usize {
                 first_seen: clock,
                 last_seen: clock,
                 has_keyword_cooccurrence: false,
+                keyword_cooccurrence_tick_count: 0,
             });
 
         // Only increment tick_count if this is a new tick for this term
-        if stats.last_seen < clock {
+        let seen_in_new_tick = stats.total_count == 0 || stats.last_seen < clock;
+        if seen_in_new_tick {
             stats.tick_count += 1;
         }
         stats.total_count += 1;
-        stats.last_seen = clock;
 
         // Filter 4: Co-occurrence — mark if this tick has existing keywords
         if has_existing_keyword {
             stats.has_keyword_cooccurrence = true;
+            if seen_in_new_tick {
+                stats.keyword_cooccurrence_tick_count += 1;
+            }
         }
+        stats.last_seen = clock;
     }
 
     // Check for promotions
@@ -2373,14 +2402,10 @@ fn should_promote_term(state: &BrainState, term: &str) -> bool {
         return false;
     }
 
-    // Filter 5: Minimum information content — 3+ chars, not purely numeric
-    if term.len() < TERM_PROMOTION_MIN_LEN {
-        return false;
-    }
-    if term
-        .chars()
-        .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
-    {
+    // Filter 5: Minimum information content — meaningful shape, not naked numeric
+    // or punctuation noise. Quantitative facts are preserved as evidence refs,
+    // not promoted into the learned domain keyword lexicon.
+    if !is_promotable_term_shape(term) {
         return false;
     }
 
@@ -2401,12 +2426,43 @@ fn should_promote_term(state: &BrainState, term: &str) -> bool {
     // Filter 3: Entity extraction gate — already passed (only extracted entities
     // enter term_frequency, so this is inherently satisfied)
 
-    // Filter 4: Co-occurrence with existing keywords
-    if !stats.has_keyword_cooccurrence {
+    // Filter 4: Repeated co-occurrence with existing keywords.
+    // Back-compat: old stores only had the boolean, which counts as one
+    // co-occurrence but is not enough by itself for new promotion.
+    let cooccurrence_ticks = stats.keyword_cooccurrence_tick_count.max(u32::from(
+        stats.has_keyword_cooccurrence,
+    ));
+    if cooccurrence_ticks < TERM_PROMOTION_MIN_KEYWORD_COOCCURRENCE_TICKS {
         return false;
     }
 
     true
+}
+
+fn is_promotable_term_shape(term: &str) -> bool {
+    let term = term.trim();
+    if term.len() < TERM_PROMOTION_MIN_LEN {
+        return false;
+    }
+
+    let mut has_alpha = false;
+    let mut alnum_count = 0usize;
+    let mut separator_count = 0usize;
+
+    for ch in term.chars() {
+        if ch.is_ascii_alphanumeric() {
+            alnum_count += 1;
+            if ch.is_ascii_alphabetic() {
+                has_alpha = true;
+            }
+        } else if matches!(ch, ' ' | '_' | '-' | '.') {
+            separator_count += 1;
+        } else {
+            return false;
+        }
+    }
+
+    has_alpha && alnum_count >= TERM_PROMOTION_MIN_LEN && separator_count <= alnum_count
 }
 
 // Persistence — moved to crate::tool::persistence, re-exported above.
@@ -4849,6 +4905,10 @@ mod tests {
             rehearsal_count: 1, // rehearsed via query
             promoted: false,
             emotional_valence: 0.0,
+            wall_clock: 0,
+            extracted_dates: Vec::new(),
+            temporal_context: Vec::new(),
+            chemical_stamp: ChemicalStamp::default(),
         });
         let st_before = state.brain.short_term.len();
 
@@ -4883,6 +4943,10 @@ mod tests {
             rehearsal_count: 0,
             promoted: false,
             emotional_valence: 0.0,
+            wall_clock: 0,
+            extracted_dates: Vec::new(),
+            temporal_context: Vec::new(),
+            chemical_stamp: ChemicalStamp::default(),
         });
         let st_before = state.brain.short_term.len();
 
@@ -4914,6 +4978,10 @@ mod tests {
             rehearsal_count: 0,
             promoted: false,
             emotional_valence: 0.0,
+            wall_clock: 0,
+            extracted_dates: Vec::new(),
+            temporal_context: Vec::new(),
+            chemical_stamp: ChemicalStamp::default(),
         });
         let st_before = state.brain.short_term.len();
 
@@ -4930,6 +4998,80 @@ mod tests {
     }
 
     #[test]
+    fn test_flush_carries_l1_metadata_to_l2() {
+        let mut state = MemoryState::default();
+        let text = "checkpoint happened on 2026-04-19";
+        let embedding = embed_text(text, state.brain.config.embedding_dim);
+        let tcm = vec![0.25; TEMPORAL_CONTEXT_DIM];
+        let mut stamp = ChemicalStamp::default();
+        stamp.da_at_encoding = 0.72;
+
+        prefrontal::push_working_memory_with_metadata(
+            &mut state.brain,
+            text,
+            &embedding,
+            0.05,
+            0.0,
+            1_776_543_210,
+            vec!["2026-04-19".to_string()],
+            tcm.clone(),
+            stamp.clone(),
+        );
+
+        prefrontal::flush_working_memory(&mut state.brain);
+
+        let promoted = state
+            .brain
+            .short_term
+            .iter()
+            .find(|entry| entry.text == text)
+            .expect("flushed L1 entry should promote to L2");
+        assert_eq!(promoted.wall_clock, 1_776_543_210);
+        assert_eq!(promoted.extracted_dates, vec!["2026-04-19".to_string()]);
+        assert_eq!(promoted.temporal_context, tcm);
+        assert_eq!(promoted.chemical_stamp.da_at_encoding, stamp.da_at_encoding);
+    }
+
+    #[test]
+    fn test_displacement_carries_l1_metadata_to_l2() {
+        let mut state = MemoryState::default();
+        let text = "displaced checkpoint happened on 2026-04-20";
+        let embedding = embed_text(text, state.brain.config.embedding_dim);
+        let tcm = vec![0.5; TEMPORAL_CONTEXT_DIM];
+        let mut stamp = ChemicalStamp::default();
+        stamp.ne_at_encoding = 0.64;
+
+        prefrontal::push_working_memory_with_metadata(
+            &mut state.brain,
+            text,
+            &embedding,
+            0.05,
+            0.0,
+            1_776_629_610,
+            vec!["2026-04-20".to_string()],
+            tcm.clone(),
+            stamp.clone(),
+        );
+
+        for i in 0..state.brain.config.immediate_capacity {
+            let filler = format!("filler entry {i}");
+            let emb = embed_text(&filler, state.brain.config.embedding_dim);
+            prefrontal::push_working_memory(&mut state.brain, &filler, &emb, 0.01, 0.0);
+        }
+
+        let promoted = state
+            .brain
+            .short_term
+            .iter()
+            .find(|entry| entry.text == text)
+            .expect("displaced L1 entry should promote to L2");
+        assert_eq!(promoted.wall_clock, 1_776_629_610);
+        assert_eq!(promoted.extracted_dates, vec!["2026-04-20".to_string()]);
+        assert_eq!(promoted.temporal_context, tcm);
+        assert_eq!(promoted.chemical_stamp.ne_at_encoding, stamp.ne_at_encoding);
+    }
+
+    #[test]
     fn test_flush_skips_already_promoted() {
         let mut state = MemoryState::default();
         // Add an entry already marked as promoted
@@ -4942,6 +5084,10 @@ mod tests {
             rehearsal_count: 5,
             promoted: true, // already promoted
             emotional_valence: 0.0,
+            wall_clock: 0,
+            extracted_dates: Vec::new(),
+            temporal_context: Vec::new(),
+            chemical_stamp: ChemicalStamp::default(),
         });
         let st_before = state.brain.short_term.len();
 
@@ -5173,6 +5319,66 @@ mod tests {
             "spaced ({}) should have higher stability than massed ({})",
             spaced_edge.stability,
             massed_edge.stability
+        );
+    }
+
+    #[test]
+    fn test_edge_chemical_stamp_is_local_to_edge() {
+        let mut graph = GraphMemory::default();
+        let stamp = ChemicalStamp {
+            ne_at_encoding: 0.7,
+            cortisol_at_encoding: 0.1,
+            da_at_encoding: 0.6,
+            ach_at_encoding: 0.2,
+        };
+
+        neocortex::upsert_edge_with_chemical_stamp(&mut graph, 10, 11, "related", 1, &stamp);
+
+        let stored = graph
+            .edge_chemical_stamps
+            .get(&GraphMemory::edge_stamp_key(10, 11))
+            .expect("edge should carry a chemical stamp");
+        assert_eq!(stored.ne_at_encoding, stamp.ne_at_encoding);
+        assert_eq!(stored.da_at_encoding, stamp.da_at_encoding);
+    }
+
+    #[test]
+    fn test_edge_chemical_stamp_modulates_decay() {
+        let mut neutral = GraphMemory::default();
+        neutral.edges.push(GraphEdge {
+            from: 20,
+            to: 21,
+            weight: 1.0,
+            last_seen: 0,
+            ..GraphEdge::default()
+        });
+
+        let mut protected = GraphMemory::default();
+        protected.edges.push(GraphEdge {
+            from: 20,
+            to: 21,
+            weight: 1.0,
+            last_seen: 0,
+            ..GraphEdge::default()
+        });
+        protected.edge_chemical_stamps.insert(
+            GraphMemory::edge_stamp_key(20, 21),
+            ChemicalStamp {
+                ne_at_encoding: 1.0,
+                cortisol_at_encoding: 0.0,
+                da_at_encoding: 1.0,
+                ach_at_encoding: 0.0,
+            },
+        );
+
+        neocortex::apply_l3_decay(&mut neutral, 100, 1.0);
+        neocortex::apply_l3_decay(&mut protected, 100, 1.0);
+
+        assert!(
+            protected.edges[0].weight > neutral.edges[0].weight,
+            "local NE/DA stamp should protect edge from decay: protected={} neutral={}",
+            protected.edges[0].weight,
+            neutral.edges[0].weight
         );
     }
 
@@ -7184,6 +7390,12 @@ mod tests {
                 s.has_keyword_cooccurrence,
                 "should have keyword co-occurrence"
             );
+            assert!(
+                s.keyword_cooccurrence_tick_count >= TERM_PROMOTION_MIN_KEYWORD_COOCCURRENCE_TICKS,
+                "keyword_cooccurrence_tick_count={} should be >= {}",
+                s.keyword_cooccurrence_tick_count,
+                TERM_PROMOTION_MIN_KEYWORD_COOCCURRENCE_TICKS
+            );
         }
 
         // Should be auto-promoted to kw:domain:customprocessor
@@ -7220,7 +7432,23 @@ mod tests {
     }
 
     #[test]
-    fn test_co_occurrence_required_for_promotion() {
+    fn test_punctuation_noise_term_not_promoted() {
+        assert!(!is_promotable_term_shape("[[[["));
+        assert!(!is_promotable_term_shape("////"));
+        assert!(!is_promotable_term_shape("____"));
+        assert!(!is_promotable_term_shape("%%@@"));
+    }
+
+    #[test]
+    fn test_mixed_alphanumeric_term_shape_can_promote() {
+        assert!(is_promotable_term_shape("sqlite3"));
+        assert!(is_promotable_term_shape("phase5"));
+        assert!(is_promotable_term_shape("v1.2.3"));
+        assert!(is_promotable_term_shape("project alpha"));
+    }
+
+    #[test]
+    fn test_repeated_co_occurrence_required_for_promotion() {
         let mut state = MemoryState::default();
         // Manually insert term stats WITHOUT co-occurrence
         state.brain.term_frequency.insert(
@@ -7231,6 +7459,7 @@ mod tests {
                 first_seen: 1,
                 last_seen: 10,
                 has_keyword_cooccurrence: false,
+                keyword_cooccurrence_tick_count: 0,
             },
         );
         assert!(
@@ -7238,7 +7467,8 @@ mod tests {
             "term without keyword co-occurrence should not promote"
         );
 
-        // Now set co-occurrence
+        // A legacy one-bit co-occurrence signal is useful history, but too weak
+        // to promote learned salience vocabulary on its own.
         state
             .brain
             .term_frequency
@@ -7246,8 +7476,19 @@ mod tests {
             .unwrap()
             .has_keyword_cooccurrence = true;
         assert!(
+            !should_promote_term(&state.brain, "orphanterm"),
+            "single legacy co-occurrence should not promote"
+        );
+
+        state
+            .brain
+            .term_frequency
+            .get_mut("orphanterm")
+            .unwrap()
+            .keyword_cooccurrence_tick_count = TERM_PROMOTION_MIN_KEYWORD_COOCCURRENCE_TICKS;
+        assert!(
             should_promote_term(&state.brain, "orphanterm"),
-            "term WITH keyword co-occurrence and sufficient ticks should promote"
+            "term WITH repeated keyword co-occurrence and sufficient ticks should promote"
         );
     }
 
@@ -7267,6 +7508,7 @@ mod tests {
         let stats: TermStats = serde_json::from_str(json).unwrap();
         assert_eq!(stats.tick_count, 5);
         assert!(!stats.has_keyword_cooccurrence); // default false
+        assert_eq!(stats.keyword_cooccurrence_tick_count, 0);
     }
 
     // -----------------------------------------------------------------------

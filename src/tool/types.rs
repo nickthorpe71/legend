@@ -66,6 +66,9 @@ pub struct TermStats {
     /// Whether this term has co-occurred with an existing keyword.
     #[serde(default)]
     pub has_keyword_cooccurrence: bool,
+    /// Number of distinct ticks where this term co-occurred with an existing keyword.
+    #[serde(default)]
+    pub keyword_cooccurrence_tick_count: u32,
 }
 
 // ---------------------------------------------------------------------------

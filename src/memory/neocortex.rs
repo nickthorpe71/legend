@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use super::{
+    neurochemistry::{self, ChemicalStamp},
+    signal::reinforce_bounded_signal,
     wernicke::{extract_entities, KeywordCache},
     BrainState, EDGE_REINFORCE_DELTA, GRAPH_EDGE_CAPACITY, GRAPH_NODE_CAPACITY, GRAPH_PRUNE_WEIGHT,
     GRAPH_WEIGHT_TARGET_MAX, HEBBIAN_EDGE_BOOST, HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST,
@@ -54,6 +56,9 @@ const STABILITY_SCALE: f32 = 10.0;
 pub struct GraphMemory {
     pub nodes: HashMap<u64, GraphNode>,
     pub edges: Vec<GraphEdge>,
+    /// Per-edge neurochemical stamp keyed by canonical "min_id:max_id".
+    #[serde(default)]
+    pub edge_chemical_stamps: HashMap<String, ChemicalStamp>,
     /// Label → node ID for fast entity lookup.
     pub index: HashMap<String, u64>,
     /// (min_id, max_id) → edge index for O(1) edge lookup.
@@ -83,6 +88,11 @@ impl GraphMemory {
         } else {
             (b, a)
         }
+    }
+
+    pub fn edge_stamp_key(a: u64, b: u64) -> String {
+        let (from, to) = Self::edge_key(a, b);
+        format!("{from}:{to}")
     }
 }
 
@@ -591,7 +601,27 @@ pub fn normalize_graph_weights(long_term: &mut GraphMemory) {
 
 /// Insert a new edge or reinforce an existing one between two nodes.
 pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, clock: u64) {
+    upsert_edge_with_chemical_stamp(
+        long_term,
+        from,
+        to,
+        kind,
+        clock,
+        &ChemicalStamp::default(),
+    );
+}
+
+/// Insert or reinforce an edge while preserving its local modulatory state.
+pub fn upsert_edge_with_chemical_stamp(
+    long_term: &mut GraphMemory,
+    from: u64,
+    to: u64,
+    kind: &str,
+    clock: u64,
+    chemical_stamp: &ChemicalStamp,
+) {
     let key = GraphMemory::edge_key(from, to);
+    let stamp_key = GraphMemory::edge_stamp_key(from, to);
     if let Some(&idx) = long_term.edge_index.get(&key) {
         let edge = &mut long_term.edges[idx];
         // Synaptic plasticity: update dual-timescale interval tracking
@@ -623,6 +653,8 @@ pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, 
         if edge.kind == "related" && kind != "related" {
             edge.kind = kind.to_string();
         }
+        let stamp = long_term.edge_chemical_stamps.entry(stamp_key).or_default();
+        blend_chemical_stamp(stamp, chemical_stamp, 0.25);
     } else {
         let new_idx = long_term.edges.len();
         long_term.edges.push(GraphEdge {
@@ -638,7 +670,44 @@ pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, 
             cpeb_boost: 0.0,
         });
         long_term.edge_index.insert(key, new_idx);
+        long_term
+            .edge_chemical_stamps
+            .insert(stamp_key, chemical_stamp.clone());
     }
+}
+
+fn blend_chemical_stamp(current: &mut ChemicalStamp, incoming: &ChemicalStamp, alpha: f32) {
+    if current.ne_at_encoding == 0.0
+        && current.cortisol_at_encoding == 0.0
+        && current.da_at_encoding == 0.0
+        && current.ach_at_encoding == 0.0
+    {
+        *current = incoming.clone();
+        return;
+    }
+
+    let alpha = alpha.clamp(0.0, 1.0);
+    current.ne_at_encoding =
+        current.ne_at_encoding * (1.0 - alpha) + incoming.ne_at_encoding * alpha;
+    current.cortisol_at_encoding =
+        current.cortisol_at_encoding * (1.0 - alpha) + incoming.cortisol_at_encoding * alpha;
+    current.da_at_encoding =
+        current.da_at_encoding * (1.0 - alpha) + incoming.da_at_encoding * alpha;
+    current.ach_at_encoding =
+        current.ach_at_encoding * (1.0 - alpha) + incoming.ach_at_encoding * alpha;
+}
+
+fn averaged_chemical_stamp(a: &ChemicalStamp, b: &ChemicalStamp) -> ChemicalStamp {
+    ChemicalStamp {
+        ne_at_encoding: (a.ne_at_encoding + b.ne_at_encoding) * 0.5,
+        cortisol_at_encoding: (a.cortisol_at_encoding + b.cortisol_at_encoding) * 0.5,
+        da_at_encoding: (a.da_at_encoding + b.da_at_encoding) * 0.5,
+        ach_at_encoding: (a.ach_at_encoding + b.ach_at_encoding) * 0.5,
+    }
+}
+
+fn edge_chemical_decay_protection(stamp: &ChemicalStamp) -> f32 {
+    1.0 + stamp.ne_at_encoding * 0.5 + stamp.da_at_encoding * 0.25
 }
 
 /// "Neurons that fire together wire together" — co-retrieved entities get
@@ -716,10 +785,17 @@ pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64, decay_rate_mod: f
         node.weight *= decay;
         node.salience *= decay;
     }
-    // Edge decay: edges that haven't been reinforced recently lose weight
+    // Edge decay: edges that haven't been reinforced recently lose weight.
+    // Local NE/DA stamps protect salient/rewarded associations from decaying
+    // as quickly as neutral edges under the same global chemistry.
+    let edge_stamps = &long_term.edge_chemical_stamps;
     for edge in &mut long_term.edges {
-        let effective_decay_rate =
-            NEOCORTICAL_DECAY_RATE * decay_rate_mod / edge.stability.max(1.0);
+        let chemical_protection = edge_stamps
+            .get(&GraphMemory::edge_stamp_key(edge.from, edge.to))
+            .map(edge_chemical_decay_protection)
+            .unwrap_or(1.0);
+        let effective_decay_rate = NEOCORTICAL_DECAY_RATE * decay_rate_mod
+            / (edge.stability.max(1.0) * chemical_protection);
         let decay = (-(clock.saturating_sub(edge.last_seen) as f32) * effective_decay_rate).exp();
         edge.weight *= decay;
 
@@ -744,6 +820,7 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
         return Vec::new();
     }
 
+    let chemical_stamp = neurochemistry::stamp_from(&state.chemistry);
     let mut node_ids = Vec::new();
     let mut edge_contexts = Vec::new();
 
@@ -786,7 +863,13 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
 
             node.weight += (NODE_WEIGHT_BASE + salience * 0.3) * weight_multiplier;
             node.last_seen = state.clock;
-            node.salience = (node.salience + salience * 0.5 * weight_multiplier).min(1.0);
+            node.salience = reinforce_bounded_signal(
+                node.salience,
+                salience,
+                0.5 * weight_multiplier,
+                0.45,
+                1.4,
+            );
 
             // Update kind if it was previously generic or less specific
             if state.keyword_cache.kind_priority(&entity.kind)
@@ -809,12 +892,13 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
                 ("defines", "defines") => "co-defined",
                 _ => "related",
             };
-            upsert_edge(
+            upsert_edge_with_chemical_stamp(
                 &mut state.long_term,
                 node_ids[i],
                 node_ids[j],
                 edge_kind,
                 state.clock,
+                &chemical_stamp,
             );
         }
     }
@@ -844,12 +928,13 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
             // Reinforce edges between this keyword and other active nodes
             for &other_id in &node_ids {
                 if other_id != kw_id {
-                    upsert_edge(
+                    upsert_edge_with_chemical_stamp(
                         &mut state.long_term,
                         kw_id,
                         other_id,
                         "keyword-co-occurs",
                         state.clock,
+                        &chemical_stamp,
                     );
                 }
             }
@@ -929,6 +1014,15 @@ pub fn replay_consolidation(state: &mut BrainState) {
                     if let Some(&edge_idx) = state.long_term.edge_index.get(&key) {
                         state.long_term.edges[edge_idx].weight += REPLAY_EDGE_BOOST;
                         state.long_term.edges[edge_idx].last_seen = state.clock;
+                        let replay_stamp =
+                            averaged_chemical_stamp(&ei.chemical_stamp, &ej.chemical_stamp);
+                        let stamp_key = GraphMemory::edge_stamp_key(*id_a, *id_b);
+                        let stamp = state
+                            .long_term
+                            .edge_chemical_stamps
+                            .entry(stamp_key)
+                            .or_default();
+                        blend_chemical_stamp(stamp, &replay_stamp, 0.1);
                     }
                 }
             }

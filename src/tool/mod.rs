@@ -491,6 +491,13 @@ pub fn merge_states(ours: &mut MemoryState, theirs: &MemoryState) -> MergeStats 
         }
     }
     ours.brain.long_term.rebuild_edge_index();
+    for (key, their_stamp) in &theirs.brain.long_term.edge_chemical_stamps {
+        ours.brain
+            .long_term
+            .edge_chemical_stamps
+            .entry(key.clone())
+            .or_insert_with(|| their_stamp.clone());
+    }
 
     // --- Plans: union by name (case-insensitive), items unioned by text ---
     // Status priority: Done > Active > Deferred > Pending
