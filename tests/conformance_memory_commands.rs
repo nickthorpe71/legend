@@ -367,7 +367,11 @@ fn events_jsonl_rotates_large_log_before_append() {
     harness.cmd_ok(&["init"]);
 
     harness.write_file(".legend/events.jsonl", &"x".repeat(5 * 1024 * 1024));
-    harness.cmd_ok(&["memory", "tick", "DECISION: Rotated event log before append."]);
+    harness.cmd_ok(&[
+        "memory",
+        "tick",
+        "DECISION: Rotated event log before append.",
+    ]);
 
     assert!(
         harness.exists(".legend/events.jsonl.1"),
