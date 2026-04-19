@@ -108,6 +108,25 @@ const TOPIC_SHIFT_MARKERS: &[&str] = &[
     "one more thing",
 ];
 
+fn is_semantic_junk_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|c: char| c.is_ascii_punctuation());
+    trimmed.is_empty()
+        && token.chars().count() >= 4
+        && token.chars().all(|c| c.is_ascii_punctuation())
+}
+
+/// Remove syntactic noise that should not become semantic L3 evidence.
+///
+/// This intentionally targets only standalone punctuation runs so exact L1/L2
+/// text can remain raw while Summary/source evidence avoids junk artifacts like
+/// `[[[[`, `%%@@`, `////`, or `}}}}`.
+pub fn clean_semantic_noise(text: &str) -> String {
+    text.split_whitespace()
+        .filter(|token| !is_semantic_junk_token(token))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 // ── Representational encoding ───────────────────────────────────────────
 
 /// Run inference on a single tokenizer encoding and return the L2-normalized
@@ -559,6 +578,28 @@ mod tests {
     #[test]
     fn test_summarize_single_short() {
         assert_eq!(summarize_single("short text", &kw()), "short text");
+    }
+
+    #[test]
+    fn test_clean_semantic_noise_removes_standalone_junk_tokens() {
+        let cleaned = clean_semantic_noise(
+            "Project Alpha uses SQLite [[[[ and backups run at 02:30 UTC %%@@ ////.",
+        );
+        assert!(cleaned.contains("Project Alpha uses SQLite"));
+        assert!(cleaned.contains("backups run at 02:30 UTC"));
+        assert!(!cleaned.contains("[[[["));
+        assert!(!cleaned.contains("%%@@"));
+        assert!(!cleaned.contains("////"));
+    }
+
+    #[test]
+    fn test_clean_semantic_noise_keeps_meaningful_punctuation_tokens() {
+        let cleaned = clean_semantic_noise(
+            "C++ writes /tmp/project-alpha.db and https://example.test/a/b stays visible.",
+        );
+        assert!(cleaned.contains("C++"));
+        assert!(cleaned.contains("/tmp/project-alpha.db"));
+        assert!(cleaned.contains("https://example.test/a/b"));
     }
 
     #[test]
