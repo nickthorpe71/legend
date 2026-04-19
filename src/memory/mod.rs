@@ -4625,6 +4625,7 @@ mod tests {
                         start_line: 10,
                         end_line: 20,
                         snippet: "fn main()".into(),
+                        ..MemoryRef::default()
                     }],
                     gradient_sq_sum: 0.5,
                     density: 1.2,

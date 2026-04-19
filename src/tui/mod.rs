@@ -388,10 +388,15 @@ impl App {
             if !snippet.refs.is_empty() {
                 result.push_str("    refs:\n");
                 for reference in snippet.refs.iter().take(3) {
-                    result.push_str(&format!(
-                        "      {}#L{}-{}\n",
-                        reference.path, reference.start_line, reference.end_line
-                    ));
+                    if reference.kind.is_empty() || reference.kind == "source" {
+                        result.push_str(&format!(
+                            "      {}#L{}-{}\n",
+                            reference.path, reference.start_line, reference.end_line
+                        ));
+                    } else {
+                        result
+                            .push_str(&format!("      {}: {}\n", reference.kind, reference.value));
+                    }
                 }
             }
         }
