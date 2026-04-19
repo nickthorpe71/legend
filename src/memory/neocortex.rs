@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use super::{
+    entorhinal::clean_semantic_noise,
     neurochemistry::{self, ChemicalStamp},
     signal::reinforce_bounded_signal,
     wernicke::{extract_entities, KeywordCache},
@@ -808,7 +809,13 @@ pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64, decay_rate_mod: f
 /// Extract entities from text and insert/update nodes and edges in the knowledge graph.
 /// Returns the node IDs that were created or updated.
 pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u64> {
-    let entities = extract_entities(text, &state.keyword_cache);
+    let semantic_text = clean_semantic_noise(text);
+    let graph_text = if semantic_text.trim().is_empty() {
+        text
+    } else {
+        semantic_text.as_str()
+    };
+    let entities = extract_entities(graph_text, &state.keyword_cache);
     if entities.is_empty() {
         return Vec::new();
     }
@@ -898,7 +905,7 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
 
     // Phase E: Hebbian reinforcement for keyword nodes.
     // Scan text for matches against keyword graph nodes and boost their weight.
-    let text_lower = text.to_lowercase();
+    let text_lower = graph_text.to_lowercase();
     let keyword_node_ids: Vec<u64> = state
         .long_term
         .nodes

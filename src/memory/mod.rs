@@ -38,7 +38,8 @@ use dentate_gyrus::{
     diversity_pass, sparse_orthogonalize, word_overlap, MERGE_WORD_OVERLAP_THRESHOLD,
 };
 use entorhinal::{
-    chunk_text, cosine_similarity, embed_text, merge_embeddings, summarize_group, summarize_text,
+    chunk_text, clean_semantic_noise, cosine_similarity, embed_text, merge_embeddings,
+    summarize_group, summarize_text,
 };
 #[cfg(test)]
 use hippocampus::eviction_score;
@@ -1891,7 +1892,25 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
 
     let mut summaries = Vec::new();
     for group in groups.into_iter().filter(|g| g.len() > 1) {
-        let summary_text = summarize_group(&group, &state.keyword_cache);
+        let semantic_group: Vec<ShortTermEntry> = group
+            .iter()
+            .cloned()
+            .filter_map(|mut entry| {
+                entry.text = clean_semantic_noise(&entry.text);
+                entry.summary = clean_semantic_noise(&entry.summary);
+                if entry.text.trim().is_empty() {
+                    None
+                } else {
+                    Some(entry)
+                }
+            })
+            .collect();
+        let summary_group = if semantic_group.is_empty() {
+            &group
+        } else {
+            &semantic_group
+        };
+        let summary_text = clean_semantic_noise(&summarize_group(summary_group, &state.keyword_cache));
         #[cfg(feature = "instrument")]
         {
             let entry_previews: Vec<String> = group
@@ -1913,7 +1932,11 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
             .map(|e| e.salience)
             .fold(0.0, f32::max)
             .max(0.4);
-        let source_texts: Vec<String> = group.iter().map(|e| e.text.clone()).collect();
+        let source_texts: Vec<String> = group
+            .iter()
+            .map(|e| clean_semantic_noise(&e.text))
+            .filter(|text| !text.trim().is_empty())
+            .collect();
 
         // Systems consolidation: compute centroid embedding and rich text
         // for high-salience groups (hippocampus flags important memories
@@ -2058,8 +2081,9 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         // 2. Semantic Topic Extraction: find high-frequency entities in the group
         let mut entity_counts: HashMap<String, (usize, String)> = HashMap::new();
         for entry in &group {
+            let semantic_text = clean_semantic_noise(&entry.text);
             let entities =
-                crate::memory::wernicke::extract_entities(&entry.text, &state.keyword_cache);
+                crate::memory::wernicke::extract_entities(&semantic_text, &state.keyword_cache);
             for entity in entities {
                 let entry = entity_counts
                     .entry(entity.label.clone())
@@ -4205,6 +4229,55 @@ mod tests {
             "Summary should contain source texts from group members, got {}",
             node.source_texts.len()
         );
+    }
+
+    #[test]
+    fn test_consolidate_filters_semantic_junk_from_l3_summary_evidence() {
+        let mut state = MemoryState::default();
+        let dim = state.brain.config.embedding_dim;
+        let texts = [
+            "Project Alpha uses SQLite for metadata [[[[ %%@@",
+            "Project Alpha keeps SQLite backup audits in the runbook //// &&&&",
+            "Project Alpha validates SQLite restore row counts }}}} @@@@",
+        ];
+        for text in &texts {
+            hippocampus::insert_short_term(
+                &mut state.brain,
+                text,
+                embed_text(text, dim),
+                compute_salience(text, &kw()),
+                Vec::new(),
+                0.0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
+            );
+        }
+        state.brain.config.theta_low = 0.3;
+        consolidate(&mut state.brain);
+
+        let summary_node = state
+            .brain
+            .long_term
+            .nodes
+            .values()
+            .find(|n| n.kind == "Summary")
+            .expect("should have a Summary node");
+        let l3_text = std::iter::once(summary_node.label.as_str())
+            .chain(summary_node.source_texts.iter().map(String::as_str))
+            .chain(summary_node.full_text.as_deref())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(l3_text.contains("Project Alpha"));
+        assert!(l3_text.contains("SQLite"));
+        for junk in ["[[[[", "%%@@", "////", "&&&&", "}}}}", "@@@@"] {
+            assert!(
+                !l3_text.contains(junk),
+                "L3 Summary evidence should not retain {junk}: {l3_text}"
+            );
+        }
     }
 
     #[test]
