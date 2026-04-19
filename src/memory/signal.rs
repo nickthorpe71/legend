@@ -43,6 +43,34 @@ pub fn normalize_positive_signal(
     floor + span * powered_raw / (powered_raw + powered_midpoint)
 }
 
+/// Reinforce a bounded signal using remaining headroom and normalized evidence.
+///
+/// This avoids the dead-zone behavior of `(current + boost).min(1.0)`: higher
+/// evidence still causes a larger update, while existing high values potentiate
+/// more slowly as they approach the ceiling.
+pub fn reinforce_bounded_signal(
+    current: f32,
+    evidence: f32,
+    learning_rate: f32,
+    evidence_midpoint: f32,
+    evidence_steepness: f32,
+) -> f32 {
+    let current = if current.is_finite() {
+        current.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let learning_rate = if learning_rate.is_finite() {
+        learning_rate.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let evidence =
+        normalize_positive_signal(evidence, 0.0, 1.0, evidence_midpoint, evidence_steepness);
+
+    current + (1.0 - current) * evidence * learning_rate
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +110,46 @@ mod tests {
         assert!(
             (s - 0.525).abs() < 0.001,
             "midpoint should map halfway through span, got {s}"
+        );
+    }
+
+    #[test]
+    fn test_reinforce_bounded_signal_increases_with_evidence() {
+        let weak = reinforce_bounded_signal(0.3, 0.1, 0.5, 0.45, 1.4);
+        let strong = reinforce_bounded_signal(0.3, 0.8, 0.5, 0.45, 1.4);
+
+        assert!(weak > 0.3, "weak evidence should still reinforce");
+        assert!(
+            strong > weak,
+            "strong evidence should reinforce more: {strong} vs {weak}"
+        );
+    }
+
+    #[test]
+    fn test_reinforce_bounded_signal_respects_headroom() {
+        let low_current = reinforce_bounded_signal(0.2, 0.8, 0.5, 0.45, 1.4);
+        let high_current = reinforce_bounded_signal(0.8, 0.8, 0.5, 0.45, 1.4);
+
+        assert!(
+            low_current - 0.2 > high_current - 0.8,
+            "low-current traces should have more reinforcement headroom"
+        );
+    }
+
+    #[test]
+    fn test_reinforce_bounded_signal_approaches_ceiling_without_jump() {
+        let mut signal = 0.5;
+        for _ in 0..20 {
+            signal = reinforce_bounded_signal(signal, 1.0, 0.5, 0.45, 1.4);
+        }
+
+        assert!(
+            signal > 0.9,
+            "repeated reinforcement should approach ceiling"
+        );
+        assert!(
+            signal < 1.0,
+            "finite repeated reinforcement should stay below ceiling"
         );
     }
 }

@@ -48,6 +48,7 @@ use neurochemistry::{
     DA_POSITIVE_SPIKE, ECB_CORTISOL_RECOVERY, ECB_ROUTINE_SPIKE, NE_CONTEXT_SWITCH_SPIKE,
     NE_SALIENCE_SPIKE, NE_THREAT_SPIKE,
 };
+use signal::reinforce_bounded_signal;
 use thalamus::compute_salience;
 use wernicke::extract_dates;
 use wernicke::extract_entities;
@@ -232,6 +233,12 @@ pub(super) const CONTRASTIVE_PENALTY: f32 = 0.02;
 pub(super) const REINFORCE_GRAPH_SCALE: f32 = 0.1;
 /// Passive salience boost for top retrieval result, scaled by similarity.
 const AUTO_REINFORCE_SCALE: f32 = 0.03;
+/// Low-similarity merge reinforcement gain for salience potentiation.
+const LOW_MERGE_SALIENCE_LEARNING_RATE: f32 = 0.5;
+/// Evidence midpoint for low-similarity merge salience reinforcement.
+const LOW_MERGE_SALIENCE_MIDPOINT: f32 = 0.45;
+/// Evidence steepness for low-similarity merge salience reinforcement.
+const LOW_MERGE_SALIENCE_STEEPNESS: f32 = 1.4;
 
 // ---------------------------------------------------------------------------
 // Amygdala — Emotional processing, intensity-driven consolidation triggers
@@ -724,7 +731,13 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
                     if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == best_id) {
                         entry.embedding = merge_embeddings(&entry.embedding, &raw_embedding);
                         entry.usage = entry.usage.saturating_add(1);
-                        entry.salience = (entry.salience + salience * 0.5).min(1.0);
+                        entry.salience = reinforce_bounded_signal(
+                            entry.salience,
+                            salience,
+                            LOW_MERGE_SALIENCE_LEARNING_RATE,
+                            LOW_MERGE_SALIENCE_MIDPOINT,
+                            LOW_MERGE_SALIENCE_STEEPNESS,
+                        );
                         entry.summary = summarize_text(&entry.text, &chunk, &state.keyword_cache);
                         entry.last_access = state.clock;
                         merge_memory_refs(&mut entry.refs, refs.clone());
@@ -7649,6 +7662,39 @@ mod tests {
             sim > 0.95,
             "merged embedding should be close to raw average, got sim={}",
             sim
+        );
+    }
+
+    #[test]
+    fn test_low_similarity_merge_salience_uses_smooth_reinforcement() {
+        let mut state = MemoryState::default();
+        state.brain.config.theta_low = 0.2;
+        state.brain.config.theta_high = 0.99;
+
+        let text_a =
+            "DECISION: embedding quality improvement using n-grams for better keyword matching";
+        let text_b =
+            "DECISION: embedding quality improvement using trigrams for better keyword matching";
+
+        tick(&mut state, text_a);
+        assert_eq!(state.brain.short_term.len(), 1);
+        let initial_salience = state.brain.short_term[0].salience;
+
+        tick(&mut state, text_b);
+        assert_eq!(
+            state.brain.short_term.len(),
+            1,
+            "similar ticks should take the low-similarity merge path"
+        );
+        let reinforced_salience = state.brain.short_term[0].salience;
+
+        assert!(
+            reinforced_salience > initial_salience,
+            "low merge should reinforce salience: {reinforced_salience} vs {initial_salience}"
+        );
+        assert!(
+            reinforced_salience < 1.0,
+            "low merge should approach the ceiling smoothly, got {reinforced_salience}"
         );
     }
 
