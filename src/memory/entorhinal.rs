@@ -70,9 +70,10 @@ static SENTENCE_MODEL: std::sync::LazyLock<Mutex<SentenceModel>> = std::sync::La
 ///
 /// **Information compression:**
 ///
-/// - **Text chunking (`chunk_text`)** — splits long input into ~200-character
-///   segments respecting line boundaries.  Continuous input is discretized
-///   into manageable units that each get their own embedding and memory trace.
+/// - **Text chunking (`chunk_text`)** — groups local sentence runs into
+///   episode-like chunks while respecting hard discourse boundaries. Continuous
+///   input is discretized into manageable units that each get their own
+///   embedding and memory trace.
 ///
 /// - **Single-text summarization (`summarize_single`)** — extractive
 ///   best-sentence selection, boosted by decision rationale, code references,
@@ -89,6 +90,10 @@ use crate::memory::ShortTermEntry;
 
 const MAX_SUMMARY_LEN: usize = 200;
 const MAX_GROUP_SUMMARY_LEN: usize = 300;
+/// Soft budget for one episode-like memory chunk. Longer single sentences are
+/// kept intact; sentence runs are only split when adding another sentence would
+/// exceed this target.
+const EPISODIC_CHUNK_TARGET_CHARS: usize = 420;
 /// Discourse markers that signal a topic shift within a single turn.
 const TOPIC_SHIFT_MARKERS: &[&str] = &[
     "by the way",
@@ -423,9 +428,56 @@ pub fn summarize_group(group: &[ShortTermEntry], kw: &KeywordCache) -> String {
     }
 }
 
-/// Split text into chunks on sentence boundaries, topic-shift markers,
-/// paragraph breaks, and `|` separators. Every boundary produces a chunk,
-/// maximising preservation of individual facts (needle retrieval).
+fn split_sentences(segment: &str) -> Vec<String> {
+    let bytes = segment.as_bytes();
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        if (b == b'.' || b == b'!' || b == b'?')
+            && (i + 1 >= len || bytes[i + 1].is_ascii_whitespace())
+        {
+            // Don't split on common abbreviations like "e.g." "i.e." "Dr." etc.
+            let is_abbrev = i >= 1
+                && i + 1 < len
+                && bytes[i - 1].is_ascii_alphabetic()
+                && bytes[i + 1] == b' '
+                && i + 2 < len
+                && bytes[i + 2].is_ascii_lowercase()
+                && (i < 2 || bytes[i - 2] == b'.' || bytes[i - 2] == b' ');
+            if !is_abbrev {
+                let sentence = segment[start..=i].trim();
+                if !sentence.is_empty() {
+                    sentences.push(sentence.to_string());
+                }
+                start = i + 1;
+            }
+        }
+        i += 1;
+    }
+
+    let tail = segment[start..].trim();
+    if !tail.is_empty() {
+        sentences.push(tail.to_string());
+    }
+
+    sentences
+}
+
+fn push_episode_chunk(chunks: &mut Vec<String>, current: &mut String) {
+    let chunk = current.trim();
+    if !chunk.is_empty() {
+        chunks.push(chunk.to_string());
+    }
+    current.clear();
+}
+
+/// Split text into episode-like chunks. Paragraph breaks, topic-shift markers,
+/// and `|` separators are hard boundaries; sentence boundaries are soft
+/// boundaries used to keep each chunk near a conservative size budget without
+/// separating locally related facts.
 pub fn chunk_text(text: &str) -> Vec<String> {
     // Phase 1: split on paragraph breaks and pipe separators
     let mut segments: Vec<String> = Vec::new();
@@ -466,40 +518,27 @@ pub fn chunk_text(text: &str) -> Vec<String> {
         }
     }
 
-    // Phase 3: split on sentence boundaries (.!? followed by whitespace or end)
+    // Phase 3: group adjacent sentences into episode-like chunks.
     let mut chunks: Vec<String> = Vec::new();
     for seg in after_topic {
-        let bytes = seg.as_bytes();
-        let mut start = 0;
-        let len = bytes.len();
-        let mut i = 0;
-        while i < len {
-            let b = bytes[i];
-            if (b == b'.' || b == b'!' || b == b'?')
-                && (i + 1 >= len || bytes[i + 1].is_ascii_whitespace())
-            {
-                // Don't split on common abbreviations like "e.g." "i.e." "Dr." etc.
-                let is_abbrev = i >= 1
-                    && i + 1 < len
-                    && bytes[i - 1].is_ascii_alphabetic()
-                    && bytes[i + 1] == b' '
-                    && i + 2 < len
-                    && bytes[i + 2].is_ascii_lowercase()
-                    && (i < 2 || bytes[i - 2] == b'.' || bytes[i - 2] == b' ');
-                if !is_abbrev {
-                    let sentence = seg[start..=i].trim();
-                    if !sentence.is_empty() {
-                        chunks.push(sentence.to_string());
-                    }
-                    start = i + 1;
-                }
+        let mut current = String::new();
+        for sentence in split_sentences(&seg) {
+            let projected_len = if current.is_empty() {
+                sentence.len()
+            } else {
+                current.len() + 1 + sentence.len()
+            };
+
+            if !current.is_empty() && projected_len > EPISODIC_CHUNK_TARGET_CHARS {
+                push_episode_chunk(&mut chunks, &mut current);
             }
-            i += 1;
+
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(&sentence);
         }
-        let tail = seg[start..].trim();
-        if !tail.is_empty() {
-            chunks.push(tail.to_string());
-        }
+        push_episode_chunk(&mut chunks, &mut current);
     }
 
     if chunks.is_empty() {
@@ -537,13 +576,34 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_text_sentences() {
-        let text = "First sentence about databases. Second sentence about caching. Third one about logging.";
+    fn test_chunk_text_groups_related_sentences() {
+        let text = "Project Alpha uses SQLite for metadata. Backups run at 02:30 UTC. Restore drills validate row counts.";
         let chunks = chunk_text(text);
-        assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0], "First sentence about databases.");
-        assert_eq!(chunks[1], "Second sentence about caching.");
-        assert_eq!(chunks[2], "Third one about logging.");
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("Project Alpha uses SQLite"));
+        assert!(chunks[0].contains("Backups run at 02:30 UTC"));
+        assert!(chunks[0].contains("Restore drills validate row counts"));
+    }
+
+    #[test]
+    fn test_chunk_text_splits_sentence_runs_at_budget() {
+        let text = "Project Alpha stores metadata in SQLite and keeps its backup audit log beside the restore checklist. The operator verifies row counts after each restore drill and records mismatches in the audit log. The dashboard reports checkpoint age, file size, and service account status every morning. The release notes include unrelated cafeteria seating observations that should not force the operational facts into separate single-sentence chunks. The restore workflow also records the snapshot identifier, the retention policy, and the runbook section used by the operator.";
+        let chunks = chunk_text(text);
+        assert!(
+            chunks.len() > 1,
+            "long sentence run should split near budget, got {:?}",
+            chunks
+        );
+        assert!(
+            chunks.iter().all(|c| !c.trim().is_empty()),
+            "chunks should not be empty: {:?}",
+            chunks
+        );
+        assert!(
+            chunks[0].contains("Project Alpha") && chunks[0].contains("row counts"),
+            "first episode should keep adjacent operational facts together: {:?}",
+            chunks
+        );
     }
 
     #[test]
