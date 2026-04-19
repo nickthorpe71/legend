@@ -606,29 +606,24 @@ fn long_term_edge_weight(state: &MemoryState, expected: &EdgeExpectation) -> Opt
     let to = normalize(&expected.to);
     let kind = expected.kind.as_deref().map(normalize);
 
-    state
-        .brain
-        .long_term
-        .edges
-        .iter()
-        .find_map(|edge| {
-            let from_node = state.brain.long_term.nodes.get(&edge.from)?;
-            let to_node = state.brain.long_term.nodes.get(&edge.to)?;
+    state.brain.long_term.edges.iter().find_map(|edge| {
+        let from_node = state.brain.long_term.nodes.get(&edge.from)?;
+        let to_node = state.brain.long_term.nodes.get(&edge.to)?;
 
-            let edge_from = normalize(&from_node.label);
-            let edge_to = normalize(&to_node.label);
-            let labels_match =
-                (edge_from == from && edge_to == to) || (edge_from == to && edge_to == from);
-            let kind_matches = kind
-                .as_ref()
-                .is_none_or(|expected_kind| normalize(&edge.kind) == *expected_kind);
+        let edge_from = normalize(&from_node.label);
+        let edge_to = normalize(&to_node.label);
+        let labels_match =
+            (edge_from == from && edge_to == to) || (edge_from == to && edge_to == from);
+        let kind_matches = kind
+            .as_ref()
+            .is_none_or(|expected_kind| normalize(&edge.kind) == *expected_kind);
 
-            if labels_match && kind_matches {
-                Some(edge.weight)
-            } else {
-                None
-            }
-        })
+        if labels_match && kind_matches {
+            Some(edge.weight)
+        } else {
+            None
+        }
+    })
 }
 
 fn normalize(text: &str) -> String {

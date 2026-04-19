@@ -2429,9 +2429,9 @@ fn should_promote_term(state: &BrainState, term: &str) -> bool {
     // Filter 4: Repeated co-occurrence with existing keywords.
     // Back-compat: old stores only had the boolean, which counts as one
     // co-occurrence but is not enough by itself for new promotion.
-    let cooccurrence_ticks = stats.keyword_cooccurrence_tick_count.max(u32::from(
-        stats.has_keyword_cooccurrence,
-    ));
+    let cooccurrence_ticks = stats
+        .keyword_cooccurrence_tick_count
+        .max(u32::from(stats.has_keyword_cooccurrence));
     if cooccurrence_ticks < TERM_PROMOTION_MIN_KEYWORD_COOCCURRENCE_TICKS {
         return false;
     }
@@ -4276,7 +4276,9 @@ mod tests {
             .get(&existing_id)
             .expect("existing Summary should be reused");
         assert!(
-            texts.iter().all(|text| node.source_texts.contains(&text.to_string())),
+            texts
+                .iter()
+                .all(|text| node.source_texts.contains(&text.to_string())),
             "merged Summary should retain new evidence in source_texts"
         );
         assert_eq!(node.embedding, vec![1.0, 0.0]);
@@ -4384,8 +4386,12 @@ mod tests {
             .find(|node| node.label.eq_ignore_ascii_case("StableAnchor"))
             .expect("StableAnchor node should exist after first consolidation")
             .weight;
-        let usage_after_first: Vec<u32> =
-            state.brain.short_term.iter().map(|entry| entry.usage).collect();
+        let usage_after_first: Vec<u32> = state
+            .brain
+            .short_term
+            .iter()
+            .map(|entry| entry.usage)
+            .collect();
 
         consolidate(&mut state.brain);
 
@@ -4397,8 +4403,12 @@ mod tests {
             .find(|node| node.label.eq_ignore_ascii_case("StableAnchor"))
             .expect("StableAnchor node should still exist after second consolidation")
             .weight;
-        let usage_after_second: Vec<u32> =
-            state.brain.short_term.iter().map(|entry| entry.usage).collect();
+        let usage_after_second: Vec<u32> = state
+            .brain
+            .short_term
+            .iter()
+            .map(|entry| entry.usage)
+            .collect();
 
         assert!(
             anchor_weight_after_second <= anchor_weight_after_first,
@@ -6982,8 +6992,7 @@ mod tests {
         let mut state = MemoryState::default();
         let dim = state.brain.config.embedding_dim;
 
-        let shared =
-            "Database migration to PostgreSQL 15 uses flyway scripts for schema changes";
+        let shared = "Database migration to PostgreSQL 15 uses flyway scripts for schema changes";
         let text1 = format!("{shared} and zero-downtime rollout");
         let text2 = format!("{shared} and validation checks");
         let emb1 = embed_text(&text1, dim);
