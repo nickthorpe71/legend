@@ -127,16 +127,39 @@ impl Default for ShortTermEntry {
     }
 }
 
-/// A source reference to a file region for this memory.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// A typed evidence anchor associated with this memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryRef {
+    /// Anchor kind, such as source, time, duration, percent, version, url, path, or quantity.
+    #[serde(default = "default_memory_ref_kind")]
+    pub kind: String,
+    /// Exact extracted anchor value for non-source refs.
+    #[serde(default)]
+    pub value: String,
     pub path: String,
     pub start_line: usize,
     pub end_line: usize,
     /// Short snippet for re-anchoring when lines drift.
     #[serde(default)]
     pub snippet: String,
+}
+
+fn default_memory_ref_kind() -> String {
+    "source".to_string()
+}
+
+impl Default for MemoryRef {
+    fn default() -> Self {
+        Self {
+            kind: default_memory_ref_kind(),
+            value: String::new(),
+            path: String::new(),
+            start_line: 0,
+            end_line: 0,
+            snippet: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,7 +183,7 @@ fn is_zero(v: &u64) -> bool {
     *v == 0
 }
 
-/// Maximum source references per memory entry.
+/// Maximum evidence anchors per memory entry.
 pub const MAX_REFS_PER_ENTRY: usize = 8;
 
 /// Default stability for new entries (Ebbinghaus forgetting curve).
@@ -670,23 +693,17 @@ pub fn calculate_density(text: &str, kw: &super::wernicke::KeywordCache) -> f32 
     score
 }
 
-/// Merge incoming source references into existing, deduplicating by (path, start, end).
+/// Merge incoming evidence anchors into existing refs, deduplicating by typed identity.
 pub fn merge_memory_refs(existing: &mut Vec<MemoryRef>, incoming: Vec<MemoryRef>) {
     if incoming.is_empty() {
         return;
     }
 
-    let mut seen: HashSet<(String, usize, usize)> = existing
-        .iter()
-        .map(|r| (r.path.clone(), r.start_line, r.end_line))
-        .collect();
+    let mut seen: HashSet<(String, String, String, usize, usize)> =
+        existing.iter().map(memory_ref_key).collect();
 
     for reference in incoming {
-        let key = (
-            reference.path.clone(),
-            reference.start_line,
-            reference.end_line,
-        );
+        let key = memory_ref_key(&reference);
         if seen.insert(key) {
             existing.push(reference);
         }
@@ -700,33 +717,68 @@ pub fn merge_memory_refs(existing: &mut Vec<MemoryRef>, incoming: Vec<MemoryRef>
     }
 }
 
-/// Extract file:line source references from tick text.
+/// Extract source references and non-source evidence anchors from tick text.
 ///
-/// Recognizes patterns like `path/to/file.rs#L42` or `file.rs#L10-20`.
+/// Recognizes patterns like `path/to/file.rs#L42`, `file.rs#L10-20`,
+/// `02:30 UTC`, `180 days`, `95%`, `v1.2.3`, URLs, and path-like anchors.
 pub fn extract_memory_refs_from_text(text: &str) -> Vec<MemoryRef> {
     let mut refs = Vec::new();
-    let mut seen: HashSet<(String, usize, usize)> = HashSet::new();
+    let mut seen: HashSet<(String, String, String, usize, usize)> = HashSet::new();
 
     for line in text.lines() {
         let snippet = build_ref_snippet(line);
         for token in line.split_whitespace() {
             if let Some(reference) = parse_memory_ref_token(token, &snippet) {
-                let key = (
-                    reference.path.clone(),
-                    reference.start_line,
-                    reference.end_line,
-                );
-                if seen.insert(key) {
-                    refs.push(reference);
-                }
+                push_memory_ref(&mut refs, &mut seen, reference);
                 if refs.len() >= MAX_REFS_PER_ENTRY {
                     return refs;
                 }
             }
         }
+
+        for reference in extract_evidence_refs_from_line(line, &snippet) {
+            push_memory_ref(&mut refs, &mut seen, reference);
+            if refs.len() >= MAX_REFS_PER_ENTRY {
+                return refs;
+            }
+        }
     }
 
     refs
+}
+
+fn push_memory_ref(
+    refs: &mut Vec<MemoryRef>,
+    seen: &mut HashSet<(String, String, String, usize, usize)>,
+    reference: MemoryRef,
+) {
+    if seen.insert(memory_ref_key(&reference)) {
+        refs.push(reference);
+    }
+}
+
+fn memory_ref_key(reference: &MemoryRef) -> (String, String, String, usize, usize) {
+    let kind = normalized_ref_kind(reference);
+    let value = if kind == "source" {
+        String::new()
+    } else {
+        reference.value.clone()
+    };
+    (
+        kind,
+        value,
+        reference.path.clone(),
+        reference.start_line,
+        reference.end_line,
+    )
+}
+
+fn normalized_ref_kind(reference: &MemoryRef) -> String {
+    if reference.kind.is_empty() {
+        "source".to_string()
+    } else {
+        reference.kind.clone()
+    }
 }
 
 /// Parse a single token for a file:line reference pattern.
@@ -758,11 +810,393 @@ fn parse_memory_ref_token(token: &str, snippet: &str) -> Option<MemoryRef> {
     };
 
     Some(MemoryRef {
+        kind: "source".to_string(),
+        value: format!("{}#L{}-{}", path, start_line, end_line),
         path: path.to_string(),
         start_line,
         end_line,
         snippet: snippet.to_string(),
     })
+}
+
+fn extract_evidence_refs_from_line(line: &str, snippet: &str) -> Vec<MemoryRef> {
+    let tokens: Vec<String> = line
+        .split_whitespace()
+        .map(clean_ref_token)
+        .filter(|token| !token.is_empty())
+        .collect();
+    let mut refs = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    for (idx, token) in tokens.iter().enumerate() {
+        if token.contains("#L") {
+            continue;
+        }
+
+        let lower = token.to_ascii_lowercase();
+        if is_url_token(&lower) {
+            push_evidence_ref(&mut refs, &mut seen, "url", token, snippet);
+            continue;
+        }
+
+        if is_time_token(token) {
+            let value = if let Some(next) = tokens.get(idx + 1) {
+                if is_time_suffix(next) {
+                    format!("{} {}", token, next)
+                } else {
+                    token.clone()
+                }
+            } else {
+                token.clone()
+            };
+            push_evidence_ref(&mut refs, &mut seen, "time", &value, snippet);
+            continue;
+        }
+
+        if is_percent_token(token) {
+            push_evidence_ref(&mut refs, &mut seen, "percent", token, snippet);
+            continue;
+        }
+
+        if is_version_token(token) {
+            push_evidence_ref(&mut refs, &mut seen, "version", token, snippet);
+            continue;
+        }
+
+        if is_money_token(token) {
+            push_evidence_ref(&mut refs, &mut seen, "money", token, snippet);
+            continue;
+        }
+
+        if let Some(next) = tokens.get(idx + 1) {
+            let next_lower = next.to_ascii_lowercase();
+            if (is_numeric_token(token) || is_spelled_number(&lower)) && is_unit_token(&next_lower)
+            {
+                let kind = evidence_kind_for_unit(&next_lower);
+                let value = format!("{} {}", token, next);
+                push_evidence_ref(&mut refs, &mut seen, kind, &value, snippet);
+            } else if is_numeric_token(token) && is_currency_unit(&next_lower) {
+                let value = format!("{} {}", token, next);
+                push_evidence_ref(&mut refs, &mut seen, "money", &value, snippet);
+            } else if is_numeric_token(token) && is_percent_word(&next_lower) {
+                let value = format!("{} {}", token, next);
+                push_evidence_ref(&mut refs, &mut seen, "percent", &value, snippet);
+            }
+        }
+
+        if is_path_anchor(token) {
+            push_evidence_ref(&mut refs, &mut seen, "path", token, snippet);
+        }
+    }
+
+    refs
+}
+
+fn push_evidence_ref(
+    refs: &mut Vec<MemoryRef>,
+    seen: &mut HashSet<(String, String)>,
+    kind: &str,
+    value: &str,
+    snippet: &str,
+) {
+    let key = (kind.to_string(), value.to_string());
+    if !seen.insert(key) {
+        return;
+    }
+
+    let path = if matches!(kind, "path" | "url") {
+        value.to_string()
+    } else {
+        String::new()
+    };
+    refs.push(MemoryRef {
+        kind: kind.to_string(),
+        value: value.to_string(),
+        path,
+        start_line: 0,
+        end_line: 0,
+        snippet: snippet.to_string(),
+    });
+}
+
+fn clean_ref_token(token: &str) -> String {
+    token
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+            )
+        })
+        .trim_end_matches(|c: char| matches!(c, '.' | ':' | '!'))
+        .to_string()
+}
+
+fn is_url_token(lower: &str) -> bool {
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+fn is_time_token(token: &str) -> bool {
+    let Some((hour, minute)) = token.split_once(':') else {
+        return false;
+    };
+    !hour.is_empty()
+        && !minute.is_empty()
+        && hour.len() <= 2
+        && minute.len() == 2
+        && hour.chars().all(|c| c.is_ascii_digit())
+        && minute.chars().all(|c| c.is_ascii_digit())
+}
+
+fn is_time_suffix(token: &str) -> bool {
+    matches!(
+        token.to_ascii_uppercase().as_str(),
+        "AM" | "PM" | "UTC" | "GMT" | "EST" | "EDT" | "CST" | "CDT" | "MST" | "MDT" | "PST" | "PDT"
+    )
+}
+
+fn is_percent_token(token: &str) -> bool {
+    let Some(number) = token.strip_suffix('%') else {
+        return false;
+    };
+    is_numeric_token(number)
+}
+
+fn is_version_token(token: &str) -> bool {
+    let core = token.strip_prefix('v').unwrap_or(token);
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() >= 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn is_money_token(token: &str) -> bool {
+    token
+        .strip_prefix('$')
+        .is_some_and(|number| is_numeric_token(number))
+}
+
+fn is_numeric_token(token: &str) -> bool {
+    let mut seen_digit = false;
+    let mut seen_dot = false;
+    for c in token.chars() {
+        if c.is_ascii_digit() {
+            seen_digit = true;
+        } else if c == '.' && !seen_dot {
+            seen_dot = true;
+        } else {
+            return false;
+        }
+    }
+    seen_digit
+}
+
+fn is_spelled_number(lower: &str) -> bool {
+    matches!(
+        lower,
+        "zero"
+            | "one"
+            | "two"
+            | "three"
+            | "four"
+            | "five"
+            | "six"
+            | "seven"
+            | "eight"
+            | "nine"
+            | "ten"
+            | "eleven"
+            | "twelve"
+            | "thirteen"
+            | "fourteen"
+            | "fifteen"
+            | "sixteen"
+            | "seventeen"
+            | "eighteen"
+            | "nineteen"
+            | "twenty"
+            | "thirty"
+            | "forty"
+            | "fifty"
+            | "sixty"
+            | "seventy"
+            | "eighty"
+            | "ninety"
+            | "hundred"
+    )
+}
+
+fn is_unit_token(lower: &str) -> bool {
+    matches!(
+        lower,
+        "second"
+            | "seconds"
+            | "minute"
+            | "minutes"
+            | "hour"
+            | "hours"
+            | "day"
+            | "days"
+            | "week"
+            | "weeks"
+            | "month"
+            | "months"
+            | "year"
+            | "years"
+            | "tick"
+            | "ticks"
+            | "row"
+            | "rows"
+            | "file"
+            | "files"
+            | "test"
+            | "tests"
+            | "retry"
+            | "retries"
+            | "request"
+            | "requests"
+            | "error"
+            | "errors"
+            | "item"
+            | "items"
+            | "entry"
+            | "entries"
+            | "node"
+            | "nodes"
+            | "edge"
+            | "edges"
+            | "memory"
+            | "memories"
+            | "token"
+            | "tokens"
+            | "byte"
+            | "bytes"
+            | "kb"
+            | "mb"
+            | "gb"
+    )
+}
+
+fn evidence_kind_for_unit(lower: &str) -> &'static str {
+    match lower {
+        "second" | "seconds" | "minute" | "minutes" | "hour" | "hours" | "day" | "days"
+        | "week" | "weeks" | "month" | "months" | "year" | "years" => "duration",
+        _ => "quantity",
+    }
+}
+
+fn is_currency_unit(lower: &str) -> bool {
+    matches!(lower, "usd" | "dollar" | "dollars")
+}
+
+fn is_percent_word(lower: &str) -> bool {
+    matches!(lower, "percent" | "percentage")
+}
+
+fn is_path_anchor(token: &str) -> bool {
+    if !token.contains('/')
+        || token.contains("#L")
+        || is_url_token(&token.to_ascii_lowercase())
+        || !token.chars().any(|c| c.is_ascii_alphabetic())
+    {
+        return false;
+    }
+
+    token
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn has_ref(refs: &[MemoryRef], kind: &str, value: &str) -> bool {
+        refs.iter()
+            .any(|reference| reference.kind == kind && reference.value == value)
+    }
+
+    #[test]
+    fn extract_memory_refs_preserves_source_line_refs() {
+        let refs = extract_memory_refs_from_text("See `src/main.rs#L10-20` for the handler.");
+
+        let source = refs
+            .iter()
+            .find(|reference| reference.kind == "source")
+            .expect("source ref");
+        assert_eq!(source.path, "src/main.rs");
+        assert_eq!(source.start_line, 10);
+        assert_eq!(source.end_line, 20);
+        assert_eq!(source.value, "src/main.rs#L10-20");
+    }
+
+    #[test]
+    fn extract_memory_refs_captures_quantitative_anchors() {
+        let refs = extract_memory_refs_from_text(
+            "Project Alpha verifies SQLite backups at 02:30 UTC, archives rows older than 180 days, and alerts at 95%.",
+        );
+
+        assert!(has_ref(&refs, "time", "02:30 UTC"));
+        assert!(has_ref(&refs, "duration", "180 days"));
+        assert!(has_ref(&refs, "percent", "95%"));
+    }
+
+    #[test]
+    fn extract_memory_refs_captures_spelled_durations_versions_urls_and_paths() {
+        let refs = extract_memory_refs_from_text(
+            "Release v1.2.3 stores migration files in db/migrations, checks https://example.test/status, and pages after thirty minutes.",
+        );
+
+        assert!(has_ref(&refs, "version", "v1.2.3"));
+        assert!(has_ref(&refs, "path", "db/migrations"));
+        assert!(has_ref(&refs, "url", "https://example.test/status"));
+        assert!(has_ref(&refs, "duration", "thirty minutes"));
+    }
+
+    #[test]
+    fn extract_memory_refs_dedupes_repeated_non_source_anchors() {
+        let refs = extract_memory_refs_from_text(
+            "Retry window is 30 minutes; later, 30 minutes remains the retry window.",
+        );
+
+        let count = refs
+            .iter()
+            .filter(|reference| reference.kind == "duration" && reference.value == "30 minutes")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn merge_memory_refs_dedupes_by_kind_and_value_for_evidence_refs() {
+        let mut refs = vec![MemoryRef {
+            kind: "duration".into(),
+            value: "30 minutes".into(),
+            snippet: "Retry window is 30 minutes.".into(),
+            ..MemoryRef::default()
+        }];
+
+        merge_memory_refs(
+            &mut refs,
+            vec![
+                MemoryRef {
+                    kind: "duration".into(),
+                    value: "30 minutes".into(),
+                    snippet: "Later 30 minutes remains the retry window.".into(),
+                    ..MemoryRef::default()
+                },
+                MemoryRef {
+                    kind: "duration".into(),
+                    value: "45 minutes".into(),
+                    snippet: "Retry window became 45 minutes.".into(),
+                    ..MemoryRef::default()
+                },
+            ],
+        );
+
+        assert_eq!(refs.len(), 2);
+        assert!(has_ref(&refs, "duration", "30 minutes"));
+        assert!(has_ref(&refs, "duration", "45 minutes"));
+    }
 }
 
 /// Build a short snippet from a line for re-anchoring when line numbers drift.
