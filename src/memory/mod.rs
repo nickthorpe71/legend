@@ -48,7 +48,7 @@ use neurochemistry::{
     DA_POSITIVE_SPIKE, ECB_CORTISOL_RECOVERY, ECB_ROUTINE_SPIKE, NE_CONTEXT_SWITCH_SPIKE,
     NE_SALIENCE_SPIKE, NE_THREAT_SPIKE,
 };
-use signal::reinforce_bounded_signal;
+use signal::{normalize_positive_signal, reinforce_bounded_signal};
 use thalamus::compute_salience;
 use wernicke::extract_dates;
 use wernicke::extract_entities;
@@ -239,6 +239,14 @@ const LOW_MERGE_SALIENCE_LEARNING_RATE: f32 = 0.5;
 const LOW_MERGE_SALIENCE_MIDPOINT: f32 = 0.45;
 /// Evidence steepness for low-similarity merge salience reinforcement.
 const LOW_MERGE_SALIENCE_STEEPNESS: f32 = 1.4;
+/// Final encoding salience floor after neurochemical gain.
+const FINAL_SALIENCE_FLOOR: f32 = 0.0;
+/// Final encoding salience asymptote after neurochemical gain.
+const FINAL_SALIENCE_CEILING: f32 = 1.0;
+/// Raw gained salience that maps halfway through the final response curve.
+const FINAL_SALIENCE_MIDPOINT: f32 = 0.25;
+/// Steepness of the final encoding salience response curve.
+const FINAL_SALIENCE_STEEPNESS: f32 = 1.4;
 
 // ---------------------------------------------------------------------------
 // Amygdala — Emotional processing, intensity-driven consolidation triggers
@@ -248,6 +256,16 @@ const LOW_MERGE_SALIENCE_STEEPNESS: f32 = 1.4;
 pub const CONSOLIDATION_PRESSURE_THRESHOLD: f32 = 1.2;
 /// Context switch detection: cosine similarity threshold for topic shifts.
 const CONTEXT_SWITCH_THRESHOLD: f32 = 0.15;
+
+fn normalize_final_salience(raw: f32) -> f32 {
+    normalize_positive_signal(
+        raw,
+        FINAL_SALIENCE_FLOOR,
+        FINAL_SALIENCE_CEILING,
+        FINAL_SALIENCE_MIDPOINT,
+        FINAL_SALIENCE_STEEPNESS,
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Temporal Context Model (TCM) — implicit temporal encoding
@@ -569,7 +587,8 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
         // prior chunk's salience, ACh from prior chunk's novelty) take effect.
         let live_encoding_gain =
             1.0 + state.chemistry.norepinephrine * 0.5 + state.chemistry.acetylcholine * 0.3;
-        let salience = compute_salience(&chunk, &state.keyword_cache) * live_encoding_gain;
+        let raw_salience = compute_salience(&chunk, &state.keyword_cache) * live_encoding_gain;
+        let salience = normalize_final_salience(raw_salience);
         #[cfg(feature = "instrument")]
         _tctx.emit(
             trace::PipelineStep::ComputeSalience,
@@ -712,7 +731,13 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
                 s if s >= state.config.theta_high && diversity_ok => {
                     if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == best_id) {
                         entry.usage = entry.usage.saturating_add(2);
-                        entry.salience = (entry.salience + salience).min(1.0);
+                        entry.salience = reinforce_bounded_signal(
+                            entry.salience,
+                            salience,
+                            1.0,
+                            LOW_MERGE_SALIENCE_MIDPOINT,
+                            LOW_MERGE_SALIENCE_STEEPNESS,
+                        );
                         entry.last_access = state.clock;
                         merge_memory_refs(&mut entry.refs, refs.clone());
                     }
@@ -3504,6 +3529,17 @@ mod tests {
             decision_salience,
             generic_salience
         );
+    }
+
+    #[test]
+    fn test_final_salience_normalization_preserves_high_end_rank() {
+        let high = normalize_final_salience(1.0);
+        let higher = normalize_final_salience(2.0);
+        let extreme = normalize_final_salience(8.0);
+
+        assert!(higher > high, "{higher} should exceed {high}");
+        assert!(extreme > higher, "{extreme} should exceed {higher}");
+        assert!(extreme < 1.0, "{extreme} should approach but not hit 1.0");
     }
 
     #[test]
@@ -6740,19 +6776,23 @@ mod tests {
         let mut state = MemoryState::default();
         let dim = state.brain.config.embedding_dim;
 
-        let emb1 = embed_text("Database migration strategy for PostgreSQL", dim);
-        let emb2 = embed_text("Database migration rollback for PostgreSQL", dim);
+        let shared =
+            "Database migration to PostgreSQL 15 uses flyway scripts for schema changes";
+        let text1 = format!("{shared} and zero-downtime rollout");
+        let text2 = format!("{shared} and validation checks");
+        let emb1 = embed_text(&text1, dim);
+        let emb2 = embed_text(&text2, dim);
 
         state.brain.short_term.push(ShortTermEntry {
             id: 1,
-            text: "Database migration strategy for PostgreSQL".into(),
+            text: text1.into(),
             embedding: emb1,
             salience: 0.6,
             ..Default::default()
         });
         state.brain.short_term.push(ShortTermEntry {
             id: 2,
-            text: "Database migration rollback for PostgreSQL".into(),
+            text: text2.into(),
             embedding: emb2,
             salience: 0.6,
             ..Default::default()
