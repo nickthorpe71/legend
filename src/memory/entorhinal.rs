@@ -106,7 +106,9 @@ const TOPIC_SHIFT_MARKERS: &[&str] = &[
 // ── Representational encoding ───────────────────────────────────────────
 
 /// Run inference on a single tokenizer encoding and return the L2-normalized
-/// CLS embedding (first token's hidden state).
+/// attention-masked mean-pooled embedding. Mean pooling matches how
+/// all-MiniLM-L6-v2 was trained and used by sentence-transformers — CLS
+/// pooling underperforms on sentence-similarity benchmarks for this model.
 fn infer_embedding(model: &TractModel, encoding: &tokenizers::Encoding, dim: usize) -> Vec<f32> {
     let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
     let attention_mask: Vec<i64> = encoding
@@ -120,7 +122,7 @@ fn infer_embedding(model: &TractModel, encoding: &tokenizers::Encoding, dim: usi
     let ids = tract_ndarray::Array2::from_shape_vec((1, seq_len), input_ids)
         .unwrap()
         .into_tensor();
-    let mask = tract_ndarray::Array2::from_shape_vec((1, seq_len), attention_mask)
+    let mask = tract_ndarray::Array2::from_shape_vec((1, seq_len), attention_mask.clone())
         .unwrap()
         .into_tensor();
     let types = tract_ndarray::Array2::from_shape_vec((1, seq_len), token_type_ids)
@@ -131,12 +133,28 @@ fn infer_embedding(model: &TractModel, encoding: &tokenizers::Encoding, dim: usi
         .run(tvec![ids.into(), mask.into(), types.into()])
         .expect("ONNX inference failed");
 
-    // Output shape: [1, seq_len, hidden_size]. CLS pooling: take first token.
+    // Output shape: [1, seq_len, hidden_size]. Mean pool over non-padding tokens.
     let view = outputs[0].to_array_view::<f32>().expect("output not f32");
     let hidden_size = view.shape()[2];
 
-    let cls: Vec<f32> = (0..hidden_size).map(|i| view[[0, 0, i]]).collect();
-    let emb = l2_normalize(&cls);
+    let mut pooled = vec![0.0f32; hidden_size];
+    let mut total_mask = 0.0f32;
+    for t in 0..seq_len {
+        let m = attention_mask[t] as f32;
+        if m == 0.0 {
+            continue;
+        }
+        total_mask += m;
+        for d in 0..hidden_size {
+            pooled[d] += view[[0, t, d]] * m;
+        }
+    }
+    let denom = total_mask.max(1e-9);
+    for v in pooled.iter_mut() {
+        *v /= denom;
+    }
+
+    let emb = l2_normalize(&pooled);
     fit_to_dim(&emb, dim)
 }
 
