@@ -370,7 +370,8 @@ pub fn try_reconsolidate(
         // Re-embed with combined text
         entry.embedding = embed_text(&entry.text, state.config.embedding_dim);
         // Boost salience (reconsolidated memories are important)
-        entry.salience = (entry.salience + salience * 0.3).min(1.0);
+        entry.salience =
+            super::signal::reinforce_bounded_signal(entry.salience, salience, 0.3, 0.45, 1.4);
         entry.usage = entry.usage.saturating_add(1);
         entry.last_access = now;
         entry.reconsolidation_count += 1;
@@ -464,7 +465,7 @@ pub fn insert_short_term(
         embedding,
         last_access: state.clock,
         usage: 1,
-        salience: salience.clamp(0.0, 1.0),
+        salience,
         reconsolidation_count: 0,
         labile_until: 0,
         refs,
@@ -649,12 +650,13 @@ fn fast_map_trace(state: &mut BrainState, victim_idx: usize) {
     for entity in &entities {
         let index_key = entity.label.to_lowercase();
         if let Some(&entity_id) = state.long_term.index.get(&index_key) {
-            neocortex::upsert_edge(
+            neocortex::upsert_edge_with_chemical_stamp(
                 &mut state.long_term,
                 trace_id,
                 entity_id,
                 "traces",
                 state.clock,
+                &victim.chemical_stamp,
             );
         }
     }
