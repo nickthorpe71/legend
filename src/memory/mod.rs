@@ -2836,6 +2836,60 @@ mod tests {
     }
 
     #[test]
+    fn test_repeated_typed_evidence_stabilizes_edge_without_duplicate_evidence() {
+        let mut state = MemoryState::default();
+        for _ in 0..3 {
+            neocortex::update_graph(
+                &mut state.brain,
+                "Project Alpha uses SQLite for metadata.",
+                0.8,
+            );
+            state.brain.clock += 5;
+        }
+        neocortex::update_graph(
+            &mut state.brain,
+            "The purple stapler is beside the humming vending machine.",
+            0.8,
+        );
+
+        let alpha = graph_node_id(&state, "project alpha");
+        let sqlite = graph_node_id(&state, "sqlite");
+        let stapler = graph_node_id(&state, "purple stapler");
+        let vending = graph_node_id(&state, "humming vending machine");
+
+        let repeated = graph_edge_between(&state, alpha, sqlite)
+            .expect("repeated Project Alpha/SQLite edge should exist");
+        let incidental = graph_edge_between(&state, stapler, vending)
+            .expect("one-off incidental edge should exist");
+        let semantics = state
+            .brain
+            .long_term
+            .edge_semantics
+            .get(&GraphMemory::edge_stamp_key(alpha, sqlite))
+            .expect("typed edge should have semantic support");
+
+        assert_eq!(semantics.support_count, 3);
+        assert_eq!(
+            semantics.evidence.len(),
+            1,
+            "duplicate evidence text should be deduped: {:?}",
+            semantics.evidence
+        );
+        assert!(
+            repeated.stability > incidental.stability,
+            "repeated typed evidence should stabilize its edge more than one-off incidental evidence: repeated={} incidental={}",
+            repeated.stability,
+            incidental.stability
+        );
+        assert!(
+            repeated.weight > incidental.weight,
+            "repeated typed evidence should reinforce edge weight: repeated={} incidental={}",
+            repeated.weight,
+            incidental.weight
+        );
+    }
+
+    #[test]
     fn test_graph_entity_weighting_is_domain_neutral() {
         let mut state = MemoryState::default();
         neocortex::update_graph(
