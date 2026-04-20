@@ -235,34 +235,101 @@ pub fn default_edge_kind() -> String {
     "related".to_string()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeKindClass {
+    WeakAssociation,
+    Association,
+    FrameBinding,
+    Temporal,
+    KeywordAssociation,
+    Structural,
+    SummaryRepresentation,
+    TypedFact,
+    Unknown,
+}
+
+fn canonical_edge_kind(kind: &str) -> &str {
+    match kind {
+        "co-mentioned" => "co_mentioned",
+        "frame-bound" => "frame_bound",
+        "keyword-co-occurs" => "keyword_co_occurs",
+        "depends-on" => "depends_on",
+        "co-defined" => "co_defined",
+        other => other,
+    }
+}
+
+fn edge_kind_class(kind: &str) -> EdgeKindClass {
+    match canonical_edge_kind(kind) {
+        "co_mentioned" => EdgeKindClass::WeakAssociation,
+        "related" => EdgeKindClass::Association,
+        "frame_bound" => EdgeKindClass::FrameBinding,
+        "temporal" => EdgeKindClass::Temporal,
+        "keyword_co_occurs" => EdgeKindClass::KeywordAssociation,
+        "contains" | "implements" | "depends_on" | "co_defined" => EdgeKindClass::Structural,
+        "represents" => EdgeKindClass::SummaryRepresentation,
+        "uses_datastore"
+        | "uses"
+        | "backs"
+        | "restricts_access"
+        | "validates"
+        | "validates_restore_with"
+        | "dashboard_shows"
+        | "located_near"
+        | "keeps_in"
+        | "verifies"
+        | "records"
+        | "stores"
+        | "exceeds" => EdgeKindClass::TypedFact,
+        _ => EdgeKindClass::Unknown,
+    }
+}
+
 /// Soft priors over edge kinds for different retrieval modes.
 pub fn edge_kind_multiplier(mode: QueryMode, edge_kind: &str) -> f32 {
-    match mode {
-        QueryMode::Structural => match edge_kind {
-            "contains" | "represents" | "frame-bound" => 1.0,
-            "related" | "co-mentioned" => 0.85,
-            "temporal" => 0.55,
-            _ => 0.8,
-        },
-        QueryMode::Temporal => match edge_kind {
-            "temporal" => 1.0,
-            "related" | "co-mentioned" => 0.8,
-            "contains" | "represents" | "frame-bound" => 0.6,
-            _ => 0.75,
-        },
-        QueryMode::Diagnostic => match edge_kind {
-            "related" | "frame-bound" => 1.0,
-            "temporal" => 0.95,
-            "contains" | "represents" => 0.75,
-            "co-mentioned" => 0.7,
-            _ => 0.8,
-        },
-        QueryMode::Semantic => match edge_kind {
-            "related" | "frame-bound" => 1.0,
-            "co-mentioned" => 0.75,
-            _ => 0.85,
-        },
-        QueryMode::Neutral => 1.0,
+    let class = edge_kind_class(edge_kind);
+    match (mode, class) {
+        (QueryMode::Neutral, _) => 1.0,
+
+        (QueryMode::Structural, EdgeKindClass::Structural)
+        | (QueryMode::Structural, EdgeKindClass::SummaryRepresentation)
+        | (QueryMode::Structural, EdgeKindClass::FrameBinding) => 1.0,
+        (QueryMode::Structural, EdgeKindClass::TypedFact) => 0.95,
+        (QueryMode::Structural, EdgeKindClass::Association) => 0.85,
+        (QueryMode::Structural, EdgeKindClass::WeakAssociation) => 0.75,
+        (QueryMode::Structural, EdgeKindClass::KeywordAssociation) => 0.7,
+        (QueryMode::Structural, EdgeKindClass::Temporal) => 0.55,
+        (QueryMode::Structural, EdgeKindClass::Unknown) => 0.8,
+
+        (QueryMode::Temporal, EdgeKindClass::Temporal) => 1.0,
+        (QueryMode::Temporal, EdgeKindClass::Association)
+        | (QueryMode::Temporal, EdgeKindClass::WeakAssociation) => 0.8,
+        (QueryMode::Temporal, EdgeKindClass::TypedFact) => 0.7,
+        (QueryMode::Temporal, EdgeKindClass::KeywordAssociation) => 0.65,
+        (QueryMode::Temporal, EdgeKindClass::Structural)
+        | (QueryMode::Temporal, EdgeKindClass::SummaryRepresentation)
+        | (QueryMode::Temporal, EdgeKindClass::FrameBinding) => 0.6,
+        (QueryMode::Temporal, EdgeKindClass::Unknown) => 0.75,
+
+        (QueryMode::Diagnostic, EdgeKindClass::TypedFact)
+        | (QueryMode::Diagnostic, EdgeKindClass::FrameBinding)
+        | (QueryMode::Diagnostic, EdgeKindClass::Association) => 1.0,
+        (QueryMode::Diagnostic, EdgeKindClass::Temporal) => 0.95,
+        (QueryMode::Diagnostic, EdgeKindClass::Structural)
+        | (QueryMode::Diagnostic, EdgeKindClass::SummaryRepresentation)
+        | (QueryMode::Diagnostic, EdgeKindClass::KeywordAssociation) => 0.75,
+        (QueryMode::Diagnostic, EdgeKindClass::WeakAssociation) => 0.7,
+        (QueryMode::Diagnostic, EdgeKindClass::Unknown) => 0.8,
+
+        (QueryMode::Semantic, EdgeKindClass::TypedFact)
+        | (QueryMode::Semantic, EdgeKindClass::FrameBinding)
+        | (QueryMode::Semantic, EdgeKindClass::Association)
+        | (QueryMode::Semantic, EdgeKindClass::SummaryRepresentation) => 1.0,
+        (QueryMode::Semantic, EdgeKindClass::Structural)
+        | (QueryMode::Semantic, EdgeKindClass::Temporal)
+        | (QueryMode::Semantic, EdgeKindClass::KeywordAssociation)
+        | (QueryMode::Semantic, EdgeKindClass::Unknown) => 0.85,
+        (QueryMode::Semantic, EdgeKindClass::WeakAssociation) => 0.75,
     }
 }
 
@@ -675,6 +742,7 @@ pub fn upsert_edge_with_weight_and_chemical_stamp(
     clock: u64,
     chemical_stamp: &ChemicalStamp,
 ) {
+    let kind = canonical_edge_kind(kind);
     let key = GraphMemory::edge_key(from, to);
     let stamp_key = GraphMemory::edge_stamp_key(from, to);
     let weight_delta = weight_delta.max(0.0);
@@ -750,6 +818,7 @@ pub fn upsert_edge_with_semantics(
     chemical_stamp: &ChemicalStamp,
     semantics: EdgeSemanticInput,
 ) {
+    let kind = canonical_edge_kind(kind);
     upsert_edge_with_weight_and_chemical_stamp(
         long_term,
         from,
@@ -769,6 +838,7 @@ fn merge_edge_semantics(
     kind: &str,
     incoming: EdgeSemanticInput,
 ) {
+    let kind = canonical_edge_kind(kind);
     let key = GraphMemory::edge_stamp_key(from, to);
     let semantics = long_term.edge_semantics.entry(key).or_default();
     if edge_kind_priority(kind) >= edge_kind_priority(&semantics.kind) {
@@ -809,25 +879,14 @@ fn push_unique_capped(values: &mut Vec<String>, value: String, cap: usize) {
 }
 
 fn edge_kind_priority(kind: &str) -> u8 {
-    match kind {
-        "contains" | "implements" | "depends-on" | "represents" => 5,
-        "uses_datastore"
-        | "depends_on"
-        | "backs"
-        | "restricts_access"
-        | "validates_restore_with"
-        | "dashboard_shows"
-        | "located_near"
-        | "keeps_in"
-        | "verifies"
-        | "records"
-        | "stores"
-        | "exceeds" => 5,
-        "frame-bound" => 4,
-        "temporal" | "keyword-co-occurs" => 3,
-        "related" => 2,
-        "co-mentioned" => 1,
-        _ => 2,
+    match edge_kind_class(kind) {
+        EdgeKindClass::TypedFact
+        | EdgeKindClass::Structural
+        | EdgeKindClass::SummaryRepresentation => 5,
+        EdgeKindClass::FrameBinding => 4,
+        EdgeKindClass::Temporal | EdgeKindClass::KeywordAssociation => 3,
+        EdgeKindClass::Association | EdgeKindClass::Unknown => 2,
+        EdgeKindClass::WeakAssociation => 1,
     }
 }
 
@@ -1141,7 +1200,7 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
                         &mut state.long_term,
                         kw_id,
                         other_id,
-                        "keyword-co-occurs",
+                        "keyword_co_occurs",
                         state.clock,
                         &chemical_stamp,
                     );
@@ -1167,9 +1226,9 @@ struct EdgeEvidence {
 fn edge_evidence(a: &GraphEntityMention, b: &GraphEntityMention, text: &str) -> EdgeEvidence {
     let context_kind = match (a.context.as_str(), b.context.as_str()) {
         ("defines", "mentions") | ("mentions", "defines") => Some("contains"),
-        (left, right) if left == "uses" || right == "uses" => Some("depends-on"),
+        (left, right) if left == "uses" || right == "uses" => Some("depends_on"),
         (left, right) if left == "implements" || right == "implements" => Some("implements"),
-        ("defines", "defines") => Some("co-defined"),
+        ("defines", "defines") => Some("co_defined"),
         _ => None,
     };
 
@@ -1191,7 +1250,7 @@ fn edge_evidence(a: &GraphEntityMention, b: &GraphEntityMention, text: &str) -> 
         let distance = pos_a.abs_diff(pos_b);
         if distance <= 140 {
             EdgeEvidence {
-                kind: "frame-bound",
+                kind: "frame_bound",
                 weight_delta: EDGE_REINFORCE_DELTA * 0.85,
             }
         } else {
@@ -1207,7 +1266,7 @@ fn edge_evidence(a: &GraphEntityMention, b: &GraphEntityMention, text: &str) -> 
 
 fn weak_co_mention() -> EdgeEvidence {
     EdgeEvidence {
-        kind: "co-mentioned",
+        kind: "co_mentioned",
         weight_delta: EDGE_REINFORCE_DELTA * 0.25,
     }
 }

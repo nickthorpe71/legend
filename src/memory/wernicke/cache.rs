@@ -1,8 +1,10 @@
-/// Graph-backed dynamic keyword cache.
+/// Wernicke-owned keyword cache with graph-learned overlays.
 ///
-/// Scans the knowledge graph for `kind == "Keyword"` nodes with labels
-/// like `kw:<category>:<term>` and builds per-category keyword lists.
-/// Falls back to static arrays from `keywords.rs` when graph categories are empty.
+/// Static lists in `lexicon.rs` act like hardwired language/perception priors:
+/// broadly useful cues for decisions, threats, actions, tools, and prediction error.
+/// L3 `Keyword` nodes add learned project/domain-specific vocabulary with labels like
+/// `kw:<category>:<term>`. The graph can extend or specialize the lexicon, but it is
+/// not the source of truth for innate/cross-domain keyword categories.
 use super::lexicon::{
     ACTION_KEYWORDS, ARCHITECTURE_KEYWORDS, BUG_KEYWORDS, CODE_KEYWORDS, DECISION_KEYWORDS,
     DOMAIN_KEYWORDS, ENTITY_KIND_PRIORITY, ENVIRONMENT_KEYWORDS, NEGATIVE_VALENCE_KEYWORDS,
@@ -12,7 +14,7 @@ use super::lexicon::{
 };
 use crate::memory::GraphMemory;
 
-/// Cached keyword lists per category, built from graph + static fallbacks.
+/// Cached keyword lists per category, built from graph overlays plus static fallbacks.
 #[derive(Debug, Clone)]
 pub struct KeywordCache {
     /// Code keywords: (trigger, entity_kind, context, priority) tuples.

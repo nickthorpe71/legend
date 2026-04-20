@@ -4,15 +4,15 @@
 /// These are like hardwired neural circuits — decision detection, threat signals,
 /// reward signals, urgency amplifiers. They function regardless of domain.
 ///
-/// Domain-specific keywords (language syntax, tools, environments) are seeded
-/// via Layer 2 (workspace bootstrap) and Layer 3 (incremental discovery).
+/// Layer 3 graph `Keyword` nodes can overlay learned project/domain vocabulary,
+/// but these static lists remain Wernicke's source of truth for broad lexical priors.
 
 /// Code syntax keywords — language-specific patterns that indicate definitions/usage.
 /// Format: (trigger, entity_kind, context, priority).
 /// Priority determines which kind wins during node deduplication (higher = more specific).
 ///
-/// NOTE: These are seeded during workspace bootstrap (Layer 2) based on detected
-/// languages, NOT loaded as static defaults. Kept here as a reference catalog.
+/// NOTE: These can be seeded during workspace bootstrap (Layer 2) based on detected
+/// languages, and they also serve as static fallbacks for minimal repos and tests.
 pub const CODE_KEYWORDS: &[(&str, &str, &str, u8)] = &[
     // Rust / C / C++
     ("fn ", "Function", "defines", 7),
