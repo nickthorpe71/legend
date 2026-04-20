@@ -15,4 +15,6 @@ pub mod lexicon;
 
 // Re-export primary types at the wernicke:: level for convenience.
 pub use cache::KeywordCache;
-pub use extract::{extract_dates, extract_entities, is_stopword};
+pub use extract::{
+    extract_dates, extract_entities, extract_relations, is_graph_entity_candidate, is_stopword,
+};

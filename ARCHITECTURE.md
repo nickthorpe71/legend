@@ -124,7 +124,7 @@ For each chunk:
     ├─ similarity ≥ 0.75 AND word overlap ≥ 40% → MERGE (average embeddings)
     └─ otherwise → INSERT new entry
     ↓
-12. update_graph() — extract entities (wernicke), create/update graph nodes and edges (neocortex)
+12. update_graph() — extract entities/facts (wernicke), create/update graph nodes and edges (neocortex). Phase 5 semantic extraction follows Hawkins, Ahmad, and Cui's Thousand Brains reference-frame framing: facts should become typed relations scoped by project/time/source/domain/goal/location/epistemic context rather than flat keyword co-occurrence.
     ↓
 13. retrieve_context() — return relevant context (also marks entries labile)
     ↓

@@ -116,6 +116,8 @@ Legend stores memories in `.legend/memory.lz4` using MessagePack + LZ4 compressi
 2. **Episodic Memory (Hippocampus)** — short-term vector store with reconsolidation, emotional valence, and Ebbinghaus forgetting curves
 3. **Knowledge Graph (Neocortex)** — long-term entity relationships with multi-hop spreading activation and Hebbian learning
 
+Legend's Phase 5 semantic graph work also draws on Hawkins, Ahmad, and Cui's Thousand Brains / reference-frame theory: durable facts should be typed relations scoped by project, time, source, domain, goal, location, and epistemic context, not just keyword co-occurrences. See `LEGEND_PAPER.md` for full citations.
+
 Salience-based retrieval with pattern completion ensures the most relevant memories surface first. Emotional memories resist forgetting; stale ones decay naturally.
 
 ## License

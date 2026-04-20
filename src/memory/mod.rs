@@ -1910,7 +1910,8 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
         } else {
             &semantic_group
         };
-        let summary_text = clean_semantic_noise(&summarize_group(summary_group, &state.keyword_cache));
+        let summary_text =
+            clean_semantic_noise(&summarize_group(summary_group, &state.keyword_cache));
         #[cfg(feature = "instrument")]
         {
             let entry_previews: Vec<String> = group
@@ -2698,28 +2699,134 @@ mod tests {
     }
 
     #[test]
+    fn test_graph_skips_action_predicate_nodes() {
+        let mut state = MemoryState::default();
+        tick(
+            &mut state,
+            "Fixed the parser bug in src/parser.rs and refactored RequestParser.",
+        );
+        let labels: Vec<&str> = state
+            .brain
+            .long_term
+            .nodes
+            .values()
+            .map(|node| node.label.as_str())
+            .collect();
+
+        assert!(!labels.contains(&"fixed"), "got graph labels: {:?}", labels);
+        assert!(
+            !labels.contains(&"refactored"),
+            "got graph labels: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"src/parser.rs") || labels.contains(&"RequestParser"),
+            "real entities should still be encoded: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_graph_edges_weight_local_reference_frames_above_distant_comentions() {
+        let mut state = MemoryState::default();
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha uses SQLite for metadata. A ceramic frog near the monitor is named Biscuit.",
+            0.8,
+        );
+
+        let alpha = graph_node_id(&state, "project alpha");
+        let sqlite = graph_node_id(&state, "sqlite");
+        let frog = graph_node_id(&state, "ceramic frog");
+        let local = graph_edge_between(&state, alpha, sqlite)
+            .expect("Project Alpha and SQLite should have a local edge");
+        let distant = graph_edge_between(&state, alpha, frog)
+            .expect("Project Alpha and ceramic frog should have only a weak co-mention edge");
+
+        assert_eq!(local.kind, "uses_datastore");
+        assert_eq!(distant.kind, "co-mentioned");
+        assert!(
+            local.weight > distant.weight,
+            "local frame evidence should reinforce more strongly than distant co-mention: local={} distant={}",
+            local.weight,
+            distant.weight
+        );
+    }
+
+    #[test]
+    fn test_graph_edge_kind_upgrades_from_weak_comention_to_frame_bound() {
+        let mut state = MemoryState::default();
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha is the migration project. SQLite sits beside a ceramic frog.",
+            0.8,
+        );
+        state.brain.clock += 1;
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha uses SQLite for metadata.",
+            0.8,
+        );
+
+        let alpha = graph_node_id(&state, "project alpha");
+        let sqlite = graph_node_id(&state, "sqlite");
+        let edge = graph_edge_between(&state, alpha, sqlite)
+            .expect("repeated Project Alpha and SQLite mentions should share an edge");
+
+        assert_eq!(
+            edge.kind, "uses_datastore",
+            "typed relation evidence should upgrade weaker earlier co-mention"
+        );
+    }
+
+    #[test]
+    fn test_graph_uses_typed_plain_english_relation_edges() {
+        let mut state = MemoryState::default();
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha uses SQLite for metadata. The SQLite datastore backs Project Alpha's audit log.",
+            0.8,
+        );
+
+        let alpha = graph_node_id(&state, "project alpha");
+        let sqlite = graph_node_id(&state, "sqlite");
+        let datastore = graph_node_id(&state, "sqlite datastore");
+
+        let uses_edge = graph_edge_between(&state, alpha, sqlite)
+            .expect("Project Alpha and SQLite should have a typed edge");
+        let backs_edge = graph_edge_between(&state, datastore, alpha)
+            .expect("SQLite datastore and Project Alpha should have a typed edge");
+
+        assert_eq!(uses_edge.kind, "uses_datastore");
+        assert_eq!(backs_edge.kind, "backs");
+    }
+
+    #[test]
     fn test_hebbian_reinforcement() {
         let mut state = MemoryState::default();
-        tick(&mut state, "fn process_data() uses struct Config");
-        let initial_weights: Vec<f32> = state
-            .brain
-            .long_term
-            .edges
-            .iter()
-            .map(|e| e.weight)
-            .collect();
-        retrieve_context(&mut state.brain, "process_data Config");
-        retrieve_context(&mut state.brain, "process_data Config");
-        let has_increased = state
-            .brain
-            .long_term
-            .edges
-            .iter()
-            .zip(initial_weights.iter())
-            .any(|(edge, &initial)| edge.weight > initial);
+        neocortex::update_graph(
+            &mut state.brain,
+            "fn process_data() uses struct Config",
+            0.8,
+        );
+
+        let process_data = graph_node_id(&state, "process_data");
+        let config = graph_node_id(&state, "config");
+        let initial_weight = graph_edge_between(&state, process_data, config)
+            .expect("graph encoder should create an edge before Hebbian reinforcement")
+            .weight;
+
+        state.brain.clock += 1;
+        neocortex::hebbian_reinforce(&mut state.brain.long_term, &[process_data, config], 1);
+        let reinforced_weight = graph_edge_between(&state, process_data, config)
+            .expect("edge should remain after Hebbian reinforcement")
+            .weight;
+
         assert!(
-            has_increased,
-            "Hebbian reinforcement should strengthen co-retrieved edges"
+            reinforced_weight > initial_weight,
+            "Hebbian reinforcement should strengthen co-active edges: before={} after={}",
+            initial_weight,
+            reinforced_weight
         );
     }
 
@@ -3659,6 +3766,28 @@ mod tests {
             !ctx.long_term.is_empty(),
             "priming should surface related graph nodes"
         );
+    }
+
+    fn graph_node_id(state: &MemoryState, label: &str) -> u64 {
+        *state
+            .brain
+            .long_term
+            .index
+            .get(label)
+            .unwrap_or_else(|| panic!("missing graph node {label}"))
+    }
+
+    fn graph_edge_between(
+        state: &MemoryState,
+        a: u64,
+        b: u64,
+    ) -> Option<&crate::memory::neocortex::GraphEdge> {
+        state
+            .brain
+            .long_term
+            .edges
+            .iter()
+            .find(|edge| (edge.from == a && edge.to == b) || (edge.from == b && edge.to == a))
     }
 
     #[test]
