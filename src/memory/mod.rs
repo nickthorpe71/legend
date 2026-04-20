@@ -2836,6 +2836,39 @@ mod tests {
     }
 
     #[test]
+    fn test_graph_entity_weighting_is_domain_neutral() {
+        let mut state = MemoryState::default();
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha verifies SQLite backups at 02:30 UTC. Maya Chen owns the migration checklist. fn handle_backup() {}",
+            0.8,
+        );
+
+        let timestamp_id = graph_node_id(&state, "02:30 utc");
+        let person_id = graph_node_id(&state, "maya chen");
+        let function_id = graph_node_id(&state, "handle_backup");
+        let timestamp = state.brain.long_term.nodes.get(&timestamp_id).unwrap();
+        let person = state.brain.long_term.nodes.get(&person_id).unwrap();
+        let function = state.brain.long_term.nodes.get(&function_id).unwrap();
+
+        assert_eq!(timestamp.kind, "Value");
+        assert_eq!(person.kind, "Concept");
+        assert_eq!(function.kind, "Function");
+        assert!(
+            timestamp.weight >= function.weight,
+            "exact non-code evidence anchors should not be weaker than code artifacts: timestamp={} function={}",
+            timestamp.weight,
+            function.weight
+        );
+        assert!(
+            person.weight >= function.weight,
+            "named non-code entities should not be weaker than code artifacts: person={} function={}",
+            person.weight,
+            function.weight
+        );
+    }
+
+    #[test]
     fn test_graph_emits_canonical_snake_case_edge_kinds() {
         let mut state = MemoryState::default();
         neocortex::update_graph(
