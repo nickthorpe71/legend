@@ -106,10 +106,14 @@ pub struct GraphEdgeSemantics {
     pub kind: String,
     pub predicates: Vec<String>,
     pub evidence: Vec<String>,
+    pub contradictory_evidence: Vec<String>,
     pub confidence: f32,
     pub polarity: String,
+    pub conflict_state: String,
     pub reference_frames: Vec<GraphReferenceFrame>,
     pub support_count: u32,
+    pub contradiction_count: u32,
+    pub correction_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -790,8 +794,9 @@ pub fn upsert_edge_with_semantics(
         clock,
         chemical_stamp,
     );
-    let support_count = merge_edge_semantics(long_term, from, to, kind, semantics);
-    apply_semantic_support_reinforcement(long_term, from, to, support_count);
+    if let Some(support_count) = merge_edge_semantics(long_term, from, to, kind, semantics) {
+        apply_semantic_support_reinforcement(long_term, from, to, support_count);
+    }
 }
 
 fn merge_edge_semantics(
@@ -800,20 +805,36 @@ fn merge_edge_semantics(
     to: u64,
     kind: &str,
     incoming: EdgeSemanticInput,
-) -> u32 {
+) -> Option<u32> {
     let key = GraphMemory::edge_stamp_key(from, to);
     let semantics = long_term.edge_semantics.entry(key).or_default();
     if edge_kind_priority(kind) >= edge_kind_priority(&semantics.kind) {
         semantics.kind = kind.to_string();
     }
     push_unique_capped(&mut semantics.predicates, incoming.predicate, 8);
-    push_unique_capped(&mut semantics.evidence, incoming.evidence, 8);
+    let incoming_polarity = incoming.polarity;
+    let incoming_evidence = incoming.evidence;
+    let mut support_count_if_incremented = None;
+    match incoming_polarity.as_str() {
+        "Negated" => {
+            push_unique_capped(&mut semantics.contradictory_evidence, incoming_evidence, 8);
+            semantics.contradiction_count = semantics.contradiction_count.saturating_add(1);
+        }
+        "Corrective" => {
+            push_unique_capped(&mut semantics.contradictory_evidence, incoming_evidence, 8);
+            semantics.correction_count = semantics.correction_count.saturating_add(1);
+        }
+        _ => {
+            push_unique_capped(&mut semantics.evidence, incoming_evidence, 8);
+            semantics.support_count = semantics.support_count.saturating_add(1);
+            support_count_if_incremented = Some(semantics.support_count);
+        }
+    }
     semantics.confidence = semantics
         .confidence
         .max(incoming.confidence.clamp(0.0, 1.0));
-    if semantics.polarity.is_empty() || semantics.polarity == "Unknown" {
-        semantics.polarity = incoming.polarity;
-    }
+    semantics.polarity = merge_polarity(&semantics.polarity, &incoming_polarity);
+    semantics.conflict_state = conflict_state_for(semantics);
     for frame in incoming.reference_frames {
         if !semantics.reference_frames.iter().any(|existing| {
             existing.kind == frame.kind
@@ -824,8 +845,32 @@ fn merge_edge_semantics(
         }
     }
     semantics.reference_frames.truncate(8);
-    semantics.support_count = semantics.support_count.saturating_add(1);
-    semantics.support_count
+    support_count_if_incremented
+}
+
+fn merge_polarity(existing: &str, incoming: &str) -> String {
+    if existing.is_empty() || existing == "Unknown" {
+        return incoming.to_string();
+    }
+    if incoming == "Unknown" || existing == incoming {
+        return existing.to_string();
+    }
+    if incoming == "Corrective" || existing == "Corrective" {
+        return "Corrective".to_string();
+    }
+    "Mixed".to_string()
+}
+
+fn conflict_state_for(semantics: &GraphEdgeSemantics) -> String {
+    if semantics.correction_count > 0 {
+        "Corrected".to_string()
+    } else if semantics.support_count > 0 && semantics.contradiction_count > 0 {
+        "Conflicted".to_string()
+    } else if semantics.contradiction_count > 0 {
+        "Contradicted".to_string()
+    } else {
+        "Supported".to_string()
+    }
 }
 
 fn apply_semantic_support_reinforcement(
