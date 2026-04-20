@@ -82,10 +82,6 @@ impl Plan {
         }
     }
 
-    /// True if this plan has at least one non-Done item.
-    pub fn is_active(&self) -> bool {
-        self.items.iter().any(|i| i.status != ItemStatus::Done)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,79 +302,6 @@ pub fn format_plans_for_summary(plans: &[Plan]) -> serde_json::Value {
         "active": active_plans,
         "completed": completed_plans,
     })
-}
-
-/// Format the plans section for markdown start summary.
-pub fn format_plans_markdown(plans: &[Plan]) -> String {
-    if plans.is_empty() {
-        return String::new();
-    }
-
-    let mut out = String::from("## Current Plans\n\n");
-
-    // Active plans first
-    for plan in plans.iter().filter(|p| p.completed_at.is_none()) {
-        out.push_str(&format!("### {}\n", plan.name));
-
-        let active: Vec<&PlanItem> = plan
-            .items
-            .iter()
-            .filter(|i| i.status == ItemStatus::Active)
-            .collect();
-        let pending: Vec<&PlanItem> = plan
-            .items
-            .iter()
-            .filter(|i| i.status == ItemStatus::Pending)
-            .collect();
-        let deferred: Vec<&PlanItem> = plan
-            .items
-            .iter()
-            .filter(|i| i.status == ItemStatus::Deferred)
-            .collect();
-        let done: Vec<&PlanItem> = plan
-            .items
-            .iter()
-            .filter(|i| i.status == ItemStatus::Done)
-            .collect();
-
-        if !active.is_empty() {
-            out.push_str("**Active:**\n");
-            for item in &active {
-                out.push_str(&format!("- {}\n", item.text));
-            }
-        }
-        if !pending.is_empty() {
-            out.push_str("**Pending:**\n");
-            for item in &pending {
-                out.push_str(&format!("- {}\n", item.text));
-            }
-        }
-        if !deferred.is_empty() {
-            out.push_str("**Deferred:**\n");
-            for item in &deferred {
-                out.push_str(&format!("- {}\n", item.text));
-            }
-        }
-        if !done.is_empty() {
-            out.push_str("**Done:**\n");
-            for item in &done {
-                out.push_str(&format!("- ~~{}~~\n", item.text));
-            }
-        }
-        out.push('\n');
-    }
-
-    // Completed plans at the bottom
-    let completed: Vec<&Plan> = plans.iter().filter(|p| p.completed_at.is_some()).collect();
-    if !completed.is_empty() {
-        out.push_str("### Completed Plans\n");
-        for plan in &completed {
-            out.push_str(&format!("- ~~{}~~\n", plan.name));
-        }
-        out.push('\n');
-    }
-
-    out
 }
 
 /// Format plans for CLI `legend memory plan` display.
@@ -636,41 +559,6 @@ mod tests {
         assert!(text.contains("Completed plan: Test Plan"));
         assert!(text.contains("[done] Fix bug"));
         assert!(text.contains("[done] Add tests"));
-    }
-
-    #[test]
-    fn test_format_plans_markdown_empty() {
-        assert_eq!(format_plans_markdown(&[]), "");
-    }
-
-    #[test]
-    fn test_format_plans_markdown_active() {
-        let plans = vec![Plan {
-            id: 1,
-            name: "My Plan".to_string(),
-            items: vec![
-                PlanItem {
-                    text: "Active item".into(),
-                    status: ItemStatus::Active,
-                    embedding: vec![],
-                },
-                PlanItem {
-                    text: "Done item".into(),
-                    status: ItemStatus::Done,
-                    embedding: vec![],
-                },
-            ],
-            created_at: 1,
-            updated_at: 1,
-            completed_at: None,
-        }];
-        let md = format_plans_markdown(&plans);
-        assert!(md.contains("## Current Plans"));
-        assert!(md.contains("### My Plan"));
-        assert!(md.contains("**Active:**"));
-        assert!(md.contains("- Active item"));
-        assert!(md.contains("**Done:**"));
-        assert!(md.contains("- ~~Done item~~"));
     }
 
     #[test]

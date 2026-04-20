@@ -50,6 +50,7 @@ pub struct WorkingMemoryEntry {
 
 /// Push an entry into working memory (L1).
 /// When at capacity, the oldest entry is displaced and always promoted to L2.
+#[allow(dead_code)]
 pub fn push_working_memory(
     state: &mut BrainState,
     text: &str,

@@ -387,6 +387,7 @@ pub fn compute_emotional_valence(prototypes: &[EmotionalPrototype], text_embeddi
 
 /// Legacy keyword-based valence computation. Kept as fallback for tests
 /// that validate keyword behavior specifically.
+#[allow(dead_code)]
 pub fn compute_emotional_valence_keywords(text: &str, kw: &KeywordCache) -> f32 {
     let lowered = text.to_lowercase();
     let mut valence: f32 = 0.0;

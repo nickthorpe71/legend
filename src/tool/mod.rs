@@ -349,41 +349,9 @@ pub fn set_task(state: &mut MemoryState, task: &str) {
     }
 }
 
-/// Merge knowledge from another MemoryState by replaying its unique session log entries.
-pub fn merge_from_log(state: &mut MemoryState, other: MemoryState) {
-    let our_texts: HashSet<&str> = state.session_log.iter().map(|s| s.text.as_str()).collect();
-
-    let mut to_replay = Vec::new();
-    for other_entry in other.session_log {
-        if !our_texts.contains(other_entry.text.as_str()) {
-            to_replay.push(other_entry);
-        }
-    }
-
-    to_replay.sort_by_key(|e| e.timestamp);
-
-    if !to_replay.is_empty() {
-        eprintln!(
-            "[LEGEND] Smart-merging {} new session memories...",
-            to_replay.len()
-        );
-        for entry in to_replay {
-            tick(state, &entry.text);
-        }
-    }
-
-    if state.current_task.is_none() {
-        state.current_task = other.current_task;
-    }
-
-    state.brain.clock = state.brain.clock.max(other.brain.clock);
-    state.brain.next_id = state.brain.next_id.max(other.brain.next_id);
-}
-
 /// Deep structural merge: union two MemoryStates field-by-field.
 ///
-/// Unlike `merge_from_log` which replays session entries (re-embedding them),
-/// this preserves all existing entries, embeddings, and metadata intact.
+/// Preserves all existing entries, embeddings, and metadata intact.
 /// Designed for cross-machine git sync where both sides have valid state.
 pub fn merge_states(ours: &mut MemoryState, theirs: &MemoryState) -> MergeStats {
     let mut stats = MergeStats::default();
@@ -650,6 +618,7 @@ pub fn get_task(state: &MemoryState) -> Option<&str> {
 }
 
 /// Check if consolidation should be suggested.
+#[allow(dead_code)]
 pub fn should_suggest_consolidation(state: &MemoryState) -> bool {
     let effective = crate::memory::neurochemistry::compute_effective(&state.brain.chemistry);
     state.brain.ticks_since_consolidation >= crate::memory::CONSOLIDATION_SUGGESTION_THRESHOLD

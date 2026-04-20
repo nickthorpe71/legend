@@ -62,7 +62,7 @@ pub use crate::tool::types::{
 };
 #[allow(unused_imports)]
 pub use basal_ganglia::{ReinforceResult, ReinforcedEntry};
-pub use neurochemistry::{ChemicalStamp, EffectiveChemistry, Neurochemistry};
+pub use neurochemistry::{ChemicalStamp, Neurochemistry};
 
 // Re-export persistence functions so existing `crate::memory::load_or_default()` paths still work.
 #[allow(unused_imports)]
@@ -74,7 +74,7 @@ pub use crate::tool::persistence::{
 #[allow(unused_imports)]
 pub use crate::tool::{
     build_context_summary, build_dump, build_start_summary, build_start_summary_with_options,
-    clear_task, get_git_summary, get_task, merge_from_log, merge_states, recent_sessions,
+    clear_task, get_git_summary, get_task, merge_states, recent_sessions,
     scan_ecosystem_dependencies, set_task, should_suggest_consolidation, tick, MergeStats,
 };
 
@@ -2341,7 +2341,7 @@ pub fn upsert_task_node(state: &mut BrainState, label: &str) -> u64 {
     node_id
 }
 
-// recent_sessions, set_task, merge_from_log, clear_task, get_task,
+// recent_sessions, set_task, clear_task, get_task,
 // should_suggest_consolidation, build_context_summary, build_dump,
 // scan_ecosystem_dependencies — moved to crate::tool, re-exported below.
 

@@ -60,6 +60,7 @@ pub(crate) fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// Convert a unix timestamp (seconds) to an ISO date string (YYYY-MM-DD).
+#[allow(dead_code)]
 pub(super) fn ts_to_iso_date(ts: u64) -> String {
     let mut remaining = ts / 86400;
     let mut year = 1970u64;
