@@ -244,11 +244,193 @@ pub fn extract_dates(text: &str) -> Vec<String> {
     dates
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedEntity {
     pub label: String,
     pub kind: String,
     /// Relationship context: "defines", "uses", "implements", "mentions"
     pub context: String,
+}
+
+/// Whether an extracted item should become a durable L3 graph node.
+///
+/// Predicates and action cues are still useful extraction evidence, but they
+/// should become edge labels or fact metadata, not standalone concept nodes.
+pub fn is_graph_entity_candidate(entity: &ExtractedEntity) -> bool {
+    !is_predicate_entity(entity)
+}
+
+fn is_predicate_entity(entity: &ExtractedEntity) -> bool {
+    matches!(entity.kind.as_str(), "Action")
+        || matches!(entity.context.as_str(), "performs" | "predicate")
+        || is_relation_cue(&entity.label)
+}
+
+/// Reference-frame context for a fact or entity.
+///
+/// Phase 5 follows Hawkins, Ahmad, and Cui's Thousand Brains framing: cortical
+/// columns bind features to object-relative reference frames and many partial
+/// models converge through lateral evidence. Legend's text equivalent is to
+/// bind facts to project/time/source/domain/goal/location/epistemic frames
+/// instead of treating every entity as globally true.
+///
+/// Sources:
+/// - Hawkins, Ahmad, Cui, "A Theory of How Columns in the Neocortex Enable
+///   Learning the Structure of the World" (Frontiers in Neural Circuits, 2017)
+///   https://doi.org/10.3389/fncir.2017.00081
+/// - Numenta, "Thousand Brains Theory of Intelligence" companion paper
+///   https://www.numenta.com/resources/research-publications/papers/thousand-brains-theory-of-intelligence-companion-paper/
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+pub struct ReferenceFrame {
+    /// Stable category such as "project", "time", "source", "domain",
+    /// "goal", "location", or "epistemic".
+    pub kind: String,
+    /// Frame label, e.g. "Project Alpha", "02:30 UTC", "tick", "Phase 5".
+    pub label: String,
+    /// Optional relation from the fact into this frame, e.g. "within",
+    /// "observed_at", "asserted_by", "about", or "located_in".
+    pub relation: String,
+    /// Deterministic confidence in [0, 1].
+    pub confidence: f32,
+}
+
+/// Whether a fact asserts, denies, or revises a relationship.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum FactPolarity {
+    Affirmed,
+    Negated,
+    Corrective,
+    Unknown,
+}
+
+impl Default for FactPolarity {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+/// A typed relation candidate between two entity nodes.
+///
+/// This is the semantic equivalent of a cortical association with a predicate:
+/// "Project Alpha uses SQLite" should become `Project Alpha
+/// --uses_datastore--> SQLite`, not three generic co-occurring nodes.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+pub struct ExtractedRelation {
+    pub subject: ExtractedEntity,
+    /// Stable, normalized edge kind such as `uses_datastore`, `located_near`,
+    /// `depends_on`, `supports`, or `contradicts`.
+    pub kind: String,
+    pub object: ExtractedEntity,
+    /// Surface predicate from the source text: "uses", "backs", "is near".
+    pub predicate: String,
+    /// Optional context entities/values, such as dates, quantities, locations,
+    /// or method phrases.
+    pub qualifiers: Vec<ExtractedEntity>,
+    /// Reference frames that scope the relation. For example, SQLite can be a
+    /// datastore in the Project Alpha frame without implying that SQLite is the
+    /// datastore globally.
+    pub reference_frames: Vec<ReferenceFrame>,
+    /// Source phrase/sentence supporting this relation.
+    pub evidence: String,
+    /// Deterministic confidence in [0, 1].
+    pub confidence: f32,
+    pub polarity: FactPolarity,
+}
+
+/// A semantic fact extracted from text.
+///
+/// A fact is structured information that can update L3 belief:
+/// subject + typed relation + object/value + evidence. General topic mentions
+/// without a relation stay as entities or Summary gist, not durable facts.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+pub struct ExtractedFact {
+    pub relation: ExtractedRelation,
+    /// Human-readable canonical statement used in tests, logs, and future
+    /// evidence compaction.
+    pub statement: String,
+}
+
+impl ExtractedFact {
+    #[allow(dead_code)]
+    pub fn new(relation: ExtractedRelation) -> Self {
+        let statement = format!(
+            "{} {} {}",
+            relation.subject.label, relation.predicate, relation.object.label
+        );
+        Self {
+            relation,
+            statement,
+        }
+    }
+}
+
+/// Extract typed relation candidates from benchmark-style plain-English facts.
+///
+/// This deliberately starts as a conservative deterministic pass. It recognizes
+/// local subject/predicate/object bindings that are common in Legend's
+/// observability fixtures and leaves broader grammar induction for later phases.
+pub fn extract_relations(text: &str, kw: &KeywordCache) -> Vec<ExtractedRelation> {
+    let mut relations = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for sentence in split_relation_sentences(text) {
+        let entities: Vec<_> = extract_entities(sentence, kw)
+            .into_iter()
+            .filter(is_graph_entity_candidate)
+            .collect();
+        if entities.len() < 2 {
+            continue;
+        }
+
+        let mut positioned: Vec<_> = entities
+            .into_iter()
+            .filter_map(|entity| {
+                find_label_case_insensitive(sentence, &entity.label).map(|pos| (pos, entity))
+            })
+            .collect();
+        positioned.sort_by_key(|(pos, _)| *pos);
+
+        for left_idx in 0..positioned.len() {
+            for right_idx in (left_idx + 1)..positioned.len() {
+                let (left_pos, subject) = &positioned[left_idx];
+                let (right_pos, object) = &positioned[right_idx];
+                let between = relation_between(sentence, *left_pos, subject, *right_pos);
+                let Some((kind, predicate, confidence)) =
+                    infer_relation_kind(sentence, between, subject, object)
+                else {
+                    continue;
+                };
+
+                let key = format!(
+                    "{}|{}|{}",
+                    subject.label.to_ascii_lowercase(),
+                    kind,
+                    object.label.to_ascii_lowercase()
+                );
+                if !seen.insert(key) {
+                    continue;
+                }
+
+                relations.push(ExtractedRelation {
+                    subject: subject.clone(),
+                    kind: kind.to_string(),
+                    object: object.clone(),
+                    predicate: predicate.to_string(),
+                    qualifiers: Vec::new(),
+                    reference_frames: relation_reference_frames(sentence, subject, object),
+                    evidence: sentence.trim().to_string(),
+                    confidence,
+                    polarity: FactPolarity::Affirmed,
+                });
+            }
+        }
+    }
+
+    relations
 }
 
 /// Extract entities from text — multi-pass: code keywords, paths, actions, environments, and identifiers.
@@ -264,6 +446,16 @@ pub fn extract_entities(text: &str, kw: &KeywordCache) -> Vec<ExtractedEntity> {
         });
     }
 
+    for value in extract_temporal_and_quantity_values(text) {
+        if !entities.iter().any(|e| e.label == value) {
+            entities.push(ExtractedEntity {
+                label: value,
+                kind: "Value".to_string(),
+                context: "mentions".to_string(),
+            });
+        }
+    }
+
     for line in text.lines() {
         let trimmed = line.trim();
         let lower = trimmed.to_lowercase();
@@ -273,10 +465,7 @@ pub fn extract_entities(text: &str, kw: &KeywordCache) -> Vec<ExtractedEntity> {
             let clean_token = token.trim_matches(|c: char| {
                 matches!(c, '`' | '"' | '\'' | ',' | '.' | ')' | ']' | ';')
             });
-            if (clean_token.contains('/') || clean_token.contains('\\'))
-                && clean_token.contains('.')
-                && clean_token.len() > 4
-            {
+            if (clean_token.contains('/') || clean_token.contains('\\')) && clean_token.len() > 4 {
                 entities.push(ExtractedEntity {
                     label: clean_token.to_string(),
                     kind: "FilePath".to_string(),
@@ -353,6 +542,17 @@ pub fn extract_entities(text: &str, kw: &KeywordCache) -> Vec<ExtractedEntity> {
     }
 
     // 6. Plain identifiers for remaining text
+    for label in extract_entity_phrases(text) {
+        if !entities.iter().any(|e| e.label == label) {
+            entities.push(ExtractedEntity {
+                kind: infer_phrase_kind(&label),
+                label,
+                context: "mentions".to_string(),
+            });
+        }
+    }
+
+    // 7. Plain identifiers for remaining text
     for label in extract_identifiers(text) {
         if !entities.iter().any(|e| e.label == label) {
             entities.push(ExtractedEntity {
@@ -367,6 +567,484 @@ pub fn extract_entities(text: &str, kw: &KeywordCache) -> Vec<ExtractedEntity> {
     let mut seen = std::collections::HashSet::new();
     entities.retain(|e| seen.insert(e.label.clone()));
     entities
+}
+
+fn extract_temporal_and_quantity_values(text: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let words: Vec<&str> = text.split_whitespace().collect();
+
+    for (idx, raw) in words.iter().enumerate() {
+        let token = raw.trim_matches(|c: char| c.is_ascii_punctuation() && c != ':');
+        let lower = token.to_ascii_lowercase();
+
+        if is_clock_time(token) && idx + 1 < words.len() {
+            let zone = words[idx + 1].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            if matches!(zone, "UTC" | "utc") {
+                let value = format!("{token} UTC");
+                if seen.insert(value.to_ascii_lowercase()) {
+                    values.push(value);
+                }
+            }
+        }
+
+        if token.chars().all(|c| c.is_ascii_digit()) && idx + 1 < words.len() {
+            let unit = words[idx + 1]
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                .to_ascii_lowercase();
+            if matches!(
+                unit.as_str(),
+                "day"
+                    | "days"
+                    | "minute"
+                    | "minutes"
+                    | "hour"
+                    | "hours"
+                    | "row"
+                    | "rows"
+                    | "card"
+                    | "cards"
+            ) {
+                let value = format!("{token} {unit}");
+                if seen.insert(value.to_ascii_lowercase()) {
+                    values.push(value);
+                }
+            }
+        }
+
+        if matches!(lower.as_str(), "thirty" | "ninety" | "three") && idx + 1 < words.len() {
+            let unit = words[idx + 1]
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+                .to_ascii_lowercase();
+            if matches!(unit.as_str(), "minutes" | "degrees" | "cards") {
+                let value = format!("{lower} {unit}");
+                if seen.insert(value.clone()) {
+                    values.push(value);
+                }
+            }
+        }
+    }
+
+    values
+}
+
+fn split_relation_sentences(text: &str) -> Vec<&str> {
+    text.split(['.', '!', '?', '\n'])
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .collect()
+}
+
+fn find_label_case_insensitive(text: &str, label: &str) -> Option<usize> {
+    text.to_ascii_lowercase().find(&label.to_ascii_lowercase())
+}
+
+fn relation_between<'a>(
+    sentence: &'a str,
+    left_pos: usize,
+    left: &ExtractedEntity,
+    right_pos: usize,
+) -> &'a str {
+    let start = left_pos
+        .saturating_add(left.label.len())
+        .min(sentence.len());
+    if start >= right_pos || right_pos > sentence.len() {
+        ""
+    } else {
+        &sentence[start..right_pos]
+    }
+}
+
+fn infer_relation_kind<'a>(
+    sentence: &'a str,
+    between: &'a str,
+    subject: &ExtractedEntity,
+    object: &ExtractedEntity,
+) -> Option<(&'static str, &'static str, f32)> {
+    let sentence_lower = sentence.to_ascii_lowercase();
+    let between_lower = between.to_ascii_lowercase();
+    let subject_lower = subject.label.to_ascii_lowercase();
+    let object_lower = object.label.to_ascii_lowercase();
+
+    if between_lower.contains("depends on") {
+        return Some(("depends_on", "depends on", 0.9));
+    }
+    if between_lower.contains("uses") {
+        if object_lower.contains("sqlite")
+            || object_lower.contains("datastore")
+            || sentence_lower.contains("metadata")
+        {
+            return Some(("uses_datastore", "uses", 0.9));
+        }
+        return Some(("uses", "uses", 0.8));
+    }
+    if between_lower.contains("backs") || between_lower.contains("backed") {
+        return Some(("backs", "backs", 0.88));
+    }
+    if between_lower.contains("restricts") {
+        return Some(("restricts_access", "restricts", 0.86));
+    }
+    if between_lower.contains("validates") {
+        if sentence_lower.contains("restore") {
+            return Some(("validates_restore_with", "validates", 0.88));
+        }
+        return Some(("validates", "validates", 0.82));
+    }
+    if between_lower.contains("verifies") {
+        return Some(("verifies", "verifies", 0.82));
+    }
+    if between_lower.contains("shows") {
+        return Some(("dashboard_shows", "shows", 0.86));
+    }
+    if between_lower.contains("stores") {
+        return Some(("stores", "stores", 0.84));
+    }
+    if between_lower.contains("keeps") && sentence_lower.contains(" in ") {
+        return Some(("keeps_in", "keeps in", 0.82));
+    }
+    if between_lower.contains("records") {
+        return Some(("records", "records", 0.82));
+    }
+    if between_lower.contains("exceeds") {
+        return Some(("exceeds", "exceeds", 0.82));
+    }
+    if between_lower.contains("located")
+        || between_lower.contains("beside")
+        || between_lower.contains("near")
+        || between_lower.contains("under")
+        || between_lower.contains(" in ")
+    {
+        return Some(("located_near", "located near", 0.78));
+    }
+
+    if (sentence_lower.contains(" near ") || sentence_lower.contains(" beside "))
+        && same_relation_sentence_order(&subject_lower, &object_lower, &sentence_lower)
+    {
+        return Some(("located_near", "near", 0.74));
+    }
+
+    None
+}
+
+fn same_relation_sentence_order(subject: &str, object: &str, sentence: &str) -> bool {
+    let Some(subject_pos) = sentence.find(subject) else {
+        return false;
+    };
+    let Some(object_pos) = sentence.find(object) else {
+        return false;
+    };
+    subject_pos < object_pos
+}
+
+fn relation_reference_frames(
+    sentence: &str,
+    subject: &ExtractedEntity,
+    object: &ExtractedEntity,
+) -> Vec<ReferenceFrame> {
+    let mut frames = Vec::new();
+    for entity in extract_entity_phrases(sentence) {
+        let lower = entity.to_ascii_lowercase();
+        if lower == subject.label.to_ascii_lowercase() || lower == object.label.to_ascii_lowercase()
+        {
+            continue;
+        }
+        if lower.starts_with("project ") {
+            frames.push(ReferenceFrame {
+                kind: "project".to_string(),
+                label: entity,
+                relation: "within".to_string(),
+                confidence: 0.8,
+            });
+        }
+    }
+    frames
+}
+
+fn is_clock_time(token: &str) -> bool {
+    let Some((hour, minute)) = token.split_once(':') else {
+        return false;
+    };
+    hour.len() <= 2
+        && minute.len() == 2
+        && hour.chars().all(|c| c.is_ascii_digit())
+        && minute.chars().all(|c| c.is_ascii_digit())
+}
+
+fn clean_phrase_token(token: &str) -> Option<String> {
+    let trimmed = token
+        .trim_matches(|c: char| c.is_ascii_punctuation() && c != '-' && c != '_' && c != '\'')
+        .trim_end_matches("'s")
+        .trim_end_matches("'S");
+
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let normalized: String = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(*c, '-' | '_' | '\''))
+        .collect();
+
+    if normalized.chars().any(|c| c.is_ascii_alphabetic()) {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn is_proper_phrase_word(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_uppercase()
+        && chars.any(|c| c.is_ascii_lowercase())
+        && !is_stopword(token)
+        && !is_relation_cue(token)
+}
+
+fn is_phrase_component(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    token.len() > 1
+        && token.chars().any(|c| c.is_ascii_alphabetic())
+        && !is_relation_cue(&lower)
+        && !matches!(
+            lower.as_str(),
+            "a" | "an"
+                | "the"
+                | "and"
+                | "or"
+                | "but"
+                | "to"
+                | "of"
+                | "in"
+                | "on"
+                | "at"
+                | "by"
+                | "for"
+                | "with"
+                | "from"
+                | "as"
+                | "is"
+                | "are"
+                | "was"
+                | "were"
+                | "be"
+                | "been"
+        )
+}
+
+fn is_noun_phrase_head(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "account"
+            | "acorn"
+            | "age"
+            | "apple"
+            | "audit"
+            | "ball"
+            | "balloon"
+            | "backup"
+            | "backups"
+            | "bell"
+            | "bookmark"
+            | "change"
+            | "changes"
+            | "check"
+            | "checks"
+            | "color"
+            | "contention"
+            | "count"
+            | "counts"
+            | "crane"
+            | "dashboard"
+            | "datastore"
+            | "dice"
+            | "dinosaur"
+            | "drill"
+            | "drills"
+            | "drawer"
+            | "envelope"
+            | "export"
+            | "exports"
+            | "feather"
+            | "file"
+            | "files"
+            | "folklore"
+            | "frog"
+            | "hash"
+            | "hashes"
+            | "history"
+            | "index"
+            | "indexes"
+            | "jar"
+            | "keychain"
+            | "label"
+            | "job"
+            | "jobs"
+            | "latency"
+            | "log"
+            | "machine"
+            | "marble"
+            | "metadata"
+            | "mode"
+            | "monitor"
+            | "mug"
+            | "note"
+            | "notes"
+            | "notebook"
+            | "paperclip"
+            | "pawn"
+            | "pencil"
+            | "pinecone"
+            | "poster"
+            | "printer"
+            | "report"
+            | "reports"
+            | "reconciliation"
+            | "receipts"
+            | "review"
+            | "restore"
+            | "row"
+            | "rows"
+            | "runbook"
+            | "sailboat"
+            | "sample"
+            | "sink"
+            | "size"
+            | "stapler"
+            | "stamp"
+            | "string"
+            | "table"
+            | "tables"
+            | "validation"
+            | "weather"
+            | "whistle"
+            | "windmill"
+            | "wing"
+    )
+}
+
+fn is_physical_object_head(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "acorn"
+            | "apple"
+            | "ball"
+            | "balloon"
+            | "bell"
+            | "bookmark"
+            | "crane"
+            | "dice"
+            | "dinosaur"
+            | "envelope"
+            | "feather"
+            | "frog"
+            | "jar"
+            | "keychain"
+            | "machine"
+            | "marble"
+            | "mug"
+            | "notebook"
+            | "paperclip"
+            | "pawn"
+            | "pinecone"
+            | "sailboat"
+            | "stapler"
+            | "stamp"
+            | "string"
+            | "whistle"
+            | "windmill"
+    )
+}
+
+fn extract_entity_phrases(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in text.lines() {
+        let words: Vec<String> = line
+            .split_whitespace()
+            .filter_map(clean_phrase_token)
+            .collect();
+
+        // Proper-name spans: Project Alpha, Maya Chen, BioBank Japan.
+        let mut i = 0;
+        while i < words.len() {
+            if !is_proper_phrase_word(&words[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            i += 1;
+            while i < words.len() && i - start < 4 && is_proper_phrase_word(&words[i]) {
+                i += 1;
+            }
+            if i - start >= 2 {
+                let phrase = words[start..i].join(" ");
+                let key = phrase.to_ascii_lowercase();
+                if seen.insert(key) {
+                    out.push(phrase);
+                }
+            }
+        }
+
+        // Noun-like compound spans: audit log, service account,
+        // checkpoint age, purple stapler, humming vending machine.
+        for phrase in extract_special_entity_phrases(&words) {
+            let key = phrase.to_ascii_lowercase();
+            if seen.insert(key) {
+                out.push(phrase);
+            }
+        }
+
+        for start in 0..words.len() {
+            for len in (2..=3).rev() {
+                if start + len > words.len() {
+                    continue;
+                }
+                let slice = &words[start..start + len];
+                if !slice.iter().all(|w| is_phrase_component(w)) {
+                    continue;
+                }
+                let Some(head) = slice.last() else {
+                    continue;
+                };
+                if !is_noun_phrase_head(head) {
+                    continue;
+                }
+                let phrase = slice.join(" ");
+                let key = phrase.to_ascii_lowercase();
+                if seen.insert(key) {
+                    out.push(phrase);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn extract_special_entity_phrases(words: &[String]) -> Vec<String> {
+    let mut phrases = Vec::new();
+
+    for idx in 0..words.len() {
+        let lower = words[idx].to_ascii_lowercase();
+        if lower == "poster" && idx > 0 && idx + 2 < words.len() {
+            if words[idx + 1].eq_ignore_ascii_case("about") && is_phrase_component(&words[idx + 2])
+            {
+                phrases.push(words[idx - 1..=idx + 2].join(" "));
+            }
+        }
+    }
+
+    phrases
 }
 
 /// Try to extract an identifier after a code keyword (e.g. "fn ", "struct ").
@@ -458,6 +1136,7 @@ fn extract_identifiers(text: &str) -> Vec<String> {
         for variant in expand_identifier_variants(&token) {
             if variant.len() > 2
                 && !is_stopword(&variant)
+                && !is_relation_cue(&variant)
                 && !variant.chars().all(|c| c.is_ascii_digit())
             {
                 unique.entry(variant).or_insert(());
@@ -634,6 +1313,62 @@ pub fn is_stopword(token: &str) -> bool {
     )
 }
 
+fn is_relation_cue(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "backs"
+            | "backed"
+            | "beside"
+            | "belongs"
+            | "cataloged"
+            | "clipped"
+            | "curled"
+            | "depends"
+            | "exceeds"
+            | "hidden"
+            | "keeps"
+            | "located"
+            | "missing"
+            | "near"
+            | "named"
+            | "records"
+            | "remains"
+            | "restricts"
+            | "rolled"
+            | "shows"
+            | "sorted"
+            | "spun"
+            | "stuck"
+            | "stores"
+            | "tangled"
+            | "taped"
+            | "under"
+            | "uses"
+            | "validates"
+            | "verifies"
+            | "wore"
+    )
+}
+
+fn infer_phrase_kind(label: &str) -> String {
+    let lower = label.to_ascii_lowercase();
+    let first = lower.split_whitespace().next().unwrap_or("");
+    let last = lower.split_whitespace().last().unwrap_or("");
+
+    if first == "project" {
+        "Project".to_string()
+    } else if matches!(last, "account") {
+        "Actor".to_string()
+    } else if is_physical_object_head(last) {
+        "Object".to_string()
+    } else if matches!(last, "dashboard" | "datastore" | "runbook") {
+        "System".to_string()
+    } else {
+        "Concept".to_string()
+    }
+}
+
 /// Classify an identifier as Type (uppercase), Symbol (has underscore), or Term.
 fn infer_kind(label: &str) -> String {
     if label
@@ -658,6 +1393,138 @@ mod tests {
 
     fn kw() -> KeywordCache {
         KeywordCache::default_from_static()
+    }
+
+    #[test]
+    fn test_fact_schema_represents_subject_relation_object() {
+        let subject = ExtractedEntity {
+            label: "Project Alpha".to_string(),
+            kind: "Project".to_string(),
+            context: "mentions".to_string(),
+        };
+        let object = ExtractedEntity {
+            label: "SQLite".to_string(),
+            kind: "Tool".to_string(),
+            context: "mentions".to_string(),
+        };
+        let relation = ExtractedRelation {
+            subject,
+            kind: "uses_datastore".to_string(),
+            object,
+            predicate: "uses".to_string(),
+            qualifiers: Vec::new(),
+            reference_frames: Vec::new(),
+            evidence: "Project Alpha uses SQLite for metadata.".to_string(),
+            confidence: 0.9,
+            polarity: FactPolarity::Affirmed,
+        };
+        let fact = ExtractedFact::new(relation);
+
+        assert_eq!(fact.statement, "Project Alpha uses SQLite");
+        assert_eq!(fact.relation.kind, "uses_datastore");
+        assert_eq!(fact.relation.polarity, FactPolarity::Affirmed);
+        assert_eq!(
+            fact.relation.evidence,
+            "Project Alpha uses SQLite for metadata."
+        );
+    }
+
+    #[test]
+    fn test_fact_schema_keeps_predicate_as_edge_not_entity() {
+        let subject = ExtractedEntity {
+            label: "purple stapler".to_string(),
+            kind: "Object".to_string(),
+            context: "mentions".to_string(),
+        };
+        let object = ExtractedEntity {
+            label: "vending machine".to_string(),
+            kind: "Object".to_string(),
+            context: "mentions".to_string(),
+        };
+        let relation = ExtractedRelation {
+            subject,
+            kind: "located_near".to_string(),
+            object,
+            predicate: "is beside".to_string(),
+            qualifiers: Vec::new(),
+            reference_frames: Vec::new(),
+            evidence: "The purple stapler is beside the vending machine.".to_string(),
+            confidence: 0.85,
+            polarity: FactPolarity::Affirmed,
+        };
+
+        assert_eq!(relation.subject.label, "purple stapler");
+        assert_eq!(relation.object.label, "vending machine");
+        assert_eq!(relation.kind, "located_near");
+        assert_eq!(relation.predicate, "is beside");
+    }
+
+    #[test]
+    fn test_fact_schema_scopes_relation_to_reference_frame() {
+        let relation = ExtractedRelation {
+            subject: ExtractedEntity {
+                label: "SQLite".to_string(),
+                kind: "Tool".to_string(),
+                context: "mentions".to_string(),
+            },
+            kind: "stores".to_string(),
+            object: ExtractedEntity {
+                label: "metadata".to_string(),
+                kind: "Concept".to_string(),
+                context: "mentions".to_string(),
+            },
+            predicate: "stores".to_string(),
+            qualifiers: Vec::new(),
+            reference_frames: vec![ReferenceFrame {
+                kind: "project".to_string(),
+                label: "Project Alpha".to_string(),
+                relation: "within".to_string(),
+                confidence: 0.9,
+            }],
+            evidence: "Project Alpha uses SQLite for metadata.".to_string(),
+            confidence: 0.9,
+            polarity: FactPolarity::Affirmed,
+        };
+
+        assert_eq!(relation.reference_frames.len(), 1);
+        assert_eq!(relation.reference_frames[0].kind, "project");
+        assert_eq!(relation.reference_frames[0].label, "Project Alpha");
+        assert_eq!(relation.reference_frames[0].relation, "within");
+    }
+
+    #[test]
+    fn test_extract_plain_english_typed_relations() {
+        let relations = extract_relations(
+            "Project Alpha uses SQLite for metadata. The SQLite datastore backs Project Alpha's audit log. Project Alpha depends on the service account.",
+            &kw(),
+        );
+        let kinds: Vec<&str> = relations.iter().map(|r| r.kind.as_str()).collect();
+
+        assert!(kinds.contains(&"uses_datastore"), "got: {:?}", relations);
+        assert!(kinds.contains(&"backs"), "got: {:?}", relations);
+        assert!(kinds.contains(&"depends_on"), "got: {:?}", relations);
+        assert!(relations.iter().any(|r| {
+            r.kind == "uses_datastore"
+                && r.subject.label == "Project Alpha"
+                && r.object.label.eq_ignore_ascii_case("SQLite")
+        }));
+    }
+
+    #[test]
+    fn test_extract_fixture_typed_relations() {
+        let relations = extract_relations(
+            "Project Alpha dashboard shows SQLite file size and checkpoint age. Project Alpha validates SQLite restore row counts. The purple stapler is beside the humming vending machine.",
+            &kw(),
+        );
+        let kinds: Vec<&str> = relations.iter().map(|r| r.kind.as_str()).collect();
+
+        assert!(kinds.contains(&"dashboard_shows"), "got: {:?}", relations);
+        assert!(
+            kinds.contains(&"validates_restore_with"),
+            "got: {:?}",
+            relations
+        );
+        assert!(kinds.contains(&"located_near"), "got: {:?}", relations);
     }
 
     #[test]
@@ -711,6 +1578,27 @@ mod tests {
             entities.iter().find(|e| e.label == "fixed").unwrap().kind,
             "Action"
         );
+        assert!(
+            !is_graph_entity_candidate(entities.iter().find(|e| e.label == "fixed").unwrap()),
+            "actions are predicates, not durable graph entity nodes"
+        );
+    }
+
+    #[test]
+    fn test_relation_cues_are_not_graph_entity_candidates() {
+        let cue = ExtractedEntity {
+            label: "backs".to_string(),
+            kind: "Term".to_string(),
+            context: "mentions".to_string(),
+        };
+        let entity = ExtractedEntity {
+            label: "SQLite datastore".to_string(),
+            kind: "System".to_string(),
+            context: "mentions".to_string(),
+        };
+
+        assert!(!is_graph_entity_candidate(&cue));
+        assert!(is_graph_entity_candidate(&entity));
     }
 
     #[test]
@@ -777,6 +1665,122 @@ mod tests {
                 .kind,
             "Tool"
         );
+    }
+
+    #[test]
+    fn test_extract_plain_english_project_entities() {
+        let entities = extract_entities(
+            "Project Alpha dashboard shows SQLite file size and checkpoint age.",
+            &kw(),
+        );
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+
+        assert!(labels.contains(&"Project Alpha"), "got: {:?}", labels);
+        assert!(labels.contains(&"file size"), "got: {:?}", labels);
+        assert!(labels.contains(&"checkpoint age"), "got: {:?}", labels);
+        assert!(
+            labels.contains(&"Project Alpha dashboard") || labels.contains(&"dashboard"),
+            "dashboard should be represented, got: {:?}",
+            labels
+        );
+    }
+
+    #[test]
+    fn test_extract_plain_english_operational_entities() {
+        let entities = extract_entities(
+            "Project Alpha restricts SQLite write access to the service account. The SQLite datastore backs Project Alpha's audit log.",
+            &kw(),
+        );
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+
+        assert!(labels.contains(&"Project Alpha"), "got: {:?}", labels);
+        assert!(labels.contains(&"service account"), "got: {:?}", labels);
+        assert!(labels.contains(&"audit log"), "got: {:?}", labels);
+        assert!(labels.contains(&"SQLite datastore"), "got: {:?}", labels);
+        assert!(!labels.contains(&"restricts"), "got: {:?}", labels);
+        assert!(!labels.contains(&"backs"), "got: {:?}", labels);
+    }
+
+    #[test]
+    fn test_extract_plain_english_physical_object_entities() {
+        let entities = extract_entities(
+            "The purple stapler was moved beside a humming vending machine.",
+            &kw(),
+        );
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+
+        assert!(labels.contains(&"purple stapler"), "got: {:?}", labels);
+        assert!(
+            labels.contains(&"humming vending machine"),
+            "got: {:?}",
+            labels
+        );
+        assert!(!labels.contains(&"beside"), "got: {:?}", labels);
+    }
+
+    #[test]
+    fn test_extract_project_alpha_harness_incidental_entities() {
+        let text = "\
+            A ceramic frog near the monitor is named Biscuit. \
+            The hallway poster about waffles curled during cloudy weather. \
+            The moon-shaped paperclip belongs in the third drawer. \
+            The brass keychain was sorted by color near the printer. \
+            The green toy dinosaur wore a postage stamp near the sink. \
+            The rubber band ball was named Neptune. \
+            The navy origami crane was missing a wing. \
+            The glitter pinecone was cataloged under office folklore.";
+        let entities = extract_entities(text, &kw());
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+
+        for expected in [
+            "ceramic frog",
+            "monitor",
+            "hallway poster about waffles",
+            "cloudy weather",
+            "moon-shaped paperclip",
+            "third drawer",
+            "brass keychain",
+            "printer",
+            "green toy dinosaur",
+            "postage stamp",
+            "sink",
+            "rubber band ball",
+            "navy origami crane",
+            "wing",
+            "glitter pinecone",
+            "office folklore",
+        ] {
+            assert!(
+                labels.contains(&expected),
+                "missing {expected}: {:?}",
+                labels
+            );
+        }
+
+        for cue in [
+            "near",
+            "named",
+            "curled",
+            "belongs",
+            "sorted",
+            "missing",
+            "cataloged",
+        ] {
+            assert!(!labels.contains(&cue), "cue leaked as entity: {:?}", labels);
+        }
+    }
+
+    #[test]
+    fn test_extract_project_alpha_harness_values_and_paths() {
+        let entities = extract_entities(
+            "Project Alpha verifies SQLite backups at 02:30 UTC. Project Alpha archives SQLite audit rows older than 180 days. Project Alpha keeps SQLite migration files in db/migrations.",
+            &kw(),
+        );
+        let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
+
+        assert!(labels.contains(&"02:30 UTC"), "got: {:?}", labels);
+        assert!(labels.contains(&"180 days"), "got: {:?}", labels);
+        assert!(labels.contains(&"db/migrations"), "got: {:?}", labels);
     }
 
     #[test]

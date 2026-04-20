@@ -26,7 +26,7 @@ use super::{
     entorhinal::clean_semantic_noise,
     neurochemistry::{self, ChemicalStamp},
     signal::reinforce_bounded_signal,
-    wernicke::{extract_entities, KeywordCache},
+    wernicke::{extract_entities, extract_relations, is_graph_entity_candidate, KeywordCache},
     BrainState, EDGE_REINFORCE_DELTA, GRAPH_EDGE_CAPACITY, GRAPH_NODE_CAPACITY, GRAPH_PRUNE_WEIGHT,
     GRAPH_WEIGHT_TARGET_MAX, HEBBIAN_EDGE_BOOST, HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST,
     HEBBIAN_NODE_CEILING, NEOCORTICAL_DECAY_RATE, NODE_WEIGHT_BASE, PRUNE_AGE_WEIGHT,
@@ -215,25 +215,27 @@ pub fn default_edge_kind() -> String {
 pub fn edge_kind_multiplier(mode: QueryMode, edge_kind: &str) -> f32 {
     match mode {
         QueryMode::Structural => match edge_kind {
-            "contains" | "represents" => 1.0,
-            "related" => 0.85,
+            "contains" | "represents" | "frame-bound" => 1.0,
+            "related" | "co-mentioned" => 0.85,
             "temporal" => 0.55,
             _ => 0.8,
         },
         QueryMode::Temporal => match edge_kind {
             "temporal" => 1.0,
-            "related" => 0.8,
-            "contains" | "represents" => 0.6,
+            "related" | "co-mentioned" => 0.8,
+            "contains" | "represents" | "frame-bound" => 0.6,
             _ => 0.75,
         },
         QueryMode::Diagnostic => match edge_kind {
-            "related" => 1.0,
+            "related" | "frame-bound" => 1.0,
             "temporal" => 0.95,
             "contains" | "represents" => 0.75,
+            "co-mentioned" => 0.7,
             _ => 0.8,
         },
         QueryMode::Semantic => match edge_kind {
-            "related" => 1.0,
+            "related" | "frame-bound" => 1.0,
+            "co-mentioned" => 0.75,
             _ => 0.85,
         },
         QueryMode::Neutral => 1.0,
@@ -614,8 +616,33 @@ pub fn upsert_edge_with_chemical_stamp(
     clock: u64,
     chemical_stamp: &ChemicalStamp,
 ) {
+    upsert_edge_with_weight_and_chemical_stamp(
+        long_term,
+        from,
+        to,
+        kind,
+        EDGE_REINFORCE_DELTA,
+        clock,
+        chemical_stamp,
+    );
+}
+
+/// Insert or reinforce an edge with an evidence-specific plasticity delta.
+///
+/// This keeps the default Hebbian path intact while letting encoding distinguish
+/// local reference-frame evidence from weak same-chunk co-mentions.
+pub fn upsert_edge_with_weight_and_chemical_stamp(
+    long_term: &mut GraphMemory,
+    from: u64,
+    to: u64,
+    kind: &str,
+    weight_delta: f32,
+    clock: u64,
+    chemical_stamp: &ChemicalStamp,
+) {
     let key = GraphMemory::edge_key(from, to);
     let stamp_key = GraphMemory::edge_stamp_key(from, to);
+    let weight_delta = weight_delta.max(0.0);
     if let Some(&idx) = long_term.edge_index.get(&key) {
         let edge = &mut long_term.edges[idx];
         // Synaptic plasticity: update dual-timescale interval tracking
@@ -642,9 +669,9 @@ pub fn upsert_edge_with_chemical_stamp(
         }
 
         edge.activation_count = edge.activation_count.saturating_add(1);
-        edge.weight += EDGE_REINFORCE_DELTA;
+        edge.weight += weight_delta;
         edge.last_seen = clock;
-        if edge.kind == "related" && kind != "related" {
+        if edge_kind_priority(kind) > edge_kind_priority(&edge.kind) {
             edge.kind = kind.to_string();
         }
         let stamp = long_term.edge_chemical_stamps.entry(stamp_key).or_default();
@@ -654,7 +681,7 @@ pub fn upsert_edge_with_chemical_stamp(
         long_term.edges.push(GraphEdge {
             from,
             to,
-            weight: EDGE_REINFORCE_DELTA,
+            weight: weight_delta,
             kind: kind.to_string(),
             last_seen: clock,
             activation_count: 0,
@@ -667,6 +694,29 @@ pub fn upsert_edge_with_chemical_stamp(
         long_term
             .edge_chemical_stamps
             .insert(stamp_key, chemical_stamp.clone());
+    }
+}
+
+fn edge_kind_priority(kind: &str) -> u8 {
+    match kind {
+        "contains" | "implements" | "depends-on" | "represents" => 5,
+        "uses_datastore"
+        | "depends_on"
+        | "backs"
+        | "restricts_access"
+        | "validates_restore_with"
+        | "dashboard_shows"
+        | "located_near"
+        | "keeps_in"
+        | "verifies"
+        | "records"
+        | "stores"
+        | "exceeds" => 5,
+        "frame-bound" => 4,
+        "temporal" | "keyword-co-occurs" => 3,
+        "related" => 2,
+        "co-mentioned" => 1,
+        _ => 2,
     }
 }
 
@@ -815,14 +865,17 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
     } else {
         semantic_text.as_str()
     };
-    let entities = extract_entities(graph_text, &state.keyword_cache);
+    let entities: Vec<_> = extract_entities(graph_text, &state.keyword_cache)
+        .into_iter()
+        .filter(is_graph_entity_candidate)
+        .collect();
     if entities.is_empty() {
         return Vec::new();
     }
 
     let chemical_stamp = neurochemistry::stamp_from(&state.chemistry);
     let mut node_ids = Vec::new();
-    let mut edge_contexts = Vec::new();
+    let mut edge_mentions = Vec::new();
 
     for entity in &entities {
         // Normalize index key to lowercase so "Samsung" and "samsung" share one node.
@@ -880,27 +933,55 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
         }
 
         node_ids.push(id);
-        edge_contexts.push(entity.context.clone());
+        edge_mentions.push(GraphEntityMention {
+            node_id: id,
+            context: entity.context.clone(),
+            position: find_entity_position(graph_text, &entity.label),
+        });
     }
 
-    for i in 0..node_ids.len() {
-        for j in (i + 1)..node_ids.len() {
-            let edge_kind = match (edge_contexts[i].as_str(), edge_contexts[j].as_str()) {
-                ("defines", "mentions") => "contains",
-                (a, b) if a == "uses" || b == "uses" => "depends-on",
-                (a, b) if a == "implements" || b == "implements" => "implements",
-                ("defines", "defines") => "co-defined",
-                _ => "related",
-            };
-            upsert_edge_with_chemical_stamp(
+    for i in 0..edge_mentions.len() {
+        for j in (i + 1)..edge_mentions.len() {
+            let evidence = edge_evidence(&edge_mentions[i], &edge_mentions[j], graph_text);
+            upsert_edge_with_weight_and_chemical_stamp(
                 &mut state.long_term,
-                node_ids[i],
-                node_ids[j],
-                edge_kind,
+                edge_mentions[i].node_id,
+                edge_mentions[j].node_id,
+                evidence.kind,
+                evidence.weight_delta,
                 state.clock,
                 &chemical_stamp,
             );
         }
+    }
+
+    for relation in extract_relations(graph_text, &state.keyword_cache) {
+        let Some(&subject_id) = state
+            .long_term
+            .index
+            .get(&relation.subject.label.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        let Some(&object_id) = state
+            .long_term
+            .index
+            .get(&relation.object.label.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        if subject_id == object_id {
+            continue;
+        }
+        upsert_edge_with_weight_and_chemical_stamp(
+            &mut state.long_term,
+            subject_id,
+            object_id,
+            &relation.kind,
+            EDGE_REINFORCE_DELTA * relation.confidence.max(0.5),
+            state.clock,
+            &chemical_stamp,
+        );
     }
 
     // Phase E: Hebbian reinforcement for keyword nodes.
@@ -944,6 +1025,76 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
     node_ids
 }
 
+struct GraphEntityMention {
+    node_id: u64,
+    context: String,
+    position: Option<usize>,
+}
+
+struct EdgeEvidence {
+    kind: &'static str,
+    weight_delta: f32,
+}
+
+fn edge_evidence(a: &GraphEntityMention, b: &GraphEntityMention, text: &str) -> EdgeEvidence {
+    let context_kind = match (a.context.as_str(), b.context.as_str()) {
+        ("defines", "mentions") | ("mentions", "defines") => Some("contains"),
+        (left, right) if left == "uses" || right == "uses" => Some("depends-on"),
+        (left, right) if left == "implements" || right == "implements" => Some("implements"),
+        ("defines", "defines") => Some("co-defined"),
+        _ => None,
+    };
+
+    if let Some(kind) = context_kind {
+        return EdgeEvidence {
+            kind,
+            weight_delta: EDGE_REINFORCE_DELTA,
+        };
+    }
+
+    let Some(pos_a) = a.position else {
+        return weak_co_mention();
+    };
+    let Some(pos_b) = b.position else {
+        return weak_co_mention();
+    };
+
+    if same_sentence(text, pos_a, pos_b) {
+        let distance = pos_a.abs_diff(pos_b);
+        if distance <= 140 {
+            EdgeEvidence {
+                kind: "frame-bound",
+                weight_delta: EDGE_REINFORCE_DELTA * 0.85,
+            }
+        } else {
+            EdgeEvidence {
+                kind: "related",
+                weight_delta: EDGE_REINFORCE_DELTA * 0.55,
+            }
+        }
+    } else {
+        weak_co_mention()
+    }
+}
+
+fn weak_co_mention() -> EdgeEvidence {
+    EdgeEvidence {
+        kind: "co-mentioned",
+        weight_delta: EDGE_REINFORCE_DELTA * 0.25,
+    }
+}
+
+fn find_entity_position(text: &str, label: &str) -> Option<usize> {
+    text.to_ascii_lowercase().find(&label.to_ascii_lowercase())
+}
+
+fn same_sentence(text: &str, a: usize, b: usize) -> bool {
+    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+    !text[start..end]
+        .chars()
+        .any(|c| matches!(c, '.' | '!' | '?' | '\n'))
+}
+
 /// Replay consolidation: reinforce L3 edges between entities that co-occur
 /// in temporally proximate L2 entries (offline replay / sleep consolidation).
 pub fn replay_consolidation(state: &mut BrainState) {
@@ -958,7 +1109,10 @@ pub fn replay_consolidation(state: &mut BrainState) {
         .iter()
         .enumerate()
         .map(|(i, entry)| {
-            let entities = extract_entities(&entry.text, &state.keyword_cache);
+            let entities: Vec<_> = extract_entities(&entry.text, &state.keyword_cache)
+                .into_iter()
+                .filter(is_graph_entity_candidate)
+                .collect();
             let resolved: Vec<(String, u64)> = entities
                 .iter()
                 .filter_map(|e| {
