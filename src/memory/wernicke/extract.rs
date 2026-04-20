@@ -404,6 +404,7 @@ pub fn extract_relations(text: &str, kw: &KeywordCache) -> Vec<ExtractedRelation
                 else {
                     continue;
                 };
+                let polarity = infer_relation_polarity(sentence, between);
 
                 let key = format!(
                     "{}|{}|{}",
@@ -424,7 +425,7 @@ pub fn extract_relations(text: &str, kw: &KeywordCache) -> Vec<ExtractedRelation
                     reference_frames: relation_reference_frames(sentence, subject, object),
                     evidence: sentence.trim().to_string(),
                     confidence,
-                    polarity: FactPolarity::Affirmed,
+                    polarity,
                 });
             }
         }
@@ -666,8 +667,27 @@ fn infer_relation_kind<'a>(
     let subject_lower = subject.label.to_ascii_lowercase();
     let object_lower = object.label.to_ascii_lowercase();
 
+    if between_lower.contains("does not depend on")
+        || between_lower.contains("doesn't depend on")
+        || between_lower.contains("no longer depends on")
+    {
+        return Some(("depends_on", "does not depend on", 0.88));
+    }
     if between_lower.contains("depends on") {
         return Some(("depends_on", "depends on", 0.9));
+    }
+    if between_lower.contains("does not use")
+        || between_lower.contains("doesn't use")
+        || between_lower.contains("no longer uses")
+        || between_lower.contains("stopped using")
+    {
+        if object_lower.contains("sqlite")
+            || object_lower.contains("datastore")
+            || sentence_lower.contains("metadata")
+        {
+            return Some(("uses_datastore", "does not use", 0.88));
+        }
+        return Some(("uses", "does not use", 0.78));
     }
     if between_lower.contains("uses") {
         if object_lower.contains("sqlite")
@@ -724,6 +744,30 @@ fn infer_relation_kind<'a>(
     }
 
     None
+}
+
+fn infer_relation_polarity(sentence: &str, between: &str) -> FactPolarity {
+    let text = format!(
+        "{} {}",
+        sentence.to_ascii_lowercase(),
+        between.to_ascii_lowercase()
+    );
+    if text.contains("replaced ")
+        || text.contains(" corrected ")
+        || text.contains(" correction:")
+        || text.contains(" instead of ")
+    {
+        FactPolarity::Corrective
+    } else if text.contains("does not ")
+        || text.contains("doesn't ")
+        || text.contains("no longer ")
+        || text.contains("not backed by")
+        || text.contains("stopped using")
+    {
+        FactPolarity::Negated
+    } else {
+        FactPolarity::Affirmed
+    }
 }
 
 fn same_relation_sentence_order(subject: &str, object: &str, sentence: &str) -> bool {
@@ -1508,6 +1552,23 @@ mod tests {
                 && r.subject.label == "Project Alpha"
                 && r.object.label.eq_ignore_ascii_case("SQLite")
         }));
+    }
+
+    #[test]
+    fn test_extract_negated_typed_relation_polarity() {
+        let relations = extract_relations(
+            "Project Alpha does not use SQLite for metadata.",
+            &kw(),
+        );
+        let relation = relations
+            .iter()
+            .find(|r| r.kind == "uses_datastore")
+            .expect("negated uses relation should still map to canonical relation kind");
+
+        assert_eq!(relation.subject.label, "Project Alpha");
+        assert!(relation.object.label.eq_ignore_ascii_case("SQLite"));
+        assert_eq!(relation.polarity, FactPolarity::Negated);
+        assert_eq!(relation.predicate, "does not use");
     }
 
     #[test]

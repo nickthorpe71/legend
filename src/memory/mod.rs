@@ -2890,6 +2890,121 @@ mod tests {
     }
 
     #[test]
+    fn test_contradictory_typed_evidence_marks_edge_conflicted() {
+        let mut state = MemoryState::default();
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha uses SQLite for metadata.",
+            0.8,
+        );
+        state.brain.clock += 5;
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha does not use SQLite for metadata.",
+            0.8,
+        );
+
+        let alpha = graph_node_id(&state, "project alpha");
+        let sqlite = graph_node_id(&state, "sqlite");
+        let semantics = state
+            .brain
+            .long_term
+            .edge_semantics
+            .get(&GraphMemory::edge_stamp_key(alpha, sqlite))
+            .expect("typed edge should retain semantic conflict metadata");
+
+        assert_eq!(semantics.support_count, 1);
+        assert_eq!(semantics.contradiction_count, 1);
+        assert_eq!(semantics.correction_count, 0);
+        assert_eq!(semantics.polarity, "Mixed");
+        assert_eq!(semantics.conflict_state, "Conflicted");
+        assert!(
+            semantics
+                .evidence
+                .contains(&"Project Alpha uses SQLite for metadata".to_string()),
+            "supporting evidence should be preserved separately: {:?}",
+            semantics.evidence
+        );
+        assert!(
+            semantics
+                .contradictory_evidence
+                .contains(&"Project Alpha does not use SQLite for metadata".to_string()),
+            "contradictory evidence should be preserved separately: {:?}",
+            semantics.contradictory_evidence
+        );
+    }
+
+    #[test]
+    fn test_contradictory_typed_evidence_skips_support_reinforcement() {
+        // Two affirmations invoke apply_semantic_support_reinforcement twice.
+        // One affirmation plus one contradiction should invoke it only once,
+        // so the edge and its endpoint nodes should end up less reinforced
+        // than the pure-affirm case even though both cases tick the graph
+        // twice and both trigger the polarity-independent spaced-repetition
+        // path on the second tick.
+        let mut affirmed_twice = MemoryState::default();
+        neocortex::update_graph(
+            &mut affirmed_twice.brain,
+            "Project Alpha uses SQLite for metadata.",
+            0.8,
+        );
+        affirmed_twice.brain.clock += 5;
+        neocortex::update_graph(
+            &mut affirmed_twice.brain,
+            "Project Alpha uses SQLite for metadata.",
+            0.8,
+        );
+
+        let mut affirm_then_contradict = MemoryState::default();
+        neocortex::update_graph(
+            &mut affirm_then_contradict.brain,
+            "Project Alpha uses SQLite for metadata.",
+            0.8,
+        );
+        affirm_then_contradict.brain.clock += 5;
+        neocortex::update_graph(
+            &mut affirm_then_contradict.brain,
+            "Project Alpha does not use SQLite for metadata.",
+            0.8,
+        );
+
+        let alpha_a = graph_node_id(&affirmed_twice, "project alpha");
+        let sqlite_a = graph_node_id(&affirmed_twice, "sqlite");
+        let edge_a = graph_edge_between(&affirmed_twice, alpha_a, sqlite_a).unwrap();
+        let node_weight_a = affirmed_twice
+            .brain
+            .long_term
+            .nodes
+            .get(&alpha_a)
+            .unwrap()
+            .weight;
+
+        let alpha_c = graph_node_id(&affirm_then_contradict, "project alpha");
+        let sqlite_c = graph_node_id(&affirm_then_contradict, "sqlite");
+        let edge_c = graph_edge_between(&affirm_then_contradict, alpha_c, sqlite_c).unwrap();
+        let node_weight_c = affirm_then_contradict
+            .brain
+            .long_term
+            .nodes
+            .get(&alpha_c)
+            .unwrap()
+            .weight;
+
+        assert!(
+            edge_a.stability > edge_c.stability,
+            "contradiction should skip support reinforcement, so 2×affirmed stability \
+             should exceed 1×affirmed+1×contradicted: affirmed={} contradicted={}",
+            edge_a.stability,
+            edge_c.stability
+        );
+        assert!(
+            node_weight_a > node_weight_c,
+            "contradiction should skip endpoint node-weight boost: \
+             affirmed={node_weight_a} contradicted={node_weight_c}"
+        );
+    }
+
+    #[test]
     fn test_graph_entity_weighting_is_domain_neutral() {
         let mut state = MemoryState::default();
         neocortex::update_graph(
