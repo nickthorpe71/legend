@@ -27,8 +27,8 @@ use super::{
     neurochemistry::{self, ChemicalStamp},
     signal::reinforce_bounded_signal,
     wernicke::{extract_entities, extract_relations, is_graph_entity_candidate, KeywordCache},
-    BrainState, EDGE_REINFORCE_DELTA, GRAPH_EDGE_CAPACITY, GRAPH_PRUNE_WEIGHT,
-    GRAPH_WEIGHT_TARGET_MAX, HEBBIAN_EDGE_BOOST, HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST,
+    BrainState, EDGE_REINFORCE_DELTA, GRAPH_PRUNE_WEIGHT, GRAPH_WEIGHT_TARGET_MAX,
+    HEBBIAN_EDGE_BOOST, HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST,
     HEBBIAN_NODE_CEILING, NEOCORTICAL_DECAY_RATE, NODE_WEIGHT_BASE, PRUNE_AGE_WEIGHT,
     REPLAY_EDGE_BOOST, REPLAY_SALIENCE_BOOST, REPLAY_TEMPORAL_WINDOW, SPREADING_ACTIVATION_DECAY,
     SPREADING_ACTIVATION_MAX_HOPS,
@@ -633,15 +633,7 @@ pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
         .edges
         .retain(|e| node_ids.contains_key(&e.from) && node_ids.contains_key(&e.to));
 
-    // 3. Hard cap on edges: keep highest-weight
-    if long_term.edges.len() > GRAPH_EDGE_CAPACITY {
-        long_term
-            .edges
-            .sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
-        long_term.edges.truncate(GRAPH_EDGE_CAPACITY);
-    }
-
-    // Rebuild edge index after retain/truncate may have invalidated it
+    // Rebuild edge index after retain may have invalidated it
     long_term.rebuild_edge_index();
     let live_edge_keys: HashSet<String> = long_term
         .edges

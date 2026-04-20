@@ -180,8 +180,6 @@ pub(super) const HEBBIAN_NODE_CEILING: f32 = 5.0;
 pub(super) const EDGE_REINFORCE_DELTA: f32 = 0.1;
 /// Base weight assigned to new graph nodes.
 pub(super) const NODE_WEIGHT_BASE: f32 = 0.2;
-/// Hard cap on long-term graph edges.
-pub(super) const GRAPH_EDGE_CAPACITY: usize = 8192;
 /// Minimum node weight to survive graph pruning.
 pub(super) const GRAPH_PRUNE_WEIGHT: f32 = 0.05;
 /// Graph weight ceiling before periodic normalization fires.

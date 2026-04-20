@@ -54,7 +54,7 @@ Legend uses a **three-layer hierarchical memory** modeled on cognitive neuroscie
 #### Layer 3 — Knowledge Graph (Neocortex)
 - **Type:** `GraphMemory` containing:
   - `nodes: HashMap<u64, GraphNode>` — open-ended compressed semantic nodes, pruned when weak or stale
-  - `edges: Vec<GraphEdge>` — up to 8,192 edges
+  - `edges: Vec<GraphEdge>` — open-ended compressed semantic/associative edges
   - `index: HashMap<String, u64>` — label → node ID lookup
 - **Node fields:** `id`, `label`, `kind`, `weight`, `salience`, `last_seen`, `source_texts`, `embedding` (centroid for Summary nodes), `full_text` (rich text for consolidated memories)
 - **Edge fields:** `from`, `to`, `weight`, `kind` (related/depends-on/implements/co-defined/contains/drives/represents), `last_seen`, `activation_count`, `stability` (caps 10.0), `recent_interval_avg` (STP, α=0.5), `historical_interval_avg` (LTP, α=0.1)
@@ -267,7 +267,7 @@ Runs manually or auto-triggers after 15 active ticks. Two additional smart trigg
 Entries removed when composite score < 0.1: `score = salience + (usage × 0.05) - (age × 0.001)`. Consolidated entries whose Summary node has a valid embedding get an eviction score reduction of 0.2.
 
 ### L3 Pruning
-Nodes with `(weight - age × 0.001) < 0.05` removed. Hard caps enforced: 2,048 nodes, 8,192 edges. Graph weight normalization every 5 ticks (ceiling 2.0).
+Nodes with `(weight - age × 0.001) < 0.05` removed. L3 nodes and edges are open-ended compressed semantic structure rather than fixed-count slots; graph weight normalization runs every 5 ticks (ceiling 2.0).
 
 ### Eviction Scoring
 When L2 hits 1,024 entries: `score = salience × 0.4 + ln(1+usage) × 0.3 + exp(-age × 0.002) × 0.3`
