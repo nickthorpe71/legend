@@ -2802,6 +2802,39 @@ mod tests {
     }
 
     #[test]
+    fn test_graph_edge_semantics_preserve_relation_evidence() {
+        let mut state = MemoryState::default();
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha uses SQLite for metadata.",
+            0.8,
+        );
+
+        let alpha = graph_node_id(&state, "project alpha");
+        let sqlite = graph_node_id(&state, "sqlite");
+        let key = GraphMemory::edge_stamp_key(alpha, sqlite);
+        let semantics = state
+            .brain
+            .long_term
+            .edge_semantics
+            .get(&key)
+            .expect("typed relation should preserve edge semantics");
+
+        assert_eq!(semantics.kind, "uses_datastore");
+        assert!(semantics.predicates.contains(&"uses".to_string()));
+        assert!(
+            semantics
+                .evidence
+                .contains(&"Project Alpha uses SQLite for metadata".to_string()),
+            "evidence should be preserved: {:?}",
+            semantics.evidence
+        );
+        assert!(semantics.confidence >= 0.8);
+        assert_eq!(semantics.polarity, "Affirmed");
+        assert_eq!(semantics.support_count, 1);
+    }
+
+    #[test]
     fn test_hebbian_reinforcement() {
         let mut state = MemoryState::default();
         neocortex::update_graph(

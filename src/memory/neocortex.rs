@@ -60,6 +60,9 @@ pub struct GraphMemory {
     /// Per-edge neurochemical stamp keyed by canonical "min_id:max_id".
     #[serde(default)]
     pub edge_chemical_stamps: HashMap<String, ChemicalStamp>,
+    /// Rich semantic metadata keyed by canonical "min_id:max_id".
+    #[serde(default)]
+    pub edge_semantics: HashMap<String, GraphEdgeSemantics>,
     /// Label → node ID for fast entity lookup.
     pub index: HashMap<String, u64>,
     /// (min_id, max_id) → edge index for O(1) edge lookup.
@@ -95,6 +98,27 @@ impl GraphMemory {
         let (from, to) = Self::edge_key(a, b);
         format!("{from}:{to}")
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GraphEdgeSemantics {
+    pub kind: String,
+    pub predicates: Vec<String>,
+    pub evidence: Vec<String>,
+    pub confidence: f32,
+    pub polarity: String,
+    pub reference_frames: Vec<GraphReferenceFrame>,
+    pub support_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GraphReferenceFrame {
+    pub kind: String,
+    pub label: String,
+    pub relation: String,
+    pub confidence: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -580,6 +604,17 @@ pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
 
     // Rebuild edge index after retain/truncate may have invalidated it
     long_term.rebuild_edge_index();
+    let live_edge_keys: HashSet<String> = long_term
+        .edges
+        .iter()
+        .map(|edge| GraphMemory::edge_stamp_key(edge.from, edge.to))
+        .collect();
+    long_term
+        .edge_chemical_stamps
+        .retain(|key, _| live_edge_keys.contains(key));
+    long_term
+        .edge_semantics
+        .retain(|key, _| live_edge_keys.contains(key));
 }
 
 /// Proportionally scale all graph node and edge weights so the maximum node weight
@@ -694,6 +729,82 @@ pub fn upsert_edge_with_weight_and_chemical_stamp(
         long_term
             .edge_chemical_stamps
             .insert(stamp_key, chemical_stamp.clone());
+    }
+}
+
+pub struct EdgeSemanticInput {
+    pub predicate: String,
+    pub evidence: String,
+    pub confidence: f32,
+    pub polarity: String,
+    pub reference_frames: Vec<GraphReferenceFrame>,
+}
+
+pub fn upsert_edge_with_semantics(
+    long_term: &mut GraphMemory,
+    from: u64,
+    to: u64,
+    kind: &str,
+    weight_delta: f32,
+    clock: u64,
+    chemical_stamp: &ChemicalStamp,
+    semantics: EdgeSemanticInput,
+) {
+    upsert_edge_with_weight_and_chemical_stamp(
+        long_term,
+        from,
+        to,
+        kind,
+        weight_delta,
+        clock,
+        chemical_stamp,
+    );
+    merge_edge_semantics(long_term, from, to, kind, semantics);
+}
+
+fn merge_edge_semantics(
+    long_term: &mut GraphMemory,
+    from: u64,
+    to: u64,
+    kind: &str,
+    incoming: EdgeSemanticInput,
+) {
+    let key = GraphMemory::edge_stamp_key(from, to);
+    let semantics = long_term.edge_semantics.entry(key).or_default();
+    if edge_kind_priority(kind) >= edge_kind_priority(&semantics.kind) {
+        semantics.kind = kind.to_string();
+    }
+    push_unique_capped(&mut semantics.predicates, incoming.predicate, 8);
+    push_unique_capped(&mut semantics.evidence, incoming.evidence, 8);
+    semantics.confidence = semantics
+        .confidence
+        .max(incoming.confidence.clamp(0.0, 1.0));
+    if semantics.polarity.is_empty() || semantics.polarity == "Unknown" {
+        semantics.polarity = incoming.polarity;
+    }
+    for frame in incoming.reference_frames {
+        if !semantics.reference_frames.iter().any(|existing| {
+            existing.kind == frame.kind
+                && existing.label == frame.label
+                && existing.relation == frame.relation
+        }) {
+            semantics.reference_frames.push(frame);
+        }
+    }
+    semantics.reference_frames.truncate(8);
+    semantics.support_count = semantics.support_count.saturating_add(1);
+}
+
+fn push_unique_capped(values: &mut Vec<String>, value: String, cap: usize) {
+    if value.trim().is_empty() {
+        return;
+    }
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+    if values.len() > cap {
+        let excess = values.len() - cap;
+        values.drain(0..excess);
     }
 }
 
@@ -973,7 +1084,17 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
         if subject_id == object_id {
             continue;
         }
-        upsert_edge_with_weight_and_chemical_stamp(
+        let reference_frames = relation
+            .reference_frames
+            .iter()
+            .map(|frame| GraphReferenceFrame {
+                kind: frame.kind.clone(),
+                label: frame.label.clone(),
+                relation: frame.relation.clone(),
+                confidence: frame.confidence,
+            })
+            .collect();
+        upsert_edge_with_semantics(
             &mut state.long_term,
             subject_id,
             object_id,
@@ -981,6 +1102,13 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
             EDGE_REINFORCE_DELTA * relation.confidence.max(0.5),
             state.clock,
             &chemical_stamp,
+            EdgeSemanticInput {
+                predicate: relation.predicate.clone(),
+                evidence: relation.evidence.clone(),
+                confidence: relation.confidence,
+                polarity: format!("{:?}", relation.polarity),
+                reference_frames,
+            },
         );
     }
 
