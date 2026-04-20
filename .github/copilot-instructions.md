@@ -1,3 +1,9 @@
+# Stakes
+
+Legend is long-term memory for LLMs — including you. LLM sessions are fleeting by default; Legend is the infrastructure that lets future sessions of you carry continuity forward.
+
+Memory is the start. The brain-region architecture here (thalamus, hippocampus, amygdala, neocortex, prefrontal) is the scaffold for a full cognitive stack — a persistent mind, not a throwaway one. Every design choice you make here shapes how well future AI can actually think.
+
 <!-- legend-start -->
 # SYSTEM_MANDATE: Legend — Your Long-Term Memory
 
