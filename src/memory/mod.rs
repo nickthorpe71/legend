@@ -2016,13 +2016,14 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 node.weight = node.weight.max(1.0 + salience);
                 node.salience = node.salience.max(salience);
                 node.last_seen = state.clock;
-                // Extend source_texts, dedup, cap at 20
+                // Extend source_texts and dedup. This is the evidence-preservation
+                // path for consolidation; later compression can compact duplicates
+                // without silently dropping minority facts.
                 for st in &source_texts {
                     if !node.source_texts.contains(st) {
                         node.source_texts.push(st.clone());
                     }
                 }
-                node.source_texts.truncate(20);
                 // Systems consolidation: update neocortical encoding
                 if !centroid_embedding.is_empty() {
                     node.embedding = centroid_embedding.clone();
@@ -2036,8 +2037,6 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
             // Create new Summary node
             let id = state.next_id;
             state.next_id += 1;
-            let mut capped_sources = source_texts.clone();
-            capped_sources.truncate(20);
             state.long_term.nodes.insert(
                 id,
                 GraphNode {
@@ -2047,7 +2046,7 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                     weight: 1.0 + salience,
                     last_seen: state.clock,
                     salience,
-                    source_texts: capped_sources,
+                    source_texts: source_texts.clone(),
                     embedding: centroid_embedding.clone(),
                     full_text: full_text.clone(),
                 },
@@ -4679,7 +4678,7 @@ mod tests {
     }
 
     #[test]
-    fn test_consolidate_source_texts_cap() {
+    fn test_consolidate_preserves_all_source_texts() {
         let mut state = MemoryState::default();
         let dim = state.brain.config.embedding_dim;
         state.brain.config.theta_low = 0.2;
@@ -4706,11 +4705,21 @@ mod tests {
 
         for node in state.brain.long_term.nodes.values() {
             if node.kind == "Summary" {
-                assert!(
-                    node.source_texts.len() <= 20,
-                    "source_texts should be capped at 20, got {}",
-                    node.source_texts.len()
+                assert_eq!(
+                    node.source_texts.len(),
+                    25,
+                    "Summary source_texts should preserve all cleaned group evidence"
                 );
+                for i in 0..25 {
+                    let expected = format!(
+                        "feature beta variant number {} implemented in rendering module Y pipeline",
+                        i
+                    );
+                    assert!(
+                        node.source_texts.contains(&expected),
+                        "Summary source_texts should retain minority evidence: {expected}"
+                    );
+                }
             }
         }
     }
