@@ -1036,14 +1036,7 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
         };
 
         if let Some(node) = state.long_term.nodes.get_mut(&id) {
-            // Code-aware weighting: boost high-signal kinds, penalize generic Terms
-            let weight_multiplier = match entity.kind.as_str() {
-                "FilePath" => 2.0,
-                "Function" | "Struct" | "Enum" | "Trait" | "Class" => 1.5,
-                "Symbol" | "Type" => 1.2,
-                "Term" => 0.5, // Generic terms get less weight
-                _ => 1.0,
-            };
+            let weight_multiplier = entity_kind_weight_multiplier(&entity.kind);
 
             node.weight += (NODE_WEIGHT_BASE + salience * 0.3) * weight_multiplier;
             node.last_seen = state.clock;
@@ -1182,6 +1175,25 @@ struct GraphEntityMention {
 struct EdgeEvidence {
     kind: &'static str,
     weight_delta: f32,
+}
+
+fn entity_kind_weight_multiplier(kind: &str) -> f32 {
+    match kind {
+        // Exact evidence anchors are valuable across domains: times, quantities,
+        // paths, and URLs are hard to reconstruct from gist alone.
+        "Date" | "Value" | "FilePath" | "Url" => 1.35,
+        // Named objects and concepts carry most semantic graph structure.
+        "Project" | "Person" | "Organization" | "Location" | "Tool" | "Environment" | "Type"
+        | "Concept" => 1.25,
+        // Code artifacts are structural entities, but not privileged above
+        // non-code objects in the long-term graph.
+        "Function" | "Struct" | "Enum" | "Trait" | "Class" | "Symbol" | "Module" | "Package"
+        | "Decorator" => 1.2,
+        // Generic terms should survive through repetition or typed relation
+        // support, not because a single low-specificity mention appeared.
+        "Term" => 0.7,
+        _ => 1.0,
+    }
 }
 
 fn edge_evidence(a: &GraphEntityMention, b: &GraphEntityMention, text: &str) -> EdgeEvidence {
