@@ -1929,11 +1929,15 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
             .map(|e| e.salience)
             .fold(0.0, f32::max)
             .max(0.4);
-        let source_texts: Vec<String> = group
-            .iter()
-            .map(|e| clean_semantic_noise(&e.text))
-            .filter(|text| !text.trim().is_empty())
-            .collect();
+        let source_texts: Vec<String> = {
+            let mut seen: HashSet<String> = HashSet::new();
+            group
+                .iter()
+                .map(|e| clean_semantic_noise(&e.text))
+                .filter(|text| !text.trim().is_empty())
+                .filter(|text| seen.insert(text.clone()))
+                .collect()
+        };
 
         // Systems consolidation: compute centroid embedding and rich text
         // for high-salience groups (hippocampus flags important memories
@@ -2019,8 +2023,10 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 // Extend source_texts and dedup. This is the evidence-preservation
                 // path for consolidation; later compression can compact duplicates
                 // without silently dropping minority facts.
+                let mut seen: HashSet<String> =
+                    node.source_texts.iter().cloned().collect();
                 for st in &source_texts {
-                    if !node.source_texts.contains(st) {
+                    if seen.insert(st.clone()) {
                         node.source_texts.push(st.clone());
                     }
                 }
