@@ -27,6 +27,7 @@ pub fn load_or_default() -> Result<MemoryState, Box<dyn std::error::Error>> {
                 state.brain.long_term.rebuild_edge_index();
                 state.brain.keyword_cache = KeywordCache::from_graph(&state.brain.long_term);
                 migrate_embeddings(&mut state)?;
+                migrate_edge_kinds(&mut state);
                 Ok(state)
             }
             Err(err) => {
@@ -78,6 +79,7 @@ pub fn load_memory_from_path<P: AsRef<Path>>(
         let mut state: MemoryState = rmp_serde::from_slice(&decompressed[5..])
             .map_err(|e| format!("Failed to deserialize msgpack memory: {}", e))?;
         state.brain.long_term.rebuild_edge_index();
+        migrate_edge_kinds(&mut state);
         return Ok(state);
     }
 
@@ -113,6 +115,32 @@ pub fn save_memory_to_path<P: AsRef<Path>>(
 // ---------------------------------------------------------------------------
 
 const TARGET_EMBEDDING_DIM: usize = 384;
+
+/// Rewrite legacy kebab-case edge kinds to their canonical snake_case form.
+/// One-shot migration — after a load/save cycle, stored data is canonical and
+/// this pass is a no-op. Can be deleted once no old saves remain in the wild.
+fn migrate_edge_kinds(state: &mut MemoryState) {
+    fn normalize(kind: &str) -> Option<&'static str> {
+        match kind {
+            "co-mentioned" => Some("co_mentioned"),
+            "frame-bound" => Some("frame_bound"),
+            "keyword-co-occurs" => Some("keyword_co_occurs"),
+            "depends-on" => Some("depends_on"),
+            "co-defined" => Some("co_defined"),
+            _ => None,
+        }
+    }
+    for edge in &mut state.brain.long_term.edges {
+        if let Some(canonical) = normalize(&edge.kind) {
+            edge.kind = canonical.to_string();
+        }
+    }
+    for semantics in state.brain.long_term.edge_semantics.values_mut() {
+        if let Some(canonical) = normalize(&semantics.kind) {
+            semantics.kind = canonical.to_string();
+        }
+    }
+}
 
 /// Re-embed all stored entries when embedding dimensions don't match the current model.
 /// Runs once on first load after upgrading from n-gram (256-dim) to sentence-transformer (384-dim).

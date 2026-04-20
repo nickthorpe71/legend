@@ -248,19 +248,8 @@ enum EdgeKindClass {
     Unknown,
 }
 
-fn canonical_edge_kind(kind: &str) -> &str {
-    match kind {
-        "co-mentioned" => "co_mentioned",
-        "frame-bound" => "frame_bound",
-        "keyword-co-occurs" => "keyword_co_occurs",
-        "depends-on" => "depends_on",
-        "co-defined" => "co_defined",
-        other => other,
-    }
-}
-
 fn edge_kind_class(kind: &str) -> EdgeKindClass {
-    match canonical_edge_kind(kind) {
+    match kind {
         "co_mentioned" => EdgeKindClass::WeakAssociation,
         "related" => EdgeKindClass::Association,
         "frame_bound" => EdgeKindClass::FrameBinding,
@@ -742,7 +731,6 @@ pub fn upsert_edge_with_weight_and_chemical_stamp(
     clock: u64,
     chemical_stamp: &ChemicalStamp,
 ) {
-    let kind = canonical_edge_kind(kind);
     let key = GraphMemory::edge_key(from, to);
     let stamp_key = GraphMemory::edge_stamp_key(from, to);
     let weight_delta = weight_delta.max(0.0);
@@ -818,7 +806,6 @@ pub fn upsert_edge_with_semantics(
     chemical_stamp: &ChemicalStamp,
     semantics: EdgeSemanticInput,
 ) {
-    let kind = canonical_edge_kind(kind);
     upsert_edge_with_weight_and_chemical_stamp(
         long_term,
         from,
@@ -838,7 +825,6 @@ fn merge_edge_semantics(
     kind: &str,
     incoming: EdgeSemanticInput,
 ) {
-    let kind = canonical_edge_kind(kind);
     let key = GraphMemory::edge_stamp_key(from, to);
     let semantics = long_term.edge_semantics.entry(key).or_default();
     if edge_kind_priority(kind) >= edge_kind_priority(&semantics.kind) {
