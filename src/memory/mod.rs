@@ -180,8 +180,6 @@ pub(super) const HEBBIAN_NODE_CEILING: f32 = 5.0;
 pub(super) const EDGE_REINFORCE_DELTA: f32 = 0.1;
 /// Base weight assigned to new graph nodes.
 pub(super) const NODE_WEIGHT_BASE: f32 = 0.2;
-/// Hard cap on long-term graph nodes.
-pub(super) const GRAPH_NODE_CAPACITY: usize = 2048;
 /// Hard cap on long-term graph edges.
 pub(super) const GRAPH_EDGE_CAPACITY: usize = 8192;
 /// Minimum node weight to survive graph pruning.
@@ -3464,10 +3462,12 @@ mod tests {
     }
 
     #[test]
-    fn test_prune_graph_enforces_node_cap() {
+    fn test_prune_graph_allows_open_ended_node_growth() {
         let mut state = MemoryState::default();
-        // Insert more nodes than GRAPH_NODE_CAPACITY
-        for i in 0..(GRAPH_NODE_CAPACITY + 50) {
+        let inserted = 2_098;
+        // L3 nodes are open-ended; weak/aged nodes prune, but healthy nodes do
+        // not compete for a fixed slot count.
+        for i in 0..inserted {
             let id = state.brain.next_id;
             state.brain.next_id += 1;
             state.brain.long_term.nodes.insert(
@@ -3476,7 +3476,7 @@ mod tests {
                     id,
                     label: format!("node_{}", i),
                     kind: "Term".to_string(),
-                    weight: i as f32 * 0.01,
+                    weight: 1.0,
                     last_seen: state.brain.clock,
                     salience: 0.1,
                     source_texts: Vec::new(),
@@ -3490,15 +3490,14 @@ mod tests {
                 .index
                 .insert(format!("node_{}", i), id);
         }
-        assert!(state.brain.long_term.nodes.len() > GRAPH_NODE_CAPACITY);
+        assert_eq!(state.brain.long_term.nodes.len(), inserted);
 
         neocortex::prune_graph(&mut state.brain.long_term, state.brain.clock);
 
-        assert!(
-            state.brain.long_term.nodes.len() <= GRAPH_NODE_CAPACITY,
-            "node count should be capped at {}, got {}",
-            GRAPH_NODE_CAPACITY,
-            state.brain.long_term.nodes.len()
+        assert_eq!(
+            state.brain.long_term.nodes.len(),
+            inserted,
+            "healthy L3 nodes should not be evicted by a fixed graph-node cap"
         );
     }
 

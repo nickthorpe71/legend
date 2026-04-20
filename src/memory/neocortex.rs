@@ -27,7 +27,7 @@ use super::{
     neurochemistry::{self, ChemicalStamp},
     signal::reinforce_bounded_signal,
     wernicke::{extract_entities, extract_relations, is_graph_entity_candidate, KeywordCache},
-    BrainState, EDGE_REINFORCE_DELTA, GRAPH_EDGE_CAPACITY, GRAPH_NODE_CAPACITY, GRAPH_PRUNE_WEIGHT,
+    BrainState, EDGE_REINFORCE_DELTA, GRAPH_EDGE_CAPACITY, GRAPH_PRUNE_WEIGHT,
     GRAPH_WEIGHT_TARGET_MAX, HEBBIAN_EDGE_BOOST, HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST,
     HEBBIAN_NODE_CEILING, NEOCORTICAL_DECAY_RATE, NODE_WEIGHT_BASE, PRUNE_AGE_WEIGHT,
     REPLAY_EDGE_BOOST, REPLAY_SALIENCE_BOOST, REPLAY_TEMPORAL_WINDOW, SPREADING_ACTIVATION_DECAY,
@@ -627,30 +627,13 @@ pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
         }
     }
 
-    // 2. Hard cap: if still over capacity, evict lowest-weight nodes
-    if long_term.nodes.len() > GRAPH_NODE_CAPACITY {
-        let mut sorted: Vec<(u64, f32)> = long_term
-            .nodes
-            .iter()
-            .map(|(&id, n)| (id, n.weight))
-            .collect();
-        sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-
-        let to_remove = long_term.nodes.len() - GRAPH_NODE_CAPACITY;
-        for &(id, _) in sorted.iter().take(to_remove) {
-            if let Some(node) = long_term.nodes.remove(&id) {
-                long_term.index.remove(&node.label.to_lowercase());
-            }
-        }
-    }
-
-    // 3. Remove edges referencing deleted nodes
+    // 2. Remove edges referencing deleted nodes
     let node_ids = &long_term.nodes;
     long_term
         .edges
         .retain(|e| node_ids.contains_key(&e.from) && node_ids.contains_key(&e.to));
 
-    // 4. Hard cap on edges: keep highest-weight
+    // 3. Hard cap on edges: keep highest-weight
     if long_term.edges.len() > GRAPH_EDGE_CAPACITY {
         long_term
             .edges

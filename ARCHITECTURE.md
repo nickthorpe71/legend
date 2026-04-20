@@ -53,7 +53,7 @@ Legend uses a **three-layer hierarchical memory** modeled on cognitive neuroscie
 
 #### Layer 3 — Knowledge Graph (Neocortex)
 - **Type:** `GraphMemory` containing:
-  - `nodes: HashMap<u64, GraphNode>` — up to 2,048 nodes
+  - `nodes: HashMap<u64, GraphNode>` — open-ended compressed semantic nodes, pruned when weak or stale
   - `edges: Vec<GraphEdge>` — up to 8,192 edges
   - `index: HashMap<String, u64>` — label → node ID lookup
 - **Node fields:** `id`, `label`, `kind`, `weight`, `salience`, `last_seen`, `source_texts`, `embedding` (centroid for Summary nodes), `full_text` (rich text for consolidated memories)
