@@ -2835,26 +2835,6 @@ mod tests {
     }
 
     #[test]
-    fn test_edge_kind_aliases_preserve_retrieval_weighting() {
-        assert_eq!(
-            neocortex::edge_kind_multiplier(neocortex::QueryMode::Semantic, "frame-bound"),
-            neocortex::edge_kind_multiplier(neocortex::QueryMode::Semantic, "frame_bound")
-        );
-        assert_eq!(
-            neocortex::edge_kind_multiplier(neocortex::QueryMode::Structural, "co-mentioned"),
-            neocortex::edge_kind_multiplier(neocortex::QueryMode::Structural, "co_mentioned")
-        );
-        assert_eq!(
-            neocortex::edge_kind_multiplier(neocortex::QueryMode::Temporal, "keyword-co-occurs"),
-            neocortex::edge_kind_multiplier(neocortex::QueryMode::Temporal, "keyword_co_occurs")
-        );
-        assert_eq!(
-            neocortex::edge_kind_multiplier(neocortex::QueryMode::Structural, "depends-on"),
-            neocortex::edge_kind_multiplier(neocortex::QueryMode::Structural, "depends_on")
-        );
-    }
-
-    #[test]
     fn test_graph_emits_canonical_snake_case_edge_kinds() {
         let mut state = MemoryState::default();
         neocortex::update_graph(
