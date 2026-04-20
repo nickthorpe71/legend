@@ -28,9 +28,9 @@ use super::{
     signal::reinforce_bounded_signal,
     wernicke::{extract_entities, extract_relations, is_graph_entity_candidate, KeywordCache},
     BrainState, EDGE_REINFORCE_DELTA, GRAPH_PRUNE_WEIGHT, GRAPH_WEIGHT_TARGET_MAX,
-    HEBBIAN_EDGE_BOOST, HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST,
-    HEBBIAN_NODE_CEILING, NEOCORTICAL_DECAY_RATE, NODE_WEIGHT_BASE, PRUNE_AGE_WEIGHT,
-    REPLAY_EDGE_BOOST, REPLAY_SALIENCE_BOOST, REPLAY_TEMPORAL_WINDOW, SPREADING_ACTIVATION_DECAY,
+    HEBBIAN_EDGE_BOOST, HEBBIAN_EDGE_CEILING, HEBBIAN_NODE_BOOST, HEBBIAN_NODE_CEILING,
+    NEOCORTICAL_DECAY_RATE, NODE_WEIGHT_BASE, PRUNE_AGE_WEIGHT, REPLAY_EDGE_BOOST,
+    REPLAY_SALIENCE_BOOST, REPLAY_TEMPORAL_WINDOW, SPREADING_ACTIVATION_DECAY,
     SPREADING_ACTIVATION_MAX_HOPS,
 };
 
@@ -127,6 +127,26 @@ pub struct GraphReferenceFrame {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct SummaryCoverage {
+    pub source_count: usize,
+    pub evidence_count: usize,
+    pub omitted_source_count: usize,
+    pub full_evidence_preserved: bool,
+}
+
+impl Default for SummaryCoverage {
+    fn default() -> Self {
+        Self {
+            source_count: 0,
+            evidence_count: 0,
+            omitted_source_count: 0,
+            full_evidence_preserved: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GraphNode {
     pub id: u64,
     pub label: String,
@@ -134,12 +154,19 @@ pub struct GraphNode {
     pub weight: f32,
     pub last_seen: u64,
     pub salience: f32,
+    /// Semantic gist for Summary nodes. `label` stays the compact index/display
+    /// handle; `gist` carries the extractive meaning of the consolidated group.
+    pub gist: Option<String>,
+    /// Evidence backing the node. For Summary nodes this is the preserved
+    /// cleaned source evidence for the consolidated group.
     pub source_texts: Vec<String>,
     /// Centroid embedding for direct similarity search (systems consolidation).
     /// Populated on Summary nodes so they can be queried independently of L2.
     pub embedding: Vec<f32>,
     /// Richer summary text (up to 500 chars) for consolidated memories.
     pub full_text: Option<String>,
+    /// How completely the Summary node represents the source group.
+    pub coverage: Option<SummaryCoverage>,
 }
 
 impl Default for GraphNode {
@@ -151,9 +178,11 @@ impl Default for GraphNode {
             weight: 0.0,
             last_seen: 0,
             salience: 0.0,
+            gist: None,
             source_texts: Vec::new(),
             embedding: Vec::new(),
             full_text: None,
+            coverage: None,
         }
     }
 }
@@ -209,11 +238,15 @@ pub struct GraphNodeSummary {
     pub label: String,
     pub kind: String,
     pub weight: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gist: Option<String>,
     /// The type of edge that connected this node (for neighbor lookups).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_type: Option<String>,
     #[serde(default)]
     pub source_texts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<SummaryCoverage>,
 }
 
 /// Query-mode gated retrieval: bias spreading activation based on the current
@@ -430,8 +463,10 @@ pub fn graph_lookup(
                     label: node.label.clone(),
                     kind: node.kind.clone(),
                     weight: node.weight,
+                    gist: node.gist.clone(),
                     edge_type: None, // direct match, no edge
                     source_texts: node.source_texts.clone(),
+                    coverage: node.coverage.clone(),
                 });
                 seed_ids.push(node.id);
             }
@@ -454,8 +489,10 @@ pub fn graph_lookup(
                     label: node.label.clone(),
                     kind: node.kind.clone(),
                     weight: node.weight + activation,
+                    gist: node.gist.clone(),
                     edge_type: Some("activated".to_string()),
                     source_texts: node.source_texts.clone(),
+                    coverage: node.coverage.clone(),
                 });
             }
         }
@@ -1095,9 +1132,11 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
                     weight: 1.0,
                     last_seen: state.clock,
                     salience,
+                    gist: None,
                     source_texts: Vec::new(),
                     embedding: Vec::new(),
                     full_text: None,
+                    coverage: None,
                 },
             );
             state.long_term.index.insert(index_key, id);

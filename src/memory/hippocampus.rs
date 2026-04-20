@@ -638,9 +638,11 @@ fn fast_map_trace(state: &mut BrainState, victim_idx: usize) {
             weight: 1.0 + TRACE_INITIAL_SALIENCE,
             last_seen: state.clock,
             salience: TRACE_INITIAL_SALIENCE,
+            gist: Some(label.clone()),
             source_texts: vec![victim.text.clone()],
             embedding: victim.embedding.clone(),
             full_text: Some(victim.text.clone()),
+            coverage: None,
         },
     );
     state.long_term.index.insert(label.to_lowercase(), trace_id);

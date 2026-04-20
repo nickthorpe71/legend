@@ -394,7 +394,7 @@ pub use hippocampus::{MemoryRef, MemorySnippet, ShortTermEntry};
 pub use prefrontal::WorkingMemoryEntry;
 
 // GraphMemory, GraphNode, GraphEdge, GraphNodeSummary — defined in neocortex.rs, re-exported here.
-pub use neocortex::{GraphEdge, GraphMemory, GraphNode, GraphNodeSummary};
+pub use neocortex::{GraphEdge, GraphMemory, GraphNode, GraphNodeSummary, SummaryCoverage};
 
 // ReinforceResult, ReinforcedEntry — defined in basal_ganglia.rs, re-exported above.
 
@@ -1299,8 +1299,10 @@ fn encoding_activation(
                     label: node.label.clone(),
                     kind: node.kind.clone(),
                     weight: node.weight * 0.7 * activation,
+                    gist: node.gist.clone(),
                     edge_type: Some("primed".to_string()),
                     source_texts: node.source_texts.clone(),
+                    coverage: node.coverage.clone(),
                 });
             }
         }
@@ -1668,8 +1670,10 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
                     label: node.label.clone(),
                     kind: node.kind.clone(),
                     weight: node.weight * 0.7 * activation,
+                    gist: node.gist.clone(),
                     edge_type: Some("primed".to_string()),
                     source_texts: node.source_texts.clone(),
+                    coverage: node.coverage.clone(),
                 });
             }
         }
@@ -1929,6 +1933,11 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
             .map(|e| e.salience)
             .fold(0.0, f32::max)
             .max(0.4);
+        let cleaned_source_count = group
+            .iter()
+            .map(|e| clean_semantic_noise(&e.text))
+            .filter(|text| !text.trim().is_empty())
+            .count();
         let source_texts: Vec<String> = {
             let mut seen: HashSet<String> = HashSet::new();
             group
@@ -1937,6 +1946,12 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 .filter(|text| !text.trim().is_empty())
                 .filter(|text| seen.insert(text.clone()))
                 .collect()
+        };
+        let coverage = SummaryCoverage {
+            source_count: cleaned_source_count,
+            evidence_count: source_texts.len(),
+            omitted_source_count: 0,
+            full_evidence_preserved: true,
         };
 
         // Systems consolidation: compute centroid embedding and rich text
@@ -2020,11 +2035,12 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 node.weight = node.weight.max(1.0 + salience);
                 node.salience = node.salience.max(salience);
                 node.last_seen = state.clock;
+                node.gist = Some(summary_text.clone());
+                node.coverage = Some(coverage.clone());
                 // Extend source_texts and dedup. This is the evidence-preservation
                 // path for consolidation; later compression can compact duplicates
                 // without silently dropping minority facts.
-                let mut seen: HashSet<String> =
-                    node.source_texts.iter().cloned().collect();
+                let mut seen: HashSet<String> = node.source_texts.iter().cloned().collect();
                 for st in &source_texts {
                     if seen.insert(st.clone()) {
                         node.source_texts.push(st.clone());
@@ -2052,9 +2068,11 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                     weight: 1.0 + salience,
                     last_seen: state.clock,
                     salience,
+                    gist: Some(summary_text.clone()),
                     source_texts: source_texts.clone(),
                     embedding: centroid_embedding.clone(),
                     full_text: full_text.clone(),
+                    coverage: Some(coverage.clone()),
                 },
             );
             state
@@ -2142,9 +2160,11 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                             weight: 1.0,
                             last_seen: state.clock,
                             salience: 0.5,
+                            gist: None,
                             source_texts: Vec::new(),
                             embedding: Vec::new(),
                             full_text: None,
+                            coverage: None,
                         },
                     );
                     state.long_term.index.insert(index_key, id);
@@ -2187,11 +2207,13 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
 
         summaries.push(GraphNodeSummary {
             id: node_id,
-            label: summary_text,
+            label: summary_text.clone(),
             kind: "Summary".to_string(),
             weight: 1.0 + salience,
+            gist: Some(summary_text.clone()),
             edge_type: None,
             source_texts,
+            coverage: Some(coverage),
         });
     }
 
@@ -2278,9 +2300,11 @@ fn insert_graph_node(
             weight,
             last_seen: state.clock,
             salience,
+            gist: None,
             source_texts,
             embedding: Vec::new(),
             full_text: None,
+            coverage: None,
         },
     );
     state.long_term.index.insert(label.to_lowercase(), id);
@@ -3599,9 +3623,11 @@ mod tests {
                 weight: 0.01,
                 last_seen: 0,
                 salience: 0.0,
+                gist: None,
                 source_texts: Vec::new(),
                 embedding: Vec::new(),
                 full_text: None,
+                coverage: None,
             },
         );
         state
@@ -3621,9 +3647,11 @@ mod tests {
                 weight: 2.0,
                 last_seen: state.brain.clock,
                 salience: 0.5,
+                gist: None,
                 source_texts: Vec::new(),
                 embedding: Vec::new(),
                 full_text: None,
+                coverage: None,
             },
         );
         state
@@ -3684,9 +3712,11 @@ mod tests {
                     weight: 1.0,
                     last_seen: state.brain.clock,
                     salience: 0.1,
+                    gist: None,
                     source_texts: Vec::new(),
                     embedding: Vec::new(),
                     full_text: None,
+                    coverage: None,
                 },
             );
             state
@@ -4688,9 +4718,11 @@ mod tests {
                 weight: 1.2,
                 last_seen: 1,
                 salience: 0.5,
+                gist: None,
                 source_texts: vec!["legacy access-control note".to_string()],
                 embedding: vec![1.0, 0.0],
                 full_text: Some("legacy access-control note".to_string()),
+                coverage: None,
             },
         );
         state
@@ -4930,6 +4962,77 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_consolidate_splits_summary_roles() {
+        let mut state = MemoryState::default();
+        let dim = state.brain.config.embedding_dim;
+        state.brain.config.theta_low = 0.2;
+        let texts = [
+            "Project Alpha uses SQLite for metadata storage",
+            "Project Alpha keeps audit events in SQLite metadata storage",
+            "Project Alpha validates SQLite metadata restore checkpoints",
+            "Project Alpha dashboard reports SQLite metadata backup health",
+        ];
+
+        for text in texts {
+            hippocampus::insert_short_term(
+                &mut state.brain,
+                text,
+                embed_text(text, dim),
+                compute_salience(text, &kw()),
+                Vec::new(),
+                0.0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                ChemicalStamp::default(),
+            );
+        }
+
+        let summaries = consolidate(&mut state.brain);
+        assert!(
+            !summaries.is_empty(),
+            "consolidation should produce summaries"
+        );
+
+        let summary = state
+            .brain
+            .long_term
+            .nodes
+            .values()
+            .find(|node| node.kind == "Summary")
+            .expect("should have a Summary node");
+
+        assert_eq!(
+            summary.gist.as_deref(),
+            Some(summary.label.as_str()),
+            "Summary gist should hold the extractive meaning while label stays the index handle"
+        );
+        assert_eq!(
+            summary.source_texts.len(),
+            texts.len(),
+            "Summary evidence should preserve cleaned source texts"
+        );
+        let coverage = summary
+            .coverage
+            .as_ref()
+            .expect("Summary should track coverage metadata");
+        assert_eq!(coverage.source_count, texts.len());
+        assert_eq!(coverage.evidence_count, texts.len());
+        assert_eq!(coverage.omitted_source_count, 0);
+        assert!(coverage.full_evidence_preserved);
+
+        let returned = summaries
+            .iter()
+            .find(|candidate| candidate.id == summary.id)
+            .expect("returned summary should include the created Summary node");
+        assert_eq!(returned.gist, summary.gist);
+        assert_eq!(
+            returned.coverage.as_ref().map(|c| c.evidence_count),
+            Some(texts.len())
+        );
     }
 
     // ---- Commit 4: Consolidated entry filtering tests ----
@@ -6455,10 +6558,12 @@ mod tests {
                 kind: "Entity".into(),
                 weight: 1.0,
                 salience: 0.5,
+                gist: None,
                 source_texts: vec!["ConfigLoader reads settings".into()],
                 last_seen: 0,
                 embedding: Vec::new(),
                 full_text: None,
+                coverage: None,
             },
         );
         state
@@ -6475,10 +6580,12 @@ mod tests {
                 kind: "Entity".into(),
                 weight: 1.0,
                 salience: 0.5,
+                gist: None,
                 source_texts: vec!["JwtSecret stores token signing keys".into()],
                 last_seen: 0,
                 embedding: Vec::new(),
                 full_text: None,
+                coverage: None,
             },
         );
         state
@@ -6588,10 +6695,12 @@ mod tests {
                 kind: "Entity".into(),
                 weight: 1.0,
                 salience: 0.5,
+                gist: None,
                 source_texts: vec!["ConfigLoader reads YAML settings files".into()],
                 last_seen: 0,
                 embedding: Vec::new(),
                 full_text: None,
+                coverage: None,
             },
         );
         state
@@ -6608,10 +6717,12 @@ mod tests {
                 kind: "Entity".into(),
                 weight: 1.0,
                 salience: 0.5,
+                gist: None,
                 source_texts: vec!["DatabasePool manages connection pooling".into()],
                 last_seen: 0,
                 embedding: Vec::new(),
                 full_text: None,
+                coverage: None,
             },
         );
         state
@@ -6703,10 +6814,12 @@ mod tests {
                 kind: "Entity".into(),
                 weight: 1.0,
                 salience: 0.5,
+                gist: None,
                 source_texts: vec!["SkipConsolidated test entry".into()],
                 last_seen: 0,
                 embedding: Vec::new(),
                 full_text: None,
+                coverage: None,
             },
         );
         state
@@ -6896,10 +7009,12 @@ mod tests {
                 kind: "Entity".into(),
                 weight: 1.0,
                 salience: 0.5,
+                gist: None,
                 source_texts: vec![],
                 last_seen: 0,
                 embedding: Vec::new(),
                 full_text: None,
+                coverage: None,
             },
         );
         state.long_term.index.insert(label.to_lowercase(), id);
@@ -7616,9 +7731,11 @@ mod tests {
                 weight: 1.5,
                 last_seen: 10,
                 salience: 0.7,
+                gist: None,
                 source_texts: vec!["Rust borrow checker ownership rules".into()],
                 embedding: summary_emb,
                 full_text: Some("Rust borrow checker ownership and lifetime rules".into()),
+                coverage: None,
             },
         );
         state
@@ -7714,9 +7831,11 @@ mod tests {
                 weight: 1.5,
                 last_seen: 10,
                 salience: 0.7,
+                gist: None,
                 source_texts: vec!["Consolidated topic alpha details".into()],
                 embedding: summary_emb,
                 full_text: Some("Alpha topic details".into()),
+                coverage: None,
             },
         );
 
@@ -8920,9 +9039,11 @@ mod tests {
                     weight: 1.0,
                     last_seen: 0,
                     salience: 0.1 + (i as f32 * 0.001), // increasing salience
+                    gist: Some(format!("trace_{i}")),
                     source_texts: vec![format!("trace text {i}")],
                     embedding: embed_text(&format!("trace text {i}"), dim),
                     full_text: Some(format!("trace text {i}")),
+                    coverage: None,
                 },
             );
         }
@@ -9006,10 +9127,12 @@ mod tests {
                 weight: 2.0,
                 last_seen: 0,
                 salience: 0.5,
+                gist: Some("JWT auth decision".to_string()),
                 // Deliberately use DIFFERENT text than entry (old exact match would miss this)
                 source_texts: vec!["slightly different JWT text".to_string()],
                 embedding: original_emb.clone(),
                 full_text: Some(original_text.to_string()),
+                coverage: None,
             },
         );
 
@@ -9098,9 +9221,11 @@ mod tests {
                 weight: 1.3,
                 last_seen: 0,
                 salience: TRACE_INITIAL_SALIENCE,
+                gist: None,
                 source_texts: vec![trace_text.to_string()],
                 embedding: trace_emb,
                 full_text: Some(trace_text.to_string()),
+                coverage: None,
             },
         );
 
