@@ -1556,10 +1556,7 @@ mod tests {
 
     #[test]
     fn test_extract_negated_typed_relation_polarity() {
-        let relations = extract_relations(
-            "Project Alpha does not use SQLite for metadata.",
-            &kw(),
-        );
+        let relations = extract_relations("Project Alpha does not use SQLite for metadata.", &kw());
         let relation = relations
             .iter()
             .find(|r| r.kind == "uses_datastore")
