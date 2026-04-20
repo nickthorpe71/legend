@@ -2744,7 +2744,7 @@ mod tests {
             .expect("Project Alpha and ceramic frog should have only a weak co-mention edge");
 
         assert_eq!(local.kind, "uses_datastore");
-        assert_eq!(distant.kind, "co-mentioned");
+        assert_eq!(distant.kind, "co_mentioned");
         assert!(
             local.weight > distant.weight,
             "local frame evidence should reinforce more strongly than distant co-mention: local={} distant={}",
@@ -2832,6 +2832,52 @@ mod tests {
         assert!(semantics.confidence >= 0.8);
         assert_eq!(semantics.polarity, "Affirmed");
         assert_eq!(semantics.support_count, 1);
+    }
+
+    #[test]
+    fn test_edge_kind_aliases_preserve_retrieval_weighting() {
+        assert_eq!(
+            neocortex::edge_kind_multiplier(neocortex::QueryMode::Semantic, "frame-bound"),
+            neocortex::edge_kind_multiplier(neocortex::QueryMode::Semantic, "frame_bound")
+        );
+        assert_eq!(
+            neocortex::edge_kind_multiplier(neocortex::QueryMode::Structural, "co-mentioned"),
+            neocortex::edge_kind_multiplier(neocortex::QueryMode::Structural, "co_mentioned")
+        );
+        assert_eq!(
+            neocortex::edge_kind_multiplier(neocortex::QueryMode::Temporal, "keyword-co-occurs"),
+            neocortex::edge_kind_multiplier(neocortex::QueryMode::Temporal, "keyword_co_occurs")
+        );
+        assert_eq!(
+            neocortex::edge_kind_multiplier(neocortex::QueryMode::Structural, "depends-on"),
+            neocortex::edge_kind_multiplier(neocortex::QueryMode::Structural, "depends_on")
+        );
+    }
+
+    #[test]
+    fn test_graph_emits_canonical_snake_case_edge_kinds() {
+        let mut state = MemoryState::default();
+        neocortex::update_graph(
+            &mut state.brain,
+            "Project Alpha uses SQLite for metadata. A ceramic frog near the monitor is named Biscuit.",
+            0.8,
+        );
+
+        let alpha = graph_node_id(&state, "project alpha");
+        let frog = graph_node_id(&state, "ceramic frog");
+        let distant =
+            graph_edge_between(&state, alpha, frog).expect("distant co-mention edge should exist");
+
+        assert_eq!(distant.kind, "co_mentioned");
+        assert!(
+            state
+                .brain
+                .long_term
+                .edges
+                .iter()
+                .all(|edge| !edge.kind.contains('-')),
+            "new graph edges should use canonical snake_case kinds"
+        );
     }
 
     #[test]
