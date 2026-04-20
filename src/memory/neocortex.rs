@@ -710,6 +710,7 @@ pub fn normalize_graph_weights(long_term: &mut GraphMemory) {
 }
 
 /// Insert a new edge or reinforce an existing one between two nodes.
+#[allow(dead_code)]
 pub fn upsert_edge(long_term: &mut GraphMemory, from: u64, to: u64, kind: &str, clock: u64) {
     upsert_edge_with_chemical_stamp(long_term, from, to, kind, clock, &ChemicalStamp::default());
 }
