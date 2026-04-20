@@ -790,7 +790,8 @@ pub fn upsert_edge_with_semantics(
         clock,
         chemical_stamp,
     );
-    merge_edge_semantics(long_term, from, to, kind, semantics);
+    let support_count = merge_edge_semantics(long_term, from, to, kind, semantics);
+    apply_semantic_support_reinforcement(long_term, from, to, support_count);
 }
 
 fn merge_edge_semantics(
@@ -799,7 +800,7 @@ fn merge_edge_semantics(
     to: u64,
     kind: &str,
     incoming: EdgeSemanticInput,
-) {
+) -> u32 {
     let key = GraphMemory::edge_stamp_key(from, to);
     let semantics = long_term.edge_semantics.entry(key).or_default();
     if edge_kind_priority(kind) >= edge_kind_priority(&semantics.kind) {
@@ -824,6 +825,29 @@ fn merge_edge_semantics(
     }
     semantics.reference_frames.truncate(8);
     semantics.support_count = semantics.support_count.saturating_add(1);
+    semantics.support_count
+}
+
+fn apply_semantic_support_reinforcement(
+    long_term: &mut GraphMemory,
+    from: u64,
+    to: u64,
+    support_count: u32,
+) {
+    let support_gain = (support_count as f32).ln_1p();
+    let edge_boost = (0.04 * support_gain).min(0.2);
+    if let Some(&idx) = long_term.edge_index.get(&GraphMemory::edge_key(from, to)) {
+        let edge = &mut long_term.edges[idx];
+        edge.stability = soft_cap_stability(edge.stability + edge_boost);
+    }
+
+    let node_boost = (NODE_WEIGHT_BASE * 0.2 * support_gain).min(0.12);
+    for node_id in [from, to] {
+        if let Some(node) = long_term.nodes.get_mut(&node_id) {
+            node.weight += node_boost;
+            node.salience = reinforce_bounded_signal(node.salience, 0.55, 0.18, 0.45, 1.4);
+        }
+    }
 }
 
 fn push_unique_capped(values: &mut Vec<String>, value: String, cap: usize) {
