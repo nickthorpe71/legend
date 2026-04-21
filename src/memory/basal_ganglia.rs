@@ -19,8 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use super::{
-    neurochemistry, wernicke::extract_entities, BrainState, ShortTermEntry, ADAGRAD_BASE_LR,
-    ADAGRAD_EPSILON, ADAGRAD_SQ_SUM_CAP, CONTRASTIVE_PENALTY, REINFORCE_GRAPH_SCALE, RENORM_BLEND,
+    neurochemistry, signal::apply_bounded_delta, wernicke::extract_entities, BrainState,
+    ShortTermEntry, ADAGRAD_BASE_LR, ADAGRAD_EPSILON, ADAGRAD_SQ_SUM_CAP, CONTRASTIVE_PENALTY,
+    REINFORCE_GRAPH_SCALE, RENORM_BLEND,
 };
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ pub fn reinforce(state: &mut BrainState, ids: &[u64], signal: f32) -> ReinforceR
             .collect();
         for &pid in &penalized {
             if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == pid) {
-                entry.salience = (entry.salience - CONTRASTIVE_PENALTY).max(0.0);
+                entry.salience = apply_bounded_delta(entry.salience, -CONTRASTIVE_PENALTY);
             }
         }
     }
@@ -88,7 +89,7 @@ pub fn reinforce(state: &mut BrainState, ids: &[u64], signal: f32) -> ReinforceR
             let delta = signal * adaptive_lr * da_boost * effective.reinforcement_gain;
             entry.gradient_sq_sum =
                 (entry.gradient_sq_sum + signal * signal).min(ADAGRAD_SQ_SUM_CAP);
-            entry.salience = (entry.salience + delta).clamp(0.0, 1.0);
+            entry.salience = apply_bounded_delta(entry.salience, delta);
 
             // Adjust usage: positive signal bumps usage, negative doesn't
             // reduce below 1 (entry still exists, just less important)

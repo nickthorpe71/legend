@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_salience_capped_at_one() {
+    fn test_compute_salience_smoothly_normalized_below_ceiling() {
         let s = compute_salience("DECISION: Chose X because crash bug regression BLOCKER TODO architecture API schema module user prefers convention fn main() {} ``` code ```", &kw());
         assert!(s < 1.0, "should smoothly normalize below 1.0, got {}", s);
     }

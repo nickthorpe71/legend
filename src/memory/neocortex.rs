@@ -1457,7 +1457,12 @@ pub fn replay_consolidation(state: &mut BrainState) {
 
     // Boost salience of replayed entries
     for &idx in &replayed_indices {
-        state.short_term[idx].salience =
-            (state.short_term[idx].salience + REPLAY_SALIENCE_BOOST).min(1.0);
+        state.short_term[idx].salience = reinforce_bounded_signal(
+            state.short_term[idx].salience,
+            REPLAY_SALIENCE_BOOST,
+            0.5,
+            0.02,
+            1.0,
+        );
     }
 }

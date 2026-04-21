@@ -262,6 +262,16 @@ fn normalize_final_salience(raw: f32) -> f32 {
     )
 }
 
+fn reinforce_auto_retrieval_salience(current: f32, similarity: f32) -> f32 {
+    reinforce_bounded_signal(
+        current,
+        similarity,
+        AUTO_REINFORCE_SCALE,
+        LOW_MERGE_SALIENCE_MIDPOINT,
+        LOW_MERGE_SALIENCE_STEEPNESS,
+    )
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct L1NormalizationPressure {
     occupancy: f32,
@@ -1514,7 +1524,7 @@ fn encoding_activation(
     if let Some(top) = snippets.first() {
         if top.similarity > 0.2 {
             if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == top.id) {
-                entry.salience = (entry.salience + top.similarity * AUTO_REINFORCE_SCALE).min(1.0);
+                entry.salience = reinforce_auto_retrieval_salience(entry.salience, top.similarity);
             }
         }
     }
@@ -1890,7 +1900,7 @@ pub fn retrieve_context_with_mode(
             if top.similarity > 0.2 {
                 if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == top.id) {
                     entry.salience =
-                        (entry.salience + top.similarity * AUTO_REINFORCE_SCALE).min(1.0);
+                        reinforce_auto_retrieval_salience(entry.salience, top.similarity);
                 }
                 // Phase C: DA spike on successful retrieval — reward signal for recall
                 if top.similarity > 0.5 {
@@ -2325,7 +2335,13 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
             // Merge into existing: update weight/salience, extend source_texts
             if let Some(node) = state.long_term.nodes.get_mut(&eid) {
                 node.weight = node.weight.max(1.0 + salience);
-                node.salience = node.salience.max(salience);
+                node.salience = reinforce_bounded_signal(
+                    node.salience,
+                    salience,
+                    0.35,
+                    LOW_MERGE_SALIENCE_MIDPOINT,
+                    LOW_MERGE_SALIENCE_STEEPNESS,
+                );
                 node.last_seen = state.clock;
                 node.gist = Some(summary_text.clone());
                 node.coverage = Some(coverage.clone());
@@ -3909,6 +3925,36 @@ mod tests {
     }
 
     #[test]
+    fn test_reinforce_salience_uses_headroom_near_bounds() {
+        let mut state = MemoryState::default();
+        tick(
+            &mut state,
+            "fn handle_request() processes incoming API calls",
+        );
+        let id = state.brain.short_term[0].id;
+
+        state.brain.short_term[0].salience = 0.99;
+        let high_before = state.brain.short_term[0].salience;
+        basal_ganglia::reinforce(&mut state.brain, &[id][..], 1.0);
+        let high_after = state.brain.short_term[0].salience;
+        assert!(high_after > high_before);
+        assert!(
+            high_after < 1.0,
+            "positive reinforcement should approach the ceiling smoothly, got {high_after}"
+        );
+
+        state.brain.short_term[0].salience = 0.01;
+        let low_before = state.brain.short_term[0].salience;
+        basal_ganglia::reinforce(&mut state.brain, &[id][..], -1.0);
+        let low_after = state.brain.short_term[0].salience;
+        assert!(low_after < low_before);
+        assert!(
+            low_after > 0.0,
+            "negative reinforcement should depress without hard-flooring, got {low_after}"
+        );
+    }
+
+    #[test]
     fn test_reinforce_cascades_to_graph() {
         let mut state = MemoryState::default();
         tick(
@@ -4133,6 +4179,18 @@ mod tests {
             "recall-study retrieval should auto-reinforce: {} -> {}",
             salience_before,
             salience_after
+        );
+    }
+
+    #[test]
+    fn test_auto_reinforcement_preserves_salience_headroom() {
+        let salience_before = 0.99;
+        let salience_after = reinforce_auto_retrieval_salience(salience_before, 1.0);
+
+        assert!(salience_after > salience_before);
+        assert!(
+            salience_after < 1.0,
+            "auto-reinforcement should not hard-cap salience, got {salience_after}"
         );
     }
 
@@ -7797,6 +7855,18 @@ mod tests {
             any_boosted,
             "replay should boost salience of co-active entries"
         );
+
+        state.brain.short_term[0].salience = 0.99;
+        state.brain.short_term[1].salience = 0.99;
+        neocortex::replay_consolidation(&mut state.brain);
+        assert!(
+            state
+                .brain
+                .short_term
+                .iter()
+                .all(|entry| entry.salience < 1.0),
+            "replay should approach salience ceiling without hard-capping"
+        );
     }
 
     #[test]
@@ -9798,8 +9868,12 @@ mod tests {
 
         assert_eq!(state.brain.long_term.nodes[&trace_id].kind, "Trace");
 
-        // Query something related — the Trace should be surfaced and promoted
-        let _ctx = retrieve_context(&mut state.brain, "Redis caching decision");
+        // Recall-study retrieval is mutating; it can promote useful Trace nodes.
+        let _ctx = retrieve_context_with_mode(
+            &mut state.brain,
+            "Redis caching decision",
+            RetrievalMode::RecallStudy,
+        );
 
         let node = &state.brain.long_term.nodes[&trace_id];
         assert_eq!(

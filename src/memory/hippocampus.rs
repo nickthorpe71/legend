@@ -5,6 +5,7 @@ use super::{
     entorhinal::{summarize_single, summarize_text},
     neocortex::{self, GraphNode},
     neurochemistry::{self, ChemicalStamp, Neurochemistry, STATE_DEPENDENT_BONUS},
+    signal::reinforce_bounded_signal,
     wernicke::{self, extract_entities},
     BrainState, CONSOLIDATED_EVICTION_REDUCTION, EVICTION_DECAY_RATE, HIPPOCAMPAL_DECAY_RATE,
     KEYWORD_MATCH_BONUS, KEYWORD_MATCH_BONUS_CAP, L3_BACKUP_SIMILARITY_THRESHOLD,
@@ -681,7 +682,7 @@ pub fn promote_trace(state: &mut BrainState, node_id: u64) {
     if let Some(node) = state.long_term.nodes.get_mut(&node_id) {
         if node.kind == "Trace" {
             node.kind = "Summary".to_string();
-            node.salience = (node.salience + 0.2).min(1.0);
+            node.salience = reinforce_bounded_signal(node.salience, 0.2, 0.5, 0.2, 1.0);
             node.weight = (node.weight + 0.5).min(5.0);
         }
     }
