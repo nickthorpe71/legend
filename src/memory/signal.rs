@@ -71,6 +71,27 @@ pub fn reinforce_bounded_signal(
     current + (1.0 - current) * evidence * learning_rate
 }
 
+/// Apply a signed delta to a bounded signal using available headroom.
+///
+/// Positive deltas consume remaining headroom; negative deltas scale the current
+/// value down. This keeps salience responsive near both boundaries without the
+/// saturation dead-zone of additive clamp/min updates.
+pub fn apply_bounded_delta(current: f32, delta: f32) -> f32 {
+    let current = if current.is_finite() {
+        current.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let delta = if delta.is_finite() { delta } else { 0.0 };
+    let magnitude = normalize_positive_signal(delta.abs(), 0.0, 1.0, 0.5, 1.4);
+
+    if delta >= 0.0 {
+        current + (1.0 - current) * magnitude
+    } else {
+        current * (1.0 - magnitude)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +172,16 @@ mod tests {
             signal < 1.0,
             "finite repeated reinforcement should stay below ceiling"
         );
+    }
+
+    #[test]
+    fn test_apply_bounded_delta_uses_headroom_without_clamping() {
+        let high = apply_bounded_delta(0.99, 0.5);
+        assert!(high > 0.99, "{high} should still potentiate");
+        assert!(high < 1.0, "{high} should not hard-cap at 1.0");
+
+        let low = apply_bounded_delta(0.01, -0.5);
+        assert!(low > 0.0, "{low} should depress without hard-flooring");
+        assert!(low < 0.01, "{low} should be lower than the starting value");
     }
 }
