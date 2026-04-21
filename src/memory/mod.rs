@@ -49,7 +49,7 @@ use neurochemistry::{
     DA_POSITIVE_SPIKE, ECB_CORTISOL_RECOVERY, ECB_ROUTINE_SPIKE, NE_CONTEXT_SWITCH_SPIKE,
     NE_SALIENCE_SPIKE, NE_THREAT_SPIKE,
 };
-use signal::{normalize_positive_signal, reinforce_bounded_signal};
+use signal::{apply_bounded_delta, normalize_positive_signal, reinforce_bounded_signal};
 use thalamus::compute_salience;
 use wernicke::extract_dates;
 use wernicke::KeywordCache;
@@ -158,6 +158,12 @@ const OFFLINE_REPLAY_PRESSURE_THRESHOLD: f32 = 0.45;
 const OFFLINE_REPLAY_MAX_BUDGET: usize = 3;
 /// Graph integration below this marks a trace as weakly integrated.
 const OFFLINE_REPLAY_WEAK_INTEGRATION: f32 = 0.65;
+/// Minimum L2 pressure before sleep-like down-selection can run.
+const SLEEP_DOWNSELECT_PRESSURE_THRESHOLD: f32 = 0.5;
+/// Maximum salience depression for one tick-time down-selection pass.
+const SLEEP_DOWNSELECT_MAX_DELTA: f32 = 0.04;
+/// Redundant traces need strong L3 backing before down-selection.
+const SLEEP_REDUNDANT_INTEGRATION_THRESHOLD: f32 = 0.85;
 /// Eviction score reduction for consolidated L2 entries whose Summary node
 /// has a valid embedding (L3 can serve their role).
 pub(super) const CONSOLIDATED_EVICTION_REDUCTION: f32 = 0.2;
@@ -489,6 +495,11 @@ struct OfflineReplayPlan {
     candidate_ids: Vec<u64>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct SleepDownselectStats {
+    penalized_entries: usize,
+}
+
 fn graph_integration_score(state: &BrainState, entry: &ShortTermEntry) -> f32 {
     let entities: Vec<_> = extract_entities(&entry.text, &state.keyword_cache)
         .into_iter()
@@ -500,7 +511,13 @@ fn graph_integration_score(state: &BrainState, entry: &ShortTermEntry) -> f32 {
 
     let resolved: Vec<u64> = entities
         .iter()
-        .filter_map(|entity| state.long_term.index.get(&entity.label).copied())
+        .filter_map(|entity| {
+            state
+                .long_term
+                .index
+                .get(&entity.label.to_lowercase())
+                .copied()
+        })
         .collect();
     let node_coverage = resolved.len() as f32 / entities.len() as f32;
     if resolved.len() < 2 {
@@ -664,6 +681,80 @@ fn run_tick_offline_replay(
 
     let _ = plan.pressure;
     stats
+}
+
+fn has_exception_protection(entry: &ShortTermEntry, keyword_cache: &KeywordCache) -> bool {
+    if entry.salience >= 0.75 || entry.emotional_valence.abs() >= 0.35 {
+        return true;
+    }
+    if !entry.extracted_dates.is_empty() || !entry.refs.is_empty() {
+        return true;
+    }
+
+    let lowered = entry.text.to_lowercase();
+    if keyword_cache
+        .prediction_error_correction
+        .iter()
+        .chain(keyword_cache.prediction_error_surprise.iter())
+        .any(|cue| lowered.contains(cue.as_str()))
+    {
+        return true;
+    }
+
+    lowered.chars().any(|c| c.is_ascii_digit())
+}
+
+fn sleep_redundancy_score(state: &BrainState, entry: &ShortTermEntry) -> f32 {
+    if !entry.consolidated || entry.replay_count == 0 {
+        return 0.0;
+    }
+    let integration = graph_integration_score(state, entry);
+    if integration < SLEEP_REDUNDANT_INTEGRATION_THRESHOLD {
+        return 0.0;
+    }
+    if has_exception_protection(entry, &state.keyword_cache) {
+        return 0.0;
+    }
+
+    let replay_support = (entry.replay_count as f32 / 3.0).min(1.0);
+    let routine_signal = (1.0 - entry.salience).clamp(0.0, 1.0);
+    (integration * 0.45 + replay_support * 0.3 + routine_signal * 0.25).min(1.0)
+}
+
+fn run_sleep_downselection(
+    state: &mut BrainState,
+    pressure: &LayerNormalizationPressure,
+) -> SleepDownselectStats {
+    if pressure.l2.total < SLEEP_DOWNSELECT_PRESSURE_THRESHOLD || state.short_term.is_empty() {
+        return SleepDownselectStats::default();
+    }
+
+    if state.long_term.edge_index.is_empty() && !state.long_term.edges.is_empty() {
+        state.long_term.rebuild_edge_index();
+    }
+
+    let scored: Vec<(u64, f32)> = state
+        .short_term
+        .iter()
+        .map(|entry| (entry.id, sleep_redundancy_score(state, entry)))
+        .filter(|(_, score)| *score > 0.0)
+        .collect();
+    let pressure_gain = ((pressure.l2.total - SLEEP_DOWNSELECT_PRESSURE_THRESHOLD)
+        / (1.0 - SLEEP_DOWNSELECT_PRESSURE_THRESHOLD))
+        .clamp(0.0, 1.0);
+    let mut penalized_entries = 0usize;
+    for (id, redundancy) in scored {
+        if let Some(entry) = state.short_term.iter_mut().find(|entry| entry.id == id) {
+            let delta = -SLEEP_DOWNSELECT_MAX_DELTA * pressure_gain * redundancy;
+            let before = entry.salience;
+            entry.salience = apply_bounded_delta(entry.salience, delta);
+            if entry.salience < before {
+                penalized_entries += 1;
+            }
+        }
+    }
+
+    SleepDownselectStats { penalized_entries }
 }
 
 // ---------------------------------------------------------------------------
@@ -1571,6 +1662,20 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
                 ]),
             );
         }
+    }
+    #[cfg(feature = "instrument")]
+    let _sleep_stats = run_sleep_downselection(state, &normalization_pressure);
+    #[cfg(not(feature = "instrument"))]
+    let _ = run_sleep_downselection(state, &normalization_pressure);
+    #[cfg(feature = "instrument")]
+    if _sleep_stats.penalized_entries > 0 {
+        _tctx.emit(
+            trace::PipelineStep::PruneL2,
+            trace::TracePayload::KeyValue(vec![(
+                "sleep_downselected_entries".into(),
+                _sleep_stats.penalized_entries.to_string(),
+            )]),
+        );
     }
 
     #[cfg(feature = "instrument")]
@@ -8183,6 +8288,65 @@ mod tests {
                 .iter()
                 .any(|entry| entry.replay_count > 0),
             "automatic replay should mark participating L2 traces"
+        );
+    }
+
+    #[test]
+    fn test_sleep_downselection_penalizes_redundant_backed_trace() {
+        let mut state = MemoryState::default();
+        state.brain.clock = 20;
+        let text = "Project Alpha uses SQLite for audit storage";
+        neocortex::update_graph(&mut state.brain, text, 0.6);
+        state.brain.short_term.push(ShortTermEntry {
+            id: 1,
+            text: text.into(),
+            summary: text.into(),
+            embedding: embed_text(text, 256),
+            salience: 0.45,
+            usage: 1,
+            consolidated: true,
+            replay_count: 2,
+            last_replay_clock: 18,
+            ..Default::default()
+        });
+        let before = state.brain.short_term[0].salience;
+
+        let stats = run_sleep_downselection(&mut state.brain, &replay_pressure(0.9));
+
+        assert_eq!(stats.penalized_entries, 1);
+        assert!(
+            state.brain.short_term[0].salience < before,
+            "redundant backed traces should be down-selected"
+        );
+    }
+
+    #[test]
+    fn test_sleep_downselection_preserves_exception_trace() {
+        let mut state = MemoryState::default();
+        state.brain.clock = 20;
+        let text = "Correction: Project Alpha no longer uses SQLite after April 12";
+        neocortex::update_graph(&mut state.brain, text, 0.6);
+        state.brain.short_term.push(ShortTermEntry {
+            id: 1,
+            text: text.into(),
+            summary: text.into(),
+            embedding: embed_text(text, 256),
+            salience: 0.45,
+            usage: 1,
+            consolidated: true,
+            replay_count: 2,
+            last_replay_clock: 18,
+            extracted_dates: vec!["April 12".into()],
+            ..Default::default()
+        });
+        let before = state.brain.short_term[0].salience;
+
+        let stats = run_sleep_downselection(&mut state.brain, &replay_pressure(0.9));
+
+        assert_eq!(stats.penalized_entries, 0);
+        assert!(
+            (state.brain.short_term[0].salience - before).abs() < f32::EPSILON,
+            "corrections/dates should be protected from sleep down-selection"
         );
     }
 
