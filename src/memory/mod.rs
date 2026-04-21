@@ -184,8 +184,6 @@ pub(super) const NODE_WEIGHT_BASE: f32 = 0.2;
 pub(super) const GRAPH_PRUNE_WEIGHT: f32 = 0.05;
 /// Graph weight ceiling before periodic normalization fires.
 pub(super) const GRAPH_WEIGHT_TARGET_MAX: f32 = 2.0;
-/// Ticks between graph weight normalization passes.
-const GRAPH_NORM_INTERVAL: u64 = 5;
 /// Spreading activation: activation decays by this factor per hop.
 pub(super) const SPREADING_ACTIVATION_DECAY: f32 = 0.5;
 /// Maximum hops for spreading activation in graph_lookup.
@@ -222,8 +220,6 @@ pub(super) const ADAGRAD_EPSILON: f32 = 1e-6;
 pub(super) const ADAGRAD_BASE_LR: f32 = 0.15;
 /// Cap on accumulated squared gradients to prevent LR collapse.
 pub(super) const ADAGRAD_SQ_SUM_CAP: f32 = 1000.0;
-/// Ticks between salience EMA renormalization passes.
-const RENORM_INTERVAL: u64 = 10;
 /// EMA blend weight toward normalized values (gentle).
 pub(super) const RENORM_BLEND: f32 = 0.1;
 /// Salience penalty applied to retrieved-but-unreinforced entries.
@@ -264,6 +260,207 @@ fn normalize_final_salience(raw: f32) -> f32 {
         FINAL_SALIENCE_MIDPOINT,
         FINAL_SALIENCE_STEEPNESS,
     )
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct L1NormalizationPressure {
+    occupancy: f32,
+    salience_crowding: f32,
+    rehearsal_load: f32,
+    total: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct L2NormalizationPressure {
+    capacity: f32,
+    backlog: f32,
+    salience_saturation: f32,
+    total: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct L3NormalizationPressure {
+    node_weight: f32,
+    edge_weight: f32,
+    evidence_load: f32,
+    conflict_load: f32,
+    total: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct LayerNormalizationPressure {
+    l1: L1NormalizationPressure,
+    l2: L2NormalizationPressure,
+    l3: L3NormalizationPressure,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct NormalizationActions {
+    renormalize_l1: bool,
+    renormalize_l2: bool,
+    renormalize_l3: bool,
+}
+
+const L1_NORMALIZATION_THRESHOLD: f32 = 0.9;
+const L2_NORMALIZATION_THRESHOLD: f32 = 0.95;
+const L3_NORMALIZATION_THRESHOLD: f32 = 1.05;
+const L3_EVIDENCE_LOAD_TARGET: f32 = 12.0;
+const L1_REHEARSAL_LOAD_TARGET: f32 = 4.0;
+
+fn ratio_signal(value: f32, target: f32) -> f32 {
+    if target <= 0.0 {
+        0.0
+    } else {
+        (value / target).max(0.0)
+    }
+}
+
+fn occupancy_signal(len: usize, capacity: usize) -> f32 {
+    if capacity == 0 {
+        0.0
+    } else {
+        len as f32 / capacity as f32
+    }
+}
+
+fn working_memory_salience_crowding(working_memory: &[WorkingMemoryEntry]) -> f32 {
+    if working_memory.is_empty() {
+        return 0.0;
+    }
+    let total: f32 = working_memory
+        .iter()
+        .map(|entry| ratio_signal(entry.salience, FINAL_SALIENCE_CEILING.max(0.01)))
+        .sum();
+    total / working_memory.len() as f32
+}
+
+fn short_term_salience_saturation(short_term: &[ShortTermEntry]) -> f32 {
+    short_term
+        .iter()
+        .map(|entry| ratio_signal(entry.salience, FINAL_SALIENCE_CEILING.max(0.01)))
+        .fold(0.0_f32, f32::max)
+}
+
+fn long_term_evidence_load(long_term: &GraphMemory) -> f32 {
+    let max_evidence = long_term
+        .nodes
+        .values()
+        .filter(|node| node.kind == "Summary")
+        .map(|node| node.source_texts.len())
+        .max()
+        .unwrap_or(0);
+    ratio_signal(max_evidence as f32, L3_EVIDENCE_LOAD_TARGET)
+}
+
+fn long_term_conflict_load(long_term: &GraphMemory) -> f32 {
+    if long_term.edge_semantics.is_empty() {
+        return 0.0;
+    }
+    let conflicted = long_term
+        .edge_semantics
+        .values()
+        .filter(|semantics| {
+            semantics.contradiction_count > 0
+                || semantics.correction_count > 0
+                || semantics.conflict_state == "Conflicted"
+                || semantics.conflict_state == "Corrected"
+        })
+        .count();
+    conflicted as f32 / long_term.edge_semantics.len() as f32
+}
+
+fn compute_layer_normalization_pressure(state: &BrainState) -> LayerNormalizationPressure {
+    let l1_occupancy = occupancy_signal(
+        state.working_memory.len(),
+        state.config.immediate_capacity.max(1),
+    );
+    let l1_salience = working_memory_salience_crowding(&state.working_memory);
+    let l1_rehearsal = if state.working_memory.is_empty() {
+        0.0
+    } else {
+        let avg_rehearsal = state
+            .working_memory
+            .iter()
+            .map(|entry| entry.rehearsal_count as f32)
+            .sum::<f32>()
+            / state.working_memory.len() as f32;
+        ratio_signal(avg_rehearsal, L1_REHEARSAL_LOAD_TARGET)
+    };
+    let l1_total = l1_occupancy * 0.5 + l1_salience * 0.35 + l1_rehearsal * 0.15;
+
+    let l2_capacity = occupancy_signal(
+        state.short_term.len(),
+        state.config.short_term_capacity.max(1),
+    );
+    let l2_backlog = ratio_signal(
+        state.ticks_since_consolidation as f32,
+        CONSOLIDATION_SUGGESTION_THRESHOLD as f32,
+    );
+    let l2_salience = short_term_salience_saturation(&state.short_term);
+    let l2_total = l2_capacity * 0.35 + l2_backlog * 0.35 + l2_salience * 0.3;
+
+    let max_node_weight = state
+        .long_term
+        .nodes
+        .values()
+        .map(|node| node.weight)
+        .fold(0.0_f32, f32::max);
+    let max_edge_weight = state
+        .long_term
+        .edges
+        .iter()
+        .map(|edge| edge.weight)
+        .fold(0.0_f32, f32::max);
+    let l3_node_weight = ratio_signal(max_node_weight, GRAPH_WEIGHT_TARGET_MAX.max(0.01));
+    let l3_edge_weight = ratio_signal(max_edge_weight, GRAPH_WEIGHT_TARGET_MAX.max(0.01));
+    let l3_evidence = long_term_evidence_load(&state.long_term);
+    let l3_conflict = long_term_conflict_load(&state.long_term);
+    let l3_total =
+        l3_node_weight * 0.45 + l3_edge_weight * 0.35 + l3_evidence * 0.1 + l3_conflict * 0.1;
+
+    LayerNormalizationPressure {
+        l1: L1NormalizationPressure {
+            occupancy: l1_occupancy,
+            salience_crowding: l1_salience,
+            rehearsal_load: l1_rehearsal,
+            total: l1_total,
+        },
+        l2: L2NormalizationPressure {
+            capacity: l2_capacity,
+            backlog: l2_backlog,
+            salience_saturation: l2_salience,
+            total: l2_total,
+        },
+        l3: L3NormalizationPressure {
+            node_weight: l3_node_weight,
+            edge_weight: l3_edge_weight,
+            evidence_load: l3_evidence,
+            conflict_load: l3_conflict,
+            total: l3_total,
+        },
+    }
+}
+
+fn plan_normalization_actions(pressure: &LayerNormalizationPressure) -> NormalizationActions {
+    NormalizationActions {
+        renormalize_l1: pressure.l1.total >= L1_NORMALIZATION_THRESHOLD,
+        renormalize_l2: pressure.l2.total >= L2_NORMALIZATION_THRESHOLD,
+        renormalize_l3: pressure.l3.total >= L3_NORMALIZATION_THRESHOLD,
+    }
+}
+
+fn renormalize_working_memory_salience(working_memory: &mut [WorkingMemoryEntry]) {
+    let max_sal = working_memory
+        .iter()
+        .map(|entry| entry.salience)
+        .fold(0.0_f32, f32::max);
+    if max_sal < 0.05 {
+        return;
+    }
+    for entry in working_memory.iter_mut() {
+        let normalized = entry.salience / max_sal;
+        entry.salience = entry.salience * (1.0 - RENORM_BLEND) + normalized * RENORM_BLEND;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -540,11 +737,54 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
         trace::PipelineStep::StabilizeLabile,
         trace::TracePayload::None,
     );
-    if state.clock.is_multiple_of(RENORM_INTERVAL) {
+    let normalization_pressure = compute_layer_normalization_pressure(state);
+    let normalization_actions = plan_normalization_actions(&normalization_pressure);
+    if normalization_actions.renormalize_l1 {
+        renormalize_working_memory_salience(&mut state.working_memory);
+    }
+    if normalization_actions.renormalize_l2 {
         basal_ganglia::renormalize_salience(&mut state.short_term);
     }
-    if state.clock.is_multiple_of(GRAPH_NORM_INTERVAL) {
+    if normalization_actions.renormalize_l3 {
         neocortex::normalize_graph_weights(&mut state.long_term);
+    }
+    #[cfg(feature = "instrument")]
+    {
+        let actions = [
+            ("l1".to_string(), normalization_actions.renormalize_l1.to_string()),
+            ("l2".to_string(), normalization_actions.renormalize_l2.to_string()),
+            ("l3".to_string(), normalization_actions.renormalize_l3.to_string()),
+            ("l1_pressure".to_string(), format!("{:.3}", normalization_pressure.l1.total)),
+            ("l2_pressure".to_string(), format!("{:.3}", normalization_pressure.l2.total)),
+            ("l3_pressure".to_string(), format!("{:.3}", normalization_pressure.l3.total)),
+        ];
+        _tctx.emit(
+            trace::PipelineStep::Renormalize,
+            trace::TracePayload::KeyValue(actions.to_vec()),
+        );
+        if normalization_actions.renormalize_l3 {
+            _tctx.emit(
+                trace::PipelineStep::NormalizeGraphWeights,
+                trace::TracePayload::KeyValue(vec![
+                    (
+                        "node_weight_pressure".into(),
+                        format!("{:.3}", normalization_pressure.l3.node_weight),
+                    ),
+                    (
+                        "edge_weight_pressure".into(),
+                        format!("{:.3}", normalization_pressure.l3.edge_weight),
+                    ),
+                    (
+                        "evidence_load".into(),
+                        format!("{:.3}", normalization_pressure.l3.evidence_load),
+                    ),
+                    (
+                        "conflict_load".into(),
+                        format!("{:.3}", normalization_pressure.l3.conflict_load),
+                    ),
+                ]),
+            );
+        }
     }
 
     let mut last_context = MemoryContext {
@@ -4020,6 +4260,182 @@ mod tests {
         assert!(higher > high, "{higher} should exceed {high}");
         assert!(extreme > higher, "{extreme} should exceed {higher}");
         assert!(extreme < 1.0, "{extreme} should approach but not hit 1.0");
+    }
+
+    #[test]
+    fn test_layer_normalization_pressure_is_localized() {
+        let mut state = MemoryState::default();
+        state.brain.config.immediate_capacity = 4;
+        state.brain.config.short_term_capacity = 100;
+        state.brain.working_memory = vec![
+            WorkingMemoryEntry {
+                id: 1,
+                text: "wm one".into(),
+                embedding: Vec::new(),
+                salience: 1.2,
+                tick_created: 0,
+                rehearsal_count: 3,
+                promoted: false,
+                emotional_valence: 0.0,
+                wall_clock: 0,
+                extracted_dates: Vec::new(),
+                temporal_context: Vec::new(),
+                chemical_stamp: ChemicalStamp::default(),
+            },
+            WorkingMemoryEntry {
+                id: 2,
+                text: "wm two".into(),
+                embedding: Vec::new(),
+                salience: 1.1,
+                tick_created: 0,
+                rehearsal_count: 2,
+                promoted: false,
+                emotional_valence: 0.0,
+                wall_clock: 0,
+                extracted_dates: Vec::new(),
+                temporal_context: Vec::new(),
+                chemical_stamp: ChemicalStamp::default(),
+            },
+            WorkingMemoryEntry {
+                id: 3,
+                text: "wm three".into(),
+                embedding: Vec::new(),
+                salience: 0.95,
+                tick_created: 0,
+                rehearsal_count: 1,
+                promoted: false,
+                emotional_valence: 0.0,
+                wall_clock: 0,
+                extracted_dates: Vec::new(),
+                temporal_context: Vec::new(),
+                chemical_stamp: ChemicalStamp::default(),
+            },
+            WorkingMemoryEntry {
+                id: 4,
+                text: "wm four".into(),
+                embedding: Vec::new(),
+                salience: 0.9,
+                tick_created: 0,
+                rehearsal_count: 1,
+                promoted: false,
+                emotional_valence: 0.0,
+                wall_clock: 0,
+                extracted_dates: Vec::new(),
+                temporal_context: Vec::new(),
+                chemical_stamp: ChemicalStamp::default(),
+            },
+        ];
+
+        let pressure = compute_layer_normalization_pressure(&state.brain);
+        let actions = plan_normalization_actions(&pressure);
+        assert!(actions.renormalize_l1, "crowded L1 should trigger local normalization");
+        assert!(
+            !actions.renormalize_l2,
+            "quiet L2 should not trigger just because L1 is busy"
+        );
+        assert!(
+            !actions.renormalize_l3,
+            "quiet L3 should not trigger just because L1 is busy"
+        );
+    }
+
+    #[test]
+    fn test_l3_signal_normalization_can_fire_before_old_interval() {
+        let mut state = MemoryState::default();
+        state.brain.clock = 1;
+        let id_a = state.brain.next_id;
+        state.brain.next_id += 1;
+        let id_b = state.brain.next_id;
+        state.brain.next_id += 1;
+        state.brain.long_term.nodes.insert(
+            id_a,
+            GraphNode {
+                id: id_a,
+                label: "Alpha".into(),
+                kind: "Project".into(),
+                weight: 4.0,
+                last_seen: 0,
+                salience: 0.5,
+                gist: None,
+                source_texts: Vec::new(),
+                embedding: Vec::new(),
+                full_text: None,
+                coverage: None,
+            },
+        );
+        state.brain.long_term.nodes.insert(
+            id_b,
+            GraphNode {
+                id: id_b,
+                label: "SQLite".into(),
+                kind: "Tool".into(),
+                weight: 2.5,
+                last_seen: 0,
+                salience: 0.5,
+                gist: None,
+                source_texts: Vec::new(),
+                embedding: Vec::new(),
+                full_text: None,
+                coverage: None,
+            },
+        );
+        state.brain.long_term.index.insert("alpha".into(), id_a);
+        state.brain.long_term.index.insert("sqlite".into(), id_b);
+        state.brain.long_term.edges.push(GraphEdge {
+            from: id_a,
+            to: id_b,
+            weight: 3.2,
+            kind: "uses_datastore".into(),
+            ..GraphEdge::default()
+        });
+        state.brain.long_term.rebuild_edge_index();
+
+        let before = state
+            .brain
+            .long_term
+            .nodes
+            .get(&id_a)
+            .expect("Alpha should exist")
+            .weight;
+        tick(&mut state, "routine low-salience note");
+        let after = state
+            .brain
+            .long_term
+            .nodes
+            .get(&id_a)
+            .expect("Alpha should still exist")
+            .weight;
+        assert!(
+            after < before,
+            "L3 normalization should respond to local pressure before an old fixed interval"
+        );
+        assert!(
+            after <= GRAPH_WEIGHT_TARGET_MAX,
+            "L3 normalization should scale node weights toward target max, got {after}"
+        );
+    }
+
+    #[test]
+    fn test_l2_signal_normalization_can_fire_without_waiting_for_fixed_interval() {
+        let mut state = MemoryState::default();
+        state.brain.clock = 1;
+        state.brain.ticks_since_consolidation = 2;
+        state.brain.short_term.push(ShortTermEntry {
+            id: 1,
+            text: "critical l2 trace".into(),
+            salience: 2.5,
+            last_access: 0,
+            created_at_clock: 0,
+            ..ShortTermEntry::default()
+        });
+
+        let before = state.brain.short_term[0].salience;
+        tick(&mut state, "another routine note");
+        let after = state.brain.short_term[0].salience;
+        assert!(
+            after < before,
+            "L2 normalization should respond to local salience pressure without waiting for an old interval"
+        );
     }
 
     #[test]
