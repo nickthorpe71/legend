@@ -281,7 +281,11 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
     }
 
     let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
-    let context = crate::memory::retrieve_context(&mut memory.brain, topic);
+    let context = crate::memory::retrieve_context_with_mode(
+        &mut memory.brain,
+        topic,
+        crate::memory::RetrievalMode::ReadOnly,
+    );
     crate::memory::save(&memory).map_err(|e| e.to_string())?;
 
     // Count primed nodes

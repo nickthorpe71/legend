@@ -21,7 +21,7 @@ static MEMORY_TICK: CommandDef = CommandDef {
 };
 static MEMORY_QUERY: CommandDef = CommandDef {
     name: "query",
-    about: "Query memory (auto-reinforces top result)",
+    about: "Query memory (read-only retrieval)",
     usage: "legend memory query [--reasons] <text>",
     flags: &[FlagDef {
         long: "--reasons",

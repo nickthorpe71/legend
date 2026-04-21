@@ -374,7 +374,11 @@ impl App {
             return;
         }
         let query = self.input_buffer.clone();
-        let ctx = crate::memory::retrieve_context(&mut self.memory.brain, &query);
+        let ctx = crate::memory::retrieve_context_with_mode(
+            &mut self.memory.brain,
+            &query,
+            crate::memory::RetrievalMode::ReadOnly,
+        );
         let _ = crate::memory::save(&self.memory);
 
         let mut result = format!("Query: \"{}\"\n\n", query);
