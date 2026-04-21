@@ -1836,10 +1836,10 @@ pub fn retrieve_context_with_mode(
                 if interval > 0 && entry.last_retrieval_interval > 0 {
                     if interval > entry.last_retrieval_interval {
                         // Spaced retrieval: increasing intervals strengthen stability
-                        entry.stability = (entry.stability * 1.3).min(10.0);
+                        entry.stability = hippocampus::reinforce_stability(entry.stability, 1.3);
                     } else {
                         // Massed/cramming: diminishing returns
-                        entry.stability = (entry.stability * 1.05).min(10.0);
+                        entry.stability = hippocampus::reinforce_stability(entry.stability, 1.05);
                     }
                 }
                 entry.last_retrieval_interval = interval;
@@ -3676,7 +3676,11 @@ mod tests {
         let intervals = [5, 10, 20, 40];
         for interval in &intervals {
             state.brain.clock += interval;
-            retrieve_context(&mut state.brain, "Redis caching");
+            retrieve_context_with_mode(
+                &mut state.brain,
+                "Redis caching",
+                RetrievalMode::RecallStudy,
+            );
         }
 
         let stability = state.brain.short_term[0].stability;
@@ -3698,7 +3702,11 @@ mod tests {
         // Retrieve at constant short intervals: 1, 1, 1, 1
         for _ in 0..4 {
             state.brain.clock += 1;
-            retrieve_context(&mut state.brain, "Redis caching");
+            retrieve_context_with_mode(
+                &mut state.brain,
+                "Redis caching",
+                RetrievalMode::RecallStudy,
+            );
         }
 
         let massed_stability = state.brain.short_term[0].stability;
@@ -3712,7 +3720,11 @@ mod tests {
         let intervals = [5, 10, 20, 40];
         for interval in &intervals {
             state2.brain.clock += interval;
-            retrieve_context(&mut state2.brain, "Redis caching");
+            retrieve_context_with_mode(
+                &mut state2.brain,
+                "Redis caching",
+                RetrievalMode::RecallStudy,
+            );
         }
         let spaced_stability = state2.brain.short_term[0].stability;
 
@@ -3736,7 +3748,11 @@ mod tests {
         let intervals = [5, 10, 20, 40];
         for interval in &intervals {
             state.brain.clock += interval;
-            retrieve_context(&mut state.brain, "Redis caching");
+            retrieve_context_with_mode(
+                &mut state.brain,
+                "Redis caching",
+                RetrievalMode::RecallStudy,
+            );
         }
         let high_stability_salience = state.brain.short_term[0].salience;
 
@@ -3793,7 +3809,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stability_capped_at_ten() {
+    fn test_stability_soft_caps_above_ten() {
         let mut state = MemoryState::default();
         tick(
             &mut state,
@@ -3804,14 +3820,41 @@ mod tests {
         let mut interval = 5;
         for _ in 0..20 {
             state.brain.clock += interval;
-            retrieve_context(&mut state.brain, "Redis caching");
+            retrieve_context_with_mode(
+                &mut state.brain,
+                "Redis caching",
+                RetrievalMode::RecallStudy,
+            );
             interval += 5; // increasing intervals
         }
 
         assert!(
-            state.brain.short_term[0].stability <= 10.0,
-            "stability should be capped at 10.0, got {}",
+            state.brain.short_term[0].stability > 10.0,
+            "stability should exceed the old hard cap, got {}",
             state.brain.short_term[0].stability
+        );
+        assert!(
+            state.brain.short_term[0].stability < 20.0,
+            "stability should still plateau below the soft asymptote, got {}",
+            state.brain.short_term[0].stability
+        );
+    }
+
+    #[test]
+    fn test_hippocampal_stability_reinforcement_is_soft_capped() {
+        let mut stability = 1.0_f32;
+        for _ in 0..100 {
+            stability = hippocampus::reinforce_stability(stability, 1.3);
+        }
+        assert!(
+            stability > 10.0,
+            "hippocampal stability should exceed the old hard cap: {}",
+            stability
+        );
+        assert!(
+            stability < 20.0,
+            "hippocampal stability should still plateau below the asymptote: {}",
+            stability
         );
     }
 

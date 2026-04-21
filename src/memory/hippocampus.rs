@@ -74,7 +74,7 @@ pub struct ShortTermEntry {
     #[serde(default)]
     pub emotional_valence: f32,
     /// Ebbinghaus stability: how resistant this memory is to decay.
-    /// Starts at 1.0, grows with spaced retrieval (capped at 10.0).
+    /// Starts at 1.0 and grows with spaced retrieval using a soft cap.
     /// Higher stability → slower forgetting curve.
     #[serde(default = "default_stability")]
     pub stability: f32,
@@ -189,6 +189,14 @@ pub const MAX_REFS_PER_ENTRY: usize = 8;
 /// Default stability for new entries (Ebbinghaus forgetting curve).
 pub fn default_stability() -> f32 {
     1.0
+}
+
+/// Hippocampal stability reinforcement with diminishing returns.
+///
+/// Mirrors the L3 edge stability shaping so episodic durability can keep
+/// separating above the old 10.0 ceiling without exploding linearly.
+pub fn reinforce_stability(stability: f32, multiplier: f32) -> f32 {
+    neocortex::soft_cap_stability(stability * multiplier).max(default_stability())
 }
 
 // ---------------------------------------------------------------------------
