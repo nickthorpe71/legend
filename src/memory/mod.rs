@@ -10220,7 +10220,7 @@ mod tests {
     #[test]
     fn test_fast_map_creates_trace_on_unconsolidated_eviction() {
         // When an unconsolidated L2 entry is evicted, a Trace node should be
-        // created in L3 preserving its embedding and text.
+        // created in L3 preserving its embedding and cleaned semantic evidence.
         let mut state = MemoryState::default();
         state.brain.config.short_term_capacity = 3;
         // Prevent emergency consolidation (so entries stay unconsolidated)
@@ -10229,9 +10229,9 @@ mod tests {
 
         // Fill with 3 diverse entries (won't cluster)
         let texts = [
-            "DECISION: chose Redis for caching because of TTL support",
-            "BUG: null pointer in authentication middleware on empty tokens",
-            "ARCHITECTURE: event sourcing pattern for order processing pipeline",
+            "DECISION: chose Redis for caching because of TTL support [[[[",
+            "BUG: null pointer in authentication middleware on empty tokens %%@@",
+            "ARCHITECTURE: event sourcing pattern for order processing pipeline ====25",
         ];
         for text in &texts {
             let emb = embed_text(text, dim);
@@ -10301,6 +10301,19 @@ mod tests {
             !trace.source_texts.is_empty(),
             "Trace should have source_texts"
         );
+        let trace_text = trace
+            .source_texts
+            .iter()
+            .chain(trace.full_text.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for junk in ["[[[[", "%%@@", "====25"] {
+            assert!(
+                !trace_text.contains(junk),
+                "Trace L3 evidence should not retain syntactic junk {junk}: {trace_text}"
+            );
+        }
     }
 
     #[test]
