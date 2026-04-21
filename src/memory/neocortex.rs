@@ -249,6 +249,12 @@ pub struct GraphNodeSummary {
     pub coverage: Option<SummaryCoverage>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplayStats {
+    pub entries_replayed: usize,
+    pub edges_reinforced: usize,
+}
+
 /// Query-mode gated retrieval: bias spreading activation based on the current
 /// retrieval goal without requiring graph schema changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1367,10 +1373,23 @@ fn same_sentence(text: &str, a: usize, b: usize) -> bool {
 /// Replay consolidation: reinforce L3 edges between entities that co-occur
 /// in temporally proximate L2 entries (offline replay / sleep consolidation).
 pub fn replay_consolidation(state: &mut BrainState) {
+    let _ = replay_consolidation_for_entries(state, &[]);
+}
+
+/// Budgeted replay consolidation for selected L2 entry IDs.
+///
+/// When `selected_entry_ids` is empty this behaves like full replay. Otherwise
+/// only temporal pairs where at least one member is selected can participate.
+pub fn replay_consolidation_for_entries(
+    state: &mut BrainState,
+    selected_entry_ids: &[u64],
+) -> ReplayStats {
     let n = state.short_term.len();
     if n < 2 {
-        return;
+        return ReplayStats::default();
     }
+    let selected: HashSet<u64> = selected_entry_ids.iter().copied().collect();
+    let full_replay = selected.is_empty();
 
     // Collect (index, entities) for each L2 entry
     let entry_entities: Vec<(usize, Vec<(String, u64)>)> = state
@@ -1397,6 +1416,7 @@ pub fn replay_consolidation(state: &mut BrainState) {
         .collect();
 
     let mut replayed_indices: HashSet<usize> = HashSet::new();
+    let mut edges_reinforced = 0usize;
 
     // Ensure edge index is populated (may be empty if edges were pushed without registration)
     if state.long_term.edge_index.is_empty() && !state.long_term.edges.is_empty() {
@@ -1407,6 +1427,9 @@ pub fn replay_consolidation(state: &mut BrainState) {
         for j in (i + 1)..entry_entities.len() {
             let ei = &state.short_term[entry_entities[i].0];
             let ej = &state.short_term[entry_entities[j].0];
+            if !full_replay && !selected.contains(&ei.id) && !selected.contains(&ej.id) {
+                continue;
+            }
 
             // Check temporal proximity
             let time_diff = ei.last_access.abs_diff(ej.last_access);
@@ -1437,6 +1460,7 @@ pub fn replay_consolidation(state: &mut BrainState) {
                     if let Some(&edge_idx) = state.long_term.edge_index.get(&key) {
                         state.long_term.edges[edge_idx].weight += REPLAY_EDGE_BOOST;
                         state.long_term.edges[edge_idx].last_seen = state.clock;
+                        edges_reinforced += 1;
                         let replay_stamp =
                             averaged_chemical_stamp(&ei.chemical_stamp, &ej.chemical_stamp);
                         let stamp_key = GraphMemory::edge_stamp_key(*id_a, *id_b);
@@ -1464,5 +1488,10 @@ pub fn replay_consolidation(state: &mut BrainState) {
             0.02,
             1.0,
         );
+    }
+
+    ReplayStats {
+        entries_replayed: replayed_indices.len(),
+        edges_reinforced,
     }
 }
