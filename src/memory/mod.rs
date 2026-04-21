@@ -52,8 +52,8 @@ use neurochemistry::{
 use signal::{normalize_positive_signal, reinforce_bounded_signal};
 use thalamus::compute_salience;
 use wernicke::extract_dates;
-use wernicke::extract_entities;
 use wernicke::KeywordCache;
+use wernicke::{extract_entities, is_graph_entity_candidate};
 
 // Re-export tool types so existing `crate::memory::TickResult` paths still work.
 #[allow(unused_imports)]
@@ -148,6 +148,16 @@ pub(super) const REPLAY_TEMPORAL_WINDOW: u64 = 5;
 pub(super) const REPLAY_EDGE_BOOST: f32 = 0.08;
 /// Salience boost for entries that participate in replay.
 pub(super) const REPLAY_SALIENCE_BOOST: f32 = 0.02;
+/// Minimum ticks between automatic tick-time replay bursts.
+const OFFLINE_REPLAY_MIN_INTERVAL: u64 = 3;
+/// Per-entry cooldown so the same trace does not replay every burst.
+const OFFLINE_REPLAY_ENTRY_COOLDOWN: u64 = 8;
+/// Minimum replay pressure before tick schedules a micro-replay.
+const OFFLINE_REPLAY_PRESSURE_THRESHOLD: f32 = 0.45;
+/// Maximum L2 traces selected for one tick-time replay burst.
+const OFFLINE_REPLAY_MAX_BUDGET: usize = 3;
+/// Graph integration below this marks a trace as weakly integrated.
+const OFFLINE_REPLAY_WEAK_INTEGRATION: f32 = 0.65;
 /// Eviction score reduction for consolidated L2 entries whose Summary node
 /// has a valid embedding (L3 can serve their role).
 pub(super) const CONSOLIDATED_EVICTION_REDUCTION: f32 = 0.2;
@@ -473,6 +483,189 @@ fn renormalize_working_memory_salience(working_memory: &mut [WorkingMemoryEntry]
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct OfflineReplayPlan {
+    pressure: f32,
+    candidate_ids: Vec<u64>,
+}
+
+fn graph_integration_score(state: &BrainState, entry: &ShortTermEntry) -> f32 {
+    let entities: Vec<_> = extract_entities(&entry.text, &state.keyword_cache)
+        .into_iter()
+        .filter(is_graph_entity_candidate)
+        .collect();
+    if entities.is_empty() {
+        return 0.0;
+    }
+
+    let resolved: Vec<u64> = entities
+        .iter()
+        .filter_map(|entity| state.long_term.index.get(&entity.label).copied())
+        .collect();
+    let node_coverage = resolved.len() as f32 / entities.len() as f32;
+    if resolved.len() < 2 {
+        return node_coverage * 0.6;
+    }
+
+    let mut possible_edges = 0usize;
+    let mut present_edges = 0usize;
+    for i in 0..resolved.len() {
+        for j in (i + 1)..resolved.len() {
+            possible_edges += 1;
+            let (from, to) = if resolved[i] <= resolved[j] {
+                (resolved[i], resolved[j])
+            } else {
+                (resolved[j], resolved[i])
+            };
+            if state.long_term.edge_index.contains_key(&(from, to)) {
+                present_edges += 1;
+            }
+        }
+    }
+    let edge_coverage = if possible_edges == 0 {
+        0.0
+    } else {
+        present_edges as f32 / possible_edges as f32
+    };
+
+    node_coverage * 0.6 + edge_coverage * 0.4
+}
+
+fn replay_surprise_score(entry: &ShortTermEntry) -> f32 {
+    let stamp = &entry.chemical_stamp;
+    (stamp.ne_at_encoding * 0.35
+        + stamp.ach_at_encoding * 0.3
+        + stamp.cortisol_at_encoding * 0.2
+        + entry.emotional_valence.abs() * 0.15)
+        .min(1.0)
+}
+
+fn plan_tick_offline_replay(
+    state: &mut BrainState,
+    pressure: &LayerNormalizationPressure,
+) -> OfflineReplayPlan {
+    if state.short_term.len() < 2 {
+        return OfflineReplayPlan::default();
+    }
+    if state.clock.saturating_sub(state.last_offline_replay_clock) < OFFLINE_REPLAY_MIN_INTERVAL {
+        return OfflineReplayPlan::default();
+    }
+
+    if state.long_term.edge_index.is_empty() && !state.long_term.edges.is_empty() {
+        state.long_term.rebuild_edge_index();
+    }
+
+    let candidate_count = state.short_term.len() as f32;
+    let high_salience_ratio = state
+        .short_term
+        .iter()
+        .filter(|entry| entry.salience >= 0.55)
+        .count() as f32
+        / candidate_count;
+    let weak_ratio = state
+        .short_term
+        .iter()
+        .filter(|entry| graph_integration_score(state, entry) < OFFLINE_REPLAY_WEAK_INTEGRATION)
+        .count() as f32
+        / candidate_count;
+    let surprise_avg = state
+        .short_term
+        .iter()
+        .map(replay_surprise_score)
+        .sum::<f32>()
+        / candidate_count;
+    let pressure_score = (pressure.l2.total * 0.35
+        + high_salience_ratio * 0.25
+        + weak_ratio * 0.25
+        + surprise_avg * 0.15)
+        .min(1.0);
+
+    if pressure_score < OFFLINE_REPLAY_PRESSURE_THRESHOLD {
+        return OfflineReplayPlan {
+            pressure: pressure_score,
+            candidate_ids: Vec::new(),
+        };
+    }
+
+    let budget = if pressure_score >= 0.8 {
+        OFFLINE_REPLAY_MAX_BUDGET
+    } else if pressure_score >= 0.62 {
+        OFFLINE_REPLAY_MAX_BUDGET.min(2)
+    } else {
+        1
+    };
+
+    let mut scored: Vec<(u64, f32)> = state
+        .short_term
+        .iter()
+        .filter(|entry| {
+            state.clock.saturating_sub(entry.last_replay_clock) >= OFFLINE_REPLAY_ENTRY_COOLDOWN
+        })
+        .map(|entry| {
+            let integration_gap = (1.0 - graph_integration_score(state, entry)).clamp(0.0, 1.0);
+            let novelty = if entry.created_at_clock == 0 {
+                0.0
+            } else {
+                let age = state.clock.saturating_sub(entry.created_at_clock) as f32;
+                (1.0 / (1.0 + age / REPLAY_TEMPORAL_WINDOW as f32)).min(1.0)
+            };
+            let unconsolidated = if entry.consolidated { 0.0 } else { 0.15 };
+            let replay_fatigue = 1.0 / (1.0 + entry.replay_count as f32);
+            let score = (entry.salience * 0.35
+                + replay_surprise_score(entry) * 0.2
+                + integration_gap * 0.25
+                + novelty * 0.1
+                + unconsolidated)
+                * replay_fatigue;
+            (entry.id, score)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0)));
+
+    OfflineReplayPlan {
+        pressure: pressure_score,
+        candidate_ids: scored.into_iter().take(budget).map(|(id, _)| id).collect(),
+    }
+}
+
+fn run_tick_offline_replay(
+    state: &mut BrainState,
+    pressure: &LayerNormalizationPressure,
+) -> neocortex::ReplayStats {
+    let plan = plan_tick_offline_replay(state, pressure);
+    if plan.candidate_ids.is_empty() {
+        return neocortex::ReplayStats::default();
+    }
+
+    let selected: Vec<(u64, String, f32)> = state
+        .short_term
+        .iter()
+        .filter(|entry| plan.candidate_ids.contains(&entry.id))
+        .map(|entry| (entry.id, entry.text.clone(), entry.salience))
+        .collect();
+
+    for (_, text, salience) in &selected {
+        let replay_salience = normalize_positive_signal(*salience, 0.0, 1.0, 0.45, 1.4);
+        let _ = neocortex::update_graph(state, text, replay_salience);
+    }
+
+    let mut stats = neocortex::replay_consolidation_for_entries(state, &plan.candidate_ids);
+    stats.entries_replayed = stats.entries_replayed.max(selected.len());
+    if stats.entries_replayed > 0 {
+        state.last_offline_replay_clock = state.clock;
+        for entry in &mut state.short_term {
+            if plan.candidate_ids.contains(&entry.id) {
+                entry.replay_count = entry.replay_count.saturating_add(1);
+                entry.last_replay_clock = state.clock;
+                entry.stability = hippocampus::reinforce_stability(entry.stability, 1.05);
+            }
+        }
+    }
+
+    let _ = plan.pressure;
+    stats
+}
+
 // ---------------------------------------------------------------------------
 // Temporal Context Model (TCM) — implicit temporal encoding
 // ---------------------------------------------------------------------------
@@ -543,6 +736,9 @@ pub struct BrainState {
     /// Number of ticks since last consolidation.
     #[serde(default)]
     pub ticks_since_consolidation: u32,
+    /// Clock tick when the last automatic offline replay burst ran.
+    #[serde(default)]
+    pub last_offline_replay_clock: u64,
     /// IDs returned by the most recent retrieve_context() call, for contrastive descent.
     #[serde(default)]
     pub last_retrieved_ids: Vec<u64>,
@@ -625,6 +821,7 @@ impl Default for BrainState {
             clock: 0,
             next_id: 1,
             ticks_since_consolidation: 0,
+            last_offline_replay_clock: 0,
             last_retrieved_ids: Vec::new(),
             last_tick_embedding: Vec::new(),
             term_frequency: HashMap::new(),
@@ -1345,10 +1542,35 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
     // consolidation pressure is elevated (Phase C: replaces recent_valence_sum).
     // Re-compute effective after neurochemical spikes above may have changed levels.
     let effective_post = neurochemistry::compute_effective(&state.chemistry);
+    let mut did_consolidate = false;
     if state.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
         || effective_post.consolidation_pressure >= CONSOLIDATION_PRESSURE_THRESHOLD
     {
         consolidate(state);
+        did_consolidate = true;
+    }
+
+    if !did_consolidate {
+        #[cfg(feature = "instrument")]
+        let _replay_stats = run_tick_offline_replay(state, &normalization_pressure);
+        #[cfg(not(feature = "instrument"))]
+        let _ = run_tick_offline_replay(state, &normalization_pressure);
+        #[cfg(feature = "instrument")]
+        if _replay_stats.entries_replayed > 0 || _replay_stats.edges_reinforced > 0 {
+            _tctx.emit(
+                trace::PipelineStep::ReplayConsolidation,
+                trace::TracePayload::KeyValue(vec![
+                    (
+                        "entries_replayed".into(),
+                        _replay_stats.entries_replayed.to_string(),
+                    ),
+                    (
+                        "edges_reinforced".into(),
+                        _replay_stats.edges_reinforced.to_string(),
+                    ),
+                ]),
+            );
+        }
     }
 
     #[cfg(feature = "instrument")]
@@ -2171,6 +2393,7 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
     let consolidation_eff = neurochemistry::compute_effective(&state.chemistry);
     apply_decay(state, consolidation_eff.decay_rate_mod);
     neocortex::replay_consolidation(state);
+    state.last_offline_replay_clock = state.clock;
     #[cfg(feature = "instrument")]
     _cctx.emit(
         trace::PipelineStep::ReplayConsolidation,
@@ -7866,6 +8089,100 @@ mod tests {
                 .iter()
                 .all(|entry| entry.salience < 1.0),
             "replay should approach salience ceiling without hard-capping"
+        );
+    }
+
+    fn replay_pressure(total: f32) -> LayerNormalizationPressure {
+        LayerNormalizationPressure {
+            l1: L1NormalizationPressure::default(),
+            l2: L2NormalizationPressure {
+                total,
+                ..Default::default()
+            },
+            l3: L3NormalizationPressure::default(),
+        }
+    }
+
+    fn replay_test_entry(id: u64, text: &str, salience: f32, clock: u64) -> ShortTermEntry {
+        ShortTermEntry {
+            id,
+            text: text.into(),
+            summary: text.into(),
+            embedding: embed_text(text, 256),
+            salience,
+            usage: 1,
+            last_access: clock,
+            created_at_clock: clock,
+            chemical_stamp: ChemicalStamp {
+                ne_at_encoding: 0.7,
+                ach_at_encoding: 0.6,
+                cortisol_at_encoding: 0.1,
+                da_at_encoding: 0.2,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_tick_offline_replay_plan_selects_high_signal_weak_trace() {
+        let mut state = MemoryState::default();
+        state.brain.clock = 10;
+        state.brain.short_term.push(replay_test_entry(
+            1,
+            "Project Alpha uses SQLite for audit storage",
+            0.9,
+            9,
+        ));
+        state.brain.short_term.push(replay_test_entry(
+            2,
+            "Project Alpha validates SQLite checkpoint restore",
+            0.85,
+            10,
+        ));
+
+        let plan = plan_tick_offline_replay(&mut state.brain, &replay_pressure(0.8));
+
+        assert!(
+            !plan.candidate_ids.is_empty(),
+            "high-signal weakly integrated L2 traces should schedule replay"
+        );
+        assert!(
+            plan.candidate_ids.len() <= OFFLINE_REPLAY_MAX_BUDGET,
+            "tick replay should stay budgeted"
+        );
+    }
+
+    #[test]
+    fn test_tick_runs_budgeted_offline_replay_automatically() {
+        let mut state = MemoryState::default();
+        state.brain.clock = 10;
+        state.brain.next_id = 10;
+        state.brain.short_term.push(replay_test_entry(
+            1,
+            "Project Alpha uses SQLite for audit storage",
+            0.9,
+            9,
+        ));
+        state.brain.short_term.push(replay_test_entry(
+            2,
+            "Project Alpha validates SQLite checkpoint restore",
+            0.85,
+            10,
+        ));
+
+        tick_impl(&mut state.brain, "routine note for the active project");
+
+        assert!(
+            state.brain.last_offline_replay_clock > 0,
+            "tick should automatically run a replay burst when pressure is high"
+        );
+        assert!(
+            state
+                .brain
+                .short_term
+                .iter()
+                .any(|entry| entry.replay_count > 0),
+            "automatic replay should mark participating L2 traces"
         );
     }
 

@@ -98,6 +98,12 @@ pub struct ShortTermEntry {
     /// Neurochemical state at encoding time (Phase B).
     #[serde(default)]
     pub chemical_stamp: ChemicalStamp,
+    /// Number of offline replay cycles this entry has participated in.
+    #[serde(default)]
+    pub replay_count: u32,
+    /// Clock tick when this entry last participated in offline replay.
+    #[serde(default)]
+    pub last_replay_clock: u64,
 }
 
 impl Default for ShortTermEntry {
@@ -124,6 +130,8 @@ impl Default for ShortTermEntry {
             extracted_dates: Vec::new(),
             temporal_context: Vec::new(),
             chemical_stamp: ChemicalStamp::default(),
+            replay_count: 0,
+            last_replay_clock: 0,
         }
     }
 }
@@ -489,6 +497,8 @@ pub fn insert_short_term(
         extracted_dates,
         temporal_context,
         chemical_stamp,
+        replay_count: 0,
+        last_replay_clock: 0,
     });
     state.next_id += 1;
 }
