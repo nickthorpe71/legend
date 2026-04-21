@@ -71,7 +71,7 @@ fn print_memory_help() {
     );
     println!("    --blocker, -b                   Mark as blocker (boosts salience, prefixes with BLOCKER:)");
     println!("  legend memory tick              Record a memory (reads stdin)");
-    println!("  legend memory query [options] <text>  Query memory (auto-reinforces top result)");
+    println!("  legend memory query [options] <text>  Query memory (read-only retrieval)");
     println!(
         "    --reasons, -r                   Include similarity scores and retrieval reasoning"
     );

@@ -593,6 +593,12 @@ pub use prefrontal::WorkingMemoryEntry;
 // GraphMemory, GraphNode, GraphEdge, GraphNodeSummary — defined in neocortex.rs, re-exported here.
 pub use neocortex::{GraphEdge, GraphMemory, GraphNode, GraphNodeSummary, SummaryCoverage};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RetrievalMode {
+    ReadOnly,
+    RecallStudy,
+}
+
 // ReinforceResult, ReinforcedEntry — defined in basal_ganglia.rs, re-exported above.
 
 // ---------------------------------------------------------------------------
@@ -751,12 +757,30 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
     #[cfg(feature = "instrument")]
     {
         let actions = [
-            ("l1".to_string(), normalization_actions.renormalize_l1.to_string()),
-            ("l2".to_string(), normalization_actions.renormalize_l2.to_string()),
-            ("l3".to_string(), normalization_actions.renormalize_l3.to_string()),
-            ("l1_pressure".to_string(), format!("{:.3}", normalization_pressure.l1.total)),
-            ("l2_pressure".to_string(), format!("{:.3}", normalization_pressure.l2.total)),
-            ("l3_pressure".to_string(), format!("{:.3}", normalization_pressure.l3.total)),
+            (
+                "l1".to_string(),
+                normalization_actions.renormalize_l1.to_string(),
+            ),
+            (
+                "l2".to_string(),
+                normalization_actions.renormalize_l2.to_string(),
+            ),
+            (
+                "l3".to_string(),
+                normalization_actions.renormalize_l3.to_string(),
+            ),
+            (
+                "l1_pressure".to_string(),
+                format!("{:.3}", normalization_pressure.l1.total),
+            ),
+            (
+                "l2_pressure".to_string(),
+                format!("{:.3}", normalization_pressure.l2.total),
+            ),
+            (
+                "l3_pressure".to_string(),
+                format!("{:.3}", normalization_pressure.l3.total),
+            ),
         ];
         _tctx.emit(
             trace::PipelineStep::Renormalize,
@@ -1575,7 +1599,16 @@ fn encoding_activation(
 /// containing activated nodes' source texts.
 
 /// Query memory without inserting new data.
+#[allow(dead_code)] // Public brain API retained as the default read-only convenience wrapper.
 pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
+    retrieve_context_with_mode(state, query, RetrievalMode::ReadOnly)
+}
+
+pub fn retrieve_context_with_mode(
+    state: &mut BrainState,
+    query: &str,
+    mode: RetrievalMode,
+) -> MemoryContext {
     #[cfg(feature = "instrument")]
     let _qctx = {
         let ctx = trace::TraceCtx::new();
@@ -1586,9 +1619,15 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
         ctx
     };
 
-    state.clock += 1;
+    let mut query_clock = state.clock;
+    if mode == RetrievalMode::RecallStudy {
+        state.clock += 1;
+        query_clock = state.clock;
+    }
     let effective = neurochemistry::compute_effective(&state.chemistry);
-    apply_decay(state, effective.decay_rate_mod);
+    if mode == RetrievalMode::RecallStudy {
+        apply_decay(state, effective.decay_rate_mod);
+    }
     let query_mode = infer_query_mode(query, &state.keyword_cache);
     #[cfg(feature = "instrument")]
     _qctx.emit(
@@ -1614,7 +1653,9 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
         let effective_sim = (sim + keyword_bonus.min(KEYWORD_MATCH_BONUS_CAP)).min(1.0);
 
         if effective_sim >= MIN_QUERY_SIMILARITY {
-            wm_entry.rehearsal_count += 1;
+            if mode == RetrievalMode::RecallStudy {
+                wm_entry.rehearsal_count += 1;
+            }
             wm_snippets.push(MemorySnippet {
                 id: wm_entry.id,
                 text: wm_entry.text.clone(),
@@ -1786,24 +1827,26 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
     candidates.retain(|c| c.similarity >= adaptive_floor);
     let mut snippets = candidates;
 
-    // Update spaced repetition state for selected L2 entries
-    for snippet in &snippets {
-        if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == snippet.id) {
-            // Ebbinghaus spaced repetition: update stability based on retrieval interval
-            let interval = state.clock.saturating_sub(entry.last_access);
-            if interval > 0 && entry.last_retrieval_interval > 0 {
-                if interval > entry.last_retrieval_interval {
-                    // Spaced retrieval: increasing intervals strengthen stability
-                    entry.stability = (entry.stability * 1.3).min(10.0);
-                } else {
-                    // Massed/cramming: diminishing returns
-                    entry.stability = (entry.stability * 1.05).min(10.0);
+    if mode == RetrievalMode::RecallStudy {
+        // Update spaced repetition state for selected L2 entries
+        for snippet in &snippets {
+            if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == snippet.id) {
+                // Ebbinghaus spaced repetition: update stability based on retrieval interval
+                let interval = query_clock.saturating_sub(entry.last_access);
+                if interval > 0 && entry.last_retrieval_interval > 0 {
+                    if interval > entry.last_retrieval_interval {
+                        // Spaced retrieval: increasing intervals strengthen stability
+                        entry.stability = (entry.stability * 1.3).min(10.0);
+                    } else {
+                        // Massed/cramming: diminishing returns
+                        entry.stability = (entry.stability * 1.05).min(10.0);
+                    }
                 }
-            }
-            entry.last_retrieval_interval = interval;
+                entry.last_retrieval_interval = interval;
 
-            entry.last_access = state.clock;
-            entry.usage = entry.usage.saturating_add(1);
+                entry.last_access = query_clock;
+                entry.usage = entry.usage.saturating_add(1);
+            }
         }
     }
 
@@ -1836,34 +1879,41 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
     }
 
     // Record for contrastive descent in the next reinforce() call.
-    state.last_retrieved_ids = snippets.iter().map(|s| s.id).collect();
+    if mode == RetrievalMode::RecallStudy {
+        state.last_retrieved_ids = snippets.iter().map(|s| s.id).collect();
+    }
 
     // Passive auto-reinforce: the top result gets a small salience bump
     // proportional to its similarity, so useful memories naturally rise.
-    if let Some(top) = snippets.first() {
-        if top.similarity > 0.2 {
-            if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == top.id) {
-                entry.salience = (entry.salience + top.similarity * AUTO_REINFORCE_SCALE).min(1.0);
+    if mode == RetrievalMode::RecallStudy {
+        if let Some(top) = snippets.first() {
+            if top.similarity > 0.2 {
+                if let Some(entry) = state.short_term.iter_mut().find(|e| e.id == top.id) {
+                    entry.salience =
+                        (entry.salience + top.similarity * AUTO_REINFORCE_SCALE).min(1.0);
+                }
+                // Phase C: DA spike on successful retrieval — reward signal for recall
+                if top.similarity > 0.5 {
+                    state.chemistry.dopamine = (state.chemistry.dopamine
+                        + neurochemistry::DA_RETRIEVAL_SPIKE * top.similarity)
+                        .min(1.0);
+                }
+                #[cfg(feature = "instrument")]
+                _qctx.emit(
+                    trace::PipelineStep::AutoReinforceTop,
+                    trace::TracePayload::Similarities(vec![(top.id, top.similarity)]),
+                );
             }
-            // Phase C: DA spike on successful retrieval — reward signal for recall
-            if top.similarity > 0.5 {
-                state.chemistry.dopamine = (state.chemistry.dopamine
-                    + neurochemistry::DA_RETRIEVAL_SPIKE * top.similarity)
-                    .min(1.0);
-            }
-            #[cfg(feature = "instrument")]
-            _qctx.emit(
-                trace::PipelineStep::AutoReinforceTop,
-                trace::TracePayload::Similarities(vec![(top.id, top.similarity)]),
-            );
         }
     }
 
     // Trace promotion: any Trace node that was retrieved has proven its value.
     // Promote it to Summary status (brain analog: weak cortical traces that
     // receive hippocampal replay strengthen into stable representations).
-    for snippet in &snippets {
-        hippocampus::promote_trace(state, snippet.id);
+    if mode == RetrievalMode::RecallStudy {
+        for snippet in &snippets {
+            hippocampus::promote_trace(state, snippet.id);
+        }
     }
 
     let mut long_term = neocortex::graph_lookup(
@@ -1932,13 +1982,15 @@ pub fn retrieve_context(state: &mut BrainState, query: &str) -> MemoryContext {
     long_term.retain(|n| n.weight >= weight_floor);
 
     // Hebbian reinforcement on co-retrieved nodes
-    let retrieved_ids: Vec<u64> = long_term.iter().map(|n| n.id).collect();
-    neocortex::hebbian_reinforce(&mut state.long_term, &retrieved_ids, state.clock);
-    #[cfg(feature = "instrument")]
-    _qctx.emit(
-        trace::PipelineStep::HebbianReinforce,
-        trace::TracePayload::Number(retrieved_ids.len() as f64),
-    );
+    if mode == RetrievalMode::RecallStudy {
+        let retrieved_ids: Vec<u64> = long_term.iter().map(|n| n.id).collect();
+        neocortex::hebbian_reinforce(&mut state.long_term, &retrieved_ids, query_clock);
+        #[cfg(feature = "instrument")]
+        _qctx.emit(
+            trace::PipelineStep::HebbianReinforce,
+            trace::TracePayload::Number(retrieved_ids.len() as f64),
+        );
+    }
 
     #[cfg(feature = "instrument")]
     _qctx.emit(trace::PipelineStep::QueryEnd, trace::TracePayload::None);
@@ -3997,7 +4049,7 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_reinforce_on_query() {
+    fn test_read_only_query_does_not_auto_reinforce() {
         let mut state = MemoryState::default();
         tick(
             &mut state,
@@ -4005,13 +4057,37 @@ mod tests {
         );
         let salience_before = state.brain.short_term[0].salience;
 
-        // Query something related — top result should get a passive boost
+        // Read-only query should not mutate salience.
         retrieve_context(&mut state.brain, "cosine similarity vector");
         let salience_after = state.brain.short_term[0].salience;
 
         assert!(
+            (salience_after - salience_before).abs() < f32::EPSILON,
+            "read-only retrieval should not auto-reinforce: {} -> {}",
+            salience_before,
+            salience_after
+        );
+    }
+
+    #[test]
+    fn test_recall_study_query_auto_reinforces() {
+        let mut state = MemoryState::default();
+        tick(
+            &mut state,
+            "DECISION: the cosine similarity algorithm compares vector embeddings",
+        );
+        let salience_before = state.brain.short_term[0].salience;
+
+        retrieve_context_with_mode(
+            &mut state.brain,
+            "cosine similarity vector",
+            RetrievalMode::RecallStudy,
+        );
+        let salience_after = state.brain.short_term[0].salience;
+
+        assert!(
             salience_after > salience_before,
-            "top retrieval result should be auto-reinforced: {} -> {}",
+            "recall-study retrieval should auto-reinforce: {} -> {}",
             salience_before,
             salience_after
         );
@@ -4140,6 +4216,35 @@ mod tests {
         assert_eq!(
             state.brain.short_term[0].labile_until, 0,
             "retrieve should not set labile_until"
+        );
+    }
+
+    #[test]
+    fn test_read_only_retrieve_does_not_advance_clock() {
+        let mut state = MemoryState::default();
+        tick(&mut state, "DECISION: Redis handles caching");
+        let clock_before = state.brain.clock;
+        retrieve_context(&mut state.brain, "Redis caching");
+        assert_eq!(
+            state.brain.clock, clock_before,
+            "read-only retrieval should not advance clock"
+        );
+    }
+
+    #[test]
+    fn test_recall_study_retrieve_advances_clock_and_records_retrieval() {
+        let mut state = MemoryState::default();
+        tick(&mut state, "DECISION: Redis handles caching");
+        let clock_before = state.brain.clock;
+        retrieve_context_with_mode(
+            &mut state.brain,
+            "Redis caching",
+            RetrievalMode::RecallStudy,
+        );
+        assert_eq!(state.brain.clock, clock_before + 1);
+        assert!(
+            !state.brain.last_retrieved_ids.is_empty(),
+            "recall-study retrieval should record retrieved ids"
         );
     }
 
@@ -4328,7 +4433,10 @@ mod tests {
 
         let pressure = compute_layer_normalization_pressure(&state.brain);
         let actions = plan_normalization_actions(&pressure);
-        assert!(actions.renormalize_l1, "crowded L1 should trigger local normalization");
+        assert!(
+            actions.renormalize_l1,
+            "crowded L1 should trigger local normalization"
+        );
         assert!(
             !actions.renormalize_l2,
             "quiet L2 should not trigger just because L1 is busy"

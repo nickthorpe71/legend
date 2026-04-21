@@ -399,7 +399,7 @@ The **SessionStart hook** automatically runs `{cmd} memory start` and injects th
 
 ## Essential Commands
 - **Record decisions:** `{cmd} memory tick <<'EOF'` ... `EOF` — tick decisions with rationale (DECISION:, BUG:, ARCHITECTURE:, BLOCKER: prefixes). Aim for 3-8 ticks per session.
-- **Recall context:** `{cmd} memory query <<'EOF'` ... `EOF` — query before starting new topics. Top result auto-reinforced.
+- **Recall context:** `{cmd} memory query <<'EOF'` ... `EOF` — query before starting new topics. Read-only by default.
 {LEGEND_MARKER_END}"#,
         LEGEND_MARKER_START = LEGEND_MARKER_START,
         LEGEND_MARKER_END = LEGEND_MARKER_END,

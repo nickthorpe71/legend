@@ -32,7 +32,11 @@ pub(super) fn handle_query(
     let opts = parse_query_args(args, def)?;
 
     let mut memory = crate::memory::load_or_default()?;
-    let context = crate::memory::retrieve_context(&mut memory.brain, opts.query.trim());
+    let context = crate::memory::retrieve_context_with_mode(
+        &mut memory.brain,
+        opts.query.trim(),
+        crate::memory::RetrievalMode::ReadOnly,
+    );
     crate::memory::save(&memory)?;
 
     let primed_count = context
@@ -84,7 +88,7 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
                 "id": m.id,
                 "text": m.text,
                 "similarity": crate::tool::round3(m.similarity),
-                "reason": "matched in working memory (L1), rehearsal incremented",
+                "reason": "matched in working memory (L1)",
             })
         })
         .collect();
@@ -138,7 +142,7 @@ fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
         "short_term": short_term_with_reasons,
         "long_term": long_term_with_reasons,
         "primed_via_edges": primed_count,
-        "note": "Top result auto-reinforced (+3% salience boost)"
+        "note": "Read-only retrieval: no recall-time reinforcement or clock advance"
     });
 
     let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());

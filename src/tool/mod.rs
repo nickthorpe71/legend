@@ -18,8 +18,8 @@ pub use persistence::{
 pub use types::*;
 
 use crate::memory::{
-    add_node_if_new, anterior_pfc, classify_text, retrieve_context, tick_impl, GraphNode,
-    MemoryState, ShortTermEntry,
+    add_node_if_new, anterior_pfc, classify_text, retrieve_context_with_mode, tick_impl, GraphNode,
+    MemoryState, RetrievalMode, ShortTermEntry,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -134,7 +134,11 @@ pub fn build_start_summary_with_options(
     // This automatically boosts the salience of related short-term entries and surfaces related graph nodes.
     let mut query_context = None;
     if let Some(q) = query {
-        query_context = Some(retrieve_context(&mut state.brain, q));
+        query_context = Some(retrieve_context_with_mode(
+            &mut state.brain,
+            q,
+            RetrievalMode::ReadOnly,
+        ));
     }
 
     let git_sync = get_git_summary(state);
