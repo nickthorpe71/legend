@@ -1,5 +1,6 @@
 use super::{
     dentate_gyrus::word_overlap,
+    entorhinal::clean_semantic_noise,
     entorhinal::cosine_similarity,
     entorhinal::embed_text,
     entorhinal::{summarize_single, summarize_text},
@@ -613,10 +614,21 @@ pub fn eviction_score(entry: &ShortTermEntry, now: u64) -> f32 {
 /// `victim_idx` is the index into `state.short_term` of the entry about to be evicted.
 fn fast_map_trace(state: &mut BrainState, victim_idx: usize) {
     let victim = &state.short_term[victim_idx];
-    let label = if victim.summary.is_empty() {
+    let label = clean_semantic_noise(&if victim.summary.is_empty() {
         summarize_single(&victim.text, &state.keyword_cache)
     } else {
         victim.summary.clone()
+    });
+    let cleaned_text = clean_semantic_noise(&victim.text);
+    let source_texts = if cleaned_text.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![cleaned_text.clone()]
+    };
+    let full_text = if cleaned_text.trim().is_empty() {
+        None
+    } else {
+        Some(cleaned_text.clone())
     };
 
     // Enforce Trace node cap: prune lowest-salience Trace before creating a new one.
@@ -658,9 +670,9 @@ fn fast_map_trace(state: &mut BrainState, victim_idx: usize) {
             last_seen: state.clock,
             salience: TRACE_INITIAL_SALIENCE,
             gist: Some(label.clone()),
-            source_texts: vec![victim.text.clone()],
+            source_texts,
             embedding: victim.embedding.clone(),
-            full_text: Some(victim.text.clone()),
+            full_text,
             coverage: None,
         },
     );

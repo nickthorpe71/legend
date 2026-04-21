@@ -110,9 +110,18 @@ const TOPIC_SHIFT_MARKERS: &[&str] = &[
 
 fn is_semantic_junk_token(token: &str) -> bool {
     let trimmed = token.trim_matches(|c: char| c.is_ascii_punctuation());
-    trimmed.is_empty()
+    if trimmed.is_empty()
         && token.chars().count() >= 4
         && token.chars().all(|c| c.is_ascii_punctuation())
+    {
+        return true;
+    }
+
+    let punct_count = token.chars().filter(|c| c.is_ascii_punctuation()).count();
+    let digit_count = token.chars().filter(|c| c.is_ascii_digit()).count();
+    let alpha_count = token.chars().filter(|c| c.is_ascii_alphabetic()).count();
+
+    alpha_count == 0 && punct_count >= 4 && digit_count <= 2 && punct_count >= digit_count * 2
 }
 
 /// Remove syntactic noise that should not become semantic L3 evidence.
@@ -583,13 +592,14 @@ mod tests {
     #[test]
     fn test_clean_semantic_noise_removes_standalone_junk_tokens() {
         let cleaned = clean_semantic_noise(
-            "Project Alpha uses SQLite [[[[ and backups run at 02:30 UTC %%@@ ////.",
+            "Project Alpha uses SQLite [[[[ and backups run at 02:30 UTC %%@@ //// ====25.",
         );
         assert!(cleaned.contains("Project Alpha uses SQLite"));
         assert!(cleaned.contains("backups run at 02:30 UTC"));
         assert!(!cleaned.contains("[[[["));
         assert!(!cleaned.contains("%%@@"));
         assert!(!cleaned.contains("////"));
+        assert!(!cleaned.contains("====25"));
     }
 
     #[test]
