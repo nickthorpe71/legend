@@ -4287,7 +4287,7 @@ mod tests {
         let mut state = MemoryState::default();
         tick(
             &mut state,
-            "fn process_data() uses struct Config for settings",
+            "DECISION: fn process_data() uses struct Config for settings",
         );
         let id = state.brain.short_term[0].id;
 
@@ -4400,6 +4400,170 @@ mod tests {
         assert!(
             !state.brain.long_term.index.contains_key("weak_node"),
             "index entry should be cleaned"
+        );
+    }
+
+    fn add_survival_test_nodes(state: &mut MemoryState) -> (u64, u64) {
+        let from = state.brain.next_id;
+        state.brain.next_id += 1;
+        let to = state.brain.next_id;
+        state.brain.next_id += 1;
+        for (id, label) in [(from, "SurvivalA"), (to, "SurvivalB")] {
+            state.brain.long_term.nodes.insert(
+                id,
+                GraphNode {
+                    id,
+                    label: label.to_string(),
+                    kind: "Entity".to_string(),
+                    weight: 10.0,
+                    last_seen: 2_000,
+                    salience: 0.5,
+                    gist: None,
+                    source_texts: Vec::new(),
+                    embedding: Vec::new(),
+                    full_text: None,
+                    coverage: None,
+                },
+            );
+            state.brain.long_term.index.insert(label.to_lowercase(), id);
+        }
+        (from, to)
+    }
+
+    fn weak_survival_edge(from: u64, to: u64, kind: &str) -> GraphEdge {
+        GraphEdge {
+            from,
+            to,
+            weight: 0.01,
+            kind: kind.to_string(),
+            last_seen: 0,
+            activation_count: 0,
+            stability: 1.0,
+            recent_interval_avg: 0.0,
+            historical_interval_avg: 0.0,
+            cpeb_boost: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_prune_graph_removes_weak_stale_generic_edge() {
+        let mut state = MemoryState::default();
+        let (from, to) = add_survival_test_nodes(&mut state);
+        let key = GraphMemory::edge_stamp_key(from, to);
+        state
+            .brain
+            .long_term
+            .edges
+            .push(weak_survival_edge(from, to, "co_mentioned"));
+        state
+            .brain
+            .long_term
+            .edge_semantics
+            .insert(key.clone(), neocortex::GraphEdgeSemantics::default());
+
+        neocortex::prune_graph(&mut state.brain.long_term, 2_000);
+
+        assert!(
+            state.brain.long_term.edges.is_empty(),
+            "weak stale generic edge should be pruned"
+        );
+        assert!(
+            !state.brain.long_term.edge_semantics.contains_key(&key),
+            "semantic metadata for pruned edge should be cleaned"
+        );
+    }
+
+    #[test]
+    fn test_prune_graph_preserves_supported_typed_edge() {
+        let mut state = MemoryState::default();
+        let (from, to) = add_survival_test_nodes(&mut state);
+        let key = GraphMemory::edge_stamp_key(from, to);
+        state
+            .brain
+            .long_term
+            .edges
+            .push(weak_survival_edge(from, to, "uses_datastore"));
+        state.brain.long_term.edge_semantics.insert(
+            key,
+            neocortex::GraphEdgeSemantics {
+                kind: "uses_datastore".into(),
+                confidence: 0.9,
+                support_count: 3,
+                reference_frames: vec![neocortex::GraphReferenceFrame {
+                    kind: "project".into(),
+                    label: "Project Alpha".into(),
+                    relation: "uses datastore".into(),
+                    confidence: 0.9,
+                }],
+                ..Default::default()
+            },
+        );
+
+        neocortex::prune_graph(&mut state.brain.long_term, 2_000);
+
+        assert_eq!(
+            state.brain.long_term.edges.len(),
+            1,
+            "supported typed edge should survive despite low decayed weight"
+        );
+    }
+
+    #[test]
+    fn test_prune_graph_preserves_correction_edge() {
+        let mut state = MemoryState::default();
+        let (from, to) = add_survival_test_nodes(&mut state);
+        let key = GraphMemory::edge_stamp_key(from, to);
+        state
+            .brain
+            .long_term
+            .edges
+            .push(weak_survival_edge(from, to, "related"));
+        state.brain.long_term.edge_semantics.insert(
+            key,
+            neocortex::GraphEdgeSemantics {
+                kind: "related".into(),
+                confidence: 0.2,
+                correction_count: 1,
+                conflict_state: "Corrected".into(),
+                ..Default::default()
+            },
+        );
+
+        neocortex::prune_graph(&mut state.brain.long_term, 2_000);
+
+        assert_eq!(
+            state.brain.long_term.edges.len(),
+            1,
+            "correction/conflict edges should survive until truth maintenance resolves them"
+        );
+    }
+
+    #[test]
+    fn test_prune_graph_preserves_chemically_protected_edge() {
+        let mut state = MemoryState::default();
+        let (from, to) = add_survival_test_nodes(&mut state);
+        let key = GraphMemory::edge_stamp_key(from, to);
+        state
+            .brain
+            .long_term
+            .edges
+            .push(weak_survival_edge(from, to, "co_mentioned"));
+        state.brain.long_term.edge_chemical_stamps.insert(
+            key,
+            ChemicalStamp {
+                ne_at_encoding: 1.0,
+                da_at_encoding: 1.0,
+                cortisol_at_encoding: 0.0,
+                ach_at_encoding: 0.0,
+            },
+        );
+
+        neocortex::prune_graph(&mut state.brain.long_term, 2_000);
+
+        assert_eq!(
+            state.brain.long_term.edges.len(),
+            1,
+            "chemically protected edge should survive weak-weight pruning"
         );
     }
 
@@ -5345,7 +5509,10 @@ mod tests {
     #[test]
     fn test_graph_lookup_match_still_works() {
         let mut state = MemoryState::default();
-        tick(&mut state, "fn process_data() handles struct Config");
+        tick(
+            &mut state,
+            "DECISION: fn process_data() handles struct Config",
+        );
         // Query with a matching entity
         let results = neocortex::graph_lookup(
             &state.brain.long_term,

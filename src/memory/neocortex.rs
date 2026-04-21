@@ -255,6 +255,8 @@ pub struct ReplayStats {
     pub edges_reinforced: usize,
 }
 
+const EDGE_SURVIVAL_PRUNE_THRESHOLD: f32 = 0.12;
+
 /// Query-mode gated retrieval: bias spreading activation based on the current
 /// retrieval goal without requiring graph schema changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,6 +316,17 @@ fn edge_kind_class(kind: &str) -> EdgeKindClass {
         | "stores"
         | "exceeds" => EdgeKindClass::TypedFact,
         _ => EdgeKindClass::Unknown,
+    }
+}
+
+fn edge_kind_survival_prior(kind: &str) -> f32 {
+    match edge_kind_class(kind) {
+        EdgeKindClass::TypedFact => 0.22,
+        EdgeKindClass::Structural | EdgeKindClass::SummaryRepresentation => 0.18,
+        EdgeKindClass::FrameBinding => 0.15,
+        EdgeKindClass::Temporal | EdgeKindClass::KeywordAssociation => 0.12,
+        EdgeKindClass::Association | EdgeKindClass::Unknown => 0.04,
+        EdgeKindClass::WeakAssociation => 0.0,
     }
 }
 
@@ -654,7 +667,56 @@ pub fn graph_boost_candidates(
     }
 }
 
-/// Remove low-weight graph nodes and orphaned/excess edges.
+fn edge_semantic_survival_score(semantics: Option<&GraphEdgeSemantics>) -> f32 {
+    let Some(semantics) = semantics else {
+        return 0.0;
+    };
+
+    let support = ((semantics.support_count as f32).ln_1p() * 0.08).min(0.24);
+    let confidence = semantics.confidence.clamp(0.0, 1.0) * 0.12;
+    let frames = (semantics.reference_frames.len() as f32 * 0.04).min(0.16);
+    let conflict_protection = if semantics.correction_count > 0 {
+        0.35
+    } else if semantics.contradiction_count > 0 {
+        0.28
+    } else {
+        0.0
+    };
+
+    support + confidence + frames + conflict_protection
+}
+
+fn edge_local_chemical_survival_score(stamp: Option<&ChemicalStamp>, edge: &GraphEdge) -> f32 {
+    let chemical = stamp
+        .map(|stamp| (edge_chemical_decay_protection(stamp) - 1.0).clamp(0.0, 0.35))
+        .unwrap_or(0.0);
+    chemical + edge.cpeb_boost.min(0.35)
+}
+
+fn edge_history_survival_score(edge: &GraphEdge, clock: u64) -> f32 {
+    let activation = ((edge.activation_count as f32).ln_1p() * 0.04).min(0.2);
+    let age = clock.saturating_sub(edge.last_seen) as f32;
+    let recency = (1.0 / (1.0 + age / 500.0)) * 0.08;
+    activation + recency
+}
+
+fn edge_survival_score(
+    edge: &GraphEdge,
+    semantics: Option<&GraphEdgeSemantics>,
+    chemical_stamp: Option<&ChemicalStamp>,
+    clock: u64,
+) -> f32 {
+    let weight = edge.weight.max(0.0).min(1.0) * 0.45;
+    let stability = ((edge.stability.max(1.0).sqrt() - 1.0) * 0.08).min(0.22);
+    weight
+        + stability
+        + edge_kind_survival_prior(&edge.kind)
+        + edge_semantic_survival_score(semantics)
+        + edge_local_chemical_survival_score(chemical_stamp, edge)
+        + edge_history_survival_score(edge, clock)
+}
+
+/// Remove low-weight graph nodes and edges with weak survival evidence.
 pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
     // 1. Remove nodes whose decayed weight has fallen below threshold
     let remove_ids: Vec<u64> = long_term
@@ -679,6 +741,17 @@ pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
     long_term
         .edges
         .retain(|e| node_ids.contains_key(&e.from) && node_ids.contains_key(&e.to));
+
+    // 3. Remove weak, stale edges only when they lack semantic, chemical,
+    // replay/history, or conflict/correction survival evidence.
+    let edge_semantics = long_term.edge_semantics.clone();
+    let edge_stamps = long_term.edge_chemical_stamps.clone();
+    long_term.edges.retain(|edge| {
+        let key = GraphMemory::edge_stamp_key(edge.from, edge.to);
+        let survival =
+            edge_survival_score(edge, edge_semantics.get(&key), edge_stamps.get(&key), clock);
+        survival >= EDGE_SURVIVAL_PRUNE_THRESHOLD
+    });
 
     // Rebuild edge index after retain may have invalidated it
     long_term.rebuild_edge_index();
