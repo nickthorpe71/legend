@@ -85,6 +85,7 @@ fn init_first_run_creates_expected_files_and_repeat_is_stable() {
       Created .legend/ directory
     ✓ Configured local Git merge driver for Legend
     ✓ Updated .gitattributes with Legend merge driver rules
+    ✓ Installed Git post-merge hook for Legend state recovery
     ✓ Created .claude/settings.json with Legend hooks
     ✓ Created .mcp.json with Legend MCP config
     ✓ Created CLAUDE.md with Legend instructions
