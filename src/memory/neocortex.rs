@@ -104,6 +104,7 @@ impl GraphMemory {
 #[serde(default)]
 pub struct GraphEdgeSemantics {
     pub kind: String,
+    pub kinds: Vec<String>,
     pub predicates: Vec<String>,
     pub evidence: Vec<String>,
     pub contradictory_evidence: Vec<String>,
@@ -723,6 +724,12 @@ pub fn prune_graph(long_term: &mut GraphMemory, clock: u64) {
         .nodes
         .iter()
         .filter(|(_, node)| {
+            if matches!(
+                node.kind.as_str(),
+                "Object" | "Project" | "Tool" | "Value" | "FilePath"
+            ) {
+                return false;
+            }
             let age = clock.saturating_sub(node.last_seen) as f32;
             let effective = node.weight - age * PRUNE_AGE_WEIGHT;
             effective < GRAPH_PRUNE_WEIGHT
@@ -928,6 +935,7 @@ fn merge_edge_semantics(
     if edge_kind_priority(kind) >= edge_kind_priority(&semantics.kind) {
         semantics.kind = kind.to_string();
     }
+    push_unique_capped(&mut semantics.kinds, kind.to_string(), 16);
     push_unique_capped(&mut semantics.predicates, incoming.predicate, 8);
     let incoming_polarity = incoming.polarity;
     let incoming_evidence = incoming.evidence;

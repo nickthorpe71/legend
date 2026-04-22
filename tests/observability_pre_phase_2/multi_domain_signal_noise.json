@@ -1,0 +1,273 @@
+{
+  "name": "multi_domain_signal_noise",
+  "ticks": [
+    {
+      "id": "tick-01-personal-preference",
+      "text": "Maya prefers jasmine tea during late coding sessions. The teal paper umbrella leaned beside the lamp. ####"
+    },
+    {
+      "id": "tick-02-deadline",
+      "text": "Project Beta deadline is 2026-05-15 for the accessibility audit. The copper button was under the tray. %%%%"
+    },
+    {
+      "id": "tick-03-scientific-fact",
+      "text": "Dopamine strengthens reward prediction signals in reinforcement learning notes. The blue bottle cap spun near the window. @@@@"
+    },
+    {
+      "id": "tick-04-correction",
+      "text": "Project Beta deadline moved from 2026-05-15 to 2026-05-22. The copper button moved beside the tray. !!!!"
+    },
+    {
+      "id": "tick-05-routine-noise",
+      "text": "The hallway smelled like toast while someone mentioned cloud shaped socks. [[[[["
+    },
+    {
+      "id": "tick-06-plan-queue",
+      "text": "PLAN: Multi Domain Phase\n[active] Review Project Beta deadline\n[pending] Brew jasmine tea before late coding session"
+    },
+    {
+      "id": "tick-07-repeated-signals",
+      "text": "Maya still prefers jasmine tea after the deadline moved. The teal paper umbrella stayed beside the lamp. ////"
+    },
+    {
+      "id": "tick-08-deadline-confirmation",
+      "text": "Project Beta now uses 2026-05-22 as the accessibility audit deadline. Dopamine notes still emphasize reward prediction signals. ++++"
+    }
+  ],
+  "checkpoints": [
+    {
+      "name": "preference-and-incidental-capture",
+      "after_tick": 1,
+      "expect": {
+        "any_memory_layer_contains": [
+          "Maya",
+          "jasmine tea",
+          "teal paper umbrella",
+          "lamp"
+        ],
+        "long_term_node_labels_contain": [
+          "Maya",
+          "jasmine tea",
+          "teal paper umbrella",
+          "lamp"
+        ],
+        "long_term_edges_contain": [
+          { "from": "Maya", "to": "jasmine tea", "kind": "prefers" },
+          { "from": "teal paper umbrella", "to": "lamp", "kind": "beside" }
+        ],
+        "long_term_not_contains": [
+          "####"
+        ]
+      }
+    },
+    {
+      "name": "deadline-and-date-capture",
+      "after_tick": 2,
+      "expect": {
+        "any_memory_layer_contains": [
+          "Project Beta",
+          "2026-05-15",
+          "accessibility audit",
+          "copper button",
+          "tray"
+        ],
+        "long_term_node_labels_contain": [
+          "Project Beta",
+          "2026-05-15",
+          "accessibility audit",
+          "copper button",
+          "tray"
+        ],
+        "long_term_edges_contain": [
+          { "from": "Project Beta", "to": "2026-05-15", "kind": "deadline" },
+          { "from": "copper button", "to": "tray", "kind": "located_near" }
+        ],
+        "long_term_not_contains": [
+          "%%%%"
+        ]
+      }
+    },
+    {
+      "name": "science-fact-and-noise-rejection",
+      "after_tick": 3,
+      "expect": {
+        "any_memory_layer_contains": [
+          "Dopamine",
+          "reward prediction signals",
+          "reinforcement learning notes",
+          "blue bottle cap",
+          "window"
+        ],
+        "long_term_node_labels_contain": [
+          "Dopamine",
+          "reward prediction signals",
+          "reinforcement learning notes",
+          "blue bottle cap",
+          "window"
+        ],
+        "long_term_edges_contain": [
+          { "from": "Dopamine", "to": "reward prediction signals", "kind": "strengthens" },
+          { "from": "blue bottle cap", "to": "window", "kind": "near" }
+        ],
+        "long_term_not_contains": [
+          "@@@@"
+        ]
+      }
+    },
+    {
+      "name": "correction-preserves-new-deadline",
+      "after_tick": 4,
+      "expect": {
+        "any_memory_layer_contains": [
+          "Project Beta",
+          "2026-05-22"
+        ],
+        "long_term_node_labels_contain": [
+          "Project Beta",
+          "2026-05-22"
+        ],
+        "long_term_edges_contain": [
+          { "from": "Project Beta", "to": "2026-05-22", "kind": "deadline" },
+          { "from": "copper button", "to": "tray", "kind": "beside" }
+        ],
+        "long_term_not_contains": [
+          "!!!!"
+        ]
+      }
+    },
+    {
+      "name": "routine-noise-does-not-become-l3",
+      "after_tick": 5,
+      "consolidate_before_check": true,
+      "expect": {
+        "any_memory_layer_contains": [
+          "toast"
+        ],
+        "long_term_not_contains": [
+          "[[[[["
+        ],
+        "long_term_node_labels_not_contain": [
+          "[[[[["
+        ]
+      }
+    },
+    {
+      "name": "plan-queue-is-separate",
+      "after_tick": 6,
+      "expect": {
+        "plans_contain": [
+          "Multi Domain Phase",
+          "[active] Review Project Beta deadline",
+          "[pending] Brew jasmine tea before late coding session"
+        ],
+        "working_memory_not_contains": [
+          "PLAN: Multi Domain Phase",
+          "Review Project Beta deadline"
+        ],
+        "short_term_not_contains": [
+          "PLAN: Multi Domain Phase",
+          "Review Project Beta deadline"
+        ],
+        "long_term_not_contains": [
+          "PLAN: Multi Domain Phase",
+          "Review Project Beta deadline"
+        ]
+      }
+    },
+    {
+      "name": "repetition-strengthens-core-over-incidental",
+      "after_tick": 7,
+      "expect": {
+        "long_term_node_weight_greater_than": [
+          { "heavier": "Maya", "lighter": "blue bottle cap" },
+          { "heavier": "jasmine tea", "lighter": "blue bottle cap" }
+        ],
+        "long_term_edge_weight_greater_than": [
+          {
+            "heavier": { "from": "Maya", "to": "jasmine tea", "kind": "prefers" },
+            "lighter": { "from": "blue bottle cap", "to": "window", "kind": "near" }
+          }
+        ],
+        "long_term_not_contains": [
+          "////"
+        ]
+      }
+    },
+    {
+      "name": "final-multi-domain-state",
+      "after_tick": 8,
+      "consolidate_before_check": true,
+      "expect": {
+        "long_term_node_labels_contain": [
+          "Maya",
+          "jasmine tea",
+          "Project Beta",
+          "2026-05-22",
+          "Dopamine",
+          "reward prediction signals"
+        ],
+        "long_term_edges_contain": [
+          { "from": "Maya", "to": "jasmine tea", "kind": "prefers" },
+          { "from": "Project Beta", "to": "2026-05-22", "kind": "deadline" },
+          { "from": "Dopamine", "to": "reward prediction signals", "kind": "strengthens" }
+        ],
+        "plans_contain": [
+          "Multi Domain Phase",
+          "[active] Review Project Beta deadline"
+        ],
+        "long_term_not_contains": [
+          "[[[[[",
+          "####",
+          "%%%%",
+          "@@@@",
+          "!!!!",
+          "////",
+          "++++"
+        ],
+        "long_term_occurs_at_most": [
+          { "text": "jasmine tea", "max": 6 },
+          { "text": "2026-05-22", "max": 6 },
+          { "text": "reward prediction signals", "max": 6 }
+        ],
+        "queries": [
+          {
+            "query": "What tea does Maya prefer?",
+            "contains": [
+              "Maya",
+              "jasmine tea"
+            ],
+            "not_contains": [
+              "####"
+            ]
+          },
+          {
+            "query": "What is the current Project Beta deadline?",
+            "contains": [
+              "Project Beta",
+              "2026-05-22"
+            ],
+            "not_contains": [
+              "%%%%"
+            ]
+          },
+          {
+            "query": "What does dopamine strengthen?",
+            "contains": [
+              "Dopamine",
+              "reward prediction signals"
+            ],
+            "not_contains": [
+              "@@@@"
+            ]
+          },
+          {
+            "query": "What is the next plan item?",
+            "contains": [
+              "[Plan: Multi Domain Phase | active] Review Project Beta deadline"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

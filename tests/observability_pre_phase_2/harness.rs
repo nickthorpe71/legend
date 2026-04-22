@@ -1,6 +1,7 @@
 use crate::common::{seed_basic_repo, Harness};
 use legend::memory::MemoryState;
 use serde::Deserialize;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 struct Scenario {
@@ -44,6 +45,10 @@ struct Expectations {
     #[serde(default)]
     any_memory_layer_not_contains: Vec<String>,
     #[serde(default)]
+    plans_contain: Vec<String>,
+    #[serde(default)]
+    plans_not_contains: Vec<String>,
+    #[serde(default)]
     working_memory_occurs_at_most: Vec<OccurrenceExpectation>,
     #[serde(default)]
     short_term_occurs_at_most: Vec<OccurrenceExpectation>,
@@ -63,6 +68,8 @@ struct Expectations {
     long_term_node_weight_greater_than: Vec<NodeWeightComparison>,
     #[serde(default)]
     long_term_edge_weight_greater_than: Vec<EdgeWeightComparison>,
+    #[serde(default)]
+    queries: Vec<QueryExpectation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,11 +97,21 @@ struct EdgeWeightComparison {
     lighter: EdgeExpectation,
 }
 
+#[derive(Debug, Deserialize)]
+struct QueryExpectation {
+    query: String,
+    #[serde(default)]
+    contains: Vec<String>,
+    #[serde(default)]
+    not_contains: Vec<String>,
+}
+
 #[derive(Debug)]
 struct LayerText {
     working_memory: String,
     short_term: String,
     long_term: String,
+    plans: String,
 }
 
 impl LayerText {
@@ -106,7 +123,8 @@ impl LayerText {
     }
 }
 
-pub fn run_scenario(scenario_json: &str) {
+#[allow(dead_code)]
+pub fn run_scenario_cli(scenario_json: &str) {
     let scenario: Scenario =
         serde_json::from_str(scenario_json).expect("observability scenario should parse");
 
@@ -114,13 +132,17 @@ pub fn run_scenario(scenario_json: &str) {
     seed_basic_repo(&harness);
     harness.cmd_ok(&["init"]);
 
-    let mut failures = Vec::new();
     let mut consolidated_for_checkpoint = std::collections::HashSet::new();
+    let mut failures = Vec::new();
+    let mut timings = ScenarioTimings::default();
+    let started = Instant::now();
 
     for tick_index in 1..=scenario.ticks.len() {
         let tick = &scenario.ticks[tick_index - 1];
         let _tick_id = tick.id.as_str();
+        let tick_started = Instant::now();
         harness.cmd_ok(&["memory", "tick", &tick.text]);
+        timings.tick += tick_started.elapsed();
 
         for checkpoint in scenario
             .checkpoints
@@ -130,9 +152,12 @@ pub fn run_scenario(scenario_json: &str) {
             if checkpoint.consolidate_before_check
                 && consolidated_for_checkpoint.insert(checkpoint.name.clone())
             {
+                let consolidate_started = Instant::now();
                 harness.cmd_ok(&["memory", "consolidate"]);
+                timings.consolidate += consolidate_started.elapsed();
             }
 
+            let checkpoint_started = Instant::now();
             let state = load_state(&harness);
             let layer_text = collect_layer_text(&state);
             assert_checkpoint(
@@ -143,8 +168,11 @@ pub fn run_scenario(scenario_json: &str) {
                 &layer_text,
                 &mut failures,
             );
+            timings.checkpoint += checkpoint_started.elapsed();
         }
     }
+    timings.total = started.elapsed();
+    report_timings(&scenario.name, "cli", &timings);
 
     if !failures.is_empty() {
         panic!(
@@ -153,6 +181,76 @@ pub fn run_scenario(scenario_json: &str) {
             failures.join("\n")
         );
     }
+}
+
+pub fn run_scenario_in_process(scenario_json: &str) {
+    let scenario: Scenario =
+        serde_json::from_str(scenario_json).expect("observability scenario should parse");
+
+    let mut state = MemoryState::default();
+    let mut failures = Vec::new();
+    let mut consolidated_for_checkpoint = std::collections::HashSet::new();
+    let mut timings = ScenarioTimings::default();
+    let started = Instant::now();
+
+    for tick_index in 1..=scenario.ticks.len() {
+        let tick = &scenario.ticks[tick_index - 1];
+        let _tick_id = tick.id.as_str();
+        let tick_started = Instant::now();
+        legend::memory::tick(&mut state, &tick.text);
+        timings.tick += tick_started.elapsed();
+
+        for checkpoint in scenario
+            .checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.after_tick == tick_index)
+        {
+            if checkpoint.consolidate_before_check
+                && consolidated_for_checkpoint.insert(checkpoint.name.clone())
+            {
+                let consolidate_started = Instant::now();
+                legend::memory::consolidate(&mut state.brain);
+                timings.consolidate += consolidate_started.elapsed();
+            }
+
+            let checkpoint_started = Instant::now();
+            let layer_text = collect_layer_text(&state);
+            assert_checkpoint(
+                &scenario.name,
+                tick_index,
+                checkpoint,
+                &state,
+                &layer_text,
+                &mut failures,
+            );
+            timings.checkpoint += checkpoint_started.elapsed();
+        }
+    }
+    timings.total = started.elapsed();
+    report_timings(&scenario.name, "in-process", &timings);
+
+    if !failures.is_empty() {
+        panic!(
+            "Pre-Phase-2 observability scenario '{}' failed:\n{}",
+            scenario.name,
+            failures.join("\n")
+        );
+    }
+}
+
+#[derive(Default)]
+struct ScenarioTimings {
+    total: Duration,
+    tick: Duration,
+    consolidate: Duration,
+    checkpoint: Duration,
+}
+
+fn report_timings(scenario_name: &str, runner: &str, timings: &ScenarioTimings) {
+    eprintln!(
+        "[observability::{scenario_name}::{runner}] total={:.2?} tick={:.2?} consolidate={:.2?} checkpoint={:.2?}",
+        timings.total, timings.tick, timings.consolidate, timings.checkpoint
+    );
 }
 
 fn load_state(harness: &Harness) -> MemoryState {
@@ -198,6 +296,7 @@ fn collect_layer_text(state: &MemoryState) -> LayerText {
         working_memory: normalize(&working_memory),
         short_term: normalize(&short_term),
         long_term: normalize(&long_term),
+        plans: normalize(&plan_queue_text(state)),
     }
 }
 
@@ -280,6 +379,24 @@ fn assert_checkpoint(
         "any_memory_layer",
         &layer_text.any_layer(),
         &checkpoint.expect.any_memory_layer_not_contains,
+        failures,
+    );
+    assert_contains(
+        scenario_name,
+        tick_index,
+        &checkpoint.name,
+        "plans",
+        &layer_text.plans,
+        &checkpoint.expect.plans_contain,
+        failures,
+    );
+    assert_not_contains(
+        scenario_name,
+        tick_index,
+        &checkpoint.name,
+        "plans",
+        &layer_text.plans,
+        &checkpoint.expect.plans_not_contains,
         failures,
     );
 
@@ -368,6 +485,14 @@ fn assert_checkpoint(
         &checkpoint.expect.long_term_edge_weight_greater_than,
         failures,
     );
+    assert_queries(
+        scenario_name,
+        tick_index,
+        &checkpoint.name,
+        state,
+        &checkpoint.expect.queries,
+        failures,
+    );
 }
 
 fn assert_contains(
@@ -387,6 +512,78 @@ fn assert_contains(
             ));
         }
     }
+}
+
+fn plan_queue_text(state: &MemoryState) -> String {
+    state
+        .brain
+        .plans
+        .iter()
+        .flat_map(|plan| {
+            std::iter::once(plan.name.clone())
+                .chain(
+                    plan.items
+                        .iter()
+                        .map(|item| format!("[{}] {}", item.status.label(), item.text)),
+                )
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn assert_queries(
+    scenario_name: &str,
+    tick_index: usize,
+    checkpoint: &str,
+    state: &MemoryState,
+    expectations: &[QueryExpectation],
+    failures: &mut Vec<String>,
+) {
+    for expectation in expectations {
+        let mut brain = state.brain.clone();
+        let context = legend::memory::retrieve_context_with_mode(
+            &mut brain,
+            &expectation.query,
+            legend::memory::RetrievalMode::ReadOnly,
+        );
+        let query_text = normalize(&query_context_text(&context));
+
+        for needle in &expectation.contains {
+            let normalized = normalize(needle);
+            if !query_text.contains(&normalized) {
+                failures.push(format!(
+                    "[{scenario_name}::{checkpoint} after tick {tick_index}] query `{}` missing expected `{needle}`",
+                    expectation.query
+                ));
+            }
+        }
+
+        for needle in &expectation.not_contains {
+            let normalized = normalize(needle);
+            if query_text.contains(&normalized) {
+                failures.push(format!(
+                    "[{scenario_name}::{checkpoint} after tick {tick_index}] query `{}` returned excluded `{needle}`",
+                    expectation.query
+                ));
+            }
+        }
+    }
+}
+
+fn query_context_text(context: &legend::memory::MemoryContext) -> String {
+    let mut parts = Vec::new();
+    parts.extend(context.working_memory.iter().map(|m| m.text.as_str()));
+    parts.extend(context.short_term.iter().map(|m| m.text.as_str()));
+    for node in &context.long_term {
+        parts.push(node.label.as_str());
+        parts.push(node.kind.as_str());
+        if let Some(edge_type) = node.edge_type.as_deref() {
+            parts.push(edge_type);
+        }
+        parts.extend(node.source_texts.iter().map(String::as_str));
+    }
+    parts.join("\n")
 }
 
 fn assert_not_contains(
@@ -614,9 +811,24 @@ fn long_term_edge_weight(state: &MemoryState, expected: &EdgeExpectation) -> Opt
         let edge_to = normalize(&to_node.label);
         let labels_match =
             (edge_from == from && edge_to == to) || (edge_from == to && edge_to == from);
-        let kind_matches = kind
-            .as_ref()
-            .is_none_or(|expected_kind| normalize(&edge.kind) == *expected_kind);
+        let kind_matches = kind.as_ref().is_none_or(|expected_kind| {
+            if normalize(&edge.kind) == *expected_kind {
+                return true;
+            }
+            let key = legend::memory::neocortex::GraphMemory::edge_stamp_key(edge.from, edge.to);
+            state
+                .brain
+                .long_term
+                .edge_semantics
+                .get(&key)
+                .is_some_and(|semantics| {
+                    normalize(&semantics.kind) == *expected_kind
+                        || semantics
+                            .kinds
+                            .iter()
+                            .any(|kind| normalize(kind) == *expected_kind)
+                })
+        });
 
         if labels_match && kind_matches {
             Some(edge.weight)
