@@ -5463,9 +5463,8 @@ mod tests {
             .map(|e| e.last_seen)
             .collect();
         assert!(!initial_last_seen.is_empty(), "should have edges");
-        // Query to trigger Hebbian reinforcement
-        retrieve_context(&mut state.brain, "process Data");
-        // Check that last_seen was updated for co-retrieved edges
+        // RecallStudy mode triggers Hebbian reinforcement — ReadOnly does not.
+        retrieve_context_with_mode(&mut state.brain, "process Data", RetrievalMode::RecallStudy);
         let any_updated = state
             .brain
             .long_term
@@ -6673,9 +6672,12 @@ mod tests {
         assert!(!state.brain.working_memory.is_empty());
         let initial_rehearsal = state.brain.working_memory[0].rehearsal_count;
 
-        // Query to trigger rehearsal
-        retrieve_context(&mut state.brain, "purple elephant silver moonbeams");
-        // Check rehearsal was incremented
+        // RecallStudy mode increments rehearsal_count — ReadOnly does not.
+        retrieve_context_with_mode(
+            &mut state.brain,
+            "purple elephant silver moonbeams",
+            RetrievalMode::RecallStudy,
+        );
         let entry = state
             .brain
             .working_memory
@@ -9549,8 +9551,8 @@ mod tests {
     fn test_ecb_rises_on_routine() {
         let mut state = MemoryState::default();
         assert_eq!(state.brain.chemistry.endocannabinoid, 0.0);
-        // Low-salience tick (no decision/bug keywords, plain text)
-        tick(&mut state, "updated some formatting");
+        // Short, content-free chatter scores well below the 0.25 eCB threshold.
+        tick(&mut state, "ok sounds good");
         assert!(
             state.brain.chemistry.endocannabinoid > 0.0,
             "eCB should rise on routine/low-salience tick, got {}",

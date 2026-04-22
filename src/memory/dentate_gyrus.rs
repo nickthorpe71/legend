@@ -232,9 +232,15 @@ mod tests {
 
     #[test]
     fn test_sparse_orthogonalize_pushes_apart_similar() {
-        let a = embed_text("Rust memory model borrow checker ownership", 256);
-        let b = embed_text("Legend memory system three-layer architecture", 256);
+        // Near-paraphrases land in the confusable zone [low, high); truly
+        // unrelated sentences fall below `low` and skip orthogonalization.
+        let a = embed_text("Rust uses ownership for memory safety", 256);
+        let b = embed_text("Python uses garbage collection for memory management", 256);
         let sim_before = cosine_similarity(&a, &b);
+        assert!(
+            sim_before >= 0.3 && sim_before < 0.88,
+            "test inputs must be confusable: sim={sim_before}"
+        );
 
         let a_ortho = sparse_orthogonalize(&a, &[b.clone()], 0.3, 0.88, 0.3);
         let sim_after = cosine_similarity(&a_ortho, &b);
