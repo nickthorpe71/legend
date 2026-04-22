@@ -1,7 +1,6 @@
 mod consolidate;
 mod event_log;
 mod helpers;
-mod plan;
 mod query;
 mod reinforce;
 mod sessions;
@@ -50,7 +49,6 @@ pub fn handle_memory(
         "reinforce" => reinforce::handle_reinforce(&args[1..]),
         "dump" => simple::handle_dump(),
         "task" => task::handle_task(&args[1..]),
-        "plan" => plan::handle_plan(&args[1..]),
         _ => {
             print_memory_help();
             Ok(())
@@ -78,8 +76,6 @@ fn print_memory_help() {
     println!("  legend memory task              Show current task");
     println!("  legend memory task set <text>   Set current task");
     println!("  legend memory task clear        Clear current task");
-    println!("  legend memory plan              Show all current plans");
-    println!("  legend memory plan clear [name] Clear a specific plan (or all plans)");
     println!("  legend memory reinforce <sig> <id...>  Explicit feedback on retrieved entries");
     println!("  legend memory dump              Export full memory state as JSON");
     println!("  legend memory stats             Show memory stats");

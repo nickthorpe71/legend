@@ -73,7 +73,7 @@ fn handle_tools_list(id: &Value) -> Value {
         },
         {
             "name": "legend_memory_tick",
-            "description": "Record a decision, discovery, or insight into long-term memory. Call this frequently — after completing work, making decisions, or discovering something. Use prefixes: DECISION:, BUG:, ARCHITECTURE:, BLOCKER:, COMPLETED:, PLAN:. Example: 'DECISION: Chose SQLite over Postgres because the app is single-user'. Include rationale — the 'why' is more valuable than the 'what'. Use PLAN: prefix for structured plans with [active], [pending], [deferred], [done] status markers on each item.",
+            "description": "Record a decision, discovery, or insight, or update the executive plan queue. Call this frequently after completing work, making decisions, or discovering something. Use prefixes: DECISION:, BUG:, ARCHITECTURE:, BLOCKER:, COMPLETED:, PLAN:. Example: 'DECISION: Chose SQLite over Postgres because the app is single-user'. Include rationale — the 'why' is more valuable than the 'what'. PLAN: updates structured plans with [active], [pending], [deferred], [done] status markers on each item without entering normal L1/L2/L3 memory.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -98,20 +98,6 @@ fn handle_tools_list(id: &Value) -> Value {
                 },
                 "required": ["topic"]
             }
-        },
-        {
-            "name": "legend_memory_plan",
-            "description": "View and manage structured plans. ALWAYS call this tool when the user says anything about plans, next steps, what to work on, where we left off, or continuing previous work. Also call proactively at session start if the start summary shows current plans. Returns all active plans with item statuses and highlights the next action.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "Optional: 'list' (default) to view plans. Plans are advanced by ticking with PLAN: prefix."
-                    }
-                },
-                "required": []
-            }
         }
     ]);
 
@@ -128,7 +114,6 @@ fn dispatch_tool(name: &str, arguments: &Value) -> Result<String, String> {
         "legend_memory_start" => tool_memory_start(arguments),
         "legend_memory_tick" => tool_memory_tick(arguments),
         "legend_memory_query" => tool_memory_query(arguments),
-        "legend_memory_plan" => tool_memory_plan(arguments),
         _ => Err(format!("Unknown tool: {}", name)),
     }
 }
@@ -190,7 +175,7 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
         "- **Include rationale** — \"Chose X over Y because Z\" is better than \"Using X\"\n",
     );
     output.push_str("- **Query before new topics** — check what Legend already knows\n");
-    output.push_str("- **Plans are first-class** — when the user mentions \"plan\", \"next\", \"where we left off\", or \"what should I work on\", ALWAYS call `legend_memory_plan`. Advance plans by ticking: `PLAN: Plan Name\\n[done] Completed\\n[active] Now working on\\n[pending] Remaining`\n");
+    output.push_str("- **Plans are first-class** — `memory start` surfaces the executive plan queue; update it by ticking `PLAN: Plan Name\\n[done] Completed\\n[active] Now working on\\n[pending] Remaining`.\n");
     output.push_str("- **Don't tick noise** — avoid restating what the user just said or trivial status updates\n");
 
     Ok(output)
@@ -360,31 +345,6 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
     Ok(output)
 }
 
-fn tool_memory_plan(_arguments: &Value) -> Result<String, String> {
-    let memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
-
-    let mut output = String::new();
-
-    // Next Action callout
-    if let Some((plan_name, item_text)) =
-        crate::memory::anterior_pfc::find_next_plan_action(&memory.brain.plans)
-    {
-        output.push_str("## Next Action\n");
-        output.push_str(&format!("> **{}**: {}\n\n", plan_name, item_text));
-    }
-
-    // Full plan listing
-    let plans_text = crate::memory::anterior_pfc::format_plans_cli(&memory.brain.plans);
-    output.push_str(&plans_text);
-
-    // Usage hint
-    output.push_str("\n\n---\n");
-    output.push_str("*To advance a plan, tick with PLAN: prefix:*\n");
-    output.push_str("```\nPLAN: Plan Name\n[done] Completed item\n[active] Now working on\n[pending] Remaining items\n```\n");
-
-    Ok(output)
-}
-
 // ---------------------------------------------------------------------------
 // Tool call response builder
 // ---------------------------------------------------------------------------
@@ -527,13 +487,13 @@ mod tests {
     fn test_handle_tools_list_returns_4_core_tools() {
         let resp = handle_tools_list(&json!(1));
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 3);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"legend_memory_start"));
         assert!(names.contains(&"legend_memory_tick"));
         assert!(names.contains(&"legend_memory_query"));
-        assert!(names.contains(&"legend_memory_plan"));
+        assert!(!names.contains(&"legend_memory_plan"));
 
         // Verify each tool has inputSchema
         for tool in tools {

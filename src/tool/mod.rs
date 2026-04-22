@@ -96,10 +96,14 @@ pub fn get_git_summary(state: &mut MemoryState) -> GitSyncInfo {
 /// Returns a TickResult describing what action was taken.
 pub fn tick(state: &mut MemoryState, text: &str) -> TickResult {
     let result = tick_impl(&mut state.brain, text);
-    // Session log lives in tool layer — append after brain processing
+    // Session log lives in tool layer — append after brain processing.
+    // PLAN ticks bypass L1/L2/L3 encoding; log only a compact summary so plan
+    // bodies don't rotate real decisions out of recent session activity.
+    let log_text =
+        crate::memory::anterior_pfc::summarize_plan_tick(text).unwrap_or_else(|| text.to_string());
     state.session_log.push(SessionEntry {
         timestamp: state.brain.clock,
-        text: text.to_string(),
+        text: log_text,
     });
     while state.session_log.len() > SESSION_LOG_CAPACITY {
         state.session_log.remove(0);
