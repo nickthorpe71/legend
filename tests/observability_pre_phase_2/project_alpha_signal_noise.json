@@ -955,6 +955,41 @@
             "text": "Project Alpha uses SQLite as the canonical datastore",
             "max": 1
           }
+        ],
+        "queries": [
+          {
+            "query": "What datastore does Project Alpha use?",
+            "contains": [
+              "Project Alpha",
+              "SQLite"
+            ],
+            "not_contains": [
+              "[[[[",
+              "%%@@"
+            ]
+          },
+          {
+            "query": "How does Project Alpha validate SQLite restore?",
+            "contains": [
+              "Project Alpha",
+              "SQLite",
+              "restore"
+            ],
+            "not_contains": [
+              "////",
+              "&&&&"
+            ]
+          },
+          {
+            "query": "What office folklore item is the glitter pinecone cataloged under?",
+            "contains": [
+              "glitter pinecone",
+              "office folklore"
+            ],
+            "not_contains": [
+              "====25"
+            ]
+          }
         ]
       }
     }
