@@ -2515,27 +2515,11 @@ where
 {
     let mut seen = HashSet::new();
     let mut compacted = Vec::new();
-    let mut project_alpha_sqlite_count = 0usize;
-
     for text in texts {
-        let lower = text.to_ascii_lowercase();
-        if lower.contains("project alpha") && lower.contains("sqlite") {
-            project_alpha_sqlite_count += 1;
-            continue;
-        }
         if seen.insert(text.clone()) {
             compacted.push(text);
         }
     }
-
-    if project_alpha_sqlite_count > 0 {
-        let cluster =
-            format!("Project Alpha / SQLite: {project_alpha_sqlite_count} supporting observations");
-        if seen.insert(cluster.clone()) {
-            compacted.insert(0, cluster);
-        }
-    }
-
     compacted
 }
 
@@ -6188,25 +6172,18 @@ mod tests {
             Some(summary.label.as_str()),
             "Summary gist should hold the extractive meaning while label stays the index handle"
         );
-        assert_eq!(
-            summary.source_texts.len(),
-            1,
-            "Summary evidence should compact repeated Project Alpha / SQLite observations"
-        );
-        assert!(
-            summary.source_texts[0].contains("Project Alpha / SQLite")
-                && summary.source_texts[0].contains("4 supporting observations"),
-            "Summary evidence should retain compact support count: {:?}",
-            summary.source_texts
-        );
+        // Repeated surface variants with the same entity pair currently stay as
+        // separate source_texts (exact-match dedup only). Phase 6's duplicate
+        // evidence compaction is the planned generic replacement.
+        assert_eq!(summary.source_texts.len(), texts.len());
         let coverage = summary
             .coverage
             .as_ref()
             .expect("Summary should track coverage metadata");
         assert_eq!(coverage.source_count, texts.len());
-        assert_eq!(coverage.evidence_count, 1);
-        assert_eq!(coverage.omitted_source_count, texts.len() - 1);
-        assert!(!coverage.full_evidence_preserved);
+        assert_eq!(coverage.evidence_count, texts.len());
+        assert_eq!(coverage.omitted_source_count, 0);
+        assert!(coverage.full_evidence_preserved);
 
         let returned = summaries
             .iter()
@@ -6215,7 +6192,7 @@ mod tests {
         assert_eq!(returned.gist, summary.gist);
         assert_eq!(
             returned.coverage.as_ref().map(|c| c.evidence_count),
-            Some(1)
+            Some(texts.len())
         );
     }
 
