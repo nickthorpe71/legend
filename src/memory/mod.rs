@@ -2509,18 +2509,127 @@ fn find_existing_summary_node(
         })
 }
 
-fn compact_summary_source_texts<I>(texts: I) -> Vec<String>
+/// Minimum group size before the entity-pair compaction replaces verbatim
+/// source_texts with a support-count line. A single observation is never
+/// compacted (1 → "1 supporting observation" is pure text inflation).
+const DUPLICATE_EVIDENCE_MIN_GROUP: usize = 2;
+
+fn compact_summary_source_texts<I>(texts: I, keyword_cache: &KeywordCache) -> Vec<String>
 where
     I: IntoIterator<Item = String>,
 {
+    // Step 1: exact-match dedup, preserving first-occurrence order.
     let mut seen = HashSet::new();
-    let mut compacted = Vec::new();
+    let mut unique: Vec<String> = Vec::new();
     for text in texts {
         if seen.insert(text.clone()) {
-            compacted.push(text);
+            unique.push(text);
         }
     }
-    compacted
+
+    // Step 2: assign each unique text an entity-pair signature.
+    //
+    // Repeated mentions of the same two anchor entities (e.g. "X uses Y",
+    // "X keeps Y", "X validates Y") already reinforce node/edge weights in
+    // update_graph — storing every surface form in source_texts duplicates
+    // the evidence without adding facts. Collapse such groups into one
+    // support-count line so Summary evidence stays a compact index of
+    // distinct observations, not a transcript.
+    let mut groups: HashMap<(String, String), Vec<String>> = HashMap::new();
+    let mut order: Vec<(Option<(String, String)>, String)> = Vec::new();
+    let mut singletons: Vec<String> = Vec::new();
+
+    for text in unique {
+        match entity_pair_signature(&text, keyword_cache) {
+            Some(sig) => {
+                if !groups.contains_key(&sig) {
+                    order.push((Some(sig.clone()), text.clone()));
+                }
+                groups.entry(sig).or_default().push(text);
+            }
+            None => {
+                order.push((None, text.clone()));
+                singletons.push(text);
+            }
+        }
+    }
+
+    // Step 3: emit in first-occurrence order; compact groups >= MIN_GROUP.
+    let mut singleton_iter = singletons.into_iter();
+    let mut out = Vec::new();
+    for (sig_opt, _first_text) in order {
+        match sig_opt {
+            Some(sig) => {
+                if let Some(group) = groups.remove(&sig) {
+                    if group.len() >= DUPLICATE_EVIDENCE_MIN_GROUP {
+                        out.push(format!(
+                            "{} / {}: {} supporting observations",
+                            sig.0,
+                            sig.1,
+                            group.len()
+                        ));
+                    } else {
+                        out.extend(group);
+                    }
+                }
+            }
+            None => {
+                if let Some(text) = singleton_iter.next() {
+                    out.push(text);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Extract the top entity-pair (two distinct proper-noun / typed entity
+/// labels) from a source text, canonicalized to alphabetical order so the
+/// same pair always maps to the same signature regardless of sentence order.
+fn entity_pair_signature(
+    text: &str,
+    keyword_cache: &KeywordCache,
+) -> Option<(String, String)> {
+    let entities = wernicke::extract_entities(text, keyword_cache);
+    let mut candidates: Vec<String> = Vec::new();
+    for entity in entities {
+        if !wernicke::is_graph_entity_candidate(&entity) {
+            continue;
+        }
+        let label = entity.label;
+        if label.len() < 2 || !label.chars().any(|c| c.is_ascii_uppercase()) {
+            continue;
+        }
+        // Multi-word labels must be proper-noun phrases so compound heads
+        // like "SQLite backups" don't displace the anchor "SQLite".
+        if !label.split_whitespace().all(|word| {
+            word.chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false)
+        }) {
+            continue;
+        }
+        // Substring-overlap dedup so "Project" doesn't shadow "Project Alpha".
+        let lower = label.to_lowercase();
+        let overlaps = candidates.iter().any(|c| {
+            let c_lower = c.to_lowercase();
+            c_lower.contains(&lower) || lower.contains(&c_lower)
+        });
+        if overlaps {
+            continue;
+        }
+        candidates.push(label);
+        if candidates.len() >= 2 {
+            break;
+        }
+    }
+    if candidates.len() < 2 {
+        return None;
+    }
+    let mut pair = [candidates[0].clone(), candidates[1].clone()];
+    pair.sort_by_key(|l| l.to_lowercase());
+    Some((pair[0].clone(), pair[1].clone()))
 }
 
 /// Merge similar short-term entries into long-term graph summaries.
@@ -2619,6 +2728,7 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 .iter()
                 .map(|e| clean_semantic_noise(&e.text))
                 .filter(|text| !text.trim().is_empty()),
+            &state.keyword_cache,
         );
         let coverage = SummaryCoverage {
             source_count: cleaned_source_count,
@@ -2724,7 +2834,8 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                     .iter()
                     .cloned()
                     .chain(source_texts.clone());
-                node.source_texts = compact_summary_source_texts(merged_sources);
+                node.source_texts =
+                    compact_summary_source_texts(merged_sources, &state.keyword_cache);
                 // Systems consolidation: update neocortical encoding
                 if !centroid_embedding.is_empty() {
                     node.embedding = centroid_embedding.clone();
@@ -6172,18 +6283,28 @@ mod tests {
             Some(summary.label.as_str()),
             "Summary gist should hold the extractive meaning while label stays the index handle"
         );
-        // Repeated surface variants with the same entity pair currently stay as
-        // separate source_texts (exact-match dedup only). Phase 6's duplicate
-        // evidence compaction is the planned generic replacement.
-        assert_eq!(summary.source_texts.len(), texts.len());
+        // Phase 6 duplicate evidence compaction: four surface variants that
+        // share the same top entity-pair collapse into one support-count line.
+        assert_eq!(
+            summary.source_texts.len(),
+            1,
+            "Summary evidence should compact repeated entity-pair observations"
+        );
+        assert!(
+            summary.source_texts[0].contains("Project Alpha")
+                && summary.source_texts[0].contains("SQLite")
+                && summary.source_texts[0].contains("4 supporting observations"),
+            "Summary evidence should retain the anchor pair and support count: {:?}",
+            summary.source_texts
+        );
         let coverage = summary
             .coverage
             .as_ref()
             .expect("Summary should track coverage metadata");
         assert_eq!(coverage.source_count, texts.len());
-        assert_eq!(coverage.evidence_count, texts.len());
-        assert_eq!(coverage.omitted_source_count, 0);
-        assert!(coverage.full_evidence_preserved);
+        assert_eq!(coverage.evidence_count, 1);
+        assert_eq!(coverage.omitted_source_count, texts.len() - 1);
+        assert!(!coverage.full_evidence_preserved);
 
         let returned = summaries
             .iter()
@@ -6192,7 +6313,7 @@ mod tests {
         assert_eq!(returned.gist, summary.gist);
         assert_eq!(
             returned.coverage.as_ref().map(|c| c.evidence_count),
-            Some(texts.len())
+            Some(1)
         );
     }
 
