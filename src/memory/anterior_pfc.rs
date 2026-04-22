@@ -1,13 +1,14 @@
 /// Anterior Prefrontal Cortex (BA10) — Prospective Memory & Plan Management
 ///
-/// Maintains pending goals and structured plans WITHOUT consuming working memory.
-/// Plans persist across sessions and surface spontaneously when queries match
-/// deferred intentions (McDaniel & Einstein's prospective memory pathway).
+/// Maintains pending goals and structured plans as an executive queue WITHOUT
+/// consuming working memory or short-term episodic memory. Plans persist inside
+/// the same serialized memory state, but they are read through start/query
+/// executive pathways instead of the hippocampal L1/L2/L3 encoding path.
 ///
 /// Key mechanisms:
 /// - Cognitive branching (Koechlin): suspended goals in compressed form
 /// - Implementation intentions (Gollwitzer): structured items improve execution
-/// - ACC-inspired lifecycle: Active → Completed → Archived (to L2)
+/// - ACC-inspired lifecycle: Active → Completed inside the executive queue
 use serde::{Deserialize, Serialize};
 
 use super::entorhinal::{cosine_similarity, embed_text};
@@ -15,9 +16,6 @@ use super::entorhinal::{cosine_similarity, embed_text};
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// Ticks after completion before a plan is archived to L2.
-pub const PLAN_ARCHIVE_TICKS: u64 = 50;
 
 /// Cosine similarity threshold for fuzzy plan name matching.
 /// Set high (0.95) to avoid false matches between plans with similar prefixes
@@ -254,15 +252,6 @@ pub fn find_next_plan_action(plans: &[Plan]) -> Option<(String, String)> {
 // Formatting
 // ---------------------------------------------------------------------------
 
-/// Format a plan for archival as an L2 episodic entry.
-pub fn format_plan_archive_text(plan: &Plan) -> String {
-    let mut out = format!("Completed plan: {}", plan.name);
-    for item in &plan.items {
-        out.push_str(&format!(" | [{}] {}", item.status.label(), item.text));
-    }
-    out
-}
-
 /// Format plans for the start summary display.
 pub fn format_plans_for_summary(plans: &[Plan]) -> serde_json::Value {
     if plans.is_empty() {
@@ -303,7 +292,8 @@ pub fn format_plans_for_summary(plans: &[Plan]) -> serde_json::Value {
     })
 }
 
-/// Format plans for CLI `legend memory plan` display.
+/// Format plans for plain-text display in internal tools and tests.
+#[cfg(test)]
 pub fn format_plans_cli(plans: &[Plan]) -> String {
     if plans.is_empty() {
         return "No current plans.".to_string();
@@ -325,6 +315,31 @@ pub fn format_plans_cli(plans: &[Plan]) -> String {
         }
     }
     out
+}
+
+/// Build a compact session-log entry for PLAN ticks without storing the whole
+/// plan body as recent episodic activity.
+pub fn summarize_plan_tick(text: &str) -> Option<String> {
+    let plan_body = strip_plan_prefix(text)?;
+    let (name, items) = parse_plan_text(plan_body)?;
+
+    let mut active = 0;
+    let mut pending = 0;
+    let mut deferred = 0;
+    let mut done = 0;
+    for (_, status) in items {
+        match status {
+            ItemStatus::Active => active += 1,
+            ItemStatus::Pending => pending += 1,
+            ItemStatus::Deferred => deferred += 1,
+            ItemStatus::Done => done += 1,
+        }
+    }
+
+    Some(format!(
+        "PLAN updated: {} (active: {}, pending: {}, deferred: {}, done: {})",
+        name, active, pending, deferred, done
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -534,33 +549,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_plan_archive_text() {
-        let plan = Plan {
-            id: 1,
-            name: "Test Plan".to_string(),
-            items: vec![
-                PlanItem {
-                    text: "Fix bug".into(),
-                    status: ItemStatus::Done,
-                    embedding: vec![],
-                },
-                PlanItem {
-                    text: "Add tests".into(),
-                    status: ItemStatus::Done,
-                    embedding: vec![],
-                },
-            ],
-            created_at: 1,
-            updated_at: 10,
-            completed_at: Some(10),
-        };
-        let text = format_plan_archive_text(&plan);
-        assert!(text.contains("Completed plan: Test Plan"));
-        assert!(text.contains("[done] Fix bug"));
-        assert!(text.contains("[done] Add tests"));
-    }
-
-    #[test]
     fn test_format_plans_cli() {
         let plans = vec![Plan {
             id: 1,
@@ -577,6 +565,19 @@ mod tests {
         let output = format_plans_cli(&plans);
         assert!(output.contains("Plan: Test"));
         assert!(output.contains("[active] Do thing"));
+    }
+
+    #[test]
+    fn test_summarize_plan_tick_omits_body() {
+        let summary = summarize_plan_tick(
+            "PLAN: Test Plan\n[active] Fix parser\n[pending] Write tests\n[done] Inspect path",
+        )
+        .unwrap();
+        assert_eq!(
+            summary,
+            "PLAN updated: Test Plan (active: 1, pending: 1, deferred: 0, done: 1)"
+        );
+        assert!(!summary.contains("Fix parser"));
     }
 
     #[test]

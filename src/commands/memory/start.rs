@@ -352,7 +352,7 @@ pub fn format_start_summary_markdown(summary: &serde_json::Value) -> String {
 
     out.push_str("\n---\n");
     out.push_str("*Use heredoc for tick/query: `legend memory tick <<'EOF'` ... `EOF`*\n");
-    out.push_str("*Plans are first-class in Legend. When the user mentions \"plan\", \"next\", \"where we left off\", or \"what to work on\" — ALWAYS call `legend_memory_plan`. To advance: `PLAN: Plan Name\\n[done] Completed item\\n[active] Next item\\n[pending] Remaining`*\n");
+    out.push_str("*Plans are first-class in Legend. `memory start` surfaces the executive plan queue; update it with `PLAN: Plan Name\\n[done] Completed item\\n[active] Next item\\n[pending] Remaining` via `memory tick`.*\n");
     out
 }
 

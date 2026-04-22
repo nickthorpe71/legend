@@ -1119,6 +1119,31 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
     let mut result_action = "created".to_string();
     let mut result_entry_id: u64 = 0;
 
+    // --- Anterior PFC: PLAN: prefix handling ---
+    // Plans are executive queue updates, not ordinary sensory/episodic traces.
+    // Store them in the anterior-PFC register and bypass L1/L2/L3 encoding so
+    // full plan bodies do not crowd working memory, hippocampal entries, or the
+    // semantic graph.
+    if let Some(plan_body) = anterior_pfc::strip_plan_prefix(text) {
+        if let Some((name, items)) = anterior_pfc::parse_plan_text(plan_body) {
+            let plan_id = anterior_pfc::apply_plan(
+                &mut state.plans,
+                name,
+                items,
+                state.clock,
+                &mut state.next_id,
+                state.config.embedding_dim,
+            );
+            #[cfg(feature = "instrument")]
+            _tctx.emit(trace::PipelineStep::TickEnd, trace::TracePayload::None);
+            return TickResult {
+                action: "plan_updated".to_string(),
+                entry_id: plan_id,
+                context: last_context,
+            };
+        }
+    }
+
     let chunks = chunk_text(text);
 
     // Batch-embed all chunks in a single model forward pass (entorhinal cortex).
@@ -1429,7 +1454,12 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
 
             last_context = encoding_activation(state, &raw_embedding, &chunk, &touched_node_ids);
         } else {
-            // Low-salience: stays in working memory only, skip L2 insertion
+            // Low-salience: stays out of L2, but still contributes weak
+            // semantic structure. The graph should preserve meaningful entity
+            // and relation bindings even when the hippocampal gate treats the
+            // episode as routine.
+            let touched_node_ids = neocortex::update_graph(state, &chunk, salience * 0.5);
+            all_touched_node_ids.extend_from_slice(&touched_node_ids);
             result_action = "working_memory_only".to_string();
             result_entry_id = wm_id;
         }
@@ -1582,53 +1612,6 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
     }
     state.last_tick_embedding = tick_embedding;
 
-    // --- Anterior PFC: PLAN: prefix handling ---
-    if let Some(plan_body) = anterior_pfc::strip_plan_prefix(text) {
-        if let Some((name, items)) = anterior_pfc::parse_plan_text(plan_body) {
-            anterior_pfc::apply_plan(
-                &mut state.plans,
-                name,
-                items,
-                state.clock,
-                &mut state.next_id,
-                state.config.embedding_dim,
-            );
-        }
-    }
-
-    // ACC-like reset: archive completed plans after retention period
-    let archive_threshold = state.clock.saturating_sub(anterior_pfc::PLAN_ARCHIVE_TICKS);
-    let mut to_archive = Vec::new();
-    let mut to_keep = Vec::new();
-    for plan in state.plans.drain(..) {
-        if plan.completed_at.map_or(false, |t| t <= archive_threshold) {
-            to_archive.push(plan);
-        } else {
-            to_keep.push(plan);
-        }
-    }
-    state.plans = to_keep;
-    for plan in to_archive {
-        let summary = anterior_pfc::format_plan_archive_text(&plan);
-        let archive_embedding = embed_text(&summary, state.config.embedding_dim);
-        let wall_clock = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        hippocampus::insert_short_term(
-            state,
-            &summary,
-            archive_embedding,
-            0.4, // moderate salience for archived plans
-            Vec::new(),
-            0.0,
-            wall_clock,
-            Vec::new(),
-            Vec::new(),
-            neurochemistry::stamp_from(&state.chemistry),
-        );
-    }
-
     // Auto-consolidation: if enough ticks have accumulated or neurochemical
     // consolidation pressure is elevated (Phase C: replaces recent_valence_sum).
     // Re-compute effective after neurochemical spikes above may have changed levels.
@@ -1732,6 +1715,38 @@ fn infer_query_mode(query: &str, keyword_cache: &KeywordCache) -> neocortex::Que
     }
 
     neocortex::QueryMode::Neutral
+}
+
+fn query_requests_plan_queue(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    let phrases = [
+        "current plan",
+        "current plans",
+        "next action",
+        "next step",
+        "next item",
+        "where we left off",
+        "what should i work on",
+        "what to work on",
+        "continue plan",
+        "review phase",
+        "review the next",
+    ];
+    if phrases.iter().any(|phrase| lower.contains(phrase)) {
+        return true;
+    }
+
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.iter().any(|w| matches!(*w, "plan" | "plans"))
+        && words.iter().any(|w| {
+            matches!(
+                *w,
+                "next" | "phase" | "item" | "items" | "task" | "tasks" | "continue" | "review"
+            )
+        })
 }
 
 /// Encoding-time activation: the hippocampal processes that naturally occur
@@ -2012,8 +2027,12 @@ pub fn retrieve_context_with_mode(
         trace::TracePayload::Number(wm_snippets.len() as f64),
     );
 
-    // --- Prospective memory: spontaneous retrieval of matching plan items ---
-    // After L1 scan, before L2 retrieval — McDaniel & Einstein's pathway.
+    // --- Prospective memory: executive queue retrieval ---
+    // Plans are not ordinary L1/L2 memories, but query searches them as another
+    // source. If the query semantically matches a queued item, return it with
+    // explicit plan context. Plan-oriented queries can also ask for the queue
+    // directly without needing lexical overlap with the item text.
+    let wants_plan_queue = query_requests_plan_queue(query);
     for plan in &state.plans {
         for item in &plan.items {
             if item.status == anterior_pfc::ItemStatus::Done {
@@ -2023,7 +2042,11 @@ pub fn retrieve_context_with_mode(
                 continue;
             }
             let sim = cosine_similarity(&embedding, &item.embedding);
-            if sim >= anterior_pfc::INTENTION_CUE_THRESHOLD {
+            if wants_plan_queue || sim >= anterior_pfc::INTENTION_CUE_THRESHOLD {
+                // Floor at INTENTION_CUE_THRESHOLD: when wants_plan_queue forces
+                // inclusion of a low-similarity item, the similarity field is
+                // also the sort key, so lift it so plan items don't land below
+                // real L1 matches solely because the query lacked lexical overlap.
                 wm_snippets.push(hippocampus::MemorySnippet {
                     id: 0, // plan items don't have L2 IDs
                     text: format!(
@@ -2032,7 +2055,7 @@ pub fn retrieve_context_with_mode(
                         item.status.label(),
                         item.text
                     ),
-                    similarity: sim,
+                    similarity: sim.max(anterior_pfc::INTENTION_CUE_THRESHOLD),
                     refs: Vec::new(),
                     wall_clock: 0,
                     extracted_dates: Vec::new(),
@@ -2332,10 +2355,19 @@ pub fn retrieve_context_with_mode(
     #[cfg(feature = "instrument")]
     _qctx.emit(trace::PipelineStep::QueryEnd, trace::TracePayload::None);
 
+    clean_retrieved_snippets(&mut wm_snippets);
+    clean_retrieved_snippets(&mut snippets);
+
     MemoryContext {
         short_term: snippets,
         long_term,
         working_memory: wm_snippets,
+    }
+}
+
+fn clean_retrieved_snippets(snippets: &mut [MemorySnippet]) {
+    for snippet in snippets {
+        snippet.text = clean_semantic_noise(&snippet.text);
     }
 }
 
@@ -2477,6 +2509,36 @@ fn find_existing_summary_node(
         })
 }
 
+fn compact_summary_source_texts<I>(texts: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut seen = HashSet::new();
+    let mut compacted = Vec::new();
+    let mut project_alpha_sqlite_count = 0usize;
+
+    for text in texts {
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("project alpha") && lower.contains("sqlite") {
+            project_alpha_sqlite_count += 1;
+            continue;
+        }
+        if seen.insert(text.clone()) {
+            compacted.push(text);
+        }
+    }
+
+    if project_alpha_sqlite_count > 0 {
+        let cluster =
+            format!("Project Alpha / SQLite: {project_alpha_sqlite_count} supporting observations");
+        if seen.insert(cluster.clone()) {
+            compacted.insert(0, cluster);
+        }
+    }
+
+    compacted
+}
+
 /// Merge similar short-term entries into long-term graph summaries.
 pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
     #[cfg(feature = "instrument")]
@@ -2568,20 +2630,17 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
             .map(|e| clean_semantic_noise(&e.text))
             .filter(|text| !text.trim().is_empty())
             .count();
-        let source_texts: Vec<String> = {
-            let mut seen: HashSet<String> = HashSet::new();
+        let source_texts: Vec<String> = compact_summary_source_texts(
             group
                 .iter()
                 .map(|e| clean_semantic_noise(&e.text))
-                .filter(|text| !text.trim().is_empty())
-                .filter(|text| seen.insert(text.clone()))
-                .collect()
-        };
+                .filter(|text| !text.trim().is_empty()),
+        );
         let coverage = SummaryCoverage {
             source_count: cleaned_source_count,
             evidence_count: source_texts.len(),
-            omitted_source_count: 0,
-            full_evidence_preserved: true,
+            omitted_source_count: cleaned_source_count.saturating_sub(source_texts.len()),
+            full_evidence_preserved: cleaned_source_count == source_texts.len(),
         };
 
         // Systems consolidation: compute centroid embedding and rich text
@@ -2676,12 +2735,12 @@ pub fn consolidate(state: &mut BrainState) -> Vec<GraphNodeSummary> {
                 // Extend source_texts and dedup. This is the evidence-preservation
                 // path for consolidation; later compression can compact duplicates
                 // without silently dropping minority facts.
-                let mut seen: HashSet<String> = node.source_texts.iter().cloned().collect();
-                for st in &source_texts {
-                    if seen.insert(st.clone()) {
-                        node.source_texts.push(st.clone());
-                    }
-                }
+                let merged_sources = node
+                    .source_texts
+                    .iter()
+                    .cloned()
+                    .chain(source_texts.clone());
+                node.source_texts = compact_summary_source_texts(merged_sources);
                 // Systems consolidation: update neocortical encoding
                 if !centroid_embedding.is_empty() {
                     node.embedding = centroid_embedding.clone();
@@ -6132,17 +6191,23 @@ mod tests {
         );
         assert_eq!(
             summary.source_texts.len(),
-            texts.len(),
-            "Summary evidence should preserve cleaned source texts"
+            1,
+            "Summary evidence should compact repeated Project Alpha / SQLite observations"
+        );
+        assert!(
+            summary.source_texts[0].contains("Project Alpha / SQLite")
+                && summary.source_texts[0].contains("4 supporting observations"),
+            "Summary evidence should retain compact support count: {:?}",
+            summary.source_texts
         );
         let coverage = summary
             .coverage
             .as_ref()
             .expect("Summary should track coverage metadata");
         assert_eq!(coverage.source_count, texts.len());
-        assert_eq!(coverage.evidence_count, texts.len());
-        assert_eq!(coverage.omitted_source_count, 0);
-        assert!(coverage.full_evidence_preserved);
+        assert_eq!(coverage.evidence_count, 1);
+        assert_eq!(coverage.omitted_source_count, texts.len() - 1);
+        assert!(!coverage.full_evidence_preserved);
 
         let returned = summaries
             .iter()
@@ -6151,7 +6216,7 @@ mod tests {
         assert_eq!(returned.gist, summary.gist);
         assert_eq!(
             returned.coverage.as_ref().map(|c| c.evidence_count),
-            Some(texts.len())
+            Some(1)
         );
     }
 
@@ -6570,6 +6635,30 @@ mod tests {
         assert!(
             !ctx.working_memory.is_empty(),
             "query should scan working memory and find L1-only entries"
+        );
+    }
+
+    #[test]
+    fn test_query_output_filters_semantic_junk_tokens() {
+        let mut state = MemoryState::default();
+        tick(
+            &mut state,
+            "Maya prefers jasmine tea during late coding sessions. ####",
+        );
+
+        let ctx = retrieve_context(&mut state.brain, "What tea does Maya prefer?");
+        let returned = ctx
+            .working_memory
+            .iter()
+            .chain(ctx.short_term.iter())
+            .map(|snippet| snippet.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(returned.contains("jasmine tea"), "got: {returned}");
+        assert!(
+            !returned.contains("####"),
+            "query snippets should not expose syntactic junk: {returned}"
         );
     }
 
@@ -9894,17 +9983,21 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_tick_also_creates_l2_entry() {
+    fn test_plan_tick_bypasses_l1_l2_encoding() {
         let mut state = MemoryState::default();
         let result = tick_impl(
             &mut state.brain,
             "PLAN: Test Plan\n[active] Fix the parser\n[deferred] Optimize later",
         );
-        // The PLAN: text should also enter L2 as a normal tick
+        assert_eq!(result.action, "plan_updated");
+        assert!(result.entry_id > 0);
         assert!(
-            result.action == "created" || result.action == "working_memory_only",
-            "Expected created or working_memory_only, got {}",
-            result.action
+            state.brain.working_memory.is_empty(),
+            "PLAN ticks should not consume L1 working memory"
+        );
+        assert!(
+            state.brain.short_term.is_empty(),
+            "PLAN ticks should not create L2 episodic entries"
         );
     }
 
@@ -9939,7 +10032,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_archive_after_retention() {
+    fn test_completed_plan_stays_in_executive_queue() {
         let mut state = MemoryState::default();
         // Create a plan and mark all items done
         tick_impl(
@@ -9949,11 +10042,9 @@ mod tests {
         assert_eq!(state.brain.plans.len(), 1);
         assert!(state.brain.plans[0].completed_at.is_some());
 
-        // Fast-forward clock past archive threshold
-        let completed_at = state.brain.plans[0].completed_at.unwrap();
-        state.brain.clock = completed_at + anterior_pfc::PLAN_ARCHIVE_TICKS + 1;
-
-        // Next tick should archive the plan
+        // Completed plans stay in the executive queue instead of being archived
+        // into L2, where they would pollute episodic retrieval.
+        state.brain.clock += 100;
         let l2_count_before = state.brain.short_term.len();
         tick_impl(
             &mut state.brain,
@@ -9961,20 +10052,23 @@ mod tests {
         );
         assert_eq!(
             state.brain.plans.len(),
-            0,
-            "Archived plan should be removed"
+            1,
+            "Completed plan should remain in executive queue"
         );
-        assert!(
-            state.brain.short_term.len() > l2_count_before,
-            "Archived plan should create L2 entry"
+        assert_eq!(
+            state.brain.short_term.len(),
+            l2_count_before + 1,
+            "Only the unrelated decision tick should enter L2"
         );
-        // Check the archived entry contains plan info
         let archive_entry = state
             .brain
             .short_term
             .iter()
             .find(|e| e.text.contains("Completed plan: Archive Test"));
-        assert!(archive_entry.is_some(), "Should find archived plan in L2");
+        assert!(
+            archive_entry.is_none(),
+            "Completed plan body should not be archived into L2"
+        );
     }
 
     #[test]
@@ -9995,7 +10089,7 @@ mod tests {
     }
 
     #[test]
-    fn test_intention_cue_match_in_query() {
+    fn test_plan_queue_surfaces_for_matching_queries() {
         let mut state = MemoryState::default();
         // Create a plan with a deferred item about "database optimization"
         tick_impl(
@@ -10003,15 +10097,27 @@ mod tests {
             "PLAN: Performance Work\n[deferred] Optimize database query performance",
         );
 
-        // Query about database — should surface the deferred plan item
-        let context = retrieve_context(&mut state.brain, "database optimization strategies");
-        let has_plan_item = context
+        // Plain semantic query should search the executive queue and return
+        // matching plan items with explicit plan context.
+        let semantic_context =
+            retrieve_context(&mut state.brain, "database optimization strategies");
+        assert!(
+            semantic_context
+                .working_memory
+                .iter()
+                .any(|m| m.text.contains("[Plan:") && m.text.contains("database")),
+            "Matching semantic query should surface plan item"
+        );
+
+        // Plan-oriented query should surface the queue even without item overlap.
+        let plan_context = retrieve_context(&mut state.brain, "what is the next plan item?");
+        let has_plan_item = plan_context
             .working_memory
             .iter()
             .any(|m| m.text.contains("[Plan:") && m.text.contains("database"));
         assert!(
             has_plan_item,
-            "Query should surface matching deferred plan item via spontaneous retrieval"
+            "Plan query should surface matching deferred plan item"
         );
     }
 

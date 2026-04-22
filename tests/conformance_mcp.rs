@@ -20,7 +20,7 @@ fn initialize_returns_protocol_version_and_server_info() {
 }
 
 #[test]
-fn tools_list_returns_four_core_tools_with_schemas() {
+fn tools_list_returns_three_core_tools_with_schemas() {
     let harness = Harness::new();
     seed_basic_repo(&harness);
     harness.cmd_ok(&["init"]);
@@ -34,13 +34,13 @@ fn tools_list_returns_four_core_tools_with_schemas() {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 3);
 
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"legend_memory_start"));
     assert!(names.contains(&"legend_memory_tick"));
     assert!(names.contains(&"legend_memory_query"));
-    assert!(names.contains(&"legend_memory_plan"));
+    assert!(!names.contains(&"legend_memory_plan"));
 
     for tool in tools {
         assert!(
