@@ -230,16 +230,38 @@ mod tests {
     use super::*;
     use crate::memory::entorhinal::embed_text;
 
+    /// Hand-built unit vector: first `shared` dims = 1/sqrt(shared+unique),
+    /// plus `unique` dims at the tail of the `total`-dim vector. Used to
+    /// construct embeddings with exact, model-independent cosine similarity
+    /// so orthogonalization tests don't drift when the embedding model changes.
+    fn synthetic_embedding(total: usize, shared: usize, unique_start: usize) -> Vec<f32> {
+        let mut v = vec![0.0f32; total];
+        for i in 0..shared {
+            v[i] = 1.0;
+        }
+        for i in unique_start..(unique_start + shared) {
+            if i < total {
+                v[i] = 1.0;
+            }
+        }
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v {
+            *x /= norm;
+        }
+        v
+    }
+
     #[test]
     fn test_sparse_orthogonalize_pushes_apart_similar() {
-        // Near-paraphrases land in the confusable zone [low, high); truly
-        // unrelated sentences fall below `low` and skip orthogonalization.
-        let a = embed_text("Rust uses ownership for memory safety", 256);
-        let b = embed_text("Python uses garbage collection for memory management", 256);
+        // Construct two 256-dim unit vectors with exact cosine similarity 0.5:
+        // both have mass on dims 0..64, plus non-overlapping tails.
+        // sim(a, b) = 64 / sqrt(128 * 128) = 0.5 — inside [0.3, 0.88).
+        let a = synthetic_embedding(256, 64, 64); // dims 0..64 + 64..128
+        let b = synthetic_embedding(256, 64, 128); // dims 0..64 + 128..192
         let sim_before = cosine_similarity(&a, &b);
         assert!(
-            sim_before >= 0.3 && sim_before < 0.88,
-            "test inputs must be confusable: sim={sim_before}"
+            (sim_before - 0.5).abs() < 1e-5,
+            "synthetic inputs should have sim=0.5, got {sim_before}"
         );
 
         let a_ortho = sparse_orthogonalize(&a, &[b.clone()], 0.3, 0.88, 0.3);
