@@ -1001,6 +1001,39 @@ pub fn classify_text(text: &str, kw: &wernicke::KeywordCache) -> MemoryCategory 
 // save — moved to crate::tool::persistence, re-exported above.
 // tick — moved to crate::tool, re-exported below.
 
+/// Synchronous tick: encode one incoming text into memory.
+///
+/// Contract for what runs here vs. elsewhere:
+///
+/// **Per-tick (cheap, mandatory):**
+/// - Chunking, batch embedding, salience scoring (entorhinal + thalamus).
+/// - L1 push/displace, L2 reconsolidate/merge/insert (prefrontal + hippocampus).
+/// - Graph node/edge update for entities extracted from this text (neocortex).
+/// - Neurochemical spikes from salience, emotional valence, capacity stress.
+/// - Context-switch detection → L1 flush if triggered.
+/// - Cheap decay passes on L1/L2 so recency is continuous, not discrete.
+///
+/// **Per-tick (gated by pressure/budget):**
+/// - `run_tick_offline_replay`: budgeted SWR-style replay of a small batch
+///   of high-priority traces. Runs only when `replay_pressure` is elevated.
+/// - `run_sleep_downselection`: light penalization of redundant L2 traces.
+///   Runs only when `replay_pressure` is elevated.
+/// - `consolidate(state)`: full systems consolidation when
+///   `ticks_since_consolidation` exceeds threshold OR
+///   `consolidation_pressure` is elevated. When this fires, the other
+///   gated paths are skipped (they'd duplicate work).
+///
+/// **Consolidation-level (NOT per-tick — only inside `consolidate()`):**
+/// - Full `apply_decay` with chemistry-modulated rates.
+/// - `replay_consolidation`: global replay across all eligible traces.
+/// - Clustering L2 entries and creating/merging Summary nodes.
+/// - `prune_graph`: O(nodes + edges) sweep that clones edge_semantics and
+///   recomputes every edge's survival score. Too expensive for per-tick.
+///
+/// **Retrieval-level (separate entry point):**
+/// - `retrieve_context_with_mode`: ReadOnly is pure read (no side effects).
+///   RecallStudy additionally increments rehearsal_count and fires
+///   Hebbian reinforcement on co-retrieved nodes.
 pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
     #[cfg(feature = "instrument")]
     let _tctx = {
@@ -1492,24 +1525,11 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
             ),
         ]),
     );
-    #[cfg(feature = "instrument")]
-    let _l3_nodes_before = state.long_term.nodes.len();
-    neocortex::prune_graph(&mut state.long_term, state.clock);
-    #[cfg(feature = "instrument")]
-    _tctx.emit(
-        trace::PipelineStep::PruneL3,
-        trace::TracePayload::KeyValue(vec![
-            ("before_count".into(), _l3_nodes_before.to_string()),
-            (
-                "after_count".into(),
-                state.long_term.nodes.len().to_string(),
-            ),
-            (
-                "pruned_count".into(),
-                (_l3_nodes_before - state.long_term.nodes.len()).to_string(),
-            ),
-        ]),
-    );
+    // L3 pruning is consolidation-level work (iterates every graph node/edge,
+    // clones edge_semantics, recomputes edge survival scores, rebuilds the
+    // edge index). It runs inside consolidate() and is not part of the
+    // synchronous tick contract — decay-driven staleness accumulates between
+    // consolidations and gets cleared there.
 
     // --- Smart consolidation triggers ---
     let tick_embedding = embed_text(text, state.config.embedding_dim);
@@ -2586,6 +2606,12 @@ where
 /// Extract the top entity-pair (two distinct proper-noun / typed entity
 /// labels) from a source text, canonicalized to alphabetical order so the
 /// same pair always maps to the same signature regardless of sentence order.
+///
+/// Labels are re-canonicalized against the source text: the CamelCase
+/// splitter in wernicke can emit fragments like "Lite" from "SQLite", and
+/// HashMap-iteration order in the extractor makes which fragment wins
+/// nondeterministic. Looking each label up in the text and promoting it to
+/// the longest containing word restores a stable canonical form.
 fn entity_pair_signature(
     text: &str,
     keyword_cache: &KeywordCache,
@@ -2596,7 +2622,7 @@ fn entity_pair_signature(
         if !wernicke::is_graph_entity_candidate(&entity) {
             continue;
         }
-        let label = entity.label;
+        let label = canonicalize_label_from_text(&entity.label, text);
         if label.len() < 2 || !label.chars().any(|c| c.is_ascii_uppercase()) {
             continue;
         }
@@ -2630,6 +2656,41 @@ fn entity_pair_signature(
     let mut pair = [candidates[0].clone(), candidates[1].clone()];
     pair.sort_by_key(|l| l.to_lowercase());
     Some((pair[0].clone(), pair[1].clone()))
+}
+
+/// Promote a fragment label back to the longest whole word in the source
+/// text that contains it, but only when the fragment does NOT appear as a
+/// standalone word. "Lite" inside "SQLite datastore" upgrades to "SQLite";
+/// "Rust" appearing as its own word in "Rust Rustconf" stays "Rust" rather
+/// than spuriously upgrading to "Rustconf".
+fn canonicalize_label_from_text(label: &str, text: &str) -> String {
+    if label.contains(char::is_whitespace) {
+        return label.to_string();
+    }
+    let label_lower = label.to_lowercase();
+    let mut appears_as_word = false;
+    let mut longest_container: Option<String> = None;
+    for word in text.split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        let word_lower = word.to_lowercase();
+        if word_lower == label_lower {
+            appears_as_word = true;
+        }
+        if word_lower != label_lower && word_lower.contains(&label_lower) {
+            if longest_container
+                .as_ref()
+                .is_none_or(|c| word.len() > c.len())
+            {
+                longest_container = Some(word.to_string());
+            }
+        }
+    }
+    if appears_as_word {
+        return label.to_string();
+    }
+    longest_container.unwrap_or_else(|| label.to_string())
 }
 
 /// Merge similar short-term entries into long-term graph summaries.
