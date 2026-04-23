@@ -32,7 +32,7 @@ fn query_with_reasons_shows_similarity_and_reinforcement() {
     let reasons = harness.output_json(&["memory", "query", "--reasons", "graph index"]);
     assert_eq!(
         reasons["note"],
-        "Top result auto-reinforced (+3% salience boost)"
+        "Read-only retrieval: no recall-time reinforcement or clock advance"
     );
     assert!(reasons["short_term"]
         .as_array()
