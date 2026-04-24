@@ -314,8 +314,255 @@ pub fn render_sessions(
     Ok(out)
 }
 
-// `memory start` is deferred from Phase 2 Commit B — its render path is 601
-// lines of private inner helpers. Still falls back to in-process.
+// ---------------------------------------------------------------------------
+// Start — wraps build_start_summary_with_options + flush_working_memory
+// ---------------------------------------------------------------------------
+
+/// Options mirrored from `src/commands/memory/start.rs::StartOptions`. Kept
+/// local so callers don't have to import the CLI type.
+pub struct StartArgs<'a> {
+    pub compact: bool,
+    pub json: bool,
+    pub category: Option<&'a str>,
+    pub query: Option<&'a str>,
+}
+
+/// Render a `legend memory start`. Mutates state (flushes L1→L2, injects a
+/// session-log warning + update-available notice, logs the rich event) and
+/// returns the exact stdout string the CLI prints — markdown or JSON
+/// depending on `args.json`.
+///
+/// Version-cache read is local disk I/O keyed off `.legend/.latest_version`,
+/// which is co-located with state so the daemon sees the same file the CLI
+/// would. `--tokens` (the stderr overhead printout) stays CLI-side.
+pub fn render_start(state: &mut MemoryState, args: StartArgs) -> Result<String, String> {
+    const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
+
+    let mut summary = crate::memory::build_start_summary_with_options(
+        state,
+        args.compact,
+        args.category,
+        args.query,
+    );
+
+    if state.session_log.len() >= SESSION_LOG_WARNING_THRESHOLD {
+        if let Some(obj) = summary.as_object_mut() {
+            obj.insert(
+                "warning".to_string(),
+                serde_json::json!(format!(
+                    "Session log at {}% capacity ({}/100). Oldest entries will be dropped.",
+                    state.session_log.len(),
+                    state.session_log.len()
+                )),
+            );
+        }
+    }
+
+    if let Some(latest) = read_cached_update_version() {
+        if let Some(obj) = summary.as_object_mut() {
+            obj.insert(
+                "update_available".to_string(),
+                serde_json::json!(format!(
+                    "v{} → v{}",
+                    env!("CARGO_PKG_VERSION"),
+                    latest
+                )),
+            );
+        }
+    }
+
+    // L1 → L2 flush (the mutating side-effect of `memory start`).
+    crate::memory::prefrontal::flush_working_memory(&mut state.brain);
+
+    let event_data = EventData::Start(crate::commands::memory::StartEventData {
+        clock: state.brain.clock,
+        short_term_count: state.brain.short_term.len(),
+        long_term_nodes: state.brain.long_term.nodes.len(),
+        session_log_entries: state.session_log.len(),
+    });
+    log_event_rich("start", "session cold-start", Some(event_data));
+
+    Ok(if args.json {
+        let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
+        format!("{}\n", json)
+    } else {
+        crate::commands::memory::format_start_summary_markdown(&summary)
+    })
+}
+
+/// Read the update-version cache file (`.legend/.latest_version`). Returns
+/// the latest version string if it's newer than the compiled version and the
+/// cache is fresh (< 24 h old). Same logic as the CLI's
+/// `check_version_cached` — duplicated here so the daemon doesn't depend on
+/// the CLI module tree.
+fn read_cached_update_version() -> Option<String> {
+    const PATH: &str = ".legend/.latest_version";
+    const TTL_SECS: u64 = 86_400;
+
+    let current = env!("CARGO_PKG_VERSION");
+    let content = std::fs::read_to_string(PATH).ok()?;
+    let mut lines = content.lines();
+    let cached_ts: u64 = lines.next()?.parse().ok()?;
+    let latest = lines.next()?.trim().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    if now.saturating_sub(cached_ts) < TTL_SECS && version_greater(&latest, current) {
+        Some(latest)
+    } else {
+        None
+    }
+}
+
+fn version_greater(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
+    parse(a) > parse(b)
+}
+
+// ---------------------------------------------------------------------------
+// Query — CLI stdout rendering (wraps apply_query)
+// ---------------------------------------------------------------------------
+
+/// Render a `legend memory query` — wraps `apply_query` and formats the
+/// stdout JSON in the shape the CLI expects. The `with_reasons` flag picks
+/// between the richer annotated shape (`--reasons`) and the compact default.
+pub fn render_query(
+    state: &mut MemoryState,
+    query: &str,
+    with_reasons: bool,
+) -> Result<String, String> {
+    let context = apply_query(state, query)?;
+    let primed_count = context
+        .long_term
+        .iter()
+        .filter(|n| n.edge_type.is_some())
+        .count();
+    Ok(if with_reasons {
+        format_query_with_reasons(&context, primed_count)
+    } else {
+        format_query_context(&context)
+    })
+}
+
+fn format_query_with_reasons(context: &MemoryContext, primed_count: usize) -> String {
+    let working_memory_with_reasons: Vec<serde_json::Value> = context
+        .working_memory
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "text": m.text,
+                "similarity": crate::tool::round3(m.similarity),
+                "reason": "matched in working memory (L1)",
+            })
+        })
+        .collect();
+
+    let short_term_with_reasons: Vec<serde_json::Value> = context
+        .short_term
+        .iter()
+        .map(|m| {
+            let reason = if m.similarity >= 0.8 {
+                "high semantic similarity to query"
+            } else if m.similarity >= 0.5 {
+                "moderate semantic similarity to query"
+            } else if m.similarity >= 0.2 {
+                "weak semantic similarity, may share related terms"
+            } else {
+                "low similarity, included for coverage"
+            };
+            serde_json::json!({
+                "id": m.id,
+                "text": m.text,
+                "similarity": crate::tool::round3(m.similarity),
+                "reason": reason,
+            })
+        })
+        .collect();
+
+    let long_term_with_reasons: Vec<serde_json::Value> = context
+        .long_term
+        .iter()
+        .map(|n| {
+            let reason = if n.edge_type.is_some() {
+                format!(
+                    "reached via {} edge from related entity",
+                    n.edge_type.as_ref().unwrap()
+                )
+            } else {
+                "direct entity match from query".to_string()
+            };
+            serde_json::json!({
+                "id": n.id,
+                "label": n.label,
+                "kind": n.kind,
+                "weight": crate::tool::round3(n.weight),
+                "reason": reason,
+            })
+        })
+        .collect();
+
+    let result = serde_json::json!({
+        "working_memory": working_memory_with_reasons,
+        "short_term": short_term_with_reasons,
+        "long_term": long_term_with_reasons,
+        "primed_via_edges": primed_count,
+        "note": "Read-only retrieval: no recall-time reinforcement or clock advance"
+    });
+
+    let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
+    format!("{}\n", json)
+}
+
+fn format_query_context(context: &MemoryContext) -> String {
+    let working_memory: Vec<&str> = context
+        .working_memory
+        .iter()
+        .map(|m| m.text.as_str())
+        .collect();
+    let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
+
+    // Emit rich objects when any memory has temporal metadata.
+    let has_any_temporal = context
+        .short_term
+        .iter()
+        .any(|m| m.wall_clock > 0 || !m.extracted_dates.is_empty() || m.created_at_clock > 0);
+
+    let memories: Vec<serde_json::Value> = if has_any_temporal {
+        context
+            .short_term
+            .iter()
+            .map(|m| {
+                let mut obj = serde_json::json!({ "text": m.text });
+                if m.wall_clock > 0 {
+                    obj["wall_clock"] = serde_json::json!(m.wall_clock);
+                }
+                if !m.extracted_dates.is_empty() {
+                    obj["dates"] = serde_json::json!(m.extracted_dates);
+                }
+                if m.created_at_clock > 0 {
+                    obj["seq"] = serde_json::json!(m.created_at_clock);
+                }
+                obj
+            })
+            .collect()
+    } else {
+        context
+            .short_term
+            .iter()
+            .map(|m| serde_json::json!(m.text))
+            .collect()
+    };
+
+    let result = serde_json::json!({
+        "working_memory": working_memory,
+        "memories": memories,
+        "related_topics": related_topics,
+    });
+    let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
+    format!("{}\n", json)
+}
 
 // ---------------------------------------------------------------------------
 // Query — read-only, structured return (used by mcp-serve Phase 4)

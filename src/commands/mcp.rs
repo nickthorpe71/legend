@@ -127,46 +127,29 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
         .and_then(|c| c.as_str())
         .map(|s| s.to_string());
 
-    let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
-    let mut summary = crate::memory::build_start_summary_with_options(
-        &mut memory,
-        false,
-        category.as_deref(),
-        None,
-    );
-
-    // Session log capacity warning
-    const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
-    if memory.session_log.len() >= SESSION_LOG_WARNING_THRESHOLD {
-        if let Some(obj) = summary.as_object_mut() {
-            obj.insert(
-                "warning".to_string(),
-                json!(format!(
-                    "Session log at {}% capacity ({}/100). Oldest entries will be dropped.",
-                    memory.session_log.len(),
-                    memory.session_log.len()
-                )),
-            );
+    // Try daemon first — shares state with CLI / other MCP calls, pays the
+    // state load + ONNX init only once per daemon lifetime.
+    let summary_markdown = match try_over_ipc_raw(DaemonCommand::Start {
+        category: category.clone(),
+        compact: false,
+        json: false,
+        tokens: false,
+        query: None,
+    }) {
+        Ok(Some(Payload::CommandOutput { stdout })) => stdout,
+        Ok(Some(other)) => {
+            return Err(format!(
+                "legend daemon returned unexpected payload for Start: {:?}",
+                other
+            ));
         }
-    }
+        Ok(None) | Err(ClientError::NoDaemon) => start_in_process(category.as_deref())?,
+        Err(e) => return Err(e.to_string()),
+    };
 
-    // Flush working memory: promote qualifying entries to L2, then clear L1
-    crate::memory::prefrontal::flush_working_memory(&mut memory.brain);
-
-    // Log event
-    let event_data = EventData::Start(StartEventData {
-        clock: memory.brain.clock,
-        short_term_count: memory.brain.short_term.len(),
-        long_term_nodes: memory.brain.long_term.nodes.len(),
-        session_log_entries: memory.session_log.len(),
-    });
-
-    crate::memory::save(&memory).map_err(|e| e.to_string())?;
-    log_event_rich("start", "session cold-start (MCP)", Some(event_data));
-
-    let mut output = format_start_summary_markdown(&summary);
-
-    // Protocol injection: tell the LLM how to use Legend
+    // Protocol injection — MCP-specific tail, added on top of the shared
+    // start summary. Same bytes whether we came from daemon or fallback.
+    let mut output = summary_markdown;
     output.push_str("\n---\n");
     output.push_str("## Legend Protocol\n");
     output.push_str("- **Tick frequently** — after decisions, discoveries, blockers, completed work, architecture changes\n");
@@ -182,6 +165,42 @@ fn tool_memory_start(arguments: &Value) -> Result<String, String> {
     output.push_str("- **Don't tick noise** — avoid restating what the user just said or trivial status updates\n");
 
     Ok(output)
+}
+
+/// Fallback when the daemon isn't reachable. Preserves the pre-daemon MCP
+/// behavior byte-for-byte.
+fn start_in_process(category: Option<&str>) -> Result<String, String> {
+    let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
+    let mut summary =
+        crate::memory::build_start_summary_with_options(&mut memory, false, category, None);
+
+    const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
+    if memory.session_log.len() >= SESSION_LOG_WARNING_THRESHOLD {
+        if let Some(obj) = summary.as_object_mut() {
+            obj.insert(
+                "warning".to_string(),
+                json!(format!(
+                    "Session log at {}% capacity ({}/100). Oldest entries will be dropped.",
+                    memory.session_log.len(),
+                    memory.session_log.len()
+                )),
+            );
+        }
+    }
+
+    crate::memory::prefrontal::flush_working_memory(&mut memory.brain);
+
+    let event_data = EventData::Start(StartEventData {
+        clock: memory.brain.clock,
+        short_term_count: memory.brain.short_term.len(),
+        long_term_nodes: memory.brain.long_term.nodes.len(),
+        session_log_entries: memory.session_log.len(),
+    });
+
+    crate::memory::save(&memory).map_err(|e| e.to_string())?;
+    log_event_rich("start", "session cold-start (MCP)", Some(event_data));
+
+    Ok(format_start_summary_markdown(&summary))
 }
 
 fn tool_memory_tick(arguments: &Value) -> Result<String, String> {
