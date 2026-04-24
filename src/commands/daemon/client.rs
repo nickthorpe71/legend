@@ -152,6 +152,36 @@ pub fn try_over_ipc(cmd: Command) -> Result<Option<String>, ClientError> {
                 "expected CommandOutput, got {:?}",
                 other
             ))),
+            Message::Response(Response::Err(err)) => match err.kind {
+                crate::commands::daemon::ipc::ErrorKind::NotImplemented
+                | crate::commands::daemon::ipc::ErrorKind::VersionMismatch { .. } => Ok(None),
+                _ => Err(ClientError::Protocol(format!(
+                    "{:?}: {}",
+                    err.kind, err.message
+                ))),
+            },
+            Message::Request(_) => Err(ClientError::Protocol(
+                "daemon replied with a Request, not a Response".into(),
+            )),
+        },
+        Err(ClientError::NoDaemon) => Ok(None),
+        Err(other) => Err(other),
+    }
+}
+
+/// Like [`try_over_ipc`] but returns the raw `Payload` instead of a rendered
+/// stdout string. Used by consumers that need structured data (currently
+/// `mcp-serve`'s tick/query tools, which format into MCP markdown themselves).
+///
+/// `Ok(None)` means "fall back to in-process" (no daemon, version mismatch,
+/// or `LEGEND_NO_DAEMON` set) — same semantics as `try_over_ipc`.
+pub fn try_over_ipc_raw(cmd: Command) -> Result<Option<Payload>, ClientError> {
+    if std::env::var_os(NO_DAEMON_ENV_VAR).is_some() {
+        return Ok(None);
+    }
+    match send_or_spawn(cmd) {
+        Ok(env) => match env.body {
+            Message::Response(Response::Ok(payload)) => Ok(Some(payload)),
             // Structured errors from the daemon. `NotImplemented` means we're
             // talking to an older daemon that doesn't know this command yet
             // (classic post-upgrade skew) — fall back to in-process so the

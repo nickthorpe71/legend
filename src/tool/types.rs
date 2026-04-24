@@ -103,7 +103,7 @@ pub struct TickResult {
 // ---------------------------------------------------------------------------
 
 /// Query result: ranked snippets from short-term + related nodes from long-term.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryContext {
     pub short_term: Vec<MemorySnippet>,
     pub long_term: Vec<GraphNodeSummary>,

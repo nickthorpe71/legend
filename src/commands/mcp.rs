@@ -1,8 +1,11 @@
+use super::daemon::client::{try_over_ipc_raw, ClientError};
+use super::daemon::ipc::{Command as DaemonCommand, Payload};
 use super::memory::{
     format_start_summary_markdown, log_event_rich, truncate_text, EventData, GraphHit,
     MatchedEntry, QueryEventData, StartEventData, TickEventData,
 };
 use crate::cli::{parse_args, CommandDef};
+use crate::memory::{MemoryContext, TickResult};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 
@@ -192,11 +195,34 @@ fn tool_memory_tick(arguments: &Value) -> Result<String, String> {
         return Err("Description cannot be empty".to_string());
     }
 
+    // Try daemon first — daemon holds the single source of truth for state
+    // across CLI and MCP. Falls back to in-process on NoDaemon/VersionMismatch.
+    match try_over_ipc_raw(DaemonCommand::TickStructured {
+        text: text.to_string(),
+        blocker: false,
+    }) {
+        Ok(Some(Payload::TickResultPayload(result))) => {
+            // Daemon already logged the rich tick event — no need to double-log.
+            Ok(format_mcp_tick(&result))
+        }
+        Ok(Some(other)) => Err(format!(
+            "legend daemon returned unexpected payload for TickStructured: {:?}",
+            other
+        )),
+        Ok(None) => tick_in_process(text),
+        Err(ClientError::NoDaemon) => tick_in_process(text),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// In-process fallback path — used when the daemon is unreachable or
+/// `LEGEND_NO_DAEMON` is set (i.e. conformance tests). Preserves the pre-
+/// daemon behavior byte-for-byte: load, tick, save, format the same response.
+fn tick_in_process(text: &str) -> Result<String, String> {
     let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
     let tick_result = crate::memory::tick(&mut memory, text);
     crate::memory::save(&memory).map_err(|e| e.to_string())?;
 
-    // Log rich event data
     let event_data = EventData::Tick(TickEventData {
         entry_id: Some(tick_result.entry_id),
         matches: tick_result
@@ -225,7 +251,13 @@ fn tool_memory_tick(arguments: &Value) -> Result<String, String> {
     });
     log_event_rich("tick", text, Some(event_data));
 
-    // Build lean response from associative binding
+    Ok(format_mcp_tick(&tick_result))
+}
+
+/// Build the MCP-shaped markdown response from a `TickResult`. Same format on
+/// both the daemon and in-process paths so MCP consumers see byte-identical
+/// output regardless of which path was taken.
+fn format_mcp_tick(tick_result: &TickResult) -> String {
     let related: Vec<String> = tick_result
         .context
         .short_term
@@ -251,7 +283,7 @@ fn tool_memory_tick(arguments: &Value) -> Result<String, String> {
         output.push_str(" Topics: ");
         output.push_str(&graph_topics.join(", "));
     }
-    Ok(output)
+    output
 }
 
 fn tool_memory_query(arguments: &Value) -> Result<String, String> {
@@ -265,22 +297,39 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
         return Err("Topic cannot be empty".to_string());
     }
 
+    match try_over_ipc_raw(DaemonCommand::QueryStructured {
+        text: topic.to_string(),
+    }) {
+        Ok(Some(Payload::QueryContext(context))) => Ok(format_mcp_query(&context)),
+        Ok(Some(other)) => Err(format!(
+            "legend daemon returned unexpected payload for QueryStructured: {:?}",
+            other
+        )),
+        Ok(None) => query_in_process(topic),
+        Err(ClientError::NoDaemon) => query_in_process(topic),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn query_in_process(topic: &str) -> Result<String, String> {
     let mut memory = crate::memory::load_or_default().map_err(|e| e.to_string())?;
     let context = crate::memory::retrieve_context_with_mode(
         &mut memory.brain,
         topic,
         crate::memory::RetrievalMode::ReadOnly,
     );
+    // Preserve the pre-daemon behavior: MCP's in-process query path saved
+    // after retrieval (same anti-pattern as CLI's query.rs:40). Phase 3b's
+    // daemon path drops the save; keep it here so the fallback matches
+    // what shipped before.
     crate::memory::save(&memory).map_err(|e| e.to_string())?;
 
-    // Count primed nodes
     let primed_count = context
         .long_term
         .iter()
         .filter(|n| n.edge_type.is_some())
         .count();
 
-    // Log rich event data
     let event_data = EventData::Query(QueryEventData {
         matches: context
             .short_term
@@ -307,7 +356,10 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
     });
     log_event_rich("query", topic, Some(event_data));
 
-    // Build human-readable response with similarity scores
+    Ok(format_mcp_query(&context))
+}
+
+fn format_mcp_query(context: &MemoryContext) -> String {
     let mut output = String::new();
 
     if !context.working_memory.is_empty() {
@@ -342,7 +394,7 @@ fn tool_memory_query(arguments: &Value) -> Result<String, String> {
         output.push_str("No memories found for this topic.");
     }
 
-    Ok(output)
+    output
 }
 
 // ---------------------------------------------------------------------------
