@@ -66,6 +66,13 @@ pub enum WalEntry {
     Reinforce { signal: f32, ids: Vec<u64> },
     Consolidate,
     Reset,
+    /// Targeted plan-item status flip (item #14). Replay applies the same
+    /// status change during crash recovery.
+    PlanSetStatus {
+        plan_name: String,
+        item_number: u64,
+        status: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

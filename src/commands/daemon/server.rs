@@ -95,6 +95,11 @@ fn apply_wal_entry(state: &mut MemoryState, entry: WalEntry) {
         WalEntry::Reinforce { signal, ids } => handlers::render_reinforce(state, signal, &ids),
         WalEntry::Consolidate => handlers::render_consolidate(state),
         WalEntry::Reset => handlers::render_reset(state),
+        WalEntry::PlanSetStatus {
+            plan_name,
+            item_number,
+            status,
+        } => handlers::render_plan_set_status(state, &plan_name, item_number, &status),
     };
 }
 
@@ -481,6 +486,21 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
                 ),
             }
         }
+        Command::PlanSetStatus {
+            plan_name,
+            item_number,
+            status,
+        } => {
+            let entry = WalEntry::PlanSetStatus {
+                plan_name: plan_name.clone(),
+                item_number,
+                status: status.clone(),
+            };
+            mutating_wal(daemon, id, entry, move |s| {
+                handlers::render_plan_set_status(s, &plan_name, item_number, &status)
+            })
+        }
+
         Command::QueryStructured { text } => {
             let result = with_state_mut(daemon, |s| handlers::apply_query(s, &text))
                 .and_then(|inner| inner);

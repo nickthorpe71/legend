@@ -85,6 +85,15 @@ static MEMORY_SESSIONS: CommandDef = CommandDef {
     children: &[],
 };
 
+static MEMORY_PLAN: CommandDef = CommandDef {
+    name: "plan",
+    about: "Surgical edits to the executive plan queue (set-status, …)",
+    usage: "legend memory plan <subcommand> [args]",
+    flags: &[],
+    positionals: &[],
+    children: &[],
+};
+
 // -- legend memory --
 static MEMORY: CommandDef = CommandDef {
     name: "memory",
@@ -92,7 +101,13 @@ static MEMORY: CommandDef = CommandDef {
     usage: "legend memory <subcommand> [options]",
     flags: &[],
     positionals: &[],
-    children: &[&MEMORY_START, &MEMORY_TICK, &MEMORY_QUERY, &MEMORY_SESSIONS],
+    children: &[
+        &MEMORY_START,
+        &MEMORY_TICK,
+        &MEMORY_QUERY,
+        &MEMORY_SESSIONS,
+        &MEMORY_PLAN,
+    ],
 };
 
 // -- leaf commands --

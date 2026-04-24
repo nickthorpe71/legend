@@ -568,6 +568,44 @@ fn format_query_context(context: &MemoryContext) -> String {
 // Query — read-only, structured return (used by mcp-serve Phase 4)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Plan set-status — targeted item mutation (item #14)
+// ---------------------------------------------------------------------------
+
+/// Apply a targeted plan-item status flip. Thin wrapper over
+/// `anterior_pfc::set_item_status_by_number` with CLI-friendly error shaping
+/// and stdout text for the daemon response.
+pub fn render_plan_set_status(
+    state: &mut MemoryState,
+    plan_name: &str,
+    item_number: u64,
+    status_str: &str,
+) -> Result<String, String> {
+    let new_status = crate::memory::anterior_pfc::parse_status(status_str)
+        .ok_or_else(|| format!("invalid status '{}': expected active/pending/deferred/done", status_str))?;
+    let embedding_dim = state.brain.config.embedding_dim;
+    let clock = state.brain.clock;
+    let item_idx = crate::memory::anterior_pfc::set_item_status_by_number(
+        &mut state.brain.plans,
+        plan_name,
+        item_number,
+        new_status.clone(),
+        clock,
+        embedding_dim,
+    )?;
+    Ok(format!(
+        "✓ set item {} status to {} in plan '{}' (position {})\n",
+        item_number,
+        new_status.label(),
+        plan_name,
+        item_idx
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Query (daemon side)
+// ---------------------------------------------------------------------------
+
 /// Run the read-only query path and return the full `MemoryContext`. Used by
 /// MCP's `tool_memory_query` which renders into its own MCP-shaped markdown.
 ///

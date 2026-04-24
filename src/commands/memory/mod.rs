@@ -1,6 +1,7 @@
 mod consolidate;
 mod event_log;
 mod helpers;
+mod plan;
 mod query;
 mod reinforce;
 mod sessions;
@@ -53,6 +54,7 @@ pub fn handle_memory(
         "reinforce" => reinforce::handle_reinforce(&args[1..]),
         "dump" => simple::handle_dump(),
         "task" => task::handle_task(&args[1..]),
+        "plan" => plan::handle_plan(&args[1..]),
         _ => {
             print_memory_help();
             Ok(())

@@ -99,6 +99,20 @@ pub enum Command {
     /// Same state read as [`Command::Query`], but returns a full
     /// `MemoryContext` for MCP's own format path.
     QueryStructured { text: String },
+
+    // --- Queue-management primitives (item #14) -----------------------------
+    /// Flip a single plan item's status by its leading numeric prefix.
+    /// E.g. `PlanSetStatus { plan_name: "Current Work Queue", item_number: 15,
+    /// status: "done" }` finds the item whose text starts with "15. " in the
+    /// "Current Work Queue" plan and sets its status.
+    ///
+    /// Surgical alternative to a full-state `PLAN:` tick; no heredoc, no
+    /// renumber, ~20 ms wire cost.
+    PlanSetStatus {
+        plan_name: String,
+        item_number: u64,
+        status: String,
+    },
 }
 
 /// Why a shutdown was requested — useful for logs and the user-visible status line.
