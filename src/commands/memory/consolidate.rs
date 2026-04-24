@@ -1,27 +1,15 @@
-use super::event_log::*;
-use super::helpers::truncate_text;
+use crate::commands::daemon::{client::try_over_ipc, handlers, ipc::Command};
 
 pub(super) fn handle_consolidate() -> Result<(), Box<dyn std::error::Error>> {
-    let mut memory = crate::memory::load_or_default()?;
-    let summaries = crate::memory::consolidate(&mut memory.brain);
-    crate::memory::save(&memory)?;
+    if let Some(stdout) = try_over_ipc(Command::Consolidate)? {
+        print!("{}", stdout);
+        return Ok(());
+    }
 
-    let event_data = EventData::Consolidate(ConsolidateEventData {
-        groups_merged: summaries.len(),
-        summaries: summaries
-            .iter()
-            .map(|s| ConsolidatedGroup {
-                node_id: s.id,
-                label: truncate_text(&s.label, 60),
-            })
-            .collect(),
-    });
-    log_event_rich(
-        "consolidate",
-        &format!("{} groups merged", summaries.len()),
-        Some(event_data),
-    );
-    let json = serde_json::to_string(&summaries).unwrap_or_else(|_| "[]".to_string());
-    println!("{}", json);
+    let mut memory = crate::memory::load_or_default()?;
+    let stdout = handlers::render_consolidate(&mut memory)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    crate::memory::save(&memory)?;
+    print!("{}", stdout);
     Ok(())
 }

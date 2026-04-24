@@ -16,7 +16,8 @@ mod tick;
 
 pub use event_log::log_event_rich;
 pub use event_log::{
-    EventData, GraphHit, MatchedEntry, QueryEventData, StartEventData, TickEventData,
+    ConsolidateEventData, ConsolidatedGroup, EventData, GraphHit, MatchedEntry, QueryEventData,
+    ReinforceEntry, ReinforceEventData, StartEventData, TickEventData,
 };
 pub use helpers::truncate_text;
 pub use start::format_start_summary_markdown;

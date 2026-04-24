@@ -8,18 +8,19 @@
 //! `load_or_default()`s it first) and how to persist it after (daemon calls
 //! `persist`; the CLI fallback calls `memory::save`).
 //!
-//! Keeping the render logic out of `server.rs` and out of each command file's
-//! old `handle_*` makes the split clean: each file's `handle_*` becomes a
-//! thin orchestrator that tries IPC and falls back to load → render → save.
+//! Keeping the render logic here and out of each command file's old
+//! `handle_*` makes the split clean: each file's `handle_*` becomes a thin
+//! orchestrator that tries IPC and falls back to load → render → save.
 
 use crate::commands::memory::{
-    extract_keyword_directives, log_event_rich, truncate_text, EventData, GraphHit, MatchedEntry,
+    extract_keyword_directives, log_event_rich, truncate_text, ConsolidateEventData,
+    ConsolidatedGroup, EventData, GraphHit, MatchedEntry, ReinforceEntry, ReinforceEventData,
     TickEventData,
 };
-use crate::memory::MemoryState;
+use crate::memory::{MemoryState, ReinforceResult};
 
 // ---------------------------------------------------------------------------
-// Tick
+// Tick — mutating
 // ---------------------------------------------------------------------------
 
 /// Render a `legend memory tick` — applies keyword directives, calls the core
@@ -114,4 +115,210 @@ pub fn render_tick(
     });
     let json = serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string());
     Ok(format!("{}\n", json))
+}
+
+// ---------------------------------------------------------------------------
+// Task — mutating (set/clear) + read-only (get)
+// ---------------------------------------------------------------------------
+
+pub fn render_task_get(state: &MemoryState) -> Result<String, String> {
+    Ok(match crate::memory::get_task(state) {
+        Some(task) => format!("Current task: {}\n", task),
+        None => "No current task set\n".to_string(),
+    })
+}
+
+pub fn render_task_set(state: &mut MemoryState, task: &str) -> Result<String, String> {
+    crate::memory::set_task(state, task);
+    log_event_rich("task_set", task, None);
+    Ok(format!("✓ Current task set: {}\n", task))
+}
+
+pub fn render_task_clear(state: &mut MemoryState) -> Result<String, String> {
+    crate::memory::clear_task(state);
+    log_event_rich("task_clear", "task cleared", None);
+    Ok("✓ Current task cleared\n".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Reinforce — mutating
+// ---------------------------------------------------------------------------
+
+pub fn render_reinforce(
+    state: &mut MemoryState,
+    signal: f32,
+    ids: &[u64],
+) -> Result<String, String> {
+    let result = crate::memory::basal_ganglia::reinforce(&mut state.brain, ids, signal);
+
+    let event_data = EventData::Reinforce(ReinforceEventData {
+        signal,
+        entries: result
+            .reinforced
+            .iter()
+            .map(|r| ReinforceEntry {
+                id: r.id,
+                before: r.salience_before,
+                after: r.salience_after,
+            })
+            .collect(),
+        graph_nodes_affected: result.graph_nodes_affected,
+    });
+    log_event_rich(
+        "reinforce",
+        &format!("signal={} ids={:?}", signal, ids),
+        Some(event_data),
+    );
+
+    let json = serde_json::to_string::<ReinforceResult>(&result).unwrap_or_else(|_| "{}".to_string());
+    Ok(format!("{}\n", json))
+}
+
+// ---------------------------------------------------------------------------
+// Consolidate — mutating (wholesale graph rewrite)
+// ---------------------------------------------------------------------------
+
+pub fn render_consolidate(state: &mut MemoryState) -> Result<String, String> {
+    let summaries = crate::memory::consolidate(&mut state.brain);
+
+    let event_data = EventData::Consolidate(ConsolidateEventData {
+        groups_merged: summaries.len(),
+        summaries: summaries
+            .iter()
+            .map(|s| ConsolidatedGroup {
+                node_id: s.id,
+                label: truncate_text(&s.label, 60),
+            })
+            .collect(),
+    });
+    log_event_rich(
+        "consolidate",
+        &format!("{} groups merged", summaries.len()),
+        Some(event_data),
+    );
+
+    let json = serde_json::to_string(&summaries).unwrap_or_else(|_| "[]".to_string());
+    Ok(format!("{}\n", json))
+}
+
+// ---------------------------------------------------------------------------
+// Reset — destructive: wipes state on disk AND in memory
+// ---------------------------------------------------------------------------
+
+pub fn render_reset(state: &mut MemoryState) -> Result<String, String> {
+    crate::memory::reset_memory().map_err(|e| e.to_string())?;
+    // Replace the daemon's in-RAM state with a fresh default so future
+    // commands don't see zombie pre-reset data.
+    *state = MemoryState::default();
+    log_event_rich("reset", "memory store cleared", None);
+    Ok("✓ Memory reset\n".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Context / Dump / Stats / Sessions — read-only
+// ---------------------------------------------------------------------------
+
+pub fn render_context(state: &MemoryState) -> Result<String, String> {
+    let summary = crate::memory::build_context_summary(state);
+    let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
+    Ok(format!("{}\n", json))
+}
+
+pub fn render_dump(state: &MemoryState) -> Result<String, String> {
+    let dump = crate::memory::build_dump(state);
+    let json = serde_json::to_string(&dump).unwrap_or_else(|_| "{}".to_string());
+    Ok(format!("{}\n", json))
+}
+
+pub fn render_stats(state: &MemoryState) -> Result<String, String> {
+    let mut out = String::new();
+    out.push_str("Memory stats:\n");
+    out.push_str(&format!(
+        "  Working memory (L1): {}\n",
+        state.brain.working_memory.len()
+    ));
+    out.push_str(&format!(
+        "  Short-term entries: {}\n",
+        state.brain.short_term.len()
+    ));
+    out.push_str(&format!(
+        "  Long-term nodes: {}\n",
+        state.brain.long_term.nodes.len()
+    ));
+    out.push_str(&format!(
+        "  Long-term edges: {}\n",
+        state.brain.long_term.edges.len()
+    ));
+    out.push_str(&format!(
+        "  Ticks since consolidation: {}\n",
+        state.brain.ticks_since_consolidation
+    ));
+    if let Some(task) = crate::memory::get_task(state) {
+        out.push_str(&format!("  Current task: {}\n", task));
+    }
+    // The session-quality panel reads events.jsonl from disk and stays on the
+    // CLI side (see `src/commands/memory/stats.rs`); daemon clients still get
+    // the base stats with byte-identical ordering.
+    Ok(out)
+}
+
+pub fn render_sessions(
+    state: &MemoryState,
+    count: usize,
+    show_all: bool,
+) -> Result<String, String> {
+    let recent = crate::memory::recent_sessions(state, count);
+
+    if recent.is_empty() {
+        return Ok("No session log entries yet.\n".to_string());
+    }
+    let mut out = String::new();
+    for entry in recent {
+        if !show_all && entry.text.trim().is_empty() {
+            continue;
+        }
+        out.push_str(&format!("[t={}] {}\n", entry.timestamp, entry.text));
+    }
+    Ok(out)
+}
+
+// `memory start` and `memory query` are deferred from Phase 2 Commit B because
+// their CLI-side render helpers are private inner functions; extracting them
+// cleanly warrants its own pass. Both commands still work via the in-process
+// path (try_over_ipc returns NotImplemented, the caller's fallback executes).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Cheap sanity checks — full coverage lives in the per-command files'
+    // conformance tests, which exercise the IPC path end-to-end.
+
+    fn state_with_task(task: &str) -> MemoryState {
+        let mut s = MemoryState::default();
+        crate::memory::set_task(&mut s, task);
+        s
+    }
+
+    #[test]
+    fn task_get_reports_set_task() {
+        let s = state_with_task("finish daemon");
+        let out = render_task_get(&s).unwrap();
+        assert!(out.contains("finish daemon"), "{}", out);
+    }
+
+    #[test]
+    fn task_get_no_task_message() {
+        let s = MemoryState::default();
+        let out = render_task_get(&s).unwrap();
+        assert!(out.contains("No current task"), "{}", out);
+    }
+
+    #[test]
+    fn task_clear_removes_task() {
+        let mut s = state_with_task("temporary");
+        let out = render_task_clear(&mut s).unwrap();
+        assert!(out.contains("✓"), "{}", out);
+        assert!(crate::memory::get_task(&s).is_none());
+    }
 }
