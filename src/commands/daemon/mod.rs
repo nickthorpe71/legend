@@ -6,6 +6,7 @@
 //! change; there is no behavior delta for users of Phase 1 alone.
 
 pub mod client;
+pub mod handlers;
 pub mod ipc;
 pub mod server;
 pub mod socket_path;

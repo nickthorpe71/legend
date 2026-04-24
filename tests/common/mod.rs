@@ -71,9 +71,12 @@ impl Harness {
     }
 
     pub fn cmd_in(&self, dir: &Path, args: &[&str]) -> CmdOutput {
+        // Force the in-process fallback path so conformance tests don't race
+        // on a shared daemon (see src/commands/daemon/client.rs NO_DAEMON_ENV_VAR).
         let output = Command::new(&self.binary)
             .args(args)
             .current_dir(dir)
+            .env("LEGEND_NO_DAEMON", "1")
             .output()
             .unwrap_or_else(|err| panic!("failed to run legend {:?}: {err}", args));
         self.decode_output(output)

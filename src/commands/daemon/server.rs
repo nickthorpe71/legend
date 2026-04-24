@@ -6,7 +6,7 @@
 
 use std::io::{BufReader, BufWriter};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use interprocess::local_socket::prelude::*;
@@ -16,6 +16,9 @@ use interprocess::local_socket::GenericFilePath;
 #[cfg(windows)]
 use interprocess::local_socket::GenericNamespaced;
 
+use crate::memory::MemoryState;
+
+use super::handlers;
 use super::ipc::{
     read_frame, write_frame, Command, Envelope, Error, ErrorKind, Message, Payload, StatusInfo,
     PROTOCOL_VERSION,
@@ -23,11 +26,15 @@ use super::ipc::{
 use super::socket_path::{pid_path, socket_parent_dir, socket_path};
 
 /// Shared daemon state across the accept loop and per-connection workers.
-struct Daemon {
-    started_at: Instant,
-    requests_handled: AtomicU64,
-    shutdown: AtomicBool,
-    socket_path: String,
+pub(super) struct Daemon {
+    pub(super) started_at: Instant,
+    pub(super) requests_handled: AtomicU64,
+    pub(super) shutdown: AtomicBool,
+    pub(super) socket_path: String,
+    /// `None` until the first command that needs state. Lazy-loaded via
+    /// `with_state_mut` / `with_state` so `Ping` and `Status` don't pay the
+    /// ~1 s `load_or_default()` cost on daemon startup.
+    pub(super) state: RwLock<Option<MemoryState>>,
 }
 
 impl Daemon {
@@ -37,6 +44,7 @@ impl Daemon {
             requests_handled: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             socket_path,
+            state: RwLock::new(None),
         }
     }
 
@@ -49,6 +57,55 @@ impl Daemon {
             socket_path: self.socket_path.clone(),
         }
     }
+}
+
+/// Run `f` with exclusive access to `MemoryState`, lazy-loading from disk on
+/// first use. Errors during load propagate to the client as `ErrorKind::Internal`.
+pub(super) fn with_state_mut<R>(
+    daemon: &Daemon,
+    f: impl FnOnce(&mut MemoryState) -> R,
+) -> Result<R, String> {
+    let mut guard = daemon.state.write().map_err(|e| format!("state lock poisoned: {}", e))?;
+    if guard.is_none() {
+        *guard = Some(crate::memory::load_or_default().map_err(|e| e.to_string())?);
+    }
+    Ok(f(guard.as_mut().expect("just initialized")))
+}
+
+/// Same as [`with_state_mut`] but takes a shared lock — callers that only read
+/// don't need to serialize with other readers. Lazy-init still happens under
+/// an exclusive upgrade if required.
+///
+/// Unused in Phase 2 Commit A (only Tick is wired). Commit B uses this for
+/// the read-only Query/Context/Dump/Stats/Sessions/TaskGet commands.
+#[allow(dead_code)]
+pub(super) fn with_state<R>(
+    daemon: &Daemon,
+    f: impl FnOnce(&MemoryState) -> R,
+) -> Result<R, String> {
+    // Fast path: shared read if already initialized.
+    {
+        let guard = daemon.state.read().map_err(|e| format!("state lock poisoned: {}", e))?;
+        if let Some(state) = guard.as_ref() {
+            return Ok(f(state));
+        }
+    }
+    // Slow path: upgrade to write lock for lazy init.
+    let mut wguard = daemon.state.write().map_err(|e| format!("state lock poisoned: {}", e))?;
+    if wguard.is_none() {
+        *wguard = Some(crate::memory::load_or_default().map_err(|e| e.to_string())?);
+    }
+    Ok(f(wguard.as_ref().expect("just initialized")))
+}
+
+/// Serialize the daemon's in-RAM state to disk. Phase 2 calls this after every
+/// mutation; Phase 3b replaces with WAL append + periodic checkpoint.
+pub(super) fn persist(daemon: &Daemon) -> Result<(), String> {
+    let guard = daemon.state.read().map_err(|e| format!("state lock poisoned: {}", e))?;
+    if let Some(state) = guard.as_ref() {
+        crate::memory::save(state).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Run the daemon in the foreground. Returns when `Shutdown` is requested or a
@@ -175,6 +232,7 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
     };
 
     match cmd {
+        // --- Daemon control -------------------------------------------------
         Command::Ping => Envelope::ok(id, Payload::Pong),
         Command::Status => Envelope::ok(id, Payload::Status(daemon.status())),
         Command::Shutdown { reason } => {
@@ -192,7 +250,60 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
             eprintln!("legend daemon: shutdown requested ({:?})", reason);
             Envelope::ok(id, Payload::Ack)
         }
+
+        // --- Mutating commands ----------------------------------------------
+        Command::Tick { text, blocker } => command_output(
+            id,
+            with_state_mut(daemon, |state| handlers::render_tick(state, &text, blocker))
+                .and_then(|r| r)
+                .and_then(|out| persist(daemon).map(|()| out)),
+        ),
+
+        // Phase 2 Commit B will wire these — stubbed NotImplemented for now so
+        // clients get a structured error and can fall back to in-process.
+        Command::TaskSet { .. }
+        | Command::TaskClear
+        | Command::Reinforce { .. }
+        | Command::Consolidate
+        | Command::Reset
+        | Command::Discover { .. }
+        | Command::Init { .. }
+        | Command::DevPruneNoise => not_implemented(id),
+
+        // --- Read-only commands ---------------------------------------------
+        Command::Start { .. }
+        | Command::Query { .. }
+        | Command::Context
+        | Command::Dump
+        | Command::Stats
+        | Command::Sessions { .. }
+        | Command::TaskGet => not_implemented(id),
     }
+}
+
+/// Turn a `Result<String, String>` into an `Envelope` — success becomes
+/// `CommandOutput`, failure becomes `ErrorKind::Internal`.
+fn command_output(id: u64, result: Result<String, String>) -> Envelope {
+    match result {
+        Ok(stdout) => Envelope::ok(id, Payload::CommandOutput { stdout }),
+        Err(msg) => Envelope::err(
+            id,
+            Error {
+                kind: ErrorKind::Internal,
+                message: msg,
+            },
+        ),
+    }
+}
+
+fn not_implemented(id: u64) -> Envelope {
+    Envelope::err(
+        id,
+        Error {
+            kind: ErrorKind::NotImplemented,
+            message: "command not yet handled by daemon (Phase 2 in progress)".into(),
+        },
+    )
 }
 
 /// Write the daemon's PID to `pid_path()`. Best-effort — if the write fails,
