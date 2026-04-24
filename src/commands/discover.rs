@@ -44,15 +44,21 @@ pub struct SuggestedFeature {
     pub files: Vec<String>,
 }
 
+/// Non-hidden directories the walker should skip. Hidden directories
+/// (starting with `.`) are skipped wholesale by the walker, so entries
+/// like `.git` / `.legend` / `.vscode` don't need to appear here.
+/// See `walk_directory`.
 const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".legend",
-    "target",
-    "node_modules",
-    ".vscode",
-    ".idea",
-    "build",
-    "bin",
+    "target",         // Rust
+    "node_modules",   // Node.js
+    "build",          // generic
+    "bin",            // generic
+    "dist",           // JS bundlers
+    "out",            // misc
+    "coverage",       // test reports
+    "htmlcov",        // Python coverage
+    "__pycache__",    // Python
+    "vendor",         // Go / PHP
 ];
 
 const SOURCE_ROOTS: &[&str] = &["src", "lib", "app", "pkg"];
@@ -346,15 +352,30 @@ fn is_manifest(filename: &str) -> bool {
             | "go.mod"
             | "requirements.txt"
             | "pyproject.toml"
+            | "Pipfile"
             | "Gemfile"
             | "Makefile"
+            | "composer.json"
+            | "build.gradle"
+            | "pom.xml"
+            | "deno.json"
     )
 }
 
 fn is_entry_point(filename: &str) -> bool {
     matches!(
         filename,
-        "main.rs" | "lib.rs" | "main.py" | "app.py" | "index.ts" | "index.js" | "main.go"
+        "main.rs"
+            | "lib.rs"
+            | "main.py"
+            | "app.py"
+            | "index.ts"
+            | "index.tsx"
+            | "index.js"
+            | "App.tsx"
+            | "App.jsx"
+            | "server.js"
+            | "main.go"
     )
 }
 
