@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::io::Cursor;
-use std::sync::Mutex;
 
 use tract_onnx::prelude::*;
 
@@ -22,7 +21,7 @@ struct SentenceModel {
 /// for faster inference (6 layers vs 12) and smaller binary size. Both produce
 /// 384-dim embeddings. If retrieval quality degrades (measured via LongMemEval),
 /// swap to BGE-small-en-v1.5 by changing the model files — no code changes needed.
-static SENTENCE_MODEL: std::sync::LazyLock<Mutex<SentenceModel>> = std::sync::LazyLock::new(|| {
+static SENTENCE_MODEL: std::sync::LazyLock<SentenceModel> = std::sync::LazyLock::new(|| {
     let tokenizer = tokenizers::Tokenizer::from_bytes(include_bytes!(
         "../../models/all-MiniLM-L6-v2-q/tokenizer.json"
     ))
@@ -40,8 +39,16 @@ static SENTENCE_MODEL: std::sync::LazyLock<Mutex<SentenceModel>> = std::sync::La
         .into_runnable()
         .expect("Failed to make ONNX model runnable");
 
-    Mutex::new(SentenceModel { tokenizer, model })
+    SentenceModel { tokenizer, model }
 });
+
+// Fails the build if tract's SimplePlan or tokenizers::Tokenizer ever lose
+// thread-safety — catches the regression at compile time instead of as a
+// runtime data race.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SentenceModel>();
+};
 
 /// Entorhinal Cortex — Representational encoding and compression gateway.
 ///
@@ -216,48 +223,37 @@ pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
         return vec![0.0f32; dim];
     }
 
-    let guard = SENTENCE_MODEL
-        .lock()
-        .expect("sentence model mutex poisoned");
-    let encoding = guard
+    let m = &*SENTENCE_MODEL;
+    let encoding = m
         .tokenizer
         .encode(text, true)
         .expect("tokenization failed");
-    infer_embedding(&guard.model, &encoding, dim)
+    infer_embedding(&m.model, &encoding, dim)
 }
 
 /// Batch-embed multiple texts. Each text gets its own forward pass (tract
-/// doesn't support dynamic batch sizes after optimization). The mutex is
-/// held once for the entire batch. Empty texts get zero vectors.
+/// doesn't support dynamic batch sizes after optimization). Empty texts get
+/// zero vectors.
 pub fn embed_texts_batch(texts: &[&str], dim: usize) -> Vec<Vec<f32>> {
     if texts.is_empty() {
         return Vec::new();
     }
 
-    let mut results = vec![vec![0.0f32; dim]; texts.len()];
-    let non_empty: Vec<(usize, &str)> = texts
+    let m = &*SENTENCE_MODEL;
+    texts
         .iter()
-        .enumerate()
-        .filter(|(_, t)| !t.trim().is_empty())
-        .map(|(i, t)| (i, *t))
-        .collect();
-
-    if non_empty.is_empty() {
-        return results;
-    }
-
-    let guard = SENTENCE_MODEL
-        .lock()
-        .expect("sentence model mutex poisoned");
-    for (orig_idx, text) in non_empty {
-        let encoding = guard
-            .tokenizer
-            .encode(text, true)
-            .expect("tokenization failed");
-        results[orig_idx] = infer_embedding(&guard.model, &encoding, dim);
-    }
-
-    results
+        .map(|t| {
+            if t.trim().is_empty() {
+                vec![0.0f32; dim]
+            } else {
+                let encoding = m
+                    .tokenizer
+                    .encode(*t, true)
+                    .expect("tokenization failed");
+                infer_embedding(&m.model, &encoding, dim)
+            }
+        })
+        .collect()
 }
 
 /// FNV-1a 64-bit hash (retained for potential future use).
@@ -1079,5 +1075,30 @@ mod tests {
         let norm_2: f32 = batch[2].iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!(norm_0 > 0.5);
         assert!(norm_2 > 0.5);
+    }
+
+    #[test]
+    fn concurrent_embed_produces_bit_identical_results() {
+        use std::thread;
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                thread::spawn(|| {
+                    (0..50)
+                        .map(|_| embed_text("hello world", 384))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+
+        let results: Vec<Vec<Vec<f32>>> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        let reference = &results[0][0];
+        for batch in &results {
+            for v in batch {
+                assert_eq!(v, reference, "concurrent embed_text produced divergent output");
+            }
+        }
     }
 }
