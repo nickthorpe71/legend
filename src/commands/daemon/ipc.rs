@@ -55,6 +55,11 @@ pub enum Command {
     Ping,
     /// Request `Payload::Status` with PID, uptime, counters.
     Status,
+    /// Force the daemon to `save()` its in-RAM state to disk and truncate
+    /// the WAL, without shutting down. Used after a batch of edits to
+    /// guarantee they survive a hard crash without waiting for the 100 ms
+    /// fsync timer or an idle checkpoint.
+    Checkpoint,
     /// Request graceful shutdown. Daemon responds, closes socket, exits.
     Shutdown { reason: ShutdownReason },
 

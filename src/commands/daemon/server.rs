@@ -318,6 +318,16 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
         // --- Daemon control -------------------------------------------------
         Command::Ping => Envelope::ok(id, Payload::Pong),
         Command::Status => Envelope::ok(id, Payload::Status(daemon.status())),
+        Command::Checkpoint => match checkpoint(daemon) {
+            Ok(()) => Envelope::ok(id, Payload::Ack),
+            Err(msg) => Envelope::err(
+                id,
+                Error {
+                    kind: ErrorKind::Internal,
+                    message: msg,
+                },
+            ),
+        },
         Command::Shutdown { reason } => {
             // Flip the shutdown flag; the accept loop will exit on next iteration.
             daemon.shutdown.store(true, Ordering::Release);

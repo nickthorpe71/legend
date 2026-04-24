@@ -32,10 +32,35 @@ pub fn handle_daemon(
         "start" => handle_start(&args[1..]),
         "stop" => handle_stop(),
         "status" => handle_status(),
+        "checkpoint" => handle_checkpoint(),
         _ => {
             print_daemon_help();
             Ok(())
         }
+    }
+}
+
+fn handle_checkpoint() -> Result<(), Box<dyn std::error::Error>> {
+    match client::send(ipc::Command::Checkpoint, Duration::from_secs(5)) {
+        Ok(env) => match client::into_payload(env) {
+            Ok(ipc::Payload::Ack) => {
+                println!("✓ legend daemon: checkpoint complete (state saved, WAL truncated)");
+                Ok(())
+            }
+            Ok(other) => Err(format!(
+                "daemon returned unexpected payload for Checkpoint: {:?}",
+                other
+            )
+            .into()),
+            Err(e) => Err(Box::new(e)),
+        },
+        Err(client::ClientError::NoDaemon) => {
+            println!(
+                "legend daemon: not running (nothing to checkpoint; in-process commands save synchronously)"
+            );
+            Ok(())
+        }
+        Err(e) => Err(Box::new(e)),
     }
 }
 
@@ -128,4 +153,5 @@ fn print_daemon_help() {
     println!("  legend daemon start --detach  Internal: post-fork entry point (not for humans)");
     println!("  legend daemon stop            Request a clean shutdown");
     println!("  legend daemon status          Report pid, uptime, protocol version, request count");
+    println!("  legend daemon checkpoint      Force save + WAL truncate without shutting down");
 }
