@@ -23,6 +23,12 @@ path = "src/main.rs"
 name = "legend"
 path = "src/lib.rs"
 
+# tick_profile uses the `instrument` feature's trace channel. Gating it here
+# keeps `cargo build` / `cargo test` from failing when the feature is off.
+[[example]]
+name = "tick_profile"
+required-features = ["instrument"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 lz4 = "1.24"
