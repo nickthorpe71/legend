@@ -16,7 +16,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use legend::memory::trace::{self, PipelineStep};
+use legend::memory::trace;
+use legend::memory::TickOptions;
 
 /// How many ticks to run. First is cold (ORT init + state already loaded),
 /// rest are warm.
@@ -54,9 +55,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut per_sample_events: Vec<(std::time::Duration, Vec<trace::TraceEvent>)> =
         Vec::with_capacity(SAMPLES);
 
+    // Match the daemon's CLI tick path: compute_context = false. The MCP
+    // tick path keeps context on; we measure the CLI/daemon contract here
+    // since that is what §#06 budgets target (100 ms warm).
+    let options = TickOptions {
+        compute_context: false,
+        defer_consolidation: true,
+    };
     for text in &samples {
         let t0 = Instant::now();
-        let _ = legend::memory::tick(&mut state, text);
+        let _ = legend::memory::tick_with_options(&mut state, text, options);
         let total = t0.elapsed();
 
         let mut events = Vec::new();

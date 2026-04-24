@@ -1,6 +1,10 @@
 use super::helpers::read_stdin;
 use crate::cli::{parse_args, CommandDef};
-use crate::commands::daemon::{client::try_over_ipc, handlers::render_tick, ipc::Command};
+use crate::commands::daemon::{
+    client::try_over_ipc,
+    handlers::{drain_deferred_consolidation, render_tick},
+    ipc::Command,
+};
 
 fn parse_tick_text(
     args: &[String],
@@ -42,6 +46,9 @@ pub(super) fn handle_tick(
             let mut memory = crate::memory::load_or_default()?;
             let stdout =
                 render_tick(&mut memory, &text, blocker).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            // No daemon worker will drain the deferred queue here — handle it
+            // inline so non-daemon ticks don't grow the graph unboundedly.
+            drain_deferred_consolidation(&mut memory);
             crate::memory::save(&memory)?;
             print!("{}", stdout);
             Ok(())

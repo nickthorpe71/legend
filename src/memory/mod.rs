@@ -75,7 +75,8 @@ pub use crate::tool::persistence::{
 pub use crate::tool::{
     build_context_summary, build_dump, build_start_summary, build_start_summary_with_options,
     clear_task, get_git_summary, get_task, merge_states, recent_sessions,
-    scan_ecosystem_dependencies, set_task, should_suggest_consolidation, tick, MergeStats,
+    scan_ecosystem_dependencies, set_task, should_suggest_consolidation, tick, tick_with_options,
+    MergeStats,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1034,7 +1035,44 @@ pub fn classify_text(text: &str, kw: &wernicke::KeywordCache) -> MemoryCategory 
 /// - `retrieve_context_with_mode`: ReadOnly is pure read (no side effects).
 ///   RecallStudy additionally increments rehearsal_count and fires
 ///   Hebbian reinforcement on co-retrieved nodes.
+/// Convenience wrapper for callers that use default [`TickOptions`]
+/// (most tests). Production callers plumb their own options through
+/// [`tick_impl_with_options`] / [`crate::tool::tick_with_options`].
+#[allow(dead_code)]
 pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
+    tick_impl_with_options(state, text, TickOptions::default())
+}
+
+/// Optional behaviors for a tick. Used by the daemon to skip work that the
+/// current caller doesn't consume — see `docs/latency-budgets.md`.
+#[derive(Debug, Clone, Copy)]
+pub struct TickOptions {
+    /// Compute and attach the activation context (related L2 entries + L3
+    /// summary/trace recall) to the returned `TickResult`. Costly on large
+    /// graphs (~40–700 ms, see baseline §#06); callers that discard the
+    /// context field should pass `false`.
+    pub compute_context: bool,
+    /// Skip the sync auto-consolidation pass when the tick-count threshold
+    /// is crossed. The daemon background worker handles it instead so the
+    /// tick handler returns inside the latency budget. Non-daemon callers
+    /// (in-process discover, tests) keep sync behavior with the default.
+    pub defer_consolidation: bool,
+}
+
+impl Default for TickOptions {
+    fn default() -> Self {
+        Self {
+            compute_context: true,
+            defer_consolidation: false,
+        }
+    }
+}
+
+pub fn tick_impl_with_options(
+    state: &mut BrainState,
+    text: &str,
+    options: TickOptions,
+) -> TickResult {
     #[cfg(feature = "instrument")]
     let _tctx = {
         let ctx = trace::TraceCtx::new();
@@ -1485,7 +1523,15 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
                 wm_entry.promoted = true;
             }
 
-            last_context = encoding_activation(state, &raw_embedding, &chunk, &touched_node_ids);
+            if options.compute_context {
+                last_context =
+                    encoding_activation(state, &raw_embedding, &chunk, &touched_node_ids);
+                #[cfg(feature = "instrument")]
+                _tctx.emit(
+                    trace::PipelineStep::EncodingActivation,
+                    trace::TracePayload::None,
+                );
+            }
         } else {
             // Low-salience: stays out of L2, but still contributes weak
             // semantic structure. The graph should preserve meaningful entity
@@ -1637,9 +1683,9 @@ pub fn tick_impl(state: &mut BrainState, text: &str) -> TickResult {
     // Re-compute effective after neurochemical spikes above may have changed levels.
     let effective_post = neurochemistry::compute_effective(&state.chemistry);
     let mut did_consolidate = false;
-    if state.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
-        || effective_post.consolidation_pressure >= CONSOLIDATION_PRESSURE_THRESHOLD
-    {
+    let threshold_crossed = state.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
+        || effective_post.consolidation_pressure >= CONSOLIDATION_PRESSURE_THRESHOLD;
+    if threshold_crossed && !options.defer_consolidation {
         consolidate(state);
         did_consolidate = true;
     }
@@ -3283,13 +3329,14 @@ fn update_term_frequencies(state: &mut BrainState, text: &str) -> usize {
     for label in candidates {
         if should_promote_term(state, &label) {
             if add_keyword_node(state, "domain", &label, Vec::new()) {
+                // Incremental cache update — promotion only ever creates a
+                // domain keyword node. Skipping the O(N_graph) rebuild here
+                // is the #17 fast-path fix; bulk callers (init, discover,
+                // keyword directives) still call `rebuild_keyword_cache`.
+                state.keyword_cache.domain.push(label.clone());
                 promoted += 1;
             }
         }
-    }
-
-    if promoted > 0 {
-        rebuild_keyword_cache(state);
     }
 
     promoted

@@ -15,7 +15,7 @@
 use std::io::{BufReader, BufWriter};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{ListenerOptions, Stream};
@@ -191,6 +191,66 @@ pub(super) fn checkpoint(daemon: &Daemon) -> Result<(), String> {
     Ok(())
 }
 
+/// How often the consolidation worker polls for deferred auto-consolidation.
+/// Short enough that consolidation happens promptly after the threshold is
+/// crossed, long enough to avoid contention with tick handlers.
+const CONSOLIDATION_WORKER_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Background worker: consolidates when the sync tick path skipped it.
+///
+/// The tick handlers pass `defer_consolidation: true` in `TickOptions` so
+/// they return inside the latency budget (see docs/latency-budgets.md).
+/// This worker picks up the wholesale graph-rewrite work instead. Runs in
+/// its own thread; takes the write lock only while a consolidation pass is
+/// active (tick requests wait during that window, but it happens at most
+/// once every `CONSOLIDATION_SUGGESTION_THRESHOLD` ticks).
+fn consolidation_worker(daemon: Arc<Daemon>) {
+    loop {
+        std::thread::sleep(CONSOLIDATION_WORKER_INTERVAL);
+        if daemon.shutdown.load(Ordering::Acquire) {
+            return;
+        }
+
+        // Check the condition under a shared read lock so we don't contend
+        // with the tick path when no consolidation is pending.
+        let should_run = {
+            let guard = match daemon.state.read() {
+                Ok(g) => g,
+                Err(_) => return, // lock poisoned → daemon is unhealthy
+            };
+            guard.as_ref().is_some_and(needs_consolidation)
+        };
+
+        if !should_run {
+            continue;
+        }
+
+        if let Err(e) = run_deferred_consolidation(&daemon) {
+            eprintln!("legend daemon: consolidation worker: {}", e);
+        }
+    }
+}
+
+/// Mirror of the same predicate in `tick_impl` — we re-check here so a tick
+/// that raced ahead and reset the counter doesn't trigger a redundant run.
+fn needs_consolidation(state: &MemoryState) -> bool {
+    use crate::memory::{
+        neurochemistry, CONSOLIDATION_PRESSURE_THRESHOLD, CONSOLIDATION_SUGGESTION_THRESHOLD,
+    };
+    let effective = neurochemistry::compute_effective(&state.brain.chemistry);
+    state.brain.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
+        || effective.consolidation_pressure >= CONSOLIDATION_PRESSURE_THRESHOLD
+}
+
+fn run_deferred_consolidation(daemon: &Daemon) -> Result<(), String> {
+    with_state_mut(daemon, |state| {
+        crate::memory::consolidate(&mut state.brain);
+    })?;
+    // Consolidation is a big graph rewrite; carry it in the snapshot
+    // rather than the WAL. Mirrors `Command::Consolidate` semantics.
+    checkpoint(daemon)
+}
+
 /// Append a mutation to the WAL. Failure here is surfaced as a log line
 /// but does not fail the command — state is already updated in RAM, and
 /// the next clean checkpoint will persist it. A WAL write failing
@@ -225,6 +285,13 @@ pub fn run_foreground() -> std::io::Result<()> {
         path,
         std::process::id()
     );
+
+    // Background worker: drains deferred auto-consolidation. Tick handlers
+    // skip the sync consolidate() pass (see `TickOptions::defer_consolidation`)
+    // so the CLI / MCP paths return inside the latency budget; this worker
+    // runs the wholesale graph-rewrite work in the background instead.
+    let worker_daemon = Arc::clone(&daemon);
+    std::thread::spawn(move || consolidation_worker(worker_daemon));
 
     // The accept loop runs until shutdown flag flips. Each connection is handled
     // on a dedicated thread so a slow client can't block the rest.
@@ -471,8 +538,10 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
                 text: text.clone(),
                 blocker,
             };
-            let result = with_state_mut(daemon, |s| handlers::apply_tick(s, &text, blocker))
-                .and_then(|inner| inner);
+            let result = with_state_mut(daemon, |s| {
+                handlers::apply_tick_with_context(s, &text, blocker)
+            })
+            .and_then(|inner| inner);
             if result.is_ok() {
                 wal_append(daemon, &entry);
             }

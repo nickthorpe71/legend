@@ -46,6 +46,56 @@ pub fn apply_tick(
     text: &str,
     _blocker: bool,
 ) -> Result<TickApplied, String> {
+    // CLI tick output never consumes TickResult.context — skip the ~40–700 ms
+    // activation pass. Auto-consolidation is deferred to the daemon worker
+    // (see `consolidation_worker` in server.rs). See docs/latency-budgets.md.
+    apply_tick_inner(
+        state,
+        text,
+        crate::memory::TickOptions {
+            compute_context: false,
+            defer_consolidation: true,
+        },
+    )
+}
+
+/// Same as [`apply_tick`] but keeps the activation context — used by the MCP
+/// `TickStructured` path so `format_mcp_tick` can render "Related memories".
+pub fn apply_tick_with_context(
+    state: &mut MemoryState,
+    text: &str,
+    _blocker: bool,
+) -> Result<TickApplied, String> {
+    apply_tick_inner(
+        state,
+        text,
+        crate::memory::TickOptions {
+            compute_context: true,
+            defer_consolidation: true,
+        },
+    )
+}
+
+/// Run any consolidation that an earlier deferred tick skipped. Used by the
+/// non-daemon CLI fallback where no background worker is available to drain
+/// the deferred queue. Safe no-op when no consolidation is pending.
+pub fn drain_deferred_consolidation(state: &mut MemoryState) {
+    use crate::memory::{
+        neurochemistry, CONSOLIDATION_PRESSURE_THRESHOLD, CONSOLIDATION_SUGGESTION_THRESHOLD,
+    };
+    let effective = neurochemistry::compute_effective(&state.brain.chemistry);
+    let needs = state.brain.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
+        || effective.consolidation_pressure >= CONSOLIDATION_PRESSURE_THRESHOLD;
+    if needs {
+        crate::memory::consolidate(&mut state.brain);
+    }
+}
+
+fn apply_tick_inner(
+    state: &mut MemoryState,
+    text: &str,
+    options: crate::memory::TickOptions,
+) -> Result<TickApplied, String> {
     if text.trim().is_empty() {
         return Err("No input provided for tick".into());
     }
@@ -91,7 +141,7 @@ pub fn apply_tick(
         });
     }
 
-    let tick_result = crate::memory::tick(state, &text);
+    let tick_result = crate::tool::tick_with_options(state, &text, options);
 
     let event_data = EventData::Tick(TickEventData {
         entry_id: Some(tick_result.entry_id),
@@ -614,7 +664,7 @@ pub fn render_plan_show(state: &MemoryState, plan_name: &str) -> Result<String, 
     let plan = &state.brain.plans[idx];
     use crate::memory::anterior_pfc::ItemStatus;
     let mut out = format!("{} — {} items\n", plan.name, plan.items.len());
-    let mut section = |label: &str, status: ItemStatus, text: &mut String| {
+    let section = |label: &str, status: ItemStatus, text: &mut String| {
         let matches: Vec<_> = plan
             .items
             .iter()

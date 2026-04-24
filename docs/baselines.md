@@ -405,6 +405,70 @@ for i in $(seq 1 10); do
 done
 ```
 
+## #07 — Post-#17 tick latency (encoding-context skip + deferred consolidation)
+
+**Recorded:** 2026-04-24
+**Commits:** `0dfd902` (§#06 profile) → this entry (follow-up changes in #17).
+**Method:** Same methodology as §#06 (master-clone state at
+`/tmp/legend_bench/.legend/`, 10-sample run, `examples/tick_profile.rs`
+with `--features instrument`). Updated to exercise the daemon's CLI
+tick path: `TickOptions { compute_context: false, defer_consolidation: true }`.
+
+Raw log: `.perf/tick-profile-2026-04-24-post17c.log` (git-ignored).
+
+### Changes vs §#06
+
+Two surgical fixes in `tick_impl_with_options` + `apply_tick`:
+
+1. **Skip `encoding_activation` when the caller won't use the context.**
+   Was ~40–670 ms per tick on the ~11 k-node state. The "UpdateTermFrequencies"
+   line in §#06 was actually attributing this cost to the next trace point
+   — a new `PipelineStep::EncodingActivation` split the blame correctly.
+   The CLI tick path never consumed `TickResult.context`; MCP had its own
+   "Related memories" decoration that can be restored via
+   `apply_tick_with_context`.
+2. **Defer auto-consolidation.** Tick handlers set
+   `defer_consolidation: true`; the new `consolidation_worker` thread in
+   `daemon/server.rs` polls every 2 s and runs consolidation in the
+   background. In-process (non-daemon) fallbacks call
+   `drain_deferred_consolidation` after their tick so the graph doesn't
+   grow unboundedly without a worker.
+
+### Results
+
+| Sample | Wall (ms) | Note |
+|--------|-----------|------|
+| 0      | 197       | cold (first call pays ORT init; in-process profile does not benefit from daemon-warm state) |
+| 1      | 21        | replay_consolidation fires, small batch |
+| 2      | 20        | replay_consolidation, small batch |
+| 3      | 94        | larger replay batch |
+| 4      | 15        | baseline |
+| 5      | 16        | baseline |
+| 6      | 89        | larger replay batch |
+| 7      | 15        | baseline |
+| 8      | 16        | baseline |
+| 9      | 89        | larger replay batch |
+
+- **Warm median:** 20 ms
+- **Warm mean:** 42 ms
+- **Warm p95 (~sample 3/6/9):** ≤ 94 ms
+
+Compare §#06: warm median 216 ms, warm mean 390 ms, max 1 497 ms. The
+fixes land all warm samples under the 100 ms p95 budget set in
+`docs/latency-budgets.md`.
+
+### Follow-up candidates (not in #17)
+
+- `ChunkText` at ~6 ms on short text still feels high relative to the
+  sentence split being trivial — worth a look.
+- `Decay` at ~8 ms scales with graph size; keep an eye as the graph
+  grows past 20 k nodes.
+- Observed `ReplayConsolidation` step time (median 74 ms) is the small
+  per-tick SWR-style replay, not auto-consolidation; it's already
+  inside budget. Watch it if graph size or replay batch size changes.
+
+---
+
 ## #06 — Tick subsystem profile (sources of the 54–654 ms tail in #04a)
 
 **Recorded:** 2026-04-24
