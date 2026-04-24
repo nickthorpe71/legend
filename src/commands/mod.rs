@@ -1,3 +1,4 @@
+pub mod daemon;
 pub mod dashboard;
 pub mod dev;
 pub mod discover;
