@@ -225,13 +225,21 @@ static DAEMON_STATUS: CommandDef = CommandDef {
     positionals: &[],
     children: &[],
 };
+static DAEMON_CHECKPOINT: CommandDef = CommandDef {
+    name: "checkpoint",
+    about: "Force save + WAL truncate without shutting down",
+    usage: "legend daemon checkpoint",
+    flags: &[],
+    positionals: &[],
+    children: &[],
+};
 static DAEMON: CommandDef = CommandDef {
     name: "daemon",
     about: "Long-running daemon that caches ONNX model + state in RAM",
     usage: "legend daemon <subcommand>",
     flags: &[],
     positionals: &[],
-    children: &[&DAEMON_START, &DAEMON_STOP, &DAEMON_STATUS],
+    children: &[&DAEMON_START, &DAEMON_STOP, &DAEMON_STATUS, &DAEMON_CHECKPOINT],
 };
 
 // ---------------------------------------------------------------------------
