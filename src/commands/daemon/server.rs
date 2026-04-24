@@ -1,8 +1,16 @@
-//! Daemon server — accept-loop, per-connection handler, Phase 1 stub commands.
+//! Daemon server — accept-loop, per-connection handler, Phase 2 command dispatch,
+//! Phase 3b WAL-backed durability.
 //!
-//! Phase 1 only wires Ping / Status / Shutdown. Phase 2 extends the dispatch
-//! match to cover Tick, Query, Start, Task, etc., and holds the `MemoryState`
-//! behind an `RwLock`.
+//! State is lazy-loaded on first command that needs it. On lazy-init, any
+//! WAL file is replayed onto the snapshot before returning — this is the
+//! crash-recovery path. After replay we take a fresh checkpoint (save +
+//! truncate WAL) so the reloaded state is the new durability anchor.
+//!
+//! Mutating commands append a [`WalEntry`] to the WAL instead of doing a
+//! full save; the background fsync thread in `WalWriter` flushes those on
+//! the schedule set by `docs/daemon-durability.md`. Consolidate and Reset
+//! bypass the WAL entirely and take an immediate checkpoint (they're big
+//! rewrites and already expensive; no reason to also carry them in the WAL).
 
 use std::io::{BufReader, BufWriter};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,6 +25,7 @@ use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::GenericNamespaced;
 
 use crate::memory::MemoryState;
+use crate::tool::wal::{self, WalEntry, WalWriter, WAL_FILE};
 
 use super::handlers;
 use super::ipc::{
@@ -33,19 +42,33 @@ pub(super) struct Daemon {
     pub(super) socket_path: String,
     /// `None` until the first command that needs state. Lazy-loaded via
     /// `with_state_mut` / `with_state` so `Ping` and `Status` don't pay the
-    /// ~1 s `load_or_default()` cost on daemon startup.
+    /// ~1 s `load_or_default()` cost on daemon startup. On lazy init, the
+    /// WAL is replayed on top of the loaded snapshot and a fresh checkpoint
+    /// is written.
     pub(super) state: RwLock<Option<MemoryState>>,
+    /// WAL append handle. Eagerly created when the daemon starts (cheap —
+    /// opens the file + spawns the bg fsync thread). Drop on daemon
+    /// shutdown flushes and joins.
+    pub(super) wal: WalWriter,
 }
 
 impl Daemon {
-    fn new(socket_path: String) -> Self {
-        Self {
+    fn new(socket_path: String) -> std::io::Result<Self> {
+        Self::new_with_wal(socket_path, std::path::Path::new(WAL_FILE))
+    }
+
+    /// Test-friendly constructor: lets the caller point the WAL writer at a
+    /// tmpdir so parallel tests don't race on the default `.legend/memory.wal`.
+    fn new_with_wal(socket_path: String, wal_path: &std::path::Path) -> std::io::Result<Self> {
+        let wal = WalWriter::open(wal_path)?;
+        Ok(Self {
             started_at: Instant::now(),
             requests_handled: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             socket_path,
             state: RwLock::new(None),
-        }
+            wal,
+        })
     }
 
     fn status(&self) -> StatusInfo {
@@ -59,6 +82,46 @@ impl Daemon {
     }
 }
 
+/// Replay WAL entries into `state`. Internal to the lazy-init path.
+fn apply_wal_entry(state: &mut MemoryState, entry: WalEntry) {
+    // Errors during replay are swallowed because the render functions
+    // report them to clients via stdout strings; during replay nothing is
+    // listening. We still want the state mutation side-effect to happen,
+    // which it does even when render_* returns Err for the text portion.
+    let _ = match entry {
+        WalEntry::Tick { text, blocker } => handlers::render_tick(state, &text, blocker),
+        WalEntry::TaskSet { text } => handlers::render_task_set(state, &text),
+        WalEntry::TaskClear => handlers::render_task_clear(state),
+        WalEntry::Reinforce { signal, ids } => handlers::render_reinforce(state, signal, &ids),
+        WalEntry::Consolidate => handlers::render_consolidate(state),
+        WalEntry::Reset => handlers::render_reset(state),
+    };
+}
+
+/// Lazy state init: load snapshot, replay WAL, take a fresh checkpoint.
+/// Caller must hold the write lock.
+fn lazy_init_state(daemon: &Daemon) -> Result<MemoryState, String> {
+    let mut state = crate::memory::load_or_default().map_err(|e| e.to_string())?;
+    let replayed = wal::replay(WAL_FILE, |entry| apply_wal_entry(&mut state, entry))
+        .map_err(|e| format!("wal replay: {}", e))?;
+    if replayed > 0 {
+        eprintln!(
+            "legend daemon: replayed {} WAL {} onto snapshot",
+            replayed,
+            if replayed == 1 { "entry" } else { "entries" }
+        );
+        // Post-replay checkpoint: the state now reflects snapshot + WAL. Save
+        // it as the new snapshot and truncate the WAL so we don't re-replay
+        // on the next start.
+        crate::memory::save(&state).map_err(|e| format!("post-replay save: {}", e))?;
+        daemon
+            .wal
+            .truncate()
+            .map_err(|e| format!("post-replay wal truncate: {}", e))?;
+    }
+    Ok(state)
+}
+
 /// Run `f` with exclusive access to `MemoryState`, lazy-loading from disk on
 /// first use. Errors during load propagate to the client as `ErrorKind::Internal`.
 pub(super) fn with_state_mut<R>(
@@ -67,7 +130,7 @@ pub(super) fn with_state_mut<R>(
 ) -> Result<R, String> {
     let mut guard = daemon.state.write().map_err(|e| format!("state lock poisoned: {}", e))?;
     if guard.is_none() {
-        *guard = Some(crate::memory::load_or_default().map_err(|e| e.to_string())?);
+        *guard = Some(lazy_init_state(daemon)?);
     }
     Ok(f(guard.as_mut().expect("just initialized")))
 }
@@ -75,10 +138,6 @@ pub(super) fn with_state_mut<R>(
 /// Same as [`with_state_mut`] but takes a shared lock — callers that only read
 /// don't need to serialize with other readers. Lazy-init still happens under
 /// an exclusive upgrade if required.
-///
-/// Unused in Phase 2 Commit A (only Tick is wired). Commit B uses this for
-/// the read-only Query/Context/Dump/Stats/Sessions/TaskGet commands.
-#[allow(dead_code)]
 pub(super) fn with_state<R>(
     daemon: &Daemon,
     f: impl FnOnce(&MemoryState) -> R,
@@ -93,19 +152,36 @@ pub(super) fn with_state<R>(
     // Slow path: upgrade to write lock for lazy init.
     let mut wguard = daemon.state.write().map_err(|e| format!("state lock poisoned: {}", e))?;
     if wguard.is_none() {
-        *wguard = Some(crate::memory::load_or_default().map_err(|e| e.to_string())?);
+        *wguard = Some(lazy_init_state(daemon)?);
     }
     Ok(f(wguard.as_ref().expect("just initialized")))
 }
 
-/// Serialize the daemon's in-RAM state to disk. Phase 2 calls this after every
-/// mutation; Phase 3b replaces with WAL append + periodic checkpoint.
-pub(super) fn persist(daemon: &Daemon) -> Result<(), String> {
+/// Take an immediate checkpoint: full `save()` of the current in-RAM state
+/// plus WAL truncate. Called after Consolidate and Reset (natural big
+/// rewrites) and on daemon shutdown.
+pub(super) fn checkpoint(daemon: &Daemon) -> Result<(), String> {
     let guard = daemon.state.read().map_err(|e| format!("state lock poisoned: {}", e))?;
     if let Some(state) = guard.as_ref() {
         crate::memory::save(state).map_err(|e| e.to_string())?;
     }
+    daemon
+        .wal
+        .truncate()
+        .map_err(|e| format!("wal truncate: {}", e))?;
     Ok(())
+}
+
+/// Append a mutation to the WAL. Failure here is surfaced as a log line
+/// but does not fail the command — state is already updated in RAM, and
+/// the next clean checkpoint will persist it. A WAL write failing
+/// typically indicates disk full / permissions, conditions under which
+/// the snapshot save during checkpoint would also fail; we'd rather the
+/// user see that at checkpoint time with a clearer error.
+fn wal_append(daemon: &Daemon, entry: &WalEntry) {
+    if let Err(e) = daemon.wal.append(entry) {
+        eprintln!("legend daemon: wal append failed: {}", e);
+    }
 }
 
 /// Run the daemon in the foreground. Returns when `Shutdown` is requested or a
@@ -119,7 +195,7 @@ pub fn run_foreground() -> std::io::Result<()> {
 
     let path = socket_path();
     let listener = bind_listener(&path)?;
-    let daemon = Arc::new(Daemon::new(path.clone()));
+    let daemon = Arc::new(Daemon::new(path.clone())?);
 
     // Write PID file for CLI liveness checks.
     write_pid_file()?;
@@ -151,6 +227,13 @@ pub fn run_foreground() -> std::io::Result<()> {
                 eprintln!("legend daemon: accept error: {}", e);
             }
         }
+    }
+
+    // Graceful shutdown: take a final checkpoint so on-disk state is current
+    // and the WAL is empty for the next startup. Best-effort; any error is
+    // logged but doesn't block exit.
+    if let Err(e) = checkpoint(&daemon) {
+        eprintln!("legend daemon: final checkpoint failed: {}", e);
     }
 
     cleanup(&path);
@@ -252,16 +335,38 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
         }
 
         // --- Mutating commands ----------------------------------------------
-        Command::Tick { text, blocker } => mutating(daemon, id, |s| {
-            handlers::render_tick(s, &text, blocker)
-        }),
-        Command::TaskSet { text } => mutating(daemon, id, |s| handlers::render_task_set(s, &text)),
-        Command::TaskClear => mutating(daemon, id, handlers::render_task_clear),
-        Command::Reinforce { signal, ids } => mutating(daemon, id, |s| {
-            handlers::render_reinforce(s, signal, &ids)
-        }),
-        Command::Consolidate => mutating(daemon, id, handlers::render_consolidate),
-        Command::Reset => mutating(daemon, id, handlers::render_reset),
+        // WAL-backed: apply + append WAL (no full save on the hot path).
+        Command::Tick { text, blocker } => {
+            let entry = WalEntry::Tick {
+                text: text.clone(),
+                blocker,
+            };
+            mutating_wal(daemon, id, entry, |s| handlers::render_tick(s, &text, blocker))
+        }
+        Command::TaskSet { text } => {
+            let entry = WalEntry::TaskSet { text: text.clone() };
+            mutating_wal(daemon, id, entry, |s| handlers::render_task_set(s, &text))
+        }
+        Command::TaskClear => {
+            mutating_wal(daemon, id, WalEntry::TaskClear, handlers::render_task_clear)
+        }
+        Command::Reinforce { signal, ids } => {
+            let entry = WalEntry::Reinforce {
+                signal,
+                ids: ids.clone(),
+            };
+            mutating_wal(daemon, id, entry, |s| {
+                handlers::render_reinforce(s, signal, &ids)
+            })
+        }
+
+        // Checkpoint-backed: apply + full save + truncate WAL (natural big
+        // rewrites where a fresh snapshot is cheaper than carrying the
+        // mutation in the WAL).
+        Command::Consolidate => {
+            mutating_checkpoint(daemon, id, handlers::render_consolidate)
+        }
+        Command::Reset => mutating_checkpoint(daemon, id, handlers::render_reset),
 
         // Phase 2 Commit B+ will wire these (they need inner-helper extraction
         // from init.rs / discover.rs / dev.rs before they can be rendered from
@@ -284,17 +389,35 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
     }
 }
 
-/// Run a mutating handler under the exclusive state lock, then persist.
-fn mutating<F>(daemon: &Arc<Daemon>, id: u64, f: F) -> Envelope
+/// Run a mutating handler + append `wal_entry` to the WAL (no full save).
+/// The background fsync thread flushes on the schedule in `wal.rs`.
+fn mutating_wal<F>(
+    daemon: &Arc<Daemon>,
+    id: u64,
+    wal_entry: WalEntry,
+    f: F,
+) -> Envelope
 where
     F: FnOnce(&mut MemoryState) -> Result<String, String>,
 {
-    command_output(
-        id,
-        with_state_mut(daemon, f)
-            .and_then(|inner| inner)
-            .and_then(|stdout| persist(daemon).map(|()| stdout)),
-    )
+    let result = with_state_mut(daemon, f).and_then(|inner| inner);
+    if result.is_ok() {
+        wal_append(daemon, &wal_entry);
+    }
+    command_output(id, result)
+}
+
+/// Run a mutating handler + take a full checkpoint (save + truncate WAL).
+/// Used for Consolidate and Reset — commands that rewrite most of state so
+/// a fresh snapshot is cheaper than replaying the mutation from the WAL.
+fn mutating_checkpoint<F>(daemon: &Arc<Daemon>, id: u64, f: F) -> Envelope
+where
+    F: FnOnce(&mut MemoryState) -> Result<String, String>,
+{
+    let result = with_state_mut(daemon, f)
+        .and_then(|inner| inner)
+        .and_then(|stdout| checkpoint(daemon).map(|()| stdout));
+    command_output(id, result)
 }
 
 /// Run a read-only handler under a shared lock, no persist.
@@ -360,11 +483,21 @@ mod tests {
     };
     use super::*;
 
+    /// Build a Daemon under a tmpdir's WAL path so parallel tests don't race.
+    /// Returns `(Arc<Daemon>, TempDir)` — keep the tempdir alive for the
+    /// duration of the test.
+    fn test_daemon() -> (Arc<Daemon>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let wal_path = dir.path().join("test.wal");
+        let d = Daemon::new_with_wal("/tmp/test.sock".into(), &wal_path).expect("daemon");
+        (Arc::new(d), dir)
+    }
+
     /// Dispatch path is pure aside from the atomic counter; test it in isolation
     /// without binding a real socket.
     #[test]
     fn dispatch_ping_returns_pong() {
-        let d = Arc::new(Daemon::new("/tmp/test.sock".into()));
+        let (d, _tmp) = test_daemon();
         let resp = dispatch(&d, Envelope::request(42, Command::Ping));
         assert_eq!(resp.id, 42);
         assert_eq!(resp.version, PROTOCOL_VERSION);
@@ -376,7 +509,7 @@ mod tests {
 
     #[test]
     fn dispatch_status_returns_status() {
-        let d = Arc::new(Daemon::new("/tmp/test.sock".into()));
+        let (d, _tmp) = test_daemon();
         let resp = dispatch(&d, Envelope::request(1, Command::Status));
         match resp.body {
             Message::Response(Response::Ok(Payload::Status(info))) => {
@@ -390,7 +523,7 @@ mod tests {
 
     #[test]
     fn dispatch_version_mismatch_returns_structured_error() {
-        let d = Arc::new(Daemon::new("/tmp/test.sock".into()));
+        let (d, _tmp) = test_daemon();
         // Craft an envelope with a bogus version.
         let bad = Envelope {
             version: 9999,
@@ -411,7 +544,7 @@ mod tests {
 
     #[test]
     fn dispatch_increments_counter() {
-        let d = Arc::new(Daemon::new("/tmp/test.sock".into()));
+        let (d, _tmp) = test_daemon();
         let before = d.requests_handled.load(Ordering::Relaxed);
         dispatch(&d, Envelope::request(1, Command::Ping));
         dispatch(&d, Envelope::request(2, Command::Ping));
@@ -421,7 +554,7 @@ mod tests {
 
     #[test]
     fn dispatch_shutdown_flips_flag() {
-        let d = Arc::new(Daemon::new("/tmp/test.sock".into()));
+        let (d, _tmp) = test_daemon();
         assert!(!d.shutdown.load(Ordering::Acquire));
         // Use a socket path that can't connect so the self-connect side-effect is
         // a no-op; the flag flip is what matters.
