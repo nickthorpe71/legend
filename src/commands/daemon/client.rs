@@ -144,12 +144,30 @@ pub fn try_over_ipc(cmd: Command) -> Result<Option<String>, ClientError> {
         return Ok(None);
     }
     match send_or_spawn(cmd) {
-        Ok(env) => match into_payload(env)? {
-            Payload::CommandOutput { stdout } => Ok(Some(stdout)),
-            other => Err(ClientError::Protocol(format!(
+        Ok(env) => match env.body {
+            Message::Response(Response::Ok(Payload::CommandOutput { stdout })) => {
+                Ok(Some(stdout))
+            }
+            Message::Response(Response::Ok(other)) => Err(ClientError::Protocol(format!(
                 "expected CommandOutput, got {:?}",
                 other
             ))),
+            // Structured errors from the daemon. `NotImplemented` means we're
+            // talking to an older daemon that doesn't know this command yet
+            // (classic post-upgrade skew) — fall back to in-process so the
+            // user's command still works. `VersionMismatch` means the wire
+            // protocol itself differs; same fallback is safe.
+            Message::Response(Response::Err(err)) => match err.kind {
+                crate::commands::daemon::ipc::ErrorKind::NotImplemented
+                | crate::commands::daemon::ipc::ErrorKind::VersionMismatch { .. } => Ok(None),
+                _ => Err(ClientError::Protocol(format!(
+                    "{:?}: {}",
+                    err.kind, err.message
+                ))),
+            },
+            Message::Request(_) => Err(ClientError::Protocol(
+                "daemon replied with a Request, not a Response".into(),
+            )),
         },
         Err(ClientError::NoDaemon) => Ok(None),
         Err(other) => Err(other),
