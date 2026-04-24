@@ -41,3 +41,12 @@ shutdowns and SessionEnd hook exits lose nothing. Full rationale and
 failure modes in `docs/daemon-durability.md`. Change the policy by
 editing the constants at the top of `src/tool/wal.rs` and updating
 that doc.
+
+## Latency budgets (Legend repo only)
+
+Binding p50 / p95 targets for the tick path and read-only siblings live
+in `docs/latency-budgets.md`. The headline contract: warm tick ≤ 100 ms
+p50, ≤ 200 ms p95. Bulk operations (term-frequency rebuild,
+auto-consolidation) currently violate these and are tracked by queue
+item #17 (split sync tick into a fast encoding path + deferred work
+queues).
