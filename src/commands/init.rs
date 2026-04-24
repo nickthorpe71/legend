@@ -30,9 +30,18 @@ pub fn handle_init(args: &[String], def: &CommandDef) -> Result<(), Box<dyn std:
     if !first_init {
         println!("Legend already initialized in this directory");
         println!("  .legend/ directory exists");
-        println!("  Use 'legend memory start' to view current memory context");
+        println!();
+        println!("  Re-running `legend init` refreshes agent integration files");
+        println!("  (CLAUDE.md, .claude/settings.json, MCP configs, etc.) idempotently.");
+        println!("  Pass --discover to also re-scan the workspace and seed new keywords.");
+        println!("  To start over with an empty memory store, remove .legend/ manually");
+        println!("  (a future `--reset` flag is intentionally not provided to prevent");
+        println!("  accidental data loss — see docs/init-rerun-behavior.md).");
+        println!();
+        println!("  Use 'legend memory start' to view current memory context.");
 
         if discover_requested {
+            println!();
             println!("  Re-scanning project context...");
             if let Ok(report) = discover::run_discovery(Path::new(".")) {
                 let _ = discover::onboard_project(Path::new("."), &report);
