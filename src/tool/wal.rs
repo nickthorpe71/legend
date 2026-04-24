@@ -73,6 +73,20 @@ pub enum WalEntry {
         item_number: u64,
         status: String,
     },
+    PlanReorder {
+        plan_name: String,
+        from_pos: usize,
+        to_pos: usize,
+    },
+    PlanAdd {
+        plan_name: String,
+        status: String,
+        text: String,
+    },
+    PlanRemove {
+        plan_name: String,
+        item_number: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------

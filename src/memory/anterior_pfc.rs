@@ -279,6 +279,127 @@ pub fn set_item_status_by_number(
     Ok(item_idx)
 }
 
+/// Rewrite an item's text so its leading "NN. " numeric prefix matches
+/// `new_num`. If the text doesn't start with a "N. " prefix, one is
+/// prepended. Number is formatted zero-padded to two digits to keep
+/// alphabetic sort order stable when list views use it.
+fn renumber_item_text(text: &mut String, new_num: usize) {
+    let trimmed = text.trim_start();
+    if let Some(dot) = trimmed.find('.') {
+        if trimmed[..dot].trim().parse::<u64>().is_ok() {
+            let rest = &trimmed[dot..]; // e.g. ". Profile tick ..."
+            *text = format!("{:02}{}", new_num, rest);
+            return;
+        }
+    }
+    *text = format!("{:02}. {}", new_num, text.trim());
+}
+
+/// Renumber every item in a plan so its leading prefix matches its 1-based
+/// position. Called after `reorder` / `add` / `remove` so the displayed
+/// numbers stay contiguous.
+pub fn renumber_plan_items(plan: &mut Plan) {
+    for (i, item) in plan.items.iter_mut().enumerate() {
+        renumber_item_text(&mut item.text, i + 1);
+    }
+}
+
+/// Move an item from `from_pos` (1-indexed) to `to_pos` (1-indexed) within
+/// a plan. After the move, renumbers all items to match their new 1-based
+/// positions. Positions out of range return `Err`.
+pub fn reorder_item(
+    plans: &mut [Plan],
+    plan_name: &str,
+    from_pos: usize,
+    to_pos: usize,
+    clock: u64,
+    embedding_dim: usize,
+) -> Result<(), String> {
+    let idx = find_matching_plan(plans, plan_name, embedding_dim)
+        .ok_or_else(|| format!("no plan matching name '{}'", plan_name))?;
+    let plan = &mut plans[idx];
+    let n = plan.items.len();
+    if from_pos == 0 || to_pos == 0 || from_pos > n || to_pos > n {
+        return Err(format!(
+            "positions must be in 1..={} (plan has {} items)",
+            n, n
+        ));
+    }
+    let item = plan.items.remove(from_pos - 1);
+    plan.items.insert(to_pos - 1, item);
+    renumber_plan_items(plan);
+    plan.updated_at = clock;
+    plan.update_completion_status(clock);
+    Ok(())
+}
+
+/// Append a new item to a plan with the given status and text. Auto-numbers
+/// using the new 1-based position. Creates the plan if it doesn't exist.
+pub fn add_item(
+    plans: &mut Vec<Plan>,
+    plan_name: &str,
+    status: ItemStatus,
+    text: &str,
+    clock: u64,
+    next_id: &mut u64,
+    embedding_dim: usize,
+) -> Result<(), String> {
+    let idx = match find_matching_plan(plans, plan_name, embedding_dim) {
+        Some(i) => i,
+        None => {
+            let id = *next_id;
+            *next_id += 1;
+            plans.push(Plan {
+                id,
+                name: plan_name.to_string(),
+                items: Vec::new(),
+                created_at: clock,
+                updated_at: clock,
+                completed_at: None,
+            });
+            plans.len() - 1
+        }
+    };
+    let plan = &mut plans[idx];
+    let new_num = plan.items.len() + 1;
+    let mut item_text = text.to_string();
+    renumber_item_text(&mut item_text, new_num);
+    let embedding = embed_text(&item_text, embedding_dim);
+    plan.items.push(PlanItem {
+        text: item_text,
+        status,
+        embedding,
+    });
+    plan.updated_at = clock;
+    plan.update_completion_status(clock);
+    Ok(())
+}
+
+/// Remove an item by its leading numeric prefix. Renumbers remaining items
+/// so the prefix stays contiguous. Returns the removed item's text.
+pub fn remove_item_by_number(
+    plans: &mut [Plan],
+    plan_name: &str,
+    item_number: u64,
+    clock: u64,
+    embedding_dim: usize,
+) -> Result<String, String> {
+    let idx = find_matching_plan(plans, plan_name, embedding_dim)
+        .ok_or_else(|| format!("no plan matching name '{}'", plan_name))?;
+    let plan = &mut plans[idx];
+    let item_idx = find_item_by_number(plan, item_number).ok_or_else(|| {
+        format!(
+            "no item with leading number {} in plan '{}'",
+            item_number, plan.name
+        )
+    })?;
+    let removed = plan.items.remove(item_idx);
+    renumber_plan_items(plan);
+    plan.updated_at = clock;
+    plan.update_completion_status(clock);
+    Ok(removed.text)
+}
+
 // ---------------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------------

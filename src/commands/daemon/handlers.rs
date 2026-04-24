@@ -569,6 +569,143 @@ fn format_query_context(context: &MemoryContext) -> String {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Plan management primitives (item #14)
+// ---------------------------------------------------------------------------
+
+/// List all plans with counts by status, as a concise human-readable block.
+pub fn render_plan_list(state: &MemoryState) -> Result<String, String> {
+    if state.brain.plans.is_empty() {
+        return Ok("No plans yet. Create one with: legend memory tick 'PLAN: <name>\\n[active] first item'\n".to_string());
+    }
+    let mut out = String::new();
+    for plan in &state.brain.plans {
+        let mut active = 0;
+        let mut pending = 0;
+        let mut deferred = 0;
+        let mut done = 0;
+        for item in &plan.items {
+            match item.status {
+                crate::memory::anterior_pfc::ItemStatus::Active => active += 1,
+                crate::memory::anterior_pfc::ItemStatus::Pending => pending += 1,
+                crate::memory::anterior_pfc::ItemStatus::Deferred => deferred += 1,
+                crate::memory::anterior_pfc::ItemStatus::Done => done += 1,
+            }
+        }
+        let completion = if plan.completed_at.is_some() { " [COMPLETED]" } else { "" };
+        out.push_str(&format!(
+            "{}{} — {} items (active: {}, pending: {}, deferred: {}, done: {})\n",
+            plan.name, completion, plan.items.len(), active, pending, deferred, done
+        ));
+    }
+    Ok(out)
+}
+
+/// Show one plan's items in order, grouped by status with matching section
+/// headers. Mirrors the `memory start` plans section so users get the same
+/// visual shape via a targeted command.
+pub fn render_plan_show(state: &MemoryState, plan_name: &str) -> Result<String, String> {
+    let embedding_dim = state.brain.config.embedding_dim;
+    let idx = crate::memory::anterior_pfc::find_matching_plan(
+        &state.brain.plans,
+        plan_name,
+        embedding_dim,
+    )
+    .ok_or_else(|| format!("no plan matching name '{}'", plan_name))?;
+    let plan = &state.brain.plans[idx];
+    use crate::memory::anterior_pfc::ItemStatus;
+    let mut out = format!("{} — {} items\n", plan.name, plan.items.len());
+    let mut section = |label: &str, status: ItemStatus, text: &mut String| {
+        let matches: Vec<_> = plan
+            .items
+            .iter()
+            .filter(|i| i.status == status)
+            .collect();
+        if !matches.is_empty() {
+            text.push_str(&format!("\n[{}]\n", label));
+            for item in matches {
+                text.push_str(&format!("  {}\n", item.text));
+            }
+        }
+    };
+    section("active", ItemStatus::Active, &mut out);
+    section("pending", ItemStatus::Pending, &mut out);
+    section("deferred", ItemStatus::Deferred, &mut out);
+    section("done", ItemStatus::Done, &mut out);
+    Ok(out)
+}
+
+pub fn render_plan_reorder(
+    state: &mut MemoryState,
+    plan_name: &str,
+    from_pos: usize,
+    to_pos: usize,
+) -> Result<String, String> {
+    let embedding_dim = state.brain.config.embedding_dim;
+    let clock = state.brain.clock;
+    crate::memory::anterior_pfc::reorder_item(
+        &mut state.brain.plans,
+        plan_name,
+        from_pos,
+        to_pos,
+        clock,
+        embedding_dim,
+    )?;
+    Ok(format!(
+        "✓ moved item {} → {} in plan '{}' (remaining items renumbered)\n",
+        from_pos, to_pos, plan_name
+    ))
+}
+
+pub fn render_plan_add(
+    state: &mut MemoryState,
+    plan_name: &str,
+    status_str: &str,
+    text: &str,
+) -> Result<String, String> {
+    let status = crate::memory::anterior_pfc::parse_status(status_str)
+        .ok_or_else(|| format!("invalid status '{}': expected active/pending/deferred/done", status_str))?;
+    let embedding_dim = state.brain.config.embedding_dim;
+    let clock = state.brain.clock;
+    crate::memory::anterior_pfc::add_item(
+        &mut state.brain.plans,
+        plan_name,
+        status.clone(),
+        text,
+        clock,
+        &mut state.brain.next_id,
+        embedding_dim,
+    )?;
+    Ok(format!(
+        "✓ appended [{}] '{}' to plan '{}'\n",
+        status.label(),
+        text,
+        plan_name
+    ))
+}
+
+pub fn render_plan_remove(
+    state: &mut MemoryState,
+    plan_name: &str,
+    item_number: u64,
+) -> Result<String, String> {
+    let embedding_dim = state.brain.config.embedding_dim;
+    let clock = state.brain.clock;
+    let removed = crate::memory::anterior_pfc::remove_item_by_number(
+        &mut state.brain.plans,
+        plan_name,
+        item_number,
+        clock,
+        embedding_dim,
+    )?;
+    Ok(format!(
+        "✓ removed item {} ({}) from plan '{}' (remaining items renumbered)\n",
+        item_number,
+        removed.chars().take(60).collect::<String>(),
+        plan_name
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Plan set-status — targeted item mutation (item #14)
 // ---------------------------------------------------------------------------
 
