@@ -400,6 +400,13 @@ The **SessionStart hook** automatically runs `{cmd} memory start` and injects th
 ## Essential Commands
 - **Record decisions:** `{cmd} memory tick <<'EOF'` ... `EOF` — tick decisions with rationale (DECISION:, BUG:, ARCHITECTURE:, BLOCKER: prefixes). Aim for 3-8 ticks per session.
 - **Recall context:** `{cmd} memory query <<'EOF'` ... `EOF` — query before starting new topics. Read-only by default.
+
+## Daemon Lifecycle
+Legend runs a background daemon that holds the ONNX embedding model and state in RAM, so commands return in tens of milliseconds instead of seconds. You don't manage it directly — it auto-spawns on the first command that needs it and stops cleanly when the session ends:
+- **Auto-spawn:** the first `memory tick` / `memory start` / etc. spawns a detached daemon (~200 ms one-time cost) and reuses it for every subsequent command in the session.
+- **SessionEnd hook:** a `{cmd} daemon stop` hook is configured in `.claude/settings.json` — it fires on `/exit`, flushing the WAL and taking a final snapshot so the next session starts clean.
+- **Crash recovery:** if the daemon is killed (SIGKILL / OOM / power loss), the next start replays the `.legend/memory.wal` onto the last snapshot. Up to ~100 ms of very recent mutations may be lost on a hard crash — see `docs/daemon-durability.md` for details.
+- **Inspect:** `{cmd} daemon status` (pid, uptime, request count) · `{cmd} daemon stop` (manual shutdown if needed).
 {LEGEND_MARKER_END}"#,
         LEGEND_MARKER_START = LEGEND_MARKER_START,
         LEGEND_MARKER_END = LEGEND_MARKER_END,
@@ -489,10 +496,12 @@ fn write_legend_markdown(
 /// Set up Claude Code hooks in .claude/settings.json
 ///
 /// Creates or merges Legend hooks into the project's Claude Code configuration.
-/// Sets up three hooks:
-/// - SessionStart: loads Legend state automatically
+/// Sets up four hooks:
+/// - SessionStart: loads Legend state automatically (also warms the daemon)
 /// - UserPromptSubmit: reminds Claude to search Legend for context
 /// - Stop: detects file changes and reminds Claude to update Legend
+/// - SessionEnd: stops the Legend daemon cleanly so the next session starts
+///   from a fresh snapshot (WAL truncated, final fsync flushed).
 fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
     setup_agent_hooks(
         ".claude",
@@ -500,7 +509,7 @@ fn setup_claude_hooks() -> Result<(), Box<dyn std::error::Error>> {
         "UserPromptSubmit",
         "Stop",
         Some("PostToolUse"),
-        None,
+        Some("SessionEnd"),
     )
 }
 
@@ -519,17 +528,21 @@ fn setup_codex_hooks() -> Result<(), Box<dyn std::error::Error>> {
 /// Set up agent hooks in a settings.json for the given tool directory.
 ///
 /// Creates or merges Legend hooks into the project's agent configuration.
-/// Sets up three hooks:
+/// Sets up the following hooks, depending on which events the agent supports:
 /// - SessionStart: loads Legend state automatically
-/// - UserPromptSubmit: reminds the agent to search Legend for context
-/// - Stop: detects file changes and reminds the agent to update Legend
+/// - prompt_event: reminds the agent to search Legend for context
+/// - stop_event: detects file changes and reminds the agent to update Legend
+/// - post_tool_event (opt): nudges to tick after file edits
+/// - session_end_event (opt, Claude-only today): stops the Legend daemon
+///   cleanly so the WAL is truncated and the next session starts from a
+///   fresh snapshot
 fn setup_agent_hooks(
     dir_name: &str,
     display_name: &str,
     prompt_event: &str,
     stop_event: &str,
     post_tool_event: Option<&str>,
-    _after_agent_event: Option<&str>,
+    session_end_event: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = Path::new(dir_name);
     let settings_path = agent_dir.join("settings.json");
@@ -579,6 +592,18 @@ fn setup_agent_hooks(
         }]
     });
 
+    // SessionEnd: clean daemon shutdown (final fsync + WAL truncate).
+    // The command is a no-op if no daemon is running — `legend daemon stop`
+    // just prints "not running" and exits 0. Output is silenced so Claude
+    // Code doesn't display anything on session exit.
+    let legend_session_end_hook = json!({
+        "matcher": "*",
+        "hooks": [{
+            "type": "command",
+            "command": format!("{cmd} daemon stop > /dev/null 2>&1 || true")
+        }]
+    });
+
     if settings_path.exists() {
         let content = fs::read_to_string(&settings_path)
             .map_err(|e| format!("Failed to read {}/settings.json: {}", dir_name, e))?;
@@ -596,7 +621,7 @@ fn setup_agent_hooks(
             prompt_event,
             stop_event,
             post_tool_event,
-            _after_agent_event,
+            session_end_event,
         ) {
             println!("  {} hooks already configured", display_name);
             return Ok(());
@@ -612,6 +637,8 @@ fn setup_agent_hooks(
                 stop_event,
                 post_tool_hook: post_tool_event.map(|_| &legend_post_tool_hook),
                 post_tool_event,
+                session_end_hook: session_end_event.map(|_| &legend_session_end_hook),
+                session_end_event,
             },
         );
 
@@ -634,6 +661,9 @@ fn setup_agent_hooks(
         if let Some(event) = post_tool_event {
             hooks_map.insert(event.to_string(), json!([legend_post_tool_hook]));
         }
+        if let Some(event) = session_end_event {
+            hooks_map.insert(event.to_string(), json!([legend_session_end_hook]));
+        }
         let settings = json!({ "hooks": hooks_map });
 
         let output = serde_json::to_string_pretty(&settings)?;
@@ -652,7 +682,7 @@ fn has_legend_hooks(
     prompt_event: &str,
     stop_event: &str,
     after_tool_event: Option<&str>,
-    after_agent_event: Option<&str>,
+    session_end_event: Option<&str>,
 ) -> bool {
     let cmd = get_legend_command();
 
@@ -660,7 +690,7 @@ fn has_legend_hooks(
     if let Some(evt) = after_tool_event {
         required.push(evt);
     }
-    if let Some(evt) = after_agent_event {
+    if let Some(evt) = session_end_event {
         required.push(evt);
     }
 
@@ -678,7 +708,8 @@ fn has_legend_hooks(
                         if let Some(hook_cmd) = hook.get("command").and_then(|c| c.as_str()) {
                             if (hook_cmd.contains("legend memory start")
                                 || hook_cmd.contains("legend memory query")
-                                || hook_cmd.contains("legend memory tick"))
+                                || hook_cmd.contains("legend memory tick")
+                                || hook_cmd.contains("legend daemon stop"))
                                 && hook_cmd.contains(cmd)
                             {
                                 found = true;
@@ -728,6 +759,7 @@ fn remove_any_legend_hooks(settings: &mut Value) -> bool {
                     !(entry_str.contains("memory start")
                         || entry_str.contains("memory query")
                         || entry_str.contains("memory tick")
+                        || entry_str.contains("daemon stop")
                         || entry_str.contains("[Legend]")
                         || entry_str.contains("[Legend Context]"))
                 });
@@ -756,6 +788,8 @@ struct LegendHooks<'a> {
     stop_event: &'a str,
     post_tool_hook: Option<&'a Value>,
     post_tool_event: Option<&'a str>,
+    session_end_hook: Option<&'a Value>,
+    session_end_event: Option<&'a str>,
 }
 
 /// Merge Legend hooks into existing settings
@@ -798,6 +832,20 @@ fn merge_legend_hooks(settings: &mut Value, hooks_config: LegendHooks) {
 
     // Add post-tool hook if configured (e.g. PostToolUse or AfterTool)
     if let (Some(hook), Some(event)) = (hooks_config.post_tool_hook, hooks_config.post_tool_event) {
+        if hooks.get(event).is_none() {
+            hooks[event] = json!([]);
+        }
+        if let Some(arr) = hooks.get_mut(event).and_then(|s| s.as_array_mut()) {
+            arr.push(hook.clone());
+        }
+    }
+
+    // Add session-end hook (today: Claude Code's SessionEnd running
+    // `legend daemon stop` for clean daemon shutdown on /exit).
+    if let (Some(hook), Some(event)) = (
+        hooks_config.session_end_hook,
+        hooks_config.session_end_event,
+    ) {
         if hooks.get(event).is_none() {
             hooks[event] = json!([]);
         }
