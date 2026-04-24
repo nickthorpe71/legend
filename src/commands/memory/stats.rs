@@ -1,23 +1,25 @@
 use super::event_log::EVENT_LOG_PATH;
+use crate::commands::daemon::{client::try_over_ipc, handlers, ipc::Command};
 
 pub(super) fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
-    let memory = crate::memory::load_or_default()?;
-    println!("Memory stats:");
-    println!(
-        "  Working memory (L1): {}",
-        memory.brain.working_memory.len()
-    );
-    println!("  Short-term entries: {}", memory.brain.short_term.len());
-    println!("  Long-term nodes: {}", memory.brain.long_term.nodes.len());
-    println!("  Long-term edges: {}", memory.brain.long_term.edges.len());
-    println!(
-        "  Ticks since consolidation: {}",
-        memory.brain.ticks_since_consolidation
-    );
-    if let Some(task) = crate::memory::get_task(&memory) {
-        println!("  Current task: {}", task);
+    if let Some(stdout) = try_over_ipc(Command::Stats)? {
+        // The daemon returns the base stats; the session-quality panel still
+        // runs locally because it reads events.jsonl from disk.
+        print!("{}", stdout);
+        print_session_quality();
+        return Ok(());
     }
 
+    // In-process fallback: base stats + session quality, same output.
+    let memory = crate::memory::load_or_default()?;
+    let stdout = handlers::render_stats(&memory)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    print!("{}", stdout);
+    print_session_quality();
+    Ok(())
+}
+
+fn print_session_quality() {
     if let Some(quality) = compute_session_quality() {
         println!();
         println!("Session quality (current session):");
@@ -38,7 +40,6 @@ pub(super) fn handle_stats() -> Result<(), Box<dyn std::error::Error>> {
             println!("  [GOOD] Strong session signal.");
         }
     }
-    Ok(())
 }
 
 struct SessionQuality {

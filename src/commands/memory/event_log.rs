@@ -126,7 +126,3 @@ pub fn log_event_rich(cmd: &str, detail: &str, data: Option<EventData>) {
     let _ = writeln!(f, "{}", entry);
 }
 
-/// Simple event logging without rich data (backwards compatible).
-pub fn log_event(cmd: &str, detail: &str) {
-    log_event_rich(cmd, detail, None);
-}

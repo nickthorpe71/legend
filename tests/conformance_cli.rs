@@ -26,6 +26,7 @@ fn help_output_is_stable() {
           init                          Initialize Legend in a new project
           mcp-serve                     Run MCP stdio server for AI tool integration
           dashboard [--3d]              Launch TUI dashboard (--3d for Bevy 3D view)
+          daemon <subcommand>           Long-running daemon that caches ONNX model + state in RAM
           help                          Show this help message
         "###
     );

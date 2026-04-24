@@ -252,33 +252,57 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
         }
 
         // --- Mutating commands ----------------------------------------------
-        Command::Tick { text, blocker } => command_output(
-            id,
-            with_state_mut(daemon, |state| handlers::render_tick(state, &text, blocker))
-                .and_then(|r| r)
-                .and_then(|out| persist(daemon).map(|()| out)),
-        ),
+        Command::Tick { text, blocker } => mutating(daemon, id, |s| {
+            handlers::render_tick(s, &text, blocker)
+        }),
+        Command::TaskSet { text } => mutating(daemon, id, |s| handlers::render_task_set(s, &text)),
+        Command::TaskClear => mutating(daemon, id, handlers::render_task_clear),
+        Command::Reinforce { signal, ids } => mutating(daemon, id, |s| {
+            handlers::render_reinforce(s, signal, &ids)
+        }),
+        Command::Consolidate => mutating(daemon, id, handlers::render_consolidate),
+        Command::Reset => mutating(daemon, id, handlers::render_reset),
 
-        // Phase 2 Commit B will wire these — stubbed NotImplemented for now so
-        // clients get a structured error and can fall back to in-process.
-        Command::TaskSet { .. }
-        | Command::TaskClear
-        | Command::Reinforce { .. }
-        | Command::Consolidate
-        | Command::Reset
-        | Command::Discover { .. }
-        | Command::Init { .. }
-        | Command::DevPruneNoise => not_implemented(id),
+        // Phase 2 Commit B+ will wire these (they need inner-helper extraction
+        // from init.rs / discover.rs / dev.rs before they can be rendered from
+        // a `&mut MemoryState`). Return NotImplemented → client falls back.
+        Command::Discover { .. } | Command::Init { .. } | Command::DevPruneNoise => {
+            not_implemented(id)
+        }
 
         // --- Read-only commands ---------------------------------------------
-        Command::Start { .. }
-        | Command::Query { .. }
-        | Command::Context
-        | Command::Dump
-        | Command::Stats
-        | Command::Sessions { .. }
-        | Command::TaskGet => not_implemented(id),
+        Command::Context => read_only(daemon, id, handlers::render_context),
+        Command::Dump => read_only(daemon, id, handlers::render_dump),
+        Command::Stats => read_only(daemon, id, handlers::render_stats),
+        Command::Sessions { count, all } => read_only(daemon, id, move |s| {
+            handlers::render_sessions(s, count, all)
+        }),
+        Command::TaskGet => read_only(daemon, id, handlers::render_task_get),
+
+        // `Start` and `Query` stay in-process for now — deferred from Phase 2.
+        Command::Start { .. } | Command::Query { .. } => not_implemented(id),
     }
+}
+
+/// Run a mutating handler under the exclusive state lock, then persist.
+fn mutating<F>(daemon: &Arc<Daemon>, id: u64, f: F) -> Envelope
+where
+    F: FnOnce(&mut MemoryState) -> Result<String, String>,
+{
+    command_output(
+        id,
+        with_state_mut(daemon, f)
+            .and_then(|inner| inner)
+            .and_then(|stdout| persist(daemon).map(|()| stdout)),
+    )
+}
+
+/// Run a read-only handler under a shared lock, no persist.
+fn read_only<F>(daemon: &Arc<Daemon>, id: u64, f: F) -> Envelope
+where
+    F: FnOnce(&MemoryState) -> Result<String, String>,
+{
+    command_output(id, with_state(daemon, f).and_then(|inner| inner))
 }
 
 /// Turn a `Result<String, String>` into an `Envelope` — success becomes

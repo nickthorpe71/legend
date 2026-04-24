@@ -1,5 +1,4 @@
-use super::event_log::*;
-use crate::memory::ReinforceResult;
+use crate::commands::daemon::{client::try_over_ipc, handlers, ipc::Command};
 
 pub(super) fn handle_reinforce(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 2 {
@@ -16,33 +15,18 @@ pub(super) fn handle_reinforce(args: &[String]) -> Result<(), Box<dyn std::error
     let ids: Result<Vec<u64>, _> = args[1..].iter().map(|s| s.parse()).collect();
     let ids = ids.map_err(|_| "Invalid entry ID: expected integer(s)")?;
 
-    let mut memory = crate::memory::load_or_default()?;
-    let result = crate::memory::basal_ganglia::reinforce(&mut memory.brain, &ids, signal);
-    crate::memory::save(&memory)?;
-
-    let event_data = EventData::Reinforce(ReinforceEventData {
+    if let Some(stdout) = try_over_ipc(Command::Reinforce {
         signal,
-        entries: result
-            .reinforced
-            .iter()
-            .map(|r| ReinforceEntry {
-                id: r.id,
-                before: r.salience_before,
-                after: r.salience_after,
-            })
-            .collect(),
-        graph_nodes_affected: result.graph_nodes_affected,
-    });
-    log_event_rich(
-        "reinforce",
-        &format!("signal={} ids={:?}", signal, ids),
-        Some(event_data),
-    );
-    print_reinforce_result(&result);
-    Ok(())
-}
+        ids: ids.clone(),
+    })? {
+        print!("{}", stdout);
+        return Ok(());
+    }
 
-fn print_reinforce_result(result: &ReinforceResult) {
-    let json = serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string());
-    println!("{}", json);
+    let mut memory = crate::memory::load_or_default()?;
+    let stdout = handlers::render_reinforce(&mut memory, signal, &ids)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    crate::memory::save(&memory)?;
+    print!("{}", stdout);
+    Ok(())
 }
