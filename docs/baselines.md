@@ -65,9 +65,79 @@ slow as the package hits thermal limits.
 
 ---
 
-## #03 — `cargo test --release` (cold)
+## #03 — `cargo test --release` (1 cold + 2 warm)
 
-*Not yet recorded. Queue item #03.*
+**Recorded:** 2026-04-23
+**Commit:** `8b2ea36` (master)
+**Method:** `cargo clean && time cargo test --release` (run 1, cold — compile + run),
+then `time cargo test --release` twice (runs 2 and 3, warm — binaries already built,
+tests only). Same `TIMEFORMAT='real=%R user=%U sys=%S'` as #02. Raw log:
+`.perf/cargo-test-release-2026-04-23.log` (git-ignored).
+
+| Run | Type | Wall (real) | User     | Sys   | Parallelism (user+sys / real) |
+|-----|------|-------------|----------|-------|-------------------------------|
+| 1   | cold | 10,614.4 s  | 18,077.6 s | 73.8 s | 1.71×                       |
+| 2   | warm | 5,918.4 s   |  6,350.2 s |  9.1 s | 1.07×                       |
+| 3   | warm | 5,897.7 s   |  6,417.0 s |  8.3 s | 1.09×                       |
+
+**Summary:**
+- Warm test runtime: **~98 min** (median 5,918 s).
+- Cold overhead (compile all 14 test binaries in release): **~78 min**
+  (run 1 − run 2).
+- Warm-to-warm variance: **21 s** — <0.4% of median. Test runtime itself is
+  extremely stable; the dominant variance source is compile (in cold) and
+  is absent from warm comparisons.
+
+**Per-binary wall time (warm run 2), ranked:**
+
+| Tests | Binary (inferred)                 | Wall    | % of warm run |
+|-------|-----------------------------------|---------|---------------|
+| 442   | unit tests (lib.rs)               | 2,858 s | 48.3%         |
+| 505   | unit tests (main.rs)              | 2,799 s | 47.3%         |
+|  17   | conformance_memory_commands       |    32 s |  0.5%         |
+|  13   | conformance_keywords              |    54 s |  0.9%         |
+|  10   | conformance_init / merge_driver   |    21–23 s each | ~0.8% |
+|   7   | conformance_error_paths           |    21 s |  0.4%         |
+|   6   | conformance_mcp                   |    21 s |  0.4%         |
+|   3   | conformance_dev                   |    29 s |  0.5%         |
+|   2   | conformance_discover              |    20 s |  0.3%         |
+|   3   | conformance_memory_workflows      |    41 s | ⚠ FAILED — see below |
+
+> **⚠ One consistent failure across all three runs:**
+> `conformance_memory_workflows::start_query_context_and_dump_preserve_core_workflow_behavior`
+> fails with an `insta` snapshot mismatch. The captured snapshot has 10
+> memories in the `memories` array; the current `memory query`
+> legitimately returns 1. This is stale-snapshot fallout from commit
+> `faa2fca` (split retrieval into ReadOnly vs RecallStudy modes) — same
+> class of issue as the one fixed in commit `660376f`, but this binary
+> never ran during debug-mode testing because `conformance_memory_commands`
+> failed first and cargo stopped there. Fix: update the inline snapshot to
+> the new 1-memory shape. Intentionally deferred to the post-optimization
+> pass so we don't need to re-run the 1.6-hour suite twice.
+> Because cargo stops at the first failing test binary,
+> `conformance_cli`, `conformance_recovery`, and
+> `observability_pre_phase_2` **never ran** in any of the three measured
+> runs. Their times are excluded from the baseline. Expect their addition
+> to the warm number to be small (< 2 min combined based on debug-mode
+> data) but this should be re-measured after the snapshot fix.
+
+**Headline interpretation:**
+- The two unit-test binaries (442 + 505 tests) together account for **~95%
+  of warm wall time** — everything else is rounding error.
+- `user / real = 1.07×` during warm runs on a **12-core CPU** proves the
+  suite is running effectively single-threaded. The `SENTENCE_MODEL` mutex
+  at `src/memory/entorhinal.rs:25` is the near-certain cause: every
+  `embed_text` serializes through one lock, so of the 12 test threads
+  rustc launches, only one at a time does useful work whenever an
+  embedding is needed.
+- Cold compile dwarfs the per-run runtime numbers from #02 (which only
+  compiled the main binary): here we compile **14 release-profile
+  binaries** (2 unit + 12 integration), explaining the 78-min gap.
+
+**Optimization brief (for the follow-up item; see `docs/test-speed-optimization.md`).**
+Do not re-run this suite to measure regressions until optimization lands.
+Post-optimization, re-record this baseline in a new section (do not
+overwrite) so the delta is visible.
 
 ## #04 — Cold + warm single-tick latency
 
