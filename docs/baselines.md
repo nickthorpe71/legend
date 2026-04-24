@@ -407,4 +407,96 @@ done
 
 ## #05 — `legend memory start` startup latency
 
-*Not yet recorded. Queue item #05.*
+**Recorded:** 2026-04-24
+**Commit:** `16a5116` (master)
+**Method:** Same state (`/tmp/legend_bench_master/.legend/` ~2.4 MB /
+~11k entries) and same `time` framing as #04 / #04a. Two variants:
+
+1. **Cold per sample** — kill daemon, restore master state, start
+   daemon, wait 1.5 s for readiness, `time legend memory start`.
+   Matches the "fresh session" path a user hits via Claude Code's
+   SessionStart hook at the start of every new session.
+2. **Warm** — preserve state across samples, run 10 consecutive
+   invocations. Tests whether OS page cache / shared state reuse
+   reduces latency.
+
+Raw log: `.perf/memory-start-2026-04-24.log` (git-ignored).
+
+### Per-sample timings
+
+| Sample | Cold (ms) | Warm (ms) |
+|--------|-----------|-----------|
+| 1  | 288 | 265 |
+| 2  | 268 | 266 |
+| 3  | 288 | 276 |
+| 4  | 264 | 272 |
+| 5  | 275 | 252 |
+| 6  | 274 | 238 |
+| 7  | 275 | 225 |
+| 8  | 270 | 207 |
+| 9  | 263 | 267 |
+| 10 | 278 | 263 |
+
+### Summary
+
+| Metric | Cold | Warm |
+|--------|------|------|
+| Min    | 263 ms | 207 ms |
+| Median | 274 ms | 264 ms |
+| Mean   | 274 ms | 253 ms |
+| Max    | 288 ms | 276 ms |
+| Stdev  | 8.7 ms | 22.7 ms |
+
+**Warm-up effect is small** (~10–20 ms). Most of the cost is in
+Rust binary startup + dynamic linking (including libonnxruntime, even
+though `memory start` never invokes it) + LZ4 decompression +
+MessagePack deserialization of the state file. None of these benefit
+much from the OS page cache.
+
+### Surprising finding: `memory start` doesn't use the daemon
+
+`memory start` is deferred from Phase 2 (item #36 in the queue) —
+it executes in-process every time, loading state fresh via
+`load_or_default()` and saving after the L1→L2 flush. The "cold /
+warm daemon" distinction doesn't matter for this command today
+because the daemon isn't on the path. The numbers above are the
+in-process path.
+
+### Interpretation
+
+- **Sub-300 ms is probably fine for the SessionStart hook.** Claude
+  Code spawns the hook once per session; 274 ms is not user-visible
+  friction.
+- **If we wanted to drop this further**, the two biggest levers are
+  (a) daemonize the command so state load is amortized (ports the
+  same win we got on tick) and (b) stop linking libonnxruntime for
+  the CLI binary path when the daemon handles all embedding-needing
+  commands. Both are architecture-level, tracked by item #36.
+- **No urgency.** The command is called once per session. Even a
+  doubling to 500 ms would be acceptable for its role.
+
+### Delta vs #04 (`memory tick`)
+
+Worth noting because the two commands share a lot of machinery:
+- `memory tick` cold (pre-daemon, #04): 6,436 ms median
+- `memory start` cold (today): 274 ms median — **24× faster than a
+  `tick` on the pre-daemon architecture,** because `memory start`
+  doesn't call `embed_text` (the 2 s/call ORT inference, now 18 ms
+  with ort, was the tick killer).
+
+### How to compare future runs
+
+```bash
+# Cold per sample (same methodology as #04a cold)
+for i in $(seq 1 10); do
+  pkill -f 'legend daemon start' 2>/dev/null
+  rm -rf /tmp/legend_bench/.legend
+  cp -r /tmp/legend_bench_master/.legend /tmp/legend_bench/
+  export LEGEND_SOCKET=/tmp/legend_bench_start.sock
+  rm -f "$LEGEND_SOCKET"
+  (cd /tmp/legend_bench && legend daemon start &) ; sleep 1.5
+  (cd /tmp/legend_bench && { time legend memory start > /dev/null ; })
+  legend daemon stop
+done
+```
+
