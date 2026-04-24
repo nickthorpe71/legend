@@ -16,6 +16,8 @@ use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+use crate::memory::{MemoryContext, TickResult};
+
 /// Wire protocol version. Bump on any `Command` / `Payload` / `Envelope` shape change.
 pub const PROTOCOL_VERSION: u16 = 1;
 
@@ -24,7 +26,12 @@ pub const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// Top-level IPC envelope. Carries version, correlation id, and typed body.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `PartialEq` is intentionally NOT derived — `Payload` contains
+/// `TickResult`/`MemoryContext` whose full field trees include `f32`s and
+/// other non-Eq types. Tests that need to assert envelope equality compare
+/// their debug representations instead (see ipc::tests).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     pub version: u16,
     pub id: u64,
@@ -32,7 +39,7 @@ pub struct Envelope {
 }
 
 /// Request-or-response switch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     Request(Command),
     Response(Response),
@@ -78,6 +85,15 @@ pub enum Command {
     Stats,
     Sessions { count: usize, all: bool },
     TaskGet,
+
+    // --- Structured payloads (for non-CLI consumers, e.g. `mcp-serve`) ------
+    /// Same state mutation as [`Command::Tick`], but returns `TickResult`
+    /// structured data instead of a pre-rendered stdout string. Used by
+    /// `mcp-serve` which formats the response into MCP-shaped markdown.
+    TickStructured { text: String, blocker: bool },
+    /// Same state read as [`Command::Query`], but returns a full
+    /// `MemoryContext` for MCP's own format path.
+    QueryStructured { text: String },
 }
 
 /// Why a shutdown was requested — useful for logs and the user-visible status line.
@@ -89,14 +105,18 @@ pub enum ShutdownReason {
 }
 
 /// Response envelope. Either a typed `Payload` on success, or a structured `Error`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
     Ok(Payload),
     Err(Error),
 }
 
 /// Command-specific success payload.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `PartialEq` is derived on the enum for round-trip test assertions.
+/// `TickResult` / `MemoryContext` both derive `PartialEq` transitively through
+/// their serde-exposed fields, so the derive holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Payload {
     Pong,
     Status(StatusInfo),
@@ -105,6 +125,11 @@ pub enum Payload {
     /// Rendered stdout text for a CLI command. The client prints this verbatim.
     /// Matches the byte-for-byte output of the in-process code path.
     CommandOutput { stdout: String },
+    /// Structured `TickResult` returned by `Command::TickStructured`.
+    /// Consumers render it themselves (e.g. mcp-serve emits MCP markdown).
+    TickResultPayload(TickResult),
+    /// Structured `MemoryContext` returned by `Command::QueryStructured`.
+    QueryContext(MemoryContext),
 }
 
 /// Daemon health snapshot returned by `Command::Status`.
@@ -213,6 +238,13 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    /// Envelope equality via debug-string comparison — Payload intentionally
+    /// doesn't derive PartialEq (see the struct doc), so tests that need
+    /// structural equality compare `format!("{:?}", …)` instead.
+    fn debug_eq<T: std::fmt::Debug>(a: &T, b: &T) {
+        assert_eq!(format!("{:?}", a), format!("{:?}", b));
+    }
+
     #[test]
     fn envelope_roundtrip_ping() {
         let original = Envelope::request(42, Command::Ping);
@@ -220,7 +252,7 @@ mod tests {
         write_frame(&mut buf, &original).expect("write");
         let mut cursor = Cursor::new(&buf);
         let decoded = read_frame(&mut cursor).expect("read").expect("some");
-        assert_eq!(original, decoded);
+        debug_eq(&original, &decoded);
     }
 
     #[test]
@@ -238,7 +270,7 @@ mod tests {
         let mut buf = Vec::new();
         write_frame(&mut buf, &original).expect("write");
         let decoded = read_frame(&mut Cursor::new(&buf)).expect("read").expect("some");
-        assert_eq!(original, decoded);
+        debug_eq(&original, &decoded);
     }
 
     #[test]
@@ -256,14 +288,14 @@ mod tests {
         let mut buf = Vec::new();
         write_frame(&mut buf, &original).unwrap();
         let decoded = read_frame(&mut Cursor::new(&buf)).unwrap().unwrap();
-        assert_eq!(original, decoded);
+        debug_eq(&original, &decoded);
     }
 
     #[test]
     fn read_frame_clean_eof_returns_none() {
         let empty: Vec<u8> = Vec::new();
         let mut cursor = Cursor::new(&empty);
-        assert_eq!(read_frame(&mut cursor).unwrap(), None);
+        assert!(read_frame(&mut cursor).unwrap().is_none());
     }
 
     #[test]
@@ -285,6 +317,6 @@ mod tests {
         let b = read_frame(&mut cursor).unwrap().unwrap();
         assert_eq!(a.id, 1);
         assert_eq!(b.id, 2);
-        assert_eq!(read_frame(&mut cursor).unwrap(), None);
+        assert!(read_frame(&mut cursor).unwrap().is_none());
     }
 }

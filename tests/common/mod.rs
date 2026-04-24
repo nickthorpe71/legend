@@ -125,8 +125,11 @@ impl Harness {
     }
 
     pub fn mcp_session_in(&self, cwd: &Path, messages: &[Value]) -> Vec<Value> {
+        // Force the in-process fallback path so conformance tests don't race
+        // on a shared daemon — same reason `cmd_in` sets this flag.
         let mut child = Command::new(&self.binary)
             .args(["mcp-serve", "--cwd", cwd.to_str().unwrap()])
+            .env("LEGEND_NO_DAEMON", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

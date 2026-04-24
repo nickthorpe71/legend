@@ -14,25 +14,38 @@
 
 use crate::commands::memory::{
     extract_keyword_directives, log_event_rich, truncate_text, ConsolidateEventData,
-    ConsolidatedGroup, EventData, GraphHit, MatchedEntry, ReinforceEntry, ReinforceEventData,
-    TickEventData,
+    ConsolidatedGroup, EventData, GraphHit, MatchedEntry, QueryEventData, ReinforceEntry,
+    ReinforceEventData, TickEventData,
 };
-use crate::memory::{MemoryState, ReinforceResult};
+use crate::memory::{MemoryContext, MemoryState, ReinforceResult, TickResult};
 
 // ---------------------------------------------------------------------------
 // Tick — mutating
 // ---------------------------------------------------------------------------
 
-/// Render a `legend memory tick` — applies keyword directives, calls the core
-/// tick, logs the event, and returns the JSON stdout the CLI would print.
+/// Outcome of a `tick` mutation when the daemon returns structured data to a
+/// non-CLI consumer (currently: `mcp-serve`).
 ///
-/// `blocker` is accepted for forward compatibility; today's tick path does not
-/// yet apply blocker-specific salience, matching the existing CLI behavior.
-pub fn render_tick(
+/// `KeywordOnly` is distinct from `Applied` because a tick whose text collapses
+/// to just `KEYWORD:cat:term` directives never enters L1/L2 — it only
+/// registers graph keyword nodes. MCP formats these two cases differently.
+#[derive(Debug, Clone)]
+pub enum TickApplied {
+    Applied(TickResult),
+    KeywordOnly { keywords_registered: usize },
+}
+
+/// Core tick mutation used by both the CLI render path and the MCP structured
+/// path. Parses keyword directives, applies them, then runs `memory::tick` on
+/// the residual text. Logs the rich tick event exactly once.
+///
+/// Returns `TickApplied::KeywordOnly` when the residual text is empty after
+/// stripping keyword directives — in that case no TickResult is available.
+pub fn apply_tick(
     state: &mut MemoryState,
     text: &str,
     _blocker: bool,
-) -> Result<String, String> {
+) -> Result<TickApplied, String> {
     if text.trim().is_empty() {
         return Err("No input provided for tick".into());
     }
@@ -73,10 +86,9 @@ pub fn render_tick(
                 None,
             );
         }
-        return Ok(format!(
-            "{{\"action\":\"keyword_only\",\"keywords_registered\":{}}}\n",
-            keyword_directives.len()
-        ));
+        return Ok(TickApplied::KeywordOnly {
+            keywords_registered: keyword_directives.len(),
+        });
     }
 
     let tick_result = crate::memory::tick(state, &text);
@@ -109,12 +121,32 @@ pub fn render_tick(
     });
     log_event_rich("tick", text.trim(), Some(event_data));
 
-    let output = serde_json::json!({
-        "action": tick_result.action,
-        "entry_id": tick_result.entry_id,
-    });
-    let json = serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string());
-    Ok(format!("{}\n", json))
+    Ok(TickApplied::Applied(tick_result))
+}
+
+/// Render a `legend memory tick` — wraps `apply_tick` and formats the CLI JSON
+/// stdout (`{"action":..,"entry_id":..}` or `{"action":"keyword_only",...}`).
+pub fn render_tick(
+    state: &mut MemoryState,
+    text: &str,
+    blocker: bool,
+) -> Result<String, String> {
+    match apply_tick(state, text, blocker)? {
+        TickApplied::KeywordOnly {
+            keywords_registered,
+        } => Ok(format!(
+            "{{\"action\":\"keyword_only\",\"keywords_registered\":{}}}\n",
+            keywords_registered
+        )),
+        TickApplied::Applied(tick_result) => {
+            let output = serde_json::json!({
+                "action": tick_result.action,
+                "entry_id": tick_result.entry_id,
+            });
+            let json = serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string());
+            Ok(format!("{}\n", json))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -282,10 +314,65 @@ pub fn render_sessions(
     Ok(out)
 }
 
-// `memory start` and `memory query` are deferred from Phase 2 Commit B because
-// their CLI-side render helpers are private inner functions; extracting them
-// cleanly warrants its own pass. Both commands still work via the in-process
-// path (try_over_ipc returns NotImplemented, the caller's fallback executes).
+// `memory start` is deferred from Phase 2 Commit B — its render path is 601
+// lines of private inner helpers. Still falls back to in-process.
+
+// ---------------------------------------------------------------------------
+// Query — read-only, structured return (used by mcp-serve Phase 4)
+// ---------------------------------------------------------------------------
+
+/// Run the read-only query path and return the full `MemoryContext`. Used by
+/// MCP's `tool_memory_query` which renders into its own MCP-shaped markdown.
+///
+/// No state mutation: `RetrievalMode::ReadOnly` prevents recall-time
+/// reinforcement / clock advance. Still logs the rich query event so the
+/// observability log sees the request.
+pub fn apply_query(state: &mut MemoryState, query: &str) -> Result<MemoryContext, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("Empty query".into());
+    }
+
+    let context = crate::memory::retrieve_context_with_mode(
+        &mut state.brain,
+        trimmed,
+        crate::memory::RetrievalMode::ReadOnly,
+    );
+
+    let primed_count = context
+        .long_term
+        .iter()
+        .filter(|n| n.edge_type.is_some())
+        .count();
+
+    let event_data = EventData::Query(QueryEventData {
+        matches: context
+            .short_term
+            .iter()
+            .take(5)
+            .map(|m| MatchedEntry {
+                id: m.id,
+                similarity: m.similarity,
+                text_preview: truncate_text(&m.text, 80),
+            })
+            .collect(),
+        graph_nodes: context
+            .long_term
+            .iter()
+            .take(8)
+            .map(|n| GraphHit {
+                id: n.id,
+                label: n.label.clone(),
+                kind: n.kind.clone(),
+                weight: n.weight,
+            })
+            .collect(),
+        primed_count,
+    });
+    log_event_rich("query", trimmed, Some(event_data));
+
+    Ok(context)
+}
 
 #[cfg(test)]
 mod tests {

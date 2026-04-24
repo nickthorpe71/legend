@@ -384,8 +384,64 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
         }),
         Command::TaskGet => read_only(daemon, id, handlers::render_task_get),
 
-        // `Start` and `Query` stay in-process for now — deferred from Phase 2.
+        // `Start` and `Query` (stdout form) stay in-process for now — deferred
+        // from Phase 2. See `TickStructured` / `QueryStructured` below for the
+        // structured variants consumed by `mcp-serve`.
         Command::Start { .. } | Command::Query { .. } => not_implemented(id),
+
+        // --- Structured returns for MCP ------------------------------------
+        // Same mutation semantics as `Command::Tick`, but responds with a
+        // `TickResult` instead of pre-rendered CLI stdout. WAL still captures
+        // the equivalent `WalEntry::Tick` so replay on crash reproduces the
+        // same state.
+        Command::TickStructured { text, blocker } => {
+            let entry = WalEntry::Tick {
+                text: text.clone(),
+                blocker,
+            };
+            let result = with_state_mut(daemon, |s| handlers::apply_tick(s, &text, blocker))
+                .and_then(|inner| inner);
+            if result.is_ok() {
+                wal_append(daemon, &entry);
+            }
+            match result {
+                Ok(handlers::TickApplied::Applied(tick_result)) => {
+                    Envelope::ok(id, Payload::TickResultPayload(tick_result))
+                }
+                // Keyword-only ticks don't produce a TickResult; send a
+                // synthetic "empty" one so MCP sees a consistent payload
+                // shape. Action = "keyword_only", entry_id = 0 is a marker.
+                Ok(handlers::TickApplied::KeywordOnly { .. }) => Envelope::ok(
+                    id,
+                    Payload::TickResultPayload(crate::memory::TickResult {
+                        action: "keyword_only".into(),
+                        entry_id: 0,
+                        context: crate::memory::MemoryContext::default(),
+                    }),
+                ),
+                Err(msg) => Envelope::err(
+                    id,
+                    Error {
+                        kind: ErrorKind::Internal,
+                        message: msg,
+                    },
+                ),
+            }
+        }
+        Command::QueryStructured { text } => {
+            let result = with_state_mut(daemon, |s| handlers::apply_query(s, &text))
+                .and_then(|inner| inner);
+            match result {
+                Ok(ctx) => Envelope::ok(id, Payload::QueryContext(ctx)),
+                Err(msg) => Envelope::err(
+                    id,
+                    Error {
+                        kind: ErrorKind::Internal,
+                        message: msg,
+                    },
+                ),
+            }
+        }
     }
 }
 
