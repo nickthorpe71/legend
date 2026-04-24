@@ -41,11 +41,18 @@ should add roughly 6–10 ms on top of every budget below.
 ### Why two tick budgets are the same
 
 `tick (with bulk op)` matches `tick (steady-state)` because **bulk ops
-must not run synchronously on the tick path**. The plan is #17: split
-sync encoding from deferred work queues. Until #17 ships, this row is
-*aspirational* — observed values land in the 500–1500 ms range per
-§#06. Treat that as a known violation tracked by #17, not a budget
-revision.
+do not run synchronously on the tick path**. #17 shipped two changes
+to enforce this:
+
+1. `encoding_activation` (context recall) now skipped on the CLI path
+   and computed lazily only on the MCP path (~40–670 ms saved).
+2. Auto-consolidation deferred to a background worker thread in the
+   daemon (`consolidation_worker` in `src/commands/daemon/server.rs`);
+   non-daemon in-process fallbacks drain via
+   `drain_deferred_consolidation` after save.
+
+Post-#17 measurements (§#07) land all warm ticks under 100 ms p95 on
+the master-clone state.
 
 ### Cold-tick clarification
 
@@ -65,12 +72,12 @@ timeout mean this is paid roughly once per Claude Code session.
 
 ## Baseline measurements (anchor points)
 
-From `docs/baselines.md` §#06 (2026-04-24, 11 k-node state):
+From `docs/baselines.md` §#07 (2026-04-24, post-#17, 11 k-node state):
 
-- Baseline tick (no bulk op): **69–81 ms** ✅ inside budget
-- Tick with `UpdateTermFrequencies`: **~516 ms** ❌ violates (tracked by #17)
-- Tick with auto-consolidation: **~775 ms** ❌ violates (tracked by #17)
-- Cold first tick (full ORT init + state load): **~858 ms** ✅ well inside 2 s budget
+- Baseline tick: **15–21 ms** ✅ well inside budget
+- Tick with larger replay batch: **89–94 ms** ✅ inside budget
+- Cold first tick (in-process, full ORT init): **~197 ms** ✅ well inside 2 s budget
+- Warm median: **20 ms** / mean: **42 ms** / max: **94 ms**
 
 ## How to verify
 
@@ -91,3 +98,5 @@ deferred until #17 lands so the deferred-queue boundary is known.
 
 - **2026-04-24** — initial budgets set after #15. Baseline ticks pass;
   the two bulk-op categories are knowingly out of budget pending #17.
+- **2026-04-24** — #17 shipped: `compute_context` split + background
+  consolidation worker. All warm ticks inside budget per §#07.

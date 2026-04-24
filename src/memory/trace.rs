@@ -63,6 +63,7 @@ pub enum PipelineStep {
     MergeEntryLow,
     InsertShortTerm,
     UpdateGraph,
+    EncodingActivation,
     UpdateTermFrequencies,
     PruneL2,
     PruneL3,

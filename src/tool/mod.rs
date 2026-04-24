@@ -19,7 +19,7 @@ pub use persistence::{
 pub use types::*;
 
 use crate::memory::{
-    add_node_if_new, anterior_pfc, classify_text, retrieve_context_with_mode, tick_impl, GraphNode,
+    add_node_if_new, anterior_pfc, classify_text, retrieve_context_with_mode, GraphNode,
     MemoryState, RetrievalMode, ShortTermEntry,
 };
 use std::collections::{HashMap, HashSet};
@@ -96,7 +96,18 @@ pub fn get_git_summary(state: &mut MemoryState) -> GitSyncInfo {
 /// Ingest text: chunk -> embed -> reconsolidate or match/merge/insert -> update graph.
 /// Returns a TickResult describing what action was taken.
 pub fn tick(state: &mut MemoryState, text: &str) -> TickResult {
-    let result = tick_impl(&mut state.brain, text);
+    tick_with_options(state, text, crate::memory::TickOptions::default())
+}
+
+/// Same as [`tick`] with explicit [`TickOptions`]. Daemon + MCP paths that
+/// do not consume `TickResult.context` pass `compute_context: false` to skip
+/// the costly activation pass. See `docs/latency-budgets.md`.
+pub fn tick_with_options(
+    state: &mut MemoryState,
+    text: &str,
+    options: crate::memory::TickOptions,
+) -> TickResult {
+    let result = crate::memory::tick_impl_with_options(&mut state.brain, text, options);
     // Session log lives in tool layer — append after brain processing.
     // PLAN ticks bypass L1/L2/L3 encoding; log only a compact summary so plan
     // bodies don't rotate real decisions out of recent session activity.
