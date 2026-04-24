@@ -1,5 +1,37 @@
 #![allow(dead_code)]
 
+//! Conformance test harness.
+//!
+//! Each `Harness::cmd_*` / `Harness::mcp_session_*` call spawns the
+//! `legend` binary as a subprocess with `LEGEND_NO_DAEMON=1`. This forces
+//! the in-process code path in every test and prevents the daemon
+//! auto-spawn from racing against other tests running in parallel on the
+//! same user-scope socket (`~/.cache/legend/daemon.sock`).
+//!
+//! Why not call command handlers in-process via a library API instead of
+//! subprocess? It was considered (queue item #13) and rejected:
+//!
+//! 1. **Speed isn't the issue.** After the tract → ort swap and the Phase
+//!    3b daemon work, full-tier integration tests run in ~8 s end-to-end
+//!    — down from ~260 s pre-daemon. The biggest remaining per-subprocess
+//!    cost is binary load + ORT lib init (~170 ms) + state load
+//!    (~500 ms). Replacing subprocess with in-process calls would shave
+//!    ~4 s; not worth a harness rewrite.
+//!
+//! 2. **Exercise what users run.** Subprocess tests execute the exact
+//!    entry path a user's `legend …` command takes — argv parsing,
+//!    CommandDef dispatch, exit-code semantics, stdout/stderr separation.
+//!    An in-process harness would have to mock each of those or lose
+//!    coverage. CLI regressions have been caught by this harness multiple
+//!    times; keep it.
+//!
+//! 3. **State isolation is cheap via tmpdir.** Each `Harness::new()`
+//!    creates a fresh tempdir; the subprocess's cwd is that dir so its
+//!    `.legend/` is isolated from all other tests.
+//!
+//! Deciding otherwise would need a profile showing integration-test time
+//! is a gating factor for CI (today it is not).
+
 use assert_cmd::cargo::cargo_bin;
 use serde::Serialize;
 use serde_json::Value;
