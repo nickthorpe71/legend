@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+use std::sync::{Arc, RwLock};
 
 use tract_onnx::prelude::*;
 
@@ -49,6 +50,50 @@ const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<SentenceModel>();
 };
+
+/// Process-local memoization for embeddings. Keyed by `(text, dim)` since two
+/// callers can legitimately request different output dimensions from the same
+/// input. Values are `Arc<Vec<f32>>` so multi-thread readers clone a cheap
+/// pointer and then `(*arc).clone()` the payload only at return.
+///
+/// Read path takes a shared lock; write path (miss → fill) takes an exclusive
+/// lock but only AFTER the expensive inference is done, so the write critical
+/// section is just a HashMap insert. Double-compute on race is safe because
+/// the embedding function is deterministic.
+///
+/// TODO: convert to LRU/bounded if production cache grows unbounded with
+/// high-cardinality user input. For the test suite (~48 unique strings) the
+/// cache tops out under 80 KB per process.
+static EMBED_CACHE: std::sync::LazyLock<RwLock<HashMap<(String, usize), Arc<Vec<f32>>>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::with_capacity(256)));
+
+fn cached_or_compute<F: FnOnce() -> Vec<f32>>(text: &str, dim: usize, compute: F) -> Vec<f32> {
+    // Fast path: shared read lock. Miss allocation of the lookup key is
+    // unavoidable with `HashMap<(String, usize), _>` via `get()`, but it's
+    // tens of nanoseconds for short inputs and cheap relative to the
+    // ~100 ms inference we're avoiding.
+    if let Some(hit) = EMBED_CACHE
+        .read()
+        .expect("embed cache poisoned")
+        .get(&(text.to_owned(), dim))
+    {
+        return (**hit).clone();
+    }
+
+    // Miss: compute outside the lock so other readers/writers aren't blocked
+    // during the 100+ ms inference.
+    let arc = Arc::new(compute());
+
+    // Fill. Entry API avoids clobbering a concurrent writer; double-compute
+    // on race is fine because the function is deterministic.
+    EMBED_CACHE
+        .write()
+        .expect("embed cache poisoned")
+        .entry((text.to_owned(), dim))
+        .or_insert_with(|| arc.clone());
+
+    (*arc).clone()
+}
 
 /// Entorhinal Cortex — Representational encoding and compression gateway.
 ///
@@ -217,43 +262,30 @@ fn fit_to_dim(emb: &[f32], dim: usize) -> Vec<f32> {
 /// Compute a semantic embedding vector using all-MiniLM-L6-v2 quantized (384-dim).
 ///
 /// The model is embedded in the binary — no download or network access needed.
-/// Inference runs via tract-onnx (pure Rust). Panics on model init failure.
+/// Inference runs via tract-onnx (pure Rust). Results are memoized via
+/// `EMBED_CACHE` since the function is deterministic; repeated inputs return
+/// in O(hash) instead of re-running inference. Panics on model init failure.
 pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
     if text.trim().is_empty() {
         return vec![0.0f32; dim];
     }
 
-    let m = &*SENTENCE_MODEL;
-    let encoding = m
-        .tokenizer
-        .encode(text, true)
-        .expect("tokenization failed");
-    infer_embedding(&m.model, &encoding, dim)
+    cached_or_compute(text, dim, || {
+        let m = &*SENTENCE_MODEL;
+        let encoding = m
+            .tokenizer
+            .encode(text, true)
+            .expect("tokenization failed");
+        infer_embedding(&m.model, &encoding, dim)
+    })
 }
 
 /// Batch-embed multiple texts. Each text gets its own forward pass (tract
 /// doesn't support dynamic batch sizes after optimization). Empty texts get
-/// zero vectors.
+/// zero vectors. Each element flows through `embed_text`, so identical inputs
+/// within or across batches share a cache entry.
 pub fn embed_texts_batch(texts: &[&str], dim: usize) -> Vec<Vec<f32>> {
-    if texts.is_empty() {
-        return Vec::new();
-    }
-
-    let m = &*SENTENCE_MODEL;
-    texts
-        .iter()
-        .map(|t| {
-            if t.trim().is_empty() {
-                vec![0.0f32; dim]
-            } else {
-                let encoding = m
-                    .tokenizer
-                    .encode(*t, true)
-                    .expect("tokenization failed");
-                infer_embedding(&m.model, &encoding, dim)
-            }
-        })
-        .collect()
+    texts.iter().map(|t| embed_text(t, dim)).collect()
 }
 
 /// FNV-1a 64-bit hash (retained for potential future use).
