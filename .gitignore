@@ -8,6 +8,9 @@ build/
 
 # Legend hook ephemeral files
 .legend/.last_query
+# Daemon write-ahead log — transient overlay on memory.lz4, truncated on
+# clean shutdown. Leftover WAL only exists if the daemon crashed.
+.legend/memory.wal
 
 # Test artifacts
 tests/tmp/

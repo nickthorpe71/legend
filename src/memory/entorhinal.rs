@@ -1,21 +1,28 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Cursor;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
-use tract_onnx::prelude::*;
+use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::value::Tensor;
 
 use crate::memory::wernicke::KeywordCache;
 
-type TractModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
-
+/// MiniLM model keeps its tokenizer (thread-safe via `&self`) and an ONNX
+/// Runtime session. `ort::Session::run` takes `&mut self` in rc.12, so we wrap
+/// it in a `Mutex` — the ORT backend is already thread-parallel internally, so
+/// serializing callers at the mutex doesn't cost us the SIMD/kernel parallelism
+/// that's the whole reason to use ORT. The daemon holds this singleton and
+/// amortizes the ~300-500 ms Session init across every tick for the rest of
+/// the session lifetime.
 struct SentenceModel {
     tokenizer: tokenizers::Tokenizer,
-    model: TractModel,
+    session: Mutex<Session>,
 }
 
 /// Lazy-initialized sentence embedding model (all-MiniLM-L6-v2 quantized, 384-dim).
 /// The model is embedded directly in the binary — no network download required.
-/// Inference runs via tract-onnx (pure Rust, no C/C++ ONNX Runtime dependency).
+/// Inference runs via ONNX Runtime (the `ort` crate) with graph optimizations
+/// enabled. ORT ships as a dynamic library; the `ort` crate's `download-binaries`
+/// feature fetches the right build for the current target at `cargo build` time.
 ///
 /// # Model choice
 /// We use all-MiniLM-L6-v2 quantized (~23MB) over BAAI/bge-small-en-v1.5 (~45MB)
@@ -28,24 +35,30 @@ static SENTENCE_MODEL: std::sync::LazyLock<SentenceModel> = std::sync::LazyLock:
     ))
     .expect("Failed to load embedded tokenizer");
 
-    let onnx_bytes = include_bytes!("../../models/all-MiniLM-L6-v2-q/model.onnx");
-    let mut cursor = Cursor::new(onnx_bytes.as_slice());
-    let model = tract_onnx::onnx()
-        .model_for_read(&mut cursor)
-        .expect("Failed to parse ONNX model")
-        .into_typed()
-        .expect("Failed to type ONNX model")
-        .into_optimized()
-        .expect("Failed to optimize ONNX model")
-        .into_runnable()
-        .expect("Failed to make ONNX model runnable");
+    let onnx_bytes: &[u8] = include_bytes!("../../models/all-MiniLM-L6-v2-q/model.onnx");
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+    let session = Session::builder()
+        .expect("ort session builder")
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .expect("ort set optimization level")
+        .with_intra_threads(threads)
+        .expect("ort set intra threads")
+        .commit_from_memory(onnx_bytes)
+        .expect("ort commit from memory (ONNX model bytes)");
 
-    SentenceModel { tokenizer, model }
+    SentenceModel {
+        tokenizer,
+        session: Mutex::new(session),
+    }
 });
 
-// Fails the build if tract's SimplePlan or tokenizers::Tokenizer ever lose
-// thread-safety — catches the regression at compile time instead of as a
-// runtime data race.
+// Build-time assertion: SentenceModel must be Send+Sync so the static can
+// be shared across threads. Mutex<Session> is Send+Sync; Tokenizer is too.
+// If a future `ort` upgrade breaks this, the build fails here instead of
+// producing a runtime data race.
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<SentenceModel>();
@@ -194,7 +207,16 @@ pub fn clean_semantic_noise(text: &str) -> String {
 /// attention-masked mean-pooled embedding. Mean pooling matches how
 /// all-MiniLM-L6-v2 was trained and used by sentence-transformers — CLS
 /// pooling underperforms on sentence-similarity benchmarks for this model.
-fn infer_embedding(model: &TractModel, encoding: &tokenizers::Encoding, dim: usize) -> Vec<f32> {
+///
+/// The caller holds the session mutex for the duration of `run()`. ORT's
+/// intra-op thread pool parallelizes each op across cores, so serializing at
+/// the mutex doesn't cost us the CPU parallelism that made us pick ORT in the
+/// first place.
+fn infer_embedding(
+    session: &mut Session,
+    encoding: &tokenizers::Encoding,
+    dim: usize,
+) -> Vec<f32> {
     let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
     let attention_mask: Vec<i64> = encoding
         .get_attention_mask()
@@ -204,23 +226,38 @@ fn infer_embedding(model: &TractModel, encoding: &tokenizers::Encoding, dim: usi
     let token_type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&t| t as i64).collect();
     let seq_len = input_ids.len();
 
-    let ids = tract_ndarray::Array2::from_shape_vec((1, seq_len), input_ids)
-        .unwrap()
-        .into_tensor();
-    let mask = tract_ndarray::Array2::from_shape_vec((1, seq_len), attention_mask.clone())
-        .unwrap()
-        .into_tensor();
-    let types = tract_ndarray::Array2::from_shape_vec((1, seq_len), token_type_ids)
-        .unwrap()
-        .into_tensor();
+    let ids_tensor = Tensor::from_array(([1, seq_len], input_ids)).expect("ids tensor");
+    let mask_tensor =
+        Tensor::from_array(([1, seq_len], attention_mask.clone())).expect("mask tensor");
+    let types_tensor =
+        Tensor::from_array(([1, seq_len], token_type_ids)).expect("token_type_ids tensor");
 
-    let outputs = model
-        .run(tvec![ids.into(), mask.into(), types.into()])
+    let outputs = session
+        .run(ort::inputs! {
+            "input_ids" => ids_tensor,
+            "attention_mask" => mask_tensor,
+            "token_type_ids" => types_tensor,
+        })
         .expect("ONNX inference failed");
 
-    // Output shape: [1, seq_len, hidden_size]. Mean pool over non-padding tokens.
-    let view = outputs[0].to_array_view::<f32>().expect("output not f32");
-    let hidden_size = view.shape()[2];
+    // MiniLM-style models typically emit "last_hidden_state" as output 0.
+    // We just grab the first output tensor so the code is robust to the
+    // exact output name (some exports call it "output", some "0").
+    let (_name, output_value) = outputs
+        .iter()
+        .next()
+        .expect("ONNX inference produced no outputs");
+
+    let tensor = output_value
+        .try_extract_array::<f32>()
+        .expect("output tensor is not f32");
+    let shape = tensor.shape();
+    let hidden_size = shape[shape.len() - 1];
+
+    // Shape: [1, seq_len, hidden_size]. Mean-pool over non-padding tokens,
+    // weighted by the attention mask, matching the reference sentence-
+    // transformers implementation.
+    let view = tensor.as_slice().expect("output tensor is not contiguous");
 
     let mut pooled = vec![0.0f32; hidden_size];
     let mut total_mask = 0.0f32;
@@ -230,8 +267,9 @@ fn infer_embedding(model: &TractModel, encoding: &tokenizers::Encoding, dim: usi
             continue;
         }
         total_mask += m;
+        let row_start = t * hidden_size;
         for d in 0..hidden_size {
-            pooled[d] += view[[0, t, d]] * m;
+            pooled[d] += view[row_start + d] * m;
         }
     }
     let denom = total_mask.max(1e-9);
@@ -262,9 +300,10 @@ fn fit_to_dim(emb: &[f32], dim: usize) -> Vec<f32> {
 /// Compute a semantic embedding vector using all-MiniLM-L6-v2 quantized (384-dim).
 ///
 /// The model is embedded in the binary — no download or network access needed.
-/// Inference runs via tract-onnx (pure Rust). Results are memoized via
-/// `EMBED_CACHE` since the function is deterministic; repeated inputs return
-/// in O(hash) instead of re-running inference. Panics on model init failure.
+/// Inference runs via ONNX Runtime (the `ort` crate) with full-graph
+/// optimization. Results are memoized via `EMBED_CACHE` since the function is
+/// deterministic; repeated inputs return in O(hash) instead of re-running
+/// inference. Panics on model init failure.
 pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
     if text.trim().is_empty() {
         return vec![0.0f32; dim];
@@ -276,13 +315,14 @@ pub fn embed_text(text: &str, dim: usize) -> Vec<f32> {
             .tokenizer
             .encode(text, true)
             .expect("tokenization failed");
-        infer_embedding(&m.model, &encoding, dim)
+        let mut session = m.session.lock().expect("ort session mutex poisoned");
+        infer_embedding(&mut session, &encoding, dim)
     })
 }
 
-/// Batch-embed multiple texts. Each text gets its own forward pass (tract
-/// doesn't support dynamic batch sizes after optimization). Empty texts get
-/// zero vectors. Each element flows through `embed_text`, so identical inputs
+/// Batch-embed multiple texts. Each text gets its own forward pass (the ORT
+/// session is shaped for batch size 1 in this model). Empty texts get zero
+/// vectors. Each element flows through `embed_text`, so identical inputs
 /// within or across batches share a cache entry.
 pub fn embed_texts_batch(texts: &[&str], dim: usize) -> Vec<Vec<f32>> {
     texts.iter().map(|t| embed_text(t, dim)).collect()
