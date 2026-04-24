@@ -21,6 +21,9 @@ pub use event_log::{
 pub use helpers::truncate_text;
 pub use start::format_start_summary_markdown;
 
+// Used by the daemon's shared render functions.
+pub(crate) use helpers::extract_keyword_directives;
+
 // ---------------------------------------------------------------------------
 // Subcommand dispatch
 // ---------------------------------------------------------------------------

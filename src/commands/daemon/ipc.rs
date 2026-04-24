@@ -38,16 +38,46 @@ pub enum Message {
     Response(Response),
 }
 
-/// Commands the client can send. Phase 1 exposes only the daemon-control set;
-/// Phase 2 will add the mutating and read-only command variants that mirror the CLI.
+/// Commands the client can send. Each mutating variant produces `CommandOutput`
+/// with the rendered stdout the CLI would print in-process; the in-process
+/// render logic is shared so behavior matches byte-for-byte.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
+    // --- Daemon control ------------------------------------------------------
     /// Health check. Returns `Payload::Pong`.
     Ping,
     /// Request `Payload::Status` with PID, uptime, counters.
     Status,
     /// Request graceful shutdown. Daemon responds, closes socket, exits.
     Shutdown { reason: ShutdownReason },
+
+    // --- Mutating ------------------------------------------------------------
+    /// `legend memory tick` — record a memory. `blocker=true` prefixes `BLOCKER:`
+    /// and boosts salience (same as `--blocker`).
+    Tick { text: String, blocker: bool },
+    TaskSet { text: String },
+    TaskClear,
+    Reinforce { signal: f32, ids: Vec<u64> },
+    Consolidate,
+    Reset,
+    Discover { path: Option<String>, apply: bool },
+    Init { discover: bool },
+    DevPruneNoise,
+
+    // --- Read-only -----------------------------------------------------------
+    Start {
+        category: Option<String>,
+        compact: bool,
+        json: bool,
+        tokens: bool,
+        query: Option<String>,
+    },
+    Query { text: String, with_reasons: bool },
+    Context,
+    Dump,
+    Stats,
+    Sessions { count: usize, all: bool },
+    TaskGet,
 }
 
 /// Why a shutdown was requested — useful for logs and the user-visible status line.
@@ -72,6 +102,9 @@ pub enum Payload {
     Status(StatusInfo),
     /// Acknowledgment with no data — e.g. successful Shutdown receipt.
     Ack,
+    /// Rendered stdout text for a CLI command. The client prints this verbatim.
+    /// Matches the byte-for-byte output of the in-process code path.
+    CommandOutput { stdout: String },
 }
 
 /// Daemon health snapshot returned by `Command::Status`.

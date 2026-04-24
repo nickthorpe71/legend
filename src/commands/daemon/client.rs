@@ -119,3 +119,58 @@ pub fn is_running() -> bool {
         Err(_) => false,
     }
 }
+
+/// Env var that disables any attempt to reach / spawn the daemon. Set by the
+/// conformance test Harness so test subprocesses execute in-process rather
+/// than racing to auto-spawn shared daemons.
+pub const NO_DAEMON_ENV_VAR: &str = "LEGEND_NO_DAEMON";
+
+/// Try to execute a command over IPC. Returns `Ok(Some(stdout))` on success,
+/// `Ok(None)` if the daemon isn't available and the caller should fall back to
+/// in-process execution, or `Err` for other protocol / daemon errors.
+///
+/// Auto-spawn policy:
+///  1. Connect. If it works, send the command.
+///  2. If connect fails with `NoDaemon`, spawn a detached daemon with the
+///     current binary, wait up to 2 s for the socket, retry connect.
+///  3. If the second connect fails, return `Ok(None)` — the CLI command's
+///     fallback path will handle the request in-process. This keeps Legend
+///     usable even if the daemon is uninstalled / broken / sandboxed.
+///
+/// If `LEGEND_NO_DAEMON` is set (any value), the IPC path is skipped entirely
+/// and the caller falls back to in-process — used by conformance tests.
+pub fn try_over_ipc(cmd: Command) -> Result<Option<String>, ClientError> {
+    if std::env::var_os(NO_DAEMON_ENV_VAR).is_some() {
+        return Ok(None);
+    }
+    match send_or_spawn(cmd) {
+        Ok(env) => match into_payload(env)? {
+            Payload::CommandOutput { stdout } => Ok(Some(stdout)),
+            other => Err(ClientError::Protocol(format!(
+                "expected CommandOutput, got {:?}",
+                other
+            ))),
+        },
+        Err(ClientError::NoDaemon) => Ok(None),
+        Err(other) => Err(other),
+    }
+}
+
+/// Send a command, auto-spawning the daemon on first-run / post-crash.
+fn send_or_spawn(cmd: Command) -> Result<Envelope, ClientError> {
+    match send(cmd.clone(), Duration::from_secs(10)) {
+        Ok(env) => Ok(env),
+        Err(ClientError::NoDaemon) => {
+            // Spawn and wait for the socket to come up.
+            if let Ok(path) = std::env::current_exe() {
+                if super::spawn::spawn_detached(&path).is_ok()
+                    && super::spawn::wait_for_socket(Duration::from_secs(2))
+                {
+                    return send(cmd, Duration::from_secs(10));
+                }
+            }
+            Err(ClientError::NoDaemon)
+        }
+        Err(other) => Err(other),
+    }
+}

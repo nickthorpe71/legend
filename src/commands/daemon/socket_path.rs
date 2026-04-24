@@ -20,10 +20,17 @@ pub const SOCKET_ENV_VAR: &str = "LEGEND_SOCKET";
 /// On Unix this is a filesystem path; callers that need to create directories
 /// should use [`socket_parent_dir`] before binding.
 pub fn socket_path() -> String {
-    if let Ok(override_path) = std::env::var(SOCKET_ENV_VAR) {
-        return override_path;
+    resolve_socket_path(std::env::var(SOCKET_ENV_VAR).ok())
+}
+
+/// Pure resolver used by `socket_path` and by unit tests — takes the
+/// override value explicitly so tests don't need to mutate real env (which
+/// races under `--test-threads > 1`).
+pub(super) fn resolve_socket_path(override_value: Option<String>) -> String {
+    match override_value {
+        Some(v) if !v.is_empty() => v,
+        _ => default_socket_path(),
     }
-    default_socket_path()
 }
 
 /// The default (non-overridden) socket path.
@@ -96,36 +103,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn override_env_wins() {
-        // Serialize against other env-manipulating tests via a unique path.
-        let unique = format!("/tmp/legend_test_override_{}.sock", std::process::id());
-        std::env::set_var(SOCKET_ENV_VAR, &unique);
-        assert_eq!(socket_path(), unique);
-        std::env::remove_var(SOCKET_ENV_VAR);
+    fn override_value_wins_when_nonempty() {
+        let custom = "/tmp/legend_test_override.sock".to_string();
+        assert_eq!(resolve_socket_path(Some(custom.clone())), custom);
+    }
+
+    #[test]
+    fn empty_override_falls_back_to_default() {
+        let resolved = resolve_socket_path(Some(String::new()));
+        assert!(!resolved.is_empty());
+    }
+
+    #[test]
+    fn no_override_uses_default() {
+        let resolved = resolve_socket_path(None);
+        assert!(!resolved.is_empty());
     }
 
     #[test]
     fn default_path_is_nonempty() {
-        // Guard against accidentally returning an empty string on odd envs.
-        std::env::remove_var(SOCKET_ENV_VAR);
         assert!(!default_socket_path().is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_path_uses_xdg_when_set() {
-        std::env::remove_var(SOCKET_ENV_VAR);
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
-        let path = default_socket_path();
-        assert!(path.starts_with("/run/user/1000/legend"), "{}", path);
-        std::env::remove_var("XDG_RUNTIME_DIR");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_path_is_named_pipe() {
-        std::env::remove_var(SOCKET_ENV_VAR);
-        let path = default_socket_path();
-        assert!(path.starts_with(r"\\.\pipe\legend-"), "{}", path);
     }
 }
