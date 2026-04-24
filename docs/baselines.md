@@ -200,9 +200,66 @@ Target was `< 180 s`. Achieved `~780 s` full / `~284 s` fast-tier. Target not me
 
 ---
 
-## #04 — Cold + warm single-tick latency
+## #04 — Cold single-tick latency
 
-*Not yet recorded. Queue item #04.*
+**Recorded:** 2026-04-24
+**Commit:** `f64df61` (master)
+**Method:** 10 samples of `time legend memory tick "<input>"` against a
+clone of the working memory state at `/tmp/legend_bench/.legend/`. Master
+state restored before each sample so every run starts from the same
+~2.4 MB `memory.lz4` / ~11k-entry starting point. Bash builtin `time`
+with `TIMEFORMAT='real=%R user=%U sys=%S'`. Raw log:
+`.perf/tick-cold-2026-04-24.log` (git-ignored).
+
+**Only cold is measured.** The Legend CLI always spawns a fresh process,
+so there is no "warm tick" path to measure — every tick in normal usage
+is a cold tick. An in-process warm benchmark would measure a different
+workload (library use) than the actual CLI dev loop.
+
+**Input (117 chars):**
+> `DECISION: Chose Redis for caching because pub/sub support is native and battle-tested for realtime notifications`
+
+### Per-sample timings
+
+| Sample | Wall (real) | User    | Sys     |
+|--------|-------------|---------|---------|
+| 1      | 6.595 s     | 6.472 s | 0.099 s |
+| 2      | 6.467 s     | 6.355 s | 0.091 s |
+| 3      | 6.284 s     | 6.162 s | 0.100 s |
+| 4      | 6.255 s     | 6.140 s | 0.094 s |
+| 5      | 6.406 s     | 6.287 s | 0.097 s |
+| 6      | 6.507 s     | 6.374 s | 0.111 s |
+| 7      | 6.199 s     | 6.088 s | 0.092 s |
+| 8      | 6.180 s     | 6.052 s | 0.104 s |
+| 9      | 6.498 s     | 6.371 s | 0.103 s |
+| 10     | 6.506 s     | 6.388 s | 0.094 s |
+
+### Summary
+
+- **Min:** 6.180 s
+- **Median (p50):** 6.436 s
+- **Mean:** 6.390 s
+- **Max:** 6.595 s
+- **Stdev:** 0.148 s
+- **Range:** 0.415 s (~6.7% over min)
+- **Parallelism ratio (user+sys / real):** ~1.00× — single-threaded end-to-end.
+
+### Interpretation
+
+- A single tick from fresh process to final disk write takes **~6.4 s median** on this hardware against a realistic ~2.4 MB / ~11 k-entry state. That's the cost of *every* `legend memory tick` invocation today.
+- Zero parallelism: the tick path is serial from binary load through ONNX init, state load, embedding, encoding, and save. Item #16 (profile tick latency by subsystem) will decompose this into its components; item #18 (fast encoding path + deferred queues) is the obvious consumer of that decomposition.
+- Variance is low (6.7%), bounded by thermal and load noise on the host. The baseline is tight enough that optimizations targeting ≥ 200 ms savings should be visible without re-measuring many times.
+- This baseline is state-dependent: the ~2.4 MB `memory.lz4` drives a significant fraction of startup cost through LZ4 decompression, MessagePack deserialization, and migration checks. If we revisit this after consolidation cuts state size, expect the number to move.
+
+### How to compare future runs
+
+Restore the master clone before each sample:
+```bash
+rm -rf /tmp/legend_bench/.legend
+cp -r /tmp/legend_bench_master/.legend /tmp/legend_bench/
+{ time legend memory tick "<same input>" ; }
+```
+Or regenerate a master from current `.legend/` if state has materially changed. Note the memory.lz4 size + entry count alongside the new numbers so the comparison is apples-to-apples.
 
 ## #05 — `legend memory start` startup latency
 
