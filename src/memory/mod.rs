@@ -2580,6 +2580,14 @@ fn find_existing_summary_node(
 /// compacted (1 → "1 supporting observation" is pure text inflation).
 const DUPLICATE_EVIDENCE_MIN_GROUP: usize = 2;
 
+/// Hard cap on the number of evidence lines kept per Summary node after
+/// entity-pair compaction. Past this, we drop the tail in first-occurrence
+/// order and record the drop in `SummaryCoverage::omitted_source_count` so
+/// the cognitive layer knows the Summary is no longer a complete index.
+/// Sized at 2× `L3_EVIDENCE_LOAD_TARGET` so the load signal still reflects
+/// real pressure when it matters — see `long_term_evidence_load`.
+const MAX_EVIDENCE_PER_SUMMARY: usize = 24;
+
 fn compact_summary_source_texts<I>(texts: I, keyword_cache: &KeywordCache) -> Vec<String>
 where
     I: IntoIterator<Item = String>,
@@ -2645,6 +2653,13 @@ where
                 }
             }
         }
+    }
+
+    // Hard cap: keep first-occurrence order and drop the tail if the
+    // compacted list still exceeds the budget. `SummaryCoverage` picks up
+    // the delta via `omitted_source_count` at the call site.
+    if out.len() > MAX_EVIDENCE_PER_SUMMARY {
+        out.truncate(MAX_EVIDENCE_PER_SUMMARY);
     }
     out
 }
@@ -6299,11 +6314,12 @@ mod tests {
     }
 
     #[test]
-    fn test_consolidate_preserves_all_source_texts() {
+    fn test_consolidate_caps_evidence_and_tracks_omissions() {
         let mut state = MemoryState::default();
         let dim = state.brain.config.embedding_dim;
         state.brain.config.theta_low = 0.2;
-        // Directly insert many similar entries
+        // Insert more entries than MAX_EVIDENCE_PER_SUMMARY (24) so the
+        // compression policy's hard cap must engage.
         for i in 0..25 {
             let text = format!(
                 "feature beta variant number {} implemented in rendering module Y pipeline",
@@ -6326,21 +6342,25 @@ mod tests {
 
         for node in state.brain.long_term.nodes.values() {
             if node.kind == "Summary" {
+                // The cap drops the tail in first-occurrence order.
                 assert_eq!(
                     node.source_texts.len(),
-                    25,
-                    "Summary source_texts should preserve all cleaned group evidence"
+                    MAX_EVIDENCE_PER_SUMMARY,
+                    "Summary source_texts should be capped at MAX_EVIDENCE_PER_SUMMARY",
                 );
-                for i in 0..25 {
-                    let expected = format!(
-                        "feature beta variant number {} implemented in rendering module Y pipeline",
-                        i
-                    );
-                    assert!(
-                        node.source_texts.contains(&expected),
-                        "Summary source_texts should retain minority evidence: {expected}"
-                    );
-                }
+                // Coverage must honestly reflect the omission — otherwise
+                // downstream consumers see a clean Summary when it's actually
+                // incomplete.
+                let coverage = node.coverage.as_ref().expect("coverage populated");
+                assert_eq!(coverage.evidence_count, MAX_EVIDENCE_PER_SUMMARY);
+                assert!(
+                    coverage.omitted_source_count >= 1,
+                    "omitted_source_count should record the cap drop"
+                );
+                assert!(
+                    !coverage.full_evidence_preserved,
+                    "full_evidence_preserved should be false when the cap fires"
+                );
             }
         }
     }
