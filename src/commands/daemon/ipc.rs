@@ -113,6 +113,27 @@ pub enum Command {
         item_number: u64,
         status: String,
     },
+    /// List all plans with their item-count breakdown (read-only).
+    PlanList,
+    /// Show one plan's items in order (read-only).
+    PlanShow { plan_name: String },
+    /// Move `from_pos` (1-indexed) to `to_pos`; renumber remaining items.
+    PlanReorder {
+        plan_name: String,
+        from_pos: usize,
+        to_pos: usize,
+    },
+    /// Append a new item to a plan. Auto-numbered at the tail.
+    PlanAdd {
+        plan_name: String,
+        status: String,
+        text: String,
+    },
+    /// Remove the item with leading number `item_number`; renumber the rest.
+    PlanRemove {
+        plan_name: String,
+        item_number: u64,
+    },
 }
 
 /// Why a shutdown was requested — useful for logs and the user-visible status line.

@@ -100,6 +100,20 @@ fn apply_wal_entry(state: &mut MemoryState, entry: WalEntry) {
             item_number,
             status,
         } => handlers::render_plan_set_status(state, &plan_name, item_number, &status),
+        WalEntry::PlanReorder {
+            plan_name,
+            from_pos,
+            to_pos,
+        } => handlers::render_plan_reorder(state, &plan_name, from_pos, to_pos),
+        WalEntry::PlanAdd {
+            plan_name,
+            status,
+            text,
+        } => handlers::render_plan_add(state, &plan_name, &status, &text),
+        WalEntry::PlanRemove {
+            plan_name,
+            item_number,
+        } => handlers::render_plan_remove(state, &plan_name, item_number),
     };
 }
 
@@ -498,6 +512,50 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
             };
             mutating_wal(daemon, id, entry, move |s| {
                 handlers::render_plan_set_status(s, &plan_name, item_number, &status)
+            })
+        }
+        Command::PlanList => read_only(daemon, id, handlers::render_plan_list),
+        Command::PlanShow { plan_name } => {
+            read_only(daemon, id, move |s| handlers::render_plan_show(s, &plan_name))
+        }
+        Command::PlanReorder {
+            plan_name,
+            from_pos,
+            to_pos,
+        } => {
+            let entry = WalEntry::PlanReorder {
+                plan_name: plan_name.clone(),
+                from_pos,
+                to_pos,
+            };
+            mutating_wal(daemon, id, entry, move |s| {
+                handlers::render_plan_reorder(s, &plan_name, from_pos, to_pos)
+            })
+        }
+        Command::PlanAdd {
+            plan_name,
+            status,
+            text,
+        } => {
+            let entry = WalEntry::PlanAdd {
+                plan_name: plan_name.clone(),
+                status: status.clone(),
+                text: text.clone(),
+            };
+            mutating_wal(daemon, id, entry, move |s| {
+                handlers::render_plan_add(s, &plan_name, &status, &text)
+            })
+        }
+        Command::PlanRemove {
+            plan_name,
+            item_number,
+        } => {
+            let entry = WalEntry::PlanRemove {
+                plan_name: plan_name.clone(),
+                item_number,
+            };
+            mutating_wal(daemon, id, entry, move |s| {
+                handlers::render_plan_remove(s, &plan_name, item_number)
             })
         }
 
