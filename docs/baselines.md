@@ -261,6 +261,150 @@ cp -r /tmp/legend_bench_master/.legend /tmp/legend_bench/
 ```
 Or regenerate a master from current `.legend/` if state has materially changed. Note the memory.lz4 size + entry count alongside the new numbers so the comparison is apples-to-apples.
 
+---
+
+## #04a — Post-daemon + ort tick latency
+
+**Recorded:** 2026-04-24
+**Commit:** `735e8b9` (master)
+**Method:** Two complementary measurements against the same
+`/tmp/legend_bench_master` state as #04 (~2.4 MB / ~11k entries):
+
+1. **Cold daemon per sample** — kill daemon, restore master state,
+   start daemon, wait 1.5 s for readiness, time *one* tick. Matches
+   #04's "fresh process per sample" methodology as closely as the
+   daemon architecture allows. This is the first-tick-of-session
+   latency a user experiences after `memory start` fires.
+2. **Warm daemon across a session** — single daemon, 10 consecutive
+   ticks without restoring state. Represents the within-session dev
+   loop after warm-up.
+
+Raw log: `.perf/tick-daemon-warm-2026-04-24.log` (git-ignored).
+
+**Input (same 117-char string as #04):**
+> `DECISION: Chose Redis for caching because pub/sub support is native and battle-tested for realtime notifications`
+
+### Cold daemon per sample (matches #04 methodology)
+
+| Sample | Wall (real) |
+|--------|-------------|
+| 1 | 599 ms |
+| 2 | 759 ms |
+| 3 | 667 ms |
+| 4 | 692 ms |
+| 5 | 787 ms |
+| 6 | 802 ms |
+| 7 | 659 ms |
+| 8 | 733 ms |
+| 9 | 690 ms |
+| 10 | 704 ms |
+
+- **Min:** 599 ms
+- **Median:** 698 ms
+- **Mean:** 709 ms
+- **Max:** 802 ms
+- **Stdev:** 62 ms
+- **Range:** 203 ms (≈ 34 % over min)
+
+This includes: IPC connect (~1 ms) + daemon lazy state load (~500 ms
+for 2.4 MB LZ4 → MessagePack → migration check) + ORT session init
+triggered on first embed (~170 ms) + tick work (~30 ms).
+
+### Warm daemon (10 ticks, single session, state grows)
+
+| Sample | Wall (real) |
+|--------|-------------|
+| 1 | 508 ms |
+| 2 | 246 ms |
+| 3 | 292 ms |
+| 4 | 654 ms |
+| 5 | 54 ms |
+| 6 | 57 ms |
+| 7 | 180 ms |
+| 8 | 69 ms |
+| 9 | 57 ms |
+| 10 | 182 ms |
+
+- **Min:** 54 ms
+- **Median:** 181 ms
+- **Mean:** 230 ms
+- **Max:** 654 ms
+- **Stdev:** 206 ms
+- **Samples 5–10 only (post-warm-up):** median **63 ms**
+
+Variance is high because a tick on an 11k-entry graph can touch very
+different code paths depending on which entries it resembles. A tick
+whose embedding is a cache hit + doesn't trigger wholesale graph
+decay lands at ~50–70 ms. A tick that triggers decay normalization +
+graph spreading can climb to several hundred ms. The bimodal pattern
+shows up across all observed sessions.
+
+### Delta vs #04
+
+| Metric | #04 (pre-daemon, tract) | #04a cold (daemon + ort) | #04a warm (samples 5-10) | Speedup |
+|--------|-------------------------|--------------------------|--------------------------|---------|
+| Min    | 6,180 ms | 599 ms | 54 ms | 10.3× / **114×** |
+| Median | 6,436 ms | 698 ms | 63 ms | 9.2×  / **102×** |
+| Max    | 6,595 ms | 802 ms | 654 ms | 8.2×  / 10.1× |
+| Stdev  | 148 ms | 62 ms | — | — |
+
+**Headline:** warm-session tick dropped from **~6.4 s → ~63 ms**
+(> 100× faster). Cold first-tick-of-session is **~700 ms** — still
+10× faster than the pre-daemon baseline, and the only sample users
+see that's above 100 ms.
+
+### What changed between #04 and #04a
+
+All captured in commits between `f64df61` (pre-daemon baseline) and
+`735e8b9` (Phase 5 ship):
+
+1. **`89b72ee` Phase 1** — daemon IPC scaffolding.
+2. **`4ae2517` + `d524e33` + `2cb7a78` Phase 2** — 11 CLI commands
+   route through the daemon; fallback on NotImplemented /
+   VersionMismatch.
+3. **`bec6616` Phase 3b** — write-ahead log replaces full save on
+   every mutation; checkpoint on Consolidate/Reset/shutdown.
+4. **`e54037e`** — `tract-onnx` → `ort` (ONNX Runtime). Per-call
+   inference: ~2 s → ~18 ms. Single biggest impact on absolute
+   numbers.
+5. **`91ff9fb` Phase 4** — `mcp-serve` also routes through the
+   daemon (no state split across CLI and MCP).
+6. **`735e8b9` Phase 5** — `SessionEnd` hook auto-stops the daemon
+   on `/exit` for clean WAL/snapshot handoff between sessions.
+
+### Caveats
+
+- **State-size dependent.** These numbers are from an 11k-entry,
+  2.4 MB state. A fresh project (empty state) would show lower cold
+  times (no state load) but similar warm numbers.
+- **Thermal variance.** i7-1365U laptop CPU. Sustained load pushes
+  thermal throttling; the variance on warm samples partly reflects
+  this.
+- **The "slow tick" tail is real.** ~15–20 % of warm ticks cross
+  100 ms on this state, mostly during decay-heavy runs. Item #22
+  (profile tick latency by subsystem) is where we'd hunt down the
+  exact path.
+- **ORT binary dep.** `cargo install` now downloads libonnxruntime
+  for the target at build time via `ort`'s `download-binaries`
+  feature. Prebuilt distributions need the library shipped alongside
+  the `legend` binary.
+
+### How to compare future runs
+
+```bash
+# Cold per-sample (matches #04 methodology exactly)
+for i in $(seq 1 10); do
+  pkill -f 'legend daemon start'
+  rm -rf /tmp/legend_bench/.legend
+  cp -r /tmp/legend_bench_master/.legend /tmp/legend_bench/
+  export LEGEND_SOCKET=/tmp/legend_bench.sock
+  rm -f "$LEGEND_SOCKET"
+  (cd /tmp/legend_bench && legend daemon start &) ; sleep 1.5
+  (cd /tmp/legend_bench && { time legend memory tick "<same input>" ; })
+  legend daemon stop
+done
+```
+
 ## #05 — `legend memory start` startup latency
 
 *Not yet recorded. Queue item #05.*
