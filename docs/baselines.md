@@ -405,6 +405,108 @@ for i in $(seq 1 10); do
 done
 ```
 
+## #06 — Tick subsystem profile (sources of the 54–654 ms tail in #04a)
+
+**Recorded:** 2026-04-24
+**Commit:** `1badd15` (master)
+**Method:** new `examples/tick_profile.rs` — builds with `--features instrument`,
+initializes the `memory::trace` channel, runs 10 ticks against the
+master-clone state at `/tmp/legend_bench/.legend/`, drains trace events
+into per-step deltas. Pipeline steps are defined in
+`src/memory/trace.rs::PipelineStep`; instrumentation call-sites live in
+`src/memory/mod.rs` and the per-subsystem modules.
+
+Raw log: `.perf/tick-profile-2026-04-24.log` (git-ignored).
+
+### Raw wall-time per sample
+
+| Sample | Wall (ms) | Note |
+|--------|-----------|------|
+| 0      | 858       | cold (first call; ORT session already in daemon is irrelevant here — `tick_profile` is in-process, so this sample pays full ORT init) |
+| 1      | 549       | fires UpdateTermFrequencies |
+| 2      | 532       | fires UpdateTermFrequencies |
+| 3      | 1 431     | fires both UpdateTermFrequencies + ReplayConsolidation |
+| 4      | 71        | baseline — no bulk update fires |
+| 5      | 69        | baseline |
+| 6      | 258       | partial — decay elevated, no bulk update |
+| 7      | 81        | baseline |
+| 8      | 78        | baseline |
+| 9      | 234       | partial |
+
+### The tail is NOT embedding cost
+
+That was the earlier guess. Instead it's **two conditional operations** that
+fire on a subset of ticks:
+
+- **`UpdateTermFrequencies`: ~516 ms per fire** — rebuilds the global
+  term-frequency tables used for salience and keyword scoring. Scales with
+  the vocabulary / graph size (11 k nodes here). Fires when… (TBD, looks
+  like it's based on ticks_since_rebuild or similar pressure counter).
+- **Auto-consolidation: ~775 ms total when it fires**, broken down:
+  - `ReplayConsolidation`: 670 ms
+  - `SystemsConsolidation`: 40 ms
+  - `CreateOrMergeSummaryNode`: 30 ms
+  - `SemanticTopicExtraction`: 33 ms
+  - `ClusterGroups`: 13 ms
+  - `SummarizeGroup`: 2 ms
+  - `MarkConsolidated`: <1 ms
+
+These fire based on accumulated `ticks_since_consolidation` pressure
+(`should_suggest_consolidation` + implicit trigger) inside
+`tick_impl`. With ~11 k graph nodes, consolidation replay reads and
+rewrites large chunks of the graph.
+
+### Baseline per-tick cost (when bulk updates DON'T fire)
+
+From the 4 "baseline" samples (69, 71, 78, 81 ms) and the per-step mean over
+all warm samples, the irreducible per-tick work is:
+
+| Step                     | Typical (µs) | Max (µs) | Notes |
+|--------------------------|--------------|----------|-------|
+| Decay                    | 6 000–17 000 | 32 000   | every tick; scales with graph edges |
+| ChunkText                | 24 000       | 27 000   | **surprisingly high — small text should chunk in < 1 ms** |
+| MergeEntryHigh           | 800–1 300    | —        | when an existing L2 entry is a near-match |
+| Renormalize              | 222–862      | —        | |
+| CpebTagging              | 365–570      | —        | |
+| FindBestMatch            | 170–680      | —        | |
+| ComputeEmotionalValence  | 80–200       | —        | |
+| ComputeSalience          | 85–125       | —        | |
+| ExtractMemoryRefs        | 30–60        | —        | |
+| EmbedText                | 2–7          | —        | cache hit for repeated samples |
+
+Sum of the baseline work is ~50–80 ms per tick on this ~11 k-node state,
+dominated by decay (fixed cost scaling with graph size) and ChunkText
+(investigate separately).
+
+### Implications for #16 and #17
+
+- **#16 — latency budgets:** separate steady-state from periodic. A
+  reasonable split:
+  - Normal tick:        ≤ 100 ms
+  - Tick that runs term-freq rebuild:   ≤ 300 ms (if kept synchronous)
+  - Tick that runs auto-consolidate:    ≤ 50 ms *sync* + deferred background
+  - Explicit `memory consolidate`:      no budget (big operation by design)
+- **#17 — fast + deferred split:** strong case for it. Auto-consolidation
+  and term-frequency rebuilds are exactly the kind of wholesale updates
+  that belong on a background queue. The tick's *sync* response can
+  acknowledge the mutation and return; the heavy work runs behind the
+  scenes. If we do this, #16's warm-tick budget of ≤ 100 ms is hit
+  deterministically.
+- **ChunkText at 24 ms** for short text is suspicious — `chunk_text` in
+  `src/memory/entorhinal.rs` may be doing more work than needed. Small
+  separate investigation.
+
+### How to re-run
+
+```bash
+rm -rf /tmp/legend_bench/.legend
+cp -r /tmp/legend_bench_master/.legend /tmp/legend_bench/
+cargo run --release --features instrument --example tick_profile \
+  > .perf/tick-profile-$(date +%F).log 2>&1
+```
+
+---
+
 ## #05 — `legend memory start` startup latency
 
 **Recorded:** 2026-04-24
