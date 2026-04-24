@@ -23,3 +23,11 @@ The **SessionStart hook** automatically runs `./target/release/legend memory sta
 
 ## Dev Note (Legend repo only)
 When developing Legend itself, prefer `cargo run --` over `./target/release/legend` so commands run against the current dev build, not a stale release binary.
+
+## Test tiering (Legend repo only)
+
+The full test suite is ~13 min. For day-to-day iteration, use the fast tier. See `docs/baselines.md` §#03a for the numbers behind this.
+
+- **Fast (default dev loop):** `cargo test --release --lib --bins` — 947 unit tests, ~4.7 min. Run on every meaningful change.
+- **Full (pre-merge / integration):** `cargo test --release` — unit tests + `conformance_*` integration + recovery + MCP. ~13 min. Run before merging, on release candidates, or when touching `tests/common/`, `tests/conformance_*`, `src/tool/persistence.rs`, or `src/commands/mcp.rs`.
+- **Harness (periodic):** `cargo test --release -- --include-ignored` — also runs observability benchmarks. Run weekly or on demand.
