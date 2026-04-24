@@ -195,6 +195,45 @@ static DEV: CommandDef = CommandDef {
     children: &[],
 };
 
+// -- daemon subcommands (children for help only; dispatch is string-matched) --
+static DAEMON_START: CommandDef = CommandDef {
+    name: "start",
+    about: "Run the daemon in foreground (Ctrl-C to exit)",
+    usage: "legend daemon start [--detach]",
+    flags: &[FlagDef {
+        long: "--detach",
+        short: None,
+        about: "Internal — post-fork entry point used by auto-spawn",
+        takes_value: false,
+    }],
+    positionals: &[],
+    children: &[],
+};
+static DAEMON_STOP: CommandDef = CommandDef {
+    name: "stop",
+    about: "Request a clean shutdown of the running daemon",
+    usage: "legend daemon stop",
+    flags: &[],
+    positionals: &[],
+    children: &[],
+};
+static DAEMON_STATUS: CommandDef = CommandDef {
+    name: "status",
+    about: "Show daemon pid / uptime / protocol / request count",
+    usage: "legend daemon status",
+    flags: &[],
+    positionals: &[],
+    children: &[],
+};
+static DAEMON: CommandDef = CommandDef {
+    name: "daemon",
+    about: "Long-running daemon that caches ONNX model + state in RAM",
+    usage: "legend daemon <subcommand>",
+    flags: &[],
+    positionals: &[],
+    children: &[&DAEMON_START, &DAEMON_STOP, &DAEMON_STATUS],
+};
+
 // ---------------------------------------------------------------------------
 // Top-level command registry
 // ---------------------------------------------------------------------------
@@ -245,6 +284,11 @@ static COMMANDS: &[TopCommand] = &[
         def: &DEV,
         usage_hint: "dev <subcommand>",
         handler: commands::dev::handle_dev,
+    },
+    TopCommand {
+        def: &DAEMON,
+        usage_hint: "daemon <subcommand>",
+        handler: commands::daemon::handle_daemon,
     },
 ];
 
