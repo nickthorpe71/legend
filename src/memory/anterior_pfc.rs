@@ -226,6 +226,60 @@ pub fn apply_plan(
 }
 
 // ---------------------------------------------------------------------------
+// Targeted item mutations (used by `legend memory plan set-status`)
+// ---------------------------------------------------------------------------
+
+/// Parse `ItemStatus` from the CLI flag / WAL wire string.
+pub fn parse_status(s: &str) -> Option<ItemStatus> {
+    match s.to_lowercase().as_str() {
+        "active" => Some(ItemStatus::Active),
+        "pending" => Some(ItemStatus::Pending),
+        "deferred" => Some(ItemStatus::Deferred),
+        "done" => Some(ItemStatus::Done),
+        _ => None,
+    }
+}
+
+/// Find an item in `plan.items` whose leading "N. " prefix matches `item_number`.
+/// For example, text "12. Daemonize ..." matches `item_number = 12`. Returns
+/// the 0-based index, or `None` if no item matches.
+pub fn find_item_by_number(plan: &Plan, item_number: u64) -> Option<usize> {
+    plan.items.iter().position(|item| {
+        let trimmed = item.text.trim_start();
+        let Some(dot) = trimmed.find('.') else {
+            return false;
+        };
+        trimmed[..dot].trim().parse::<u64>().ok() == Some(item_number)
+    })
+}
+
+/// Flip the status of one item in a named plan, identified by its leading
+/// numeric prefix in the text. Returns `Ok(0-based item index)` on success,
+/// or a human-readable error if the plan or item can't be found.
+pub fn set_item_status_by_number(
+    plans: &mut [Plan],
+    plan_name: &str,
+    item_number: u64,
+    new_status: ItemStatus,
+    clock: u64,
+    embedding_dim: usize,
+) -> Result<usize, String> {
+    let idx = find_matching_plan(plans, plan_name, embedding_dim)
+        .ok_or_else(|| format!("no plan matching name '{}'", plan_name))?;
+    let plan = &mut plans[idx];
+    let item_idx = find_item_by_number(plan, item_number).ok_or_else(|| {
+        format!(
+            "no item with leading number {} in plan '{}'",
+            item_number, plan.name
+        )
+    })?;
+    plan.items[item_idx].status = new_status;
+    plan.updated_at = clock;
+    plan.update_completion_status(clock);
+    Ok(item_idx)
+}
+
+// ---------------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------------
 
