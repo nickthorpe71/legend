@@ -8,6 +8,7 @@
 pub mod bootstrap;
 pub mod persistence;
 pub mod types;
+pub mod wal;
 
 // Re-export all tool types at the tool:: level for convenience.
 #[allow(unused_imports)]
