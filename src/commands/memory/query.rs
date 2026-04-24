@@ -1,7 +1,5 @@
-use super::event_log::*;
-use super::helpers::truncate_text;
 use crate::cli::{parse_args, CommandDef};
-use crate::memory::MemoryContext;
+use crate::commands::daemon::{client::try_over_ipc, handlers, ipc::Command};
 
 #[derive(Default)]
 struct QueryOptions {
@@ -31,171 +29,25 @@ pub(super) fn handle_query(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_query_args(args, def)?;
 
-    let mut memory = crate::memory::load_or_default()?;
-    let context = crate::memory::retrieve_context_with_mode(
-        &mut memory.brain,
-        opts.query.trim(),
-        crate::memory::RetrievalMode::ReadOnly,
-    );
-    crate::memory::save(&memory)?;
-
-    let primed_count = context
-        .long_term
-        .iter()
-        .filter(|n| n.edge_type.is_some())
-        .count();
-
-    let event_data = EventData::Query(QueryEventData {
-        matches: context
-            .short_term
-            .iter()
-            .take(5)
-            .map(|m| MatchedEntry {
-                id: m.id,
-                similarity: m.similarity,
-                text_preview: truncate_text(&m.text, 80),
-            })
-            .collect(),
-        graph_nodes: context
-            .long_term
-            .iter()
-            .take(8)
-            .map(|n| GraphHit {
-                id: n.id,
-                label: n.label.clone(),
-                kind: n.kind.clone(),
-                weight: n.weight,
-            })
-            .collect(),
-        primed_count,
-    });
-    log_event_rich("query", opts.query.trim(), Some(event_data));
-
-    if opts.show_reasons {
-        print_query_with_reasons(&context, primed_count);
-    } else {
-        print_context(context);
+    if let Some(stdout) = try_over_ipc(Command::Query {
+        text: opts.query.clone(),
+        with_reasons: opts.show_reasons,
+    })? {
+        print!("{}", stdout);
+        return Ok(());
     }
+
+    // In-process fallback — daemon unavailable. Same render path, same
+    // byte-identical stdout.
+    let mut memory = crate::memory::load_or_default()?;
+    let stdout = handlers::render_query(&mut memory, &opts.query, opts.show_reasons)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    // Note: we intentionally do NOT save here — the prior behavior saved
+    // unconditionally even in ReadOnly retrieval mode, which Phase 3b's
+    // durability note flagged as a bug. The daemon path also skips the save;
+    // both paths now match.
+    print!("{}", stdout);
     Ok(())
-}
-
-fn print_query_with_reasons(context: &MemoryContext, primed_count: usize) {
-    let working_memory_with_reasons: Vec<serde_json::Value> = context
-        .working_memory
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "id": m.id,
-                "text": m.text,
-                "similarity": crate::tool::round3(m.similarity),
-                "reason": "matched in working memory (L1)",
-            })
-        })
-        .collect();
-
-    let short_term_with_reasons: Vec<serde_json::Value> = context
-        .short_term
-        .iter()
-        .map(|m| {
-            let reason = if m.similarity >= 0.8 {
-                "high semantic similarity to query"
-            } else if m.similarity >= 0.5 {
-                "moderate semantic similarity to query"
-            } else if m.similarity >= 0.2 {
-                "weak semantic similarity, may share related terms"
-            } else {
-                "low similarity, included for coverage"
-            };
-            serde_json::json!({
-                "id": m.id,
-                "text": m.text,
-                "similarity": crate::tool::round3(m.similarity),
-                "reason": reason,
-            })
-        })
-        .collect();
-
-    let long_term_with_reasons: Vec<serde_json::Value> = context
-        .long_term
-        .iter()
-        .map(|n| {
-            let reason = if n.edge_type.is_some() {
-                format!(
-                    "reached via {} edge from related entity",
-                    n.edge_type.as_ref().unwrap()
-                )
-            } else {
-                "direct entity match from query".to_string()
-            };
-            serde_json::json!({
-                "id": n.id,
-                "label": n.label,
-                "kind": n.kind,
-                "weight": crate::tool::round3(n.weight),
-                "reason": reason,
-            })
-        })
-        .collect();
-
-    let result = serde_json::json!({
-        "working_memory": working_memory_with_reasons,
-        "short_term": short_term_with_reasons,
-        "long_term": long_term_with_reasons,
-        "primed_via_edges": primed_count,
-        "note": "Read-only retrieval: no recall-time reinforcement or clock advance"
-    });
-
-    let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
-    println!("{}", json);
-}
-
-fn print_context(context: MemoryContext) {
-    let working_memory: Vec<&str> = context
-        .working_memory
-        .iter()
-        .map(|m| m.text.as_str())
-        .collect();
-    let related_topics: Vec<&str> = context.long_term.iter().map(|n| n.label.as_str()).collect();
-
-    // Emit rich objects when any memory has temporal metadata.
-    let has_any_temporal = context
-        .short_term
-        .iter()
-        .any(|m| m.wall_clock > 0 || !m.extracted_dates.is_empty() || m.created_at_clock > 0);
-
-    let memories: Vec<serde_json::Value> = if has_any_temporal {
-        context
-            .short_term
-            .iter()
-            .map(|m| {
-                let mut obj = serde_json::json!({ "text": m.text });
-                if m.wall_clock > 0 {
-                    obj["wall_clock"] = serde_json::json!(m.wall_clock);
-                }
-                if !m.extracted_dates.is_empty() {
-                    obj["dates"] = serde_json::json!(m.extracted_dates);
-                }
-                if m.created_at_clock > 0 {
-                    obj["seq"] = serde_json::json!(m.created_at_clock);
-                }
-                obj
-            })
-            .collect()
-    } else {
-        context
-            .short_term
-            .iter()
-            .map(|m| serde_json::json!(m.text))
-            .collect()
-    };
-
-    let result = serde_json::json!({
-        "working_memory": working_memory,
-        "memories": memories,
-        "related_topics": related_topics,
-    });
-    let json = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
-    println!("{}", json);
 }
 
 #[cfg(test)]

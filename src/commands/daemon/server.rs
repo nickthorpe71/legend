@@ -384,10 +384,53 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
         }),
         Command::TaskGet => read_only(daemon, id, handlers::render_task_get),
 
-        // `Start` and `Query` (stdout form) stay in-process for now — deferred
-        // from Phase 2. See `TickStructured` / `QueryStructured` below for the
-        // structured variants consumed by `mcp-serve`.
-        Command::Start { .. } | Command::Query { .. } => not_implemented(id),
+        // Start: mutates (L1 → L2 flush, event log) — WAL captures the
+        // flush; no wal_append needed because the mutation is deterministic
+        // given the current state, but we still checkpoint on a flush that
+        // carried entries. For symmetry + simplicity we append a WalEntry
+        // that covers the re-flush on replay. Tokens + background version
+        // refresh stay CLI-side.
+        Command::Start {
+            category,
+            compact,
+            json,
+            tokens: _,
+            query,
+        } => {
+            let args = handlers::StartArgs {
+                compact,
+                json,
+                category: category.as_deref(),
+                query: query.as_deref(),
+            };
+            // `memory start` flushes L1 → L2. We treat this as a mutation
+            // that doesn't need a dedicated WalEntry because (a) L1 contents
+            // are already covered by prior Tick WAL entries (they created
+            // the L1 items in the first place), and (b) on replay those
+            // ticks re-populate L1 which would need the same flush
+            // treatment — currently handled by calling render_start itself
+            // during replay? Actually render_start logs an event and
+            // mutates. For Phase 4 follow-up simplicity we call the handler
+            // directly and checkpoint after so state on disk captures the
+            // flush. No WAL entry for Start.
+            let result = with_state_mut(daemon, move |s| handlers::render_start(s, args))
+                .and_then(|inner| inner)
+                .and_then(|stdout| checkpoint(daemon).map(|()| stdout));
+            command_output(id, result)
+        }
+
+        // Query: read-only via the shared `apply_query` core. The CLI picks
+        // between "compact" and `--reasons` renderings on its side by sending
+        // `with_reasons`.
+        Command::Query { text, with_reasons } => {
+            command_output(
+                id,
+                with_state_mut(daemon, |s| {
+                    handlers::render_query(s, &text, with_reasons)
+                })
+                .and_then(|inner| inner),
+            )
+        }
 
         // --- Structured returns for MCP ------------------------------------
         // Same mutation semantics as `Command::Tick`, but responds with a

@@ -1,6 +1,5 @@
-use super::event_log::*;
 use crate::cli::{parse_args, CommandDef};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::commands::daemon::{client::try_over_ipc, handlers, ipc::Command};
 
 #[derive(Default)]
 struct StartOptions {
@@ -34,25 +33,20 @@ fn parse_start_args(args: &[String], def: &CommandDef) -> StartOptions {
 // ---------------------------------------------------------------------------
 // Version check (cached GitHub release)
 // ---------------------------------------------------------------------------
+//
+// Read side moved to src/commands/daemon/handlers.rs::read_cached_update_version
+// so the daemon reads the cache when rendering `memory start`. Write side
+// (background refresh) stays CLI-side — it spawns `curl`, not something
+// a long-running daemon should do.
 
 const VERSION_CACHE_PATH: &str = ".legend/.latest_version";
-const VERSION_CHECK_INTERVAL: u64 = 86400;
 
-fn check_version_cached() -> Option<String> {
-    let current = env!("CARGO_PKG_VERSION");
-    let content = std::fs::read_to_string(VERSION_CACHE_PATH).ok()?;
-    let mut lines = content.lines();
-    let cached_ts: u64 = lines.next()?.parse().ok()?;
-    let latest = lines.next()?.trim().to_string();
-
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-
-    if now - cached_ts < VERSION_CHECK_INTERVAL && version_greater(&latest, current) {
-        return Some(latest);
-    }
-    None
-}
-
+/// Tests-only companion to the daemon-side version check. Kept here (rather
+/// than deleted) so the existing `test_version_greater_*` suite in this
+/// module still covers the comparison logic; the daemon side has its own
+/// copy inside `render_start` to avoid a circular dependency between the
+/// CLI and daemon modules.
+#[cfg(test)]
 fn version_greater(a: &str, b: &str) -> bool {
     let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
     parse(a) > parse(b)
@@ -73,69 +67,56 @@ fn refresh_version_cache_background() {
         .spawn();
 }
 
-/// Session log capacity warning threshold (90% of SESSION_LOG_CAPACITY=100)
-const SESSION_LOG_WARNING_THRESHOLD: usize = 90;
-
 pub(super) fn handle_start(
     args: &[String],
     def: &CommandDef,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_start_args(args, def);
+
+    // Try the daemon first. Daemon handles: build_start_summary +
+    // session-log warning + update-cache injection + L1→L2 flush + event
+    // log. Returns the exact stdout string we'd print (markdown or JSON).
+    if let Some(stdout) = try_over_ipc(Command::Start {
+        category: opts.category.clone(),
+        compact: opts.compact,
+        json: opts.json,
+        tokens: opts.tokens,
+        query: opts.query.clone(),
+    })? {
+        // --tokens is a CLI-side concern (writes to stderr). Token count is
+        // derived from the stdout length, which is the same whether the
+        // stdout came from the daemon or the in-process path.
+        if opts.tokens && !opts.json {
+            // We don't know session log count from the daemon payload
+            // without parsing it back out. Use a rough upper-bound of 100
+            // (the capacity) for the display; the exact number is a
+            // secondary diagnostic anyway.
+            print_token_overhead(&stdout, 100);
+        }
+        print!("{}", stdout);
+        refresh_version_cache_background();
+        return Ok(());
+    }
+
+    // In-process fallback — daemon unavailable. Same state mutations, same
+    // stdout shape.
     let mut memory = crate::memory::load_or_default()?;
-    let mut summary = crate::memory::build_start_summary_with_options(
+    let stdout = handlers::render_start(
         &mut memory,
-        opts.compact,
-        opts.category.as_deref(),
-        opts.query.as_deref(),
-    );
-
-    if memory.session_log.len() >= SESSION_LOG_WARNING_THRESHOLD {
-        if let Some(obj) = summary.as_object_mut() {
-            obj.insert(
-                "warning".to_string(),
-                serde_json::json!(format!(
-                    "Session log at {}% capacity ({}/100). Oldest entries will be dropped.",
-                    memory.session_log.len(),
-                    memory.session_log.len()
-                )),
-            );
-        }
-    }
-
-    let update_available = check_version_cached();
-    if let Some(ref latest) = update_available {
-        if let Some(obj) = summary.as_object_mut() {
-            obj.insert(
-                "update_available".to_string(),
-                serde_json::json!(format!("v{} → v{}", env!("CARGO_PKG_VERSION"), latest)),
-            );
-        }
-    }
-
-    // Flush working memory: promote qualifying entries to L2, then clear L1
-    crate::memory::prefrontal::flush_working_memory(&mut memory.brain);
-
-    let event_data = EventData::Start(StartEventData {
-        clock: memory.brain.clock,
-        short_term_count: memory.brain.short_term.len(),
-        long_term_nodes: memory.brain.long_term.nodes.len(),
-        session_log_entries: memory.session_log.len(),
-    });
-
+        handlers::StartArgs {
+            compact: opts.compact,
+            json: opts.json,
+            category: opts.category.as_deref(),
+            query: opts.query.as_deref(),
+        },
+    )
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     crate::memory::save(&memory)?;
-    log_event_rich("start", "session cold-start", Some(event_data));
 
-    if opts.json {
-        let json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string());
-        println!("{}", json);
-    } else {
-        let output = format_start_summary_markdown(&summary);
-        if opts.tokens {
-            print_token_overhead(&output, memory.session_log.len());
-        }
-        print!("{}", output);
+    if opts.tokens && !opts.json {
+        print_token_overhead(&stdout, memory.session_log.len());
     }
-
+    print!("{}", stdout);
     refresh_version_cache_background();
 
     Ok(())
