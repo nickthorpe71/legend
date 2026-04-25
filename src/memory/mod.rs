@@ -1263,7 +1263,12 @@ pub fn tick_impl_with_options(
         // prior chunk's salience, ACh from prior chunk's novelty) take effect.
         let live_encoding_gain =
             1.0 + state.chemistry.norepinephrine * 0.5 + state.chemistry.acetylcholine * 0.3;
-        let raw_salience = compute_salience(&chunk, &state.keyword_cache) * live_encoding_gain;
+        // Lexical salience + graph-aware prediction-error nudge (#33).
+        // Contradictions of established L3 edges spike here; novel typed
+        // relations earn a moderate boost; reaffirmations get a small one.
+        let lexical_salience = compute_salience(&chunk, &state.keyword_cache);
+        let graph_pe = thalamus::compute_graph_prediction_error_score(&chunk, state);
+        let raw_salience = (lexical_salience + graph_pe) * live_encoding_gain;
         let salience = normalize_final_salience(raw_salience);
         #[cfg(feature = "instrument")]
         _tctx.emit(
