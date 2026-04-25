@@ -365,6 +365,117 @@ pub fn render_sessions(
 }
 
 // ---------------------------------------------------------------------------
+// Personality — distill recurring style/preferences from stored memories
+// ---------------------------------------------------------------------------
+
+/// Render `legend memory personality`. Read-only summary that scans L2 for
+/// preference / decision / architecture / bug entries (using the same
+/// `classify_text` keyword logic that drives `memory start` categorization)
+/// and surfaces the highest-salience signal in each bucket. Also emits the
+/// top L3 graph nodes by weight, filtered to non-Term/Keyword/Type kinds so
+/// the output is the user's domain vocabulary, not internal scaffolding.
+///
+/// Output is markdown — designed to be cheap for an LLM to read at session
+/// start without inflating the context window. Defaults to top 5 per bucket;
+/// the threshold lives at the top of the function for easy tuning.
+pub fn render_personality(state: &MemoryState) -> Result<String, String> {
+    use crate::memory::{classify_text, MemoryCategory};
+    const PER_BUCKET: usize = 5;
+    const TOP_ENTITIES: usize = 10;
+
+    // Bucket L2 entries by category. Salience is the right ranker here:
+    // it's the signal the brain uses for "this matters across sessions",
+    // exactly what we want to surface as personality.
+    let mut prefs: Vec<&crate::memory::ShortTermEntry> = Vec::new();
+    let mut decisions: Vec<&crate::memory::ShortTermEntry> = Vec::new();
+    let mut architecture: Vec<&crate::memory::ShortTermEntry> = Vec::new();
+    let mut bugs: Vec<&crate::memory::ShortTermEntry> = Vec::new();
+    for entry in &state.brain.short_term {
+        match classify_text(&entry.text, &state.brain.keyword_cache) {
+            MemoryCategory::Preference => prefs.push(entry),
+            MemoryCategory::Decision => decisions.push(entry),
+            MemoryCategory::Architecture => architecture.push(entry),
+            MemoryCategory::Bug => bugs.push(entry),
+            _ => {}
+        }
+    }
+    // Sort each bucket by salience descending, take the top N.
+    let take_top = |list: &mut Vec<&crate::memory::ShortTermEntry>| {
+        list.sort_by(|a, b| b.salience.partial_cmp(&a.salience).unwrap_or(std::cmp::Ordering::Equal));
+        list.truncate(PER_BUCKET);
+    };
+    take_top(&mut prefs);
+    take_top(&mut decisions);
+    take_top(&mut architecture);
+    take_top(&mut bugs);
+
+    // L3 entities: skip the scaffolding kinds. What we want is the domain
+    // vocabulary the user keeps coming back to — Project, Concept, Tool,
+    // Object, System, Symbol, FilePath, etc.
+    let mut entities: Vec<&crate::memory::GraphNode> = state
+        .brain
+        .long_term
+        .nodes
+        .values()
+        .filter(|n| {
+            !matches!(
+                n.kind.as_str(),
+                "Term" | "Keyword" | "Type" | "Date" | "Value" | "Action"
+            )
+        })
+        .collect();
+    entities.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+    entities.truncate(TOP_ENTITIES);
+
+    let mut out = String::new();
+    out.push_str("# LLM personality (extracted from stored memories)\n\n");
+    out.push_str(&format!(
+        "Distilled from {} L2 entries and {} L3 nodes. Sorted by salience / weight.\n\n",
+        state.brain.short_term.len(),
+        state.brain.long_term.nodes.len()
+    ));
+
+    let render_entry_section = |out: &mut String, label: &str, list: &[&crate::memory::ShortTermEntry]| {
+        out.push_str(&format!("## {} ({} top entries)\n\n", label, list.len()));
+        if list.is_empty() {
+            out.push_str("_(none)_\n\n");
+            return;
+        }
+        for e in list {
+            let preview = truncate_text(&e.text.replace('\n', " "), 200);
+            out.push_str(&format!(
+                "- [sal={:.2}] {}\n",
+                e.salience, preview
+            ));
+        }
+        out.push('\n');
+    };
+
+    render_entry_section(&mut out, "Preferences", &prefs);
+    render_entry_section(&mut out, "Decisions", &decisions);
+    render_entry_section(&mut out, "Architectural stances", &architecture);
+    render_entry_section(&mut out, "Patterns of concern (bugs/blockers)", &bugs);
+
+    out.push_str(&format!(
+        "## Recurring entities ({} top L3 nodes by weight)\n\n",
+        entities.len()
+    ));
+    if entities.is_empty() {
+        out.push_str("_(none)_\n\n");
+    } else {
+        for n in entities {
+            out.push_str(&format!(
+                "- [{}] {} _(w={:.2})_\n",
+                n.kind, n.label, n.weight
+            ));
+        }
+        out.push('\n');
+    }
+
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // Start — wraps build_start_summary_with_options + flush_working_memory
 // ---------------------------------------------------------------------------
 
@@ -879,5 +990,29 @@ mod tests {
         let out = render_task_clear(&mut s).unwrap();
         assert!(out.contains("✓"), "{}", out);
         assert!(crate::memory::get_task(&s).is_none());
+    }
+
+    #[test]
+    fn personality_emits_all_sections_on_empty_state() {
+        // Empty state still produces the full skeleton — buckets just say "(none)".
+        // This locks the section contract so future refactors don't silently
+        // drop a category.
+        let s = MemoryState::default();
+        let out = render_personality(&s).unwrap();
+        for section in [
+            "# LLM personality",
+            "## Preferences",
+            "## Decisions",
+            "## Architectural stances",
+            "## Patterns of concern",
+            "## Recurring entities",
+        ] {
+            assert!(
+                out.contains(section),
+                "missing section '{}' in output:\n{}",
+                section,
+                out
+            );
+        }
     }
 }

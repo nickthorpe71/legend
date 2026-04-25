@@ -479,6 +479,7 @@ fn dispatch(daemon: &Arc<Daemon>, envelope: Envelope) -> Envelope {
             handlers::render_sessions(s, count, all)
         }),
         Command::TaskGet => read_only(daemon, id, handlers::render_task_get),
+        Command::Personality => read_only(daemon, id, handlers::render_personality),
 
         // Start: mutates (L1 → L2 flush, event log) — WAL captures the
         // flush; no wal_append needed because the mutation is deterministic
