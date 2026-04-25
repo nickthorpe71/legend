@@ -61,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = TickOptions {
         compute_context: false,
         defer_consolidation: true,
+        defer_offline_replay: true,
     };
     for text in &samples {
         let t0 = Instant::now();

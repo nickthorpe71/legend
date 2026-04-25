@@ -196,14 +196,19 @@ pub(super) fn checkpoint(daemon: &Daemon) -> Result<(), String> {
 /// crossed, long enough to avoid contention with tick handlers.
 const CONSOLIDATION_WORKER_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Background worker: consolidates when the sync tick path skipped it.
+/// Background worker — drains SWR-mode work the encoding tick deferred.
 ///
-/// The tick handlers pass `defer_consolidation: true` in `TickOptions` so
-/// they return inside the latency budget (see docs/latency-budgets.md).
-/// This worker picks up the wholesale graph-rewrite work instead. Runs in
-/// its own thread; takes the write lock only while a consolidation pass is
-/// active (tick requests wait during that window, but it happens at most
-/// once every `CONSOLIDATION_SUGGESTION_THRESHOLD` ticks).
+/// The tick handlers pass `defer_consolidation: true` and
+/// `defer_offline_replay: true` in `TickOptions` so they return inside the
+/// latency budget (see docs/latency-budgets.md). This worker picks up
+/// (a) wholesale auto-consolidation when threshold-crossed, and (b) the
+/// per-tick offline replay + sleep down-selection that real brains run
+/// only during quiet windows (theta/SWR mode separation, queue item #32).
+///
+/// Runs in its own thread; takes the write lock only while work is active.
+/// Tick requests wait during that window, but consolidation fires at most
+/// once every `CONSOLIDATION_SUGGESTION_THRESHOLD` ticks and offline
+/// replay is sub-100 ms when it has work to do.
 fn consolidation_worker(daemon: Arc<Daemon>) {
     loop {
         std::thread::sleep(CONSOLIDATION_WORKER_INTERVAL);
@@ -211,24 +216,41 @@ fn consolidation_worker(daemon: Arc<Daemon>) {
             return;
         }
 
-        // Check the condition under a shared read lock so we don't contend
-        // with the tick path when no consolidation is pending.
-        let should_run = {
+        // Check under a shared read lock so we don't contend with the tick
+        // path unless there's something to drain.
+        let (needs_cons, needs_replay) = {
             let guard = match daemon.state.read() {
                 Ok(g) => g,
                 Err(_) => return, // lock poisoned → daemon is unhealthy
             };
-            guard.as_ref().is_some_and(needs_consolidation)
+            match guard.as_ref() {
+                Some(s) => (needs_consolidation(s), needs_offline_replay(s)),
+                None => (false, false),
+            }
         };
 
-        if !should_run {
-            continue;
+        if needs_cons {
+            if let Err(e) = run_deferred_consolidation(&daemon) {
+                eprintln!("legend daemon: consolidation worker: {}", e);
+            }
         }
-
-        if let Err(e) = run_deferred_consolidation(&daemon) {
-            eprintln!("legend daemon: consolidation worker: {}", e);
+        // Replay runs after consolidation so it operates on the
+        // post-consolidation state. Cheap when there's nothing to do.
+        if needs_replay {
+            if let Err(e) = with_state_mut(&daemon, |state| {
+                crate::memory::drain_offline_replay(&mut state.brain);
+            }) {
+                eprintln!("legend daemon: offline-replay worker: {}", e);
+            }
         }
     }
+}
+
+/// Shallow check: does `state` have any L2 entries that are even
+/// candidates for offline replay? We let `drain_offline_replay` do the
+/// real bail-out; this just avoids waking the worker for empty stores.
+fn needs_offline_replay(state: &MemoryState) -> bool {
+    !state.brain.short_term.is_empty()
 }
 
 /// Mirror of the same predicate in `tick_impl` — we re-check here so a tick
