@@ -4,8 +4,10 @@ mod common;
 mod harness;
 
 #[test]
-#[ignore = "Pre-Phase-2 baseline: expected to fail until salience, chunking, graph extraction, and pruning improve"]
 fn project_alpha_signal_vs_noise_baseline() {
+    // Now passing as of #17 — entity collapse + relation lexicon
+    // expansion. Kept in the default suite so future extractor changes
+    // can't silently regress the 25-tick fixture.
     harness::run_scenario_in_process(include_str!(
         "observability_pre_phase_2/project_alpha_signal_noise.json"
     ));
