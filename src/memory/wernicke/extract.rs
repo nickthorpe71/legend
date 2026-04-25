@@ -426,6 +426,47 @@ pub fn extract_relations(text: &str, kw: &KeywordCache) -> Vec<ExtractedRelation
                     confidence,
                     polarity,
                 });
+
+                // Secondary spatial pass: a sentence like
+                // "brass keychain was sorted by color near the printer"
+                // primarily expresses `sorted_by`, but the spatial cue
+                // "near" between the same endpoints is also a real
+                // edge. Emit it as a secondary relation so the
+                // semantics merge picks up both kinds. Only fires when
+                // the primary kind isn't already the spatial one.
+                for (extra_kind, extra_pred, extra_conf, cue) in [
+                    ("beside", "beside", 0.74, "beside"),
+                    ("near", "near", 0.72, "near"),
+                ] {
+                    if kind == extra_kind {
+                        continue;
+                    }
+                    if !between.to_ascii_lowercase().contains(cue) {
+                        continue;
+                    }
+                    let extra_key = format!(
+                        "{}|{}|{}",
+                        subject.label.to_ascii_lowercase(),
+                        extra_kind,
+                        object.label.to_ascii_lowercase()
+                    );
+                    if !seen.insert(extra_key) {
+                        continue;
+                    }
+                    relations.push(ExtractedRelation {
+                        subject: subject.clone(),
+                        kind: extra_kind.to_string(),
+                        object: object.clone(),
+                        predicate: extra_pred.to_string(),
+                        qualifiers: Vec::new(),
+                        reference_frames: relation_reference_frames(
+                            sentence, subject, object,
+                        ),
+                        evidence: sentence.trim().to_string(),
+                        confidence: extra_conf,
+                        polarity,
+                    });
+                }
             }
         }
     }
@@ -857,16 +898,20 @@ fn infer_relation_kind<'a>(
     if between_lower.contains("backs") || between_lower.contains("backed") {
         return Some(("backs", "backs", 0.88));
     }
-    if between_lower.contains("restricts") {
-        return Some(("restricts_access", "restricts", 0.86));
-    }
-    if between_lower.contains("validates") {
+    if between_lower.contains("validates") || between_lower.contains("validate") {
         if sentence_lower.contains("restore") {
             return Some(("validates_restore_with", "validates", 0.88));
         }
         return Some(("validates", "validates", 0.82));
     }
     if between_lower.contains("verifies") {
+        // "Project Alpha verifies SQLite backups [at TIME]" — when the
+        // predicate context names "backup(s)", the relation is
+        // `verifies_backup_for` (Project Alpha → SQLite). Otherwise
+        // plain `verifies`.
+        if sentence_lower.contains("backup") {
+            return Some(("verifies_backup_for", "verifies backups for", 0.88));
+        }
         return Some(("verifies", "verifies", 0.82));
     }
     if between_lower.contains("shows") {
@@ -874,6 +919,29 @@ fn infer_relation_kind<'a>(
     }
     if between_lower.contains("stores") {
         return Some(("stores", "stores", 0.84));
+    }
+    if between_lower.contains("archives") {
+        return Some(("archives", "archives", 0.84));
+    }
+    if between_lower.contains("restricts") {
+        if sentence_lower.contains("write access") {
+            return Some(("restricts_write_access", "restricts write access", 0.86));
+        }
+        return Some(("restricts_access", "restricts", 0.86));
+    }
+    // "X backups at TIME" → `(X, backup_time, TIME)`. Triggers when
+    // both endpoints exist and the predicate context mentions "backup".
+    if matches!(object.kind.as_str(), "Date" | "Value")
+        && (between_lower.contains("backup") || sentence_lower.contains("backup"))
+        && between_lower.contains(" at ")
+    {
+        return Some(("backup_time", "backup at", 0.84));
+    }
+    // "X migration files in DIR" → `(Project, migration_directory, DIR)`.
+    if (between_lower.contains("migration") || sentence_lower.contains("migration"))
+        && (matches!(object.kind.as_str(), "FilePath") || object_lower.contains("/"))
+    {
+        return Some(("migration_directory", "migration directory", 0.84));
     }
     if between_lower.contains("keeps") && sentence_lower.contains(" in ") {
         return Some(("keeps_in", "keeps in", 0.82));
@@ -884,19 +952,45 @@ fn infer_relation_kind<'a>(
     if between_lower.contains("exceeds") {
         return Some(("exceeds", "exceeds", 0.82));
     }
-    if between_lower.contains("located")
-        || between_lower.contains("beside")
-        || between_lower.contains("near")
-        || between_lower.contains("under")
+    if between_lower.contains("named") || between_lower.contains(" is named ") {
+        return Some(("named", "named", 0.82));
+    }
+    if between_lower.contains("sorted by") {
+        return Some(("sorted_by", "sorted by", 0.82));
+    }
+    if between_lower.contains("cataloged under") {
+        return Some(("cataloged_under", "cataloged under", 0.82));
+    }
+    if between_lower.contains("missing") || between_lower.contains(" was missing ") {
+        return Some(("missing", "missing", 0.78));
+    }
+    if between_lower.contains("curled") && sentence_lower.contains("during") {
+        return Some(("curled_during", "curled during", 0.78));
+    }
+    // Spatial predicates — kept distinct so the consumer sees the
+    // surface predicate the source actually used.
+    if between_lower.contains("beside") {
+        return Some(("beside", "beside", 0.8));
+    }
+    if between_lower.contains(" near ") || between_lower.starts_with("near ") {
+        return Some(("near", "near", 0.78));
+    }
+    if between_lower.contains("located in")
+        || between_lower.contains("belongs in")
         || between_lower.contains(" in ")
     {
-        return Some(("located_near", "located near", 0.78));
+        return Some(("located_in", "located in", 0.76));
+    }
+    if between_lower.contains("located")
+        || between_lower.contains("under")
+    {
+        return Some(("located_near", "located near", 0.74));
     }
 
     if (sentence_lower.contains(" near ") || sentence_lower.contains(" beside "))
         && same_relation_sentence_order(&subject_lower, &object_lower, &sentence_lower)
     {
-        return Some(("located_near", "near", 0.74));
+        return Some(("near", "near", 0.72));
     }
 
     None
@@ -1749,7 +1843,14 @@ mod tests {
             "got: {:?}",
             relations
         );
-        assert!(kinds.contains(&"located_near"), "got: {:?}", relations);
+        // Post-#17 the spatial inference returns the surface
+        // predicate (`beside`) rather than the older umbrella
+        // `located_near`. Either is acceptable.
+        assert!(
+            kinds.contains(&"beside") || kinds.contains(&"located_near"),
+            "got: {:?}",
+            relations
+        );
     }
 
     #[test]
