@@ -64,6 +64,7 @@ pub enum PipelineStep {
     InsertShortTerm,
     UpdateGraph,
     EncodingActivation,
+    ConceptClassifierVotes,
     UpdateTermFrequencies,
     PruneL2,
     PruneL3,
