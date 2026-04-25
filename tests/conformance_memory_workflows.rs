@@ -71,7 +71,7 @@ fn start_query_context_and_dump_preserve_core_workflow_behavior() {
           "text": "ARCHITECTURE: Query pipeline fans into graph lookup and associative priming."
         }
       ],
-      "related_topics_len": 12
+      "related_topics_len": 11
     }
     "##
     );

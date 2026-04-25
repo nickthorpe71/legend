@@ -1,6 +1,5 @@
 use super::cache::KeywordCache;
 /// Entity extraction from text (code-aware + plain identifiers).
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Date extraction — temporal perception for the memory system
@@ -564,10 +563,167 @@ pub fn extract_entities(text: &str, kw: &KeywordCache) -> Vec<ExtractedEntity> {
         }
     }
 
-    // Deduplicate by label
-    let mut seen = std::collections::HashSet::new();
-    entities.retain(|e| seen.insert(e.label.clone()));
+    // Case-insensitive dedup, preserving first-seen entity (extraction
+    // walks source order so the first variant tends to carry the
+    // source-faithful casing). Drops `sqlite` when `SQLite` is already
+    // present.
+    {
+        let mut seen = std::collections::HashSet::new();
+        entities.retain(|e| seen.insert(e.label.to_lowercase()));
+    }
+
+    // Collapse morphological fragments and CamelCase splinter shards
+    // (`Lite` from `SQLite`, `Project` from `Project Alpha`) when a
+    // longer extracted entity covers them in the source. See queue
+    // item #17 / `docs/chunking-evaluation.md`.
+    collapse_fragment_entities(&mut entities, text);
+
+    // Collapse compounds whose prefix entity appears in source
+    // OUTSIDE the compound — `SQLite datastore` drops because
+    // `SQLite` also appears elsewhere as a standalone word, but
+    // `hallway poster about waffles` is kept because `hallway poster`
+    // never appears outside the longer phrase. See queue item #17 /
+    // `docs/chunking-evaluation.md`.
+    collapse_compound_redundancy(&mut entities, text);
+
     entities
+}
+
+/// Drop a multi-word entity X when a shorter extracted entity E is
+/// (a) X's leading prefix word(s) and (b) appears in the source
+/// **outside** any whole-word occurrence of X. Distinguishes
+/// over-extracted compounds (`SQLite datastore` — `SQLite` appears
+/// elsewhere standalone) from genuine longer phrases
+/// (`hallway poster about waffles` — `hallway poster` only ever
+/// appears inside the longer phrase).
+fn collapse_compound_redundancy(entities: &mut Vec<ExtractedEntity>, source: &str) {
+    if entities.len() < 2 {
+        return;
+    }
+    let lowered = source.to_lowercase();
+    let labels: Vec<String> = entities.iter().map(|e| e.label.to_lowercase()).collect();
+    let positions: Vec<Vec<(usize, usize)>> = labels
+        .iter()
+        .map(|l| whole_word_positions(&lowered, l))
+        .collect();
+    let mut to_drop = vec![false; entities.len()];
+
+    for i in 0..entities.len() {
+        let label_i = &labels[i];
+        if !label_i.contains(' ') {
+            continue;
+        }
+        if matches!(entities[i].kind.as_str(), "Date" | "Value") {
+            continue;
+        }
+        for j in 0..entities.len() {
+            if j == i {
+                continue;
+            }
+            let prefix = &labels[j];
+            if prefix.len() >= label_i.len() {
+                continue;
+            }
+            if !label_i.starts_with(prefix.as_str())
+                || label_i.as_bytes().get(prefix.len()) != Some(&b' ')
+            {
+                continue;
+            }
+            // Drop label_i only when the prefix has at least one
+            // whole-word occurrence in source that is NOT contained
+            // in any whole-word occurrence of label_i. That signals
+            // the prefix is a genuine standalone entity, with the
+            // compound being redundant.
+            let prefix_positions = &positions[j];
+            let label_positions = &positions[i];
+            let prefix_has_outside_occurrence = prefix_positions.iter().any(|(ps, pe)| {
+                !label_positions
+                    .iter()
+                    .any(|(ls, le)| ls <= ps && le >= pe)
+            });
+            if prefix_has_outside_occurrence {
+                to_drop[i] = true;
+                break;
+            }
+        }
+    }
+
+    let mut idx = 0usize;
+    entities.retain(|_| {
+        let keep = !to_drop[idx];
+        idx += 1;
+        keep
+    });
+}
+
+/// Drop entities that are pure morphological splinters of another
+/// extracted entity — labels that are a sub-string of a longer
+/// extracted label AND that **never appear as a standalone whole word**
+/// in `source`. Catches `Lite` from `SQLite` and `lite` from the
+/// CamelCase splitter without touching meaningful nested phrases like
+/// `Project Alpha` inside `Project Alpha dashboard` (both appear as
+/// whole words in source).
+///
+/// Whole-word fragments such as `Project` and `Alpha` remain; the
+/// downstream graph dedup absorbs them via lowercased-label index.
+/// Tightening to drop those too needs separate logic that distinguishes
+/// "common-noun fragment" from "proper-noun head" — out of scope for
+/// this pass.
+fn collapse_fragment_entities(entities: &mut Vec<ExtractedEntity>, source: &str) {
+    if entities.len() < 2 {
+        return;
+    }
+    let lowered = source.to_lowercase();
+    let labels: Vec<String> = entities.iter().map(|e| e.label.to_lowercase()).collect();
+
+    let mut to_drop = vec![false; entities.len()];
+    for i in 0..entities.len() {
+        // Date / Value are exact anchors that should never be collapsed.
+        if matches!(entities[i].kind.as_str(), "Date" | "Value") {
+            continue;
+        }
+        let label_i = &labels[i];
+        // Only drop labels that don't appear as a standalone whole word
+        // anywhere in the source — those are CamelCase splinters and
+        // lowercase variants, never meaningful entities on their own.
+        if !whole_word_positions(&lowered, label_i).is_empty() {
+            continue;
+        }
+        let any_container = labels
+            .iter()
+            .enumerate()
+            .any(|(j, other)| j != i && other.len() > label_i.len() && other.contains(label_i.as_str()));
+        if any_container {
+            to_drop[i] = true;
+        }
+    }
+
+    let mut idx = 0usize;
+    entities.retain(|_| {
+        let keep = !to_drop[idx];
+        idx += 1;
+        keep
+    });
+}
+
+fn whole_word_positions(text_lower: &str, needle_lower: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if needle_lower.is_empty() {
+        return out;
+    }
+    let bytes = text_lower.as_bytes();
+    let mut pos = 0;
+    while let Some(found) = text_lower[pos..].find(needle_lower) {
+        let s = pos + found;
+        let e = s + needle_lower.len();
+        let before_ok = s == 0 || !bytes[s - 1].is_ascii_alphanumeric();
+        let after_ok = e == bytes.len() || !bytes[e].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            out.push((s, e));
+        }
+        pos = s + 1;
+    }
+    out
 }
 
 fn extract_temporal_and_quantity_values(text: &str) -> Vec<String> {
@@ -1175,43 +1331,54 @@ fn extract_identifiers(text: &str) -> Vec<String> {
         tokens.push(current);
     }
 
-    let mut unique = HashMap::new();
+    // Insertion-order-preserving dedup so the original token wins the
+    // case-insensitive collapse downstream (HashMap iteration would
+    // randomize whether `SQLite` or `sqlite` is emitted first).
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for token in tokens {
         for variant in expand_identifier_variants(&token) {
             if variant.len() > 2
                 && !is_stopword(&variant)
                 && !is_relation_cue(&variant)
                 && !variant.chars().all(|c| c.is_ascii_digit())
+                && seen.insert(variant.clone())
             {
-                unique.entry(variant).or_insert(());
+                out.push(variant);
             }
         }
     }
-    unique.into_keys().collect()
+    out
 }
 
 /// Normalize identifier tokens with constrained variants:
 /// original token + snake/camel components + simple singular form.
+/// Order is deterministic — original token first, then snake/camel
+/// parts, then lowercased forms — so the case-insensitive dedup in
+/// `extract_entities` keeps the source-faithful casing.
 fn expand_identifier_variants(token: &str) -> Vec<String> {
-    let mut out: HashMap<String, ()> = HashMap::new();
-    out.insert(token.to_string(), ());
-
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let push = |s: String, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>| {
+        if seen.insert(s.clone()) {
+            out.push(s);
+        }
+    };
+    push(token.to_string(), &mut out, &mut seen);
     for part in split_identifier_parts(token) {
-        out.insert(part.clone(), ());
         let lower_part = part.to_ascii_lowercase();
-        out.insert(lower_part.clone(), ());
+        push(part, &mut out, &mut seen);
+        push(lower_part.clone(), &mut out, &mut seen);
         if let Some(singular) = singularize(&lower_part) {
-            out.insert(singular, ());
+            push(singular, &mut out, &mut seen);
         }
     }
-
     let lower = token.to_ascii_lowercase();
-    out.insert(lower.clone(), ());
+    push(lower.clone(), &mut out, &mut seen);
     if let Some(singular) = singularize(&lower) {
-        out.insert(singular, ());
+        push(singular, &mut out, &mut seen);
     }
-
-    out.into_keys().collect()
+    out
 }
 
 fn split_identifier_parts(token: &str) -> Vec<String> {
@@ -1751,10 +1918,15 @@ mod tests {
         );
         let labels: Vec<&str> = entities.iter().map(|e| e.label.as_str()).collect();
 
+        // Post-#17: `SQLite` is the canonical entity. The
+        // `SQLite datastore` compound is collapsed (the relation
+        // layer captures what role it played) so the graph doesn't
+        // bloat with `SQLite X` nodes per modifier.
         assert!(labels.contains(&"Project Alpha"), "got: {:?}", labels);
         assert!(labels.contains(&"service account"), "got: {:?}", labels);
         assert!(labels.contains(&"audit log"), "got: {:?}", labels);
-        assert!(labels.contains(&"SQLite datastore"), "got: {:?}", labels);
+        assert!(labels.contains(&"SQLite"), "got: {:?}", labels);
+        assert!(!labels.contains(&"SQLite datastore"), "got: {:?}", labels);
         assert!(!labels.contains(&"restricts"), "got: {:?}", labels);
         assert!(!labels.contains(&"backs"), "got: {:?}", labels);
     }

@@ -3787,15 +3787,40 @@ mod tests {
 
         let alpha = graph_node_id(&state, "project alpha");
         let sqlite = graph_node_id(&state, "sqlite");
-        let datastore = graph_node_id(&state, "sqlite datastore");
+
+        // Post-#17: `SQLite datastore` is collapsed into the existing
+        // `SQLite` node; the `backs` relation now hangs off `SQLite`
+        // directly, rooted at the same canonical entity as `uses`.
+        assert!(
+            !state
+                .brain
+                .long_term
+                .index
+                .contains_key("sqlite datastore"),
+            "compound `SQLite datastore` should collapse into `SQLite`"
+        );
 
         let uses_edge = graph_edge_between(&state, alpha, sqlite)
             .expect("Project Alpha and SQLite should have a typed edge");
-        let backs_edge = graph_edge_between(&state, datastore, alpha)
-            .expect("SQLite datastore and Project Alpha should have a typed edge");
-
         assert_eq!(uses_edge.kind, "uses_datastore");
-        assert_eq!(backs_edge.kind, "backs");
+
+        // The `backs` predicate should still be present on some edge
+        // touching SQLite — we don't pin the exact other endpoint here
+        // because that's relation-extractor territory.
+        let touches_sqlite_with_backs = state
+            .brain
+            .long_term
+            .edge_semantics
+            .iter()
+            .any(|(key, sem)| {
+                let endpoints: Vec<_> = key.split(':').filter_map(|s| s.parse::<u64>().ok()).collect();
+                endpoints.contains(&sqlite)
+                    && (sem.kind == "backs" || sem.kinds.iter().any(|k| k == "backs"))
+            });
+        assert!(
+            touches_sqlite_with_backs,
+            "expected a `backs` edge touching SQLite",
+        );
     }
 
     #[test]
