@@ -1183,6 +1183,28 @@ pub fn apply_l3_decay(long_term: &mut GraphMemory, clock: u64, decay_rate_mod: f
 
 /// Extract entities from text and insert/update nodes and edges in the knowledge graph.
 /// Returns the node IDs that were created or updated.
+/// True for labels that look like a canonical entity head — multi-word,
+/// CamelCase, or ALL-CAPS acronym. Used to gate the cross-tick compound
+/// collapse so meaningful multi-word entities don't get dropped because
+/// a generic single word (`project`, `the`) happens to be indexed too.
+fn looks_like_proper_entity_label(label: &str) -> bool {
+    if label.contains(' ') {
+        return true;
+    }
+    let chars: Vec<char> = label.chars().collect();
+    if chars.len() < 2 {
+        return false;
+    }
+    if chars[1..].iter().any(|c| c.is_ascii_uppercase()) {
+        return true;
+    }
+    let all_upper = chars
+        .iter()
+        .all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase());
+    let alpha_count = chars.iter().filter(|c| c.is_ascii_alphabetic()).count();
+    all_upper && alpha_count >= 2
+}
+
 pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u64> {
     let semantic_text = clean_semantic_noise(text);
     let graph_text = if semantic_text.trim().is_empty() {
@@ -1190,10 +1212,40 @@ pub fn update_graph(state: &mut BrainState, text: &str, salience: f32) -> Vec<u6
     } else {
         semantic_text.as_str()
     };
-    let entities: Vec<_> = extract_entities(graph_text, &state.keyword_cache)
+    let mut entities: Vec<_> = extract_entities(graph_text, &state.keyword_cache)
         .into_iter()
         .filter(is_graph_entity_candidate)
         .collect();
+    // Cross-tick compound collapse (#17): drop a multi-word entity X
+    // when a strict prefix of X is already a *proper-looking* graph
+    // node (CamelCase, multi-word, or ALL-CAPS — i.e. signal that the
+    // prefix is itself a canonical entity head, not a generic word
+    // that happens to be indexed). `SQLite datastore` collapses into
+    // the existing `SQLite` node; `Project Alpha` is NOT dropped just
+    // because `project` is also indexed.
+    entities.retain(|e| {
+        if matches!(e.kind.as_str(), "Date" | "Value") {
+            return true;
+        }
+        let lowered = e.label.to_lowercase();
+        if !lowered.contains(' ') {
+            return true;
+        }
+        for (i, byte) in lowered.bytes().enumerate() {
+            if byte != b' ' {
+                continue;
+            }
+            let prefix_lower = &lowered[..i];
+            if let Some(&id) = state.long_term.index.get(prefix_lower) {
+                if let Some(node) = state.long_term.nodes.get(&id) {
+                    if looks_like_proper_entity_label(&node.label) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    });
     if entities.is_empty() {
         return Vec::new();
     }
@@ -1485,10 +1537,12 @@ pub fn replay_consolidation_for_entries(
             let resolved: Vec<(String, u64)> = entities
                 .iter()
                 .filter_map(|e| {
+                    // Index is keyed by lowercased label (see
+                    // `update_graph` and `insert_graph_node`).
                     state
                         .long_term
                         .index
-                        .get(&e.label)
+                        .get(&e.label.to_lowercase())
                         .map(|&id| (e.label.clone(), id))
                 })
                 .collect();
