@@ -20,6 +20,7 @@
 pub mod amygdala;
 pub mod anterior_pfc;
 pub mod basal_ganglia;
+pub mod concept_classifier;
 pub mod dentate_gyrus;
 pub mod entorhinal;
 pub mod hippocampus;
@@ -1566,6 +1567,34 @@ pub fn tick_impl_with_options(
             result_action = "working_memory_only".to_string();
             result_entry_id = wm_id;
         }
+    }
+
+    // Concept classifier framework (#34): collect votes from the registry.
+    // Phase 1 wires the framework into the production tick path purely
+    // as an observability signal — votes are emitted to the trace
+    // channel under `instrument` and discarded otherwise. They do not
+    // drive salience or routing yet; that's a follow-on once we have
+    // more classifiers and want to consensus their output.
+    {
+        let registry = concept_classifier::ConceptRegistry::default_set();
+        let ctx = concept_classifier::ClassificationContext {
+            text,
+            keyword_cache: &state.keyword_cache,
+        };
+        let votes = registry.vote_all(&ctx);
+        #[cfg(feature = "instrument")]
+        if !votes.is_empty() {
+            let payload: Vec<(String, String)> = votes
+                .iter()
+                .map(|v| (v.concept.clone(), format!("{:.2}", v.confidence)))
+                .collect();
+            _tctx.emit(
+                trace::PipelineStep::ConceptClassifierVotes,
+                trace::TracePayload::KeyValue(payload),
+            );
+        }
+        #[cfg(not(feature = "instrument"))]
+        let _ = votes;
     }
 
     // Layer 3: update term frequency stats and auto-promote recurring entities
