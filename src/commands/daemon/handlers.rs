@@ -55,6 +55,7 @@ pub fn apply_tick(
         crate::memory::TickOptions {
             compute_context: false,
             defer_consolidation: true,
+            defer_offline_replay: true,
         },
     )
 }
@@ -72,23 +73,32 @@ pub fn apply_tick_with_context(
         crate::memory::TickOptions {
             compute_context: true,
             defer_consolidation: true,
+            defer_offline_replay: true,
         },
     )
 }
 
-/// Run any consolidation that an earlier deferred tick skipped. Used by the
-/// non-daemon CLI fallback where no background worker is available to drain
-/// the deferred queue. Safe no-op when no consolidation is pending.
+/// Run any SWR-mode work that the encoding tick deferred —
+/// auto-consolidation when threshold-crossed, plus the per-tick offline
+/// replay + sleep down-selection. Used by the non-daemon CLI fallback
+/// where no background worker is available; the daemon path runs the
+/// equivalent work in `consolidation_worker`. Safe no-op when nothing is
+/// pending.
 pub fn drain_deferred_consolidation(state: &mut MemoryState) {
     use crate::memory::{
         neurochemistry, CONSOLIDATION_PRESSURE_THRESHOLD, CONSOLIDATION_SUGGESTION_THRESHOLD,
     };
     let effective = neurochemistry::compute_effective(&state.brain.chemistry);
-    let needs = state.brain.ticks_since_consolidation >= CONSOLIDATION_SUGGESTION_THRESHOLD
+    let needs_consolidation = state.brain.ticks_since_consolidation
+        >= CONSOLIDATION_SUGGESTION_THRESHOLD
         || effective.consolidation_pressure >= CONSOLIDATION_PRESSURE_THRESHOLD;
-    if needs {
+    if needs_consolidation {
         crate::memory::consolidate(&mut state.brain);
     }
+    // Replay runs after consolidation so it sees the post-consolidation
+    // state. Cheap when there's nothing to do (inner functions short-
+    // circuit on empty plans / low pressure).
+    crate::memory::drain_offline_replay(&mut state.brain);
 }
 
 fn apply_tick_inner(

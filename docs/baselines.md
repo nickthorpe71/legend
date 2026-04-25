@@ -405,6 +405,85 @@ for i in $(seq 1 10); do
 done
 ```
 
+## #08 — Post-#32 tick latency (theta/SWR mode separation)
+
+**Recorded:** 2026-04-24
+**Method:** Same methodology as §#07. Updated `examples/tick_profile.rs`
+to set `defer_offline_replay: true` so the encoding tick stays in pure
+theta mode and `consolidation_worker` drains the SWR-mode work.
+
+Raw log: `.perf/tick-profile-2026-04-24-post32.log` (git-ignored).
+
+### Change vs §#07
+
+`tick_impl_with_options` now skips both `run_tick_offline_replay` and
+`run_sleep_downselection` when the caller passes
+`defer_offline_replay: true`. The daemon's `consolidation_worker`
+calls a new `crate::memory::drain_offline_replay` between idle ticks;
+the non-daemon CLI fallback drains via the same
+`drain_deferred_consolidation` handler used for #17.
+
+### Results
+
+| Sample | Wall (ms) |
+|--------|-----------|
+| 0      | 93        | (cold; first call pays ORT init) |
+| 1      | 25        |
+| 2      | 30        |
+| 3      | 41        |
+| 4      | 48        |
+| 5      | 42        |
+| 6      | 36        |
+| 7      | 38        |
+| 8      | 36        |
+| 9      | 41        |
+
+- **Warm median:** 38 ms
+- **Warm mean:** 37 ms
+- **Warm p95 / max:** 48 ms
+
+Compare §#07: warm median 20 ms but max 94 ms (replay-fires samples).
+The mode-separation removes the bimodal split; all warm samples now
+land in a tight 25–48 ms band, well inside the 100 ms p95 budget.
+Median ticked up because §#07's "baseline" samples were ones where
+`run_tick_offline_replay` happened to find no candidates and bailed
+free; now the encoding tick is uniformly free of replay cost.
+
+### Per-step (warm)
+
+| Step                | Median (µs) | Max (µs) |
+|---------------------|-------------|----------|
+| Decay               | 18 917      | 21 094   |
+| ChunkText           | 16 934      | 24 399   |
+| CpebTagging         | 865         | 865      |
+| Renormalize         | 774         | 1 097    |
+| MergeEntryHigh      | 780         | 880      |
+| UpdateTermFrequencies | 724       | 837      |
+| (everything else)   | < 200       | < 200    |
+
+The two remaining heavyweights — `Decay` and `ChunkText` — stay on
+the encoding path. Both scale with graph size and are good targets
+for future work:
+
+- **`Decay`** is per-edge / per-node bookkeeping that grows linearly
+  with the L3 graph. A future "decay batch" deferred to the worker
+  would mirror real synaptic homeostasis (slow background process).
+- **`ChunkText`** at ~17 ms for short text is suspicious — expected
+  sub-millisecond. Worth a focused look.
+
+### How to re-run
+
+Same recipe as §#07:
+
+```bash
+rm -rf /tmp/legend_bench/.legend
+cp -r /tmp/legend_bench_master/.legend /tmp/legend_bench/
+cargo run --release --features instrument --example tick_profile \
+  > .perf/tick-profile-$(date +%F).log 2>&1
+```
+
+---
+
 ## #07 — Post-#17 tick latency (encoding-context skip + deferred consolidation)
 
 **Recorded:** 2026-04-24

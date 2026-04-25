@@ -646,6 +646,18 @@ fn plan_tick_offline_replay(
     }
 }
 
+/// Drain SWR-mode work that the encoding tick deferred — per-tick offline
+/// replay + sleep down-selection. Idempotent: re-running on a state that
+/// has nothing to replay is a near-zero-cost no-op (both inner functions
+/// short-circuit on empty plans / low pressure). Called by the daemon's
+/// idle worker; non-daemon paths can call this from
+/// `drain_deferred_consolidation` via the same handler.
+pub fn drain_offline_replay(state: &mut BrainState) {
+    let pressure = compute_layer_normalization_pressure(state);
+    let _ = run_tick_offline_replay(state, &pressure);
+    let _ = run_sleep_downselection(state, &pressure);
+}
+
 fn run_tick_offline_replay(
     state: &mut BrainState,
     pressure: &LayerNormalizationPressure,
@@ -1057,6 +1069,12 @@ pub struct TickOptions {
     /// tick handler returns inside the latency budget. Non-daemon callers
     /// (in-process discover, tests) keep sync behavior with the default.
     pub defer_consolidation: bool,
+    /// Skip the per-tick SWR-style offline replay (`run_tick_offline_replay`
+    /// + `run_sleep_downselection`). Real brains separate theta-mode
+    /// encoding from SWR-mode replay temporally; the daemon's worker
+    /// drains these in idle windows so the encoding tick stays in pure
+    /// theta. See queue item #32.
+    pub defer_offline_replay: bool,
 }
 
 impl Default for TickOptions {
@@ -1064,6 +1082,7 @@ impl Default for TickOptions {
         Self {
             compute_context: true,
             defer_consolidation: false,
+            defer_offline_replay: false,
         }
     }
 }
@@ -1690,7 +1709,11 @@ pub fn tick_impl_with_options(
         did_consolidate = true;
     }
 
-    if !did_consolidate {
+    // SWR-mode work: per-tick offline replay + sleep down-selection. In
+    // real brains these only run during quiet windows (see queue item #32);
+    // when the daemon is driving, we defer to the idle worker thread so
+    // the encoding tick stays in pure theta mode.
+    if !did_consolidate && !options.defer_offline_replay {
         #[cfg(feature = "instrument")]
         let _replay_stats = run_tick_offline_replay(state, &normalization_pressure);
         #[cfg(not(feature = "instrument"))]
@@ -1712,19 +1735,21 @@ pub fn tick_impl_with_options(
             );
         }
     }
-    #[cfg(feature = "instrument")]
-    let _sleep_stats = run_sleep_downselection(state, &normalization_pressure);
-    #[cfg(not(feature = "instrument"))]
-    let _ = run_sleep_downselection(state, &normalization_pressure);
-    #[cfg(feature = "instrument")]
-    if _sleep_stats.penalized_entries > 0 {
-        _tctx.emit(
-            trace::PipelineStep::PruneL2,
-            trace::TracePayload::KeyValue(vec![(
-                "sleep_downselected_entries".into(),
-                _sleep_stats.penalized_entries.to_string(),
-            )]),
-        );
+    if !options.defer_offline_replay {
+        #[cfg(feature = "instrument")]
+        let _sleep_stats = run_sleep_downselection(state, &normalization_pressure);
+        #[cfg(not(feature = "instrument"))]
+        let _ = run_sleep_downselection(state, &normalization_pressure);
+        #[cfg(feature = "instrument")]
+        if _sleep_stats.penalized_entries > 0 {
+            _tctx.emit(
+                trace::PipelineStep::PruneL2,
+                trace::TracePayload::KeyValue(vec![(
+                    "sleep_downselected_entries".into(),
+                    _sleep_stats.penalized_entries.to_string(),
+                )]),
+            );
+        }
     }
 
     #[cfg(feature = "instrument")]
