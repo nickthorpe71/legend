@@ -1,6 +1,7 @@
 mod consolidate;
 mod event_log;
 mod helpers;
+mod personality;
 mod plan;
 mod query;
 mod reinforce;
@@ -55,6 +56,7 @@ pub fn handle_memory(
         "dump" => simple::handle_dump(),
         "task" => task::handle_task(&args[1..]),
         "plan" => plan::handle_plan(&args[1..]),
+        "personality" => personality::handle_personality(&args[1..]),
         _ => {
             print_memory_help();
             Ok(())
@@ -89,6 +91,7 @@ fn print_memory_help() {
     println!("  legend memory sessions [n] [--all]  Show last n session log entries (default 10)");
     println!("    --all, -a                       Include empty entries");
     println!("  legend memory consolidate       Merge similar memories into long-term graph");
+    println!("  legend memory personality       Distill recurring preferences/decisions/concerns");
     println!("  legend memory reset             Reset memory store");
 }
 

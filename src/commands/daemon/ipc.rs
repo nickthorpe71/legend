@@ -90,6 +90,9 @@ pub enum Command {
     Stats,
     Sessions { count: usize, all: bool },
     TaskGet,
+    /// Personality summary: distilled preferences/decisions/architecture/
+    /// concerns + top L3 entities. Read-only. See `render_personality`.
+    Personality,
 
     // --- Structured payloads (for non-CLI consumers, e.g. `mcp-serve`) ------
     /// Same state mutation as [`Command::Tick`], but returns `TickResult`

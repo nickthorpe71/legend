@@ -94,6 +94,15 @@ static MEMORY_PLAN: CommandDef = CommandDef {
     children: &[],
 };
 
+static MEMORY_PERSONALITY: CommandDef = CommandDef {
+    name: "personality",
+    about: "Distill recurring preferences/decisions/concerns from stored memories",
+    usage: "legend memory personality",
+    flags: &[],
+    positionals: &[],
+    children: &[],
+};
+
 // -- legend memory --
 static MEMORY: CommandDef = CommandDef {
     name: "memory",
@@ -107,6 +116,7 @@ static MEMORY: CommandDef = CommandDef {
         &MEMORY_QUERY,
         &MEMORY_SESSIONS,
         &MEMORY_PLAN,
+        &MEMORY_PERSONALITY,
     ],
 };
 
