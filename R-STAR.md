@@ -2,7 +2,7 @@
 
 R* is a practical style for writing Rust. Understand your data, write the concrete thing, compress only what repeats.
 
-There is no fixed way. There is the problem, and there are the fundamentals.
+There is no fixed way. There is the problem, there are the fundamentals, then the solution.
 
 ---
 
