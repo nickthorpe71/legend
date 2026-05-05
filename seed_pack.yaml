@@ -1,17 +1,23 @@
 # Legend v0 Seed Pack — Full Enumeration
 #
-# Companion to new_foundation.md §16. Every seeded atom appears here
-# with a one-sentence rationale answering: "why is this load-bearing
-# enough to seed?"
+# Companion to new_foundation.md §16. Every seeded element appears
+# here with a one-sentence rationale answering: "why is this load-
+# bearing enough to seed?"
 #
 # Seeding criterion (§3.4 / §16): seed only what's load-bearing for
 # recognition (§3.4) or for v0 extraction machinery (§11.7). Everything
 # else emerges via extraction and replay (§3.4: "the seed pack is
 # bootstrapping, not a closed vocabulary").
 #
-# Counts:    2 anchors + 10 seeded predicates + 6 modal elements
-#          + 15 regions + 11 roles + 8 reference frames
-#          ≈ 52 atoms
+# Counts:    2 anchors + 26 seeded attribute-name elements
+#          + 15 regions + 8 reference frames
+#          ≈ 51 elements
+#
+# Predicates and roles collapse into one uniform "attribute name"
+# namespace (§7.2 attribute collapse). Every attribute on a Relation
+# is just `Attribute { name: ElementId, value: Term }`; this file
+# seeds the attribute-name elements that recognition rules and v0
+# extractors must be able to refer to by name at boot.
 #
 # Recognition is read from derived indices (§8) over the relation
 # graph — there is no Pattern primitive in v0. v1 ideas around
@@ -19,7 +25,7 @@
 # new_foundation.md §22 (Beyond v0).
 
 # ---------------------------------------------------------------------
-# 1. Anchors — the two atoms every other element traces back to.
+# 1. Anchors — the two elements every other element traces back to.
 # ---------------------------------------------------------------------
 
 anchors:
@@ -38,126 +44,281 @@ anchors:
       or focus aggregation.
 
 # ---------------------------------------------------------------------
-# 2. Seeded predicates — load-bearing because §3.4 emergence rules and
-#    §11.7 Step 6 extractors read them by name.
+# 2. Seeded attribute names — load-bearing because §3.4 emergence rules,
+#    §11.7 Step 6 extractors, and §10 region structural relations read
+#    them by name. Replaces the old "predicates" + "roles" split with
+#    a uniform set under attribute collapse (§7.2).
+#
+#    Every attribute on a Relation looks like
+#       Attribute { name: ElementId, value: Term }
+#    The element_ids below name the attribute-name elements; nothing
+#    in code branches on these specifically. The seed-pack ships them
+#    so they exist at boot — none are structurally privileged.
 # ---------------------------------------------------------------------
 
-seeded_predicates:
+seeded_attribute_names:
 
-  # ----- Concept-hierarchy predicates -----
+  # ----- Ontology -----
 
-  - element_id: PREDICATE_INSTANCE_OF
+  - element_id: ATTR_INSTANCE_OF
     names: ["instance_of"]
     rationale: >
       §3.4's concept/instance recognition reads `instance_of` by name;
       without it seeded, replay would have to bootstrap one of its own
       logical primitives before any other emergence could fire.
 
-  - element_id: PREDICATE_SUBCLASS_OF
+  - element_id: ATTR_SUBCLASS_OF
     names: ["subclass_of"]
     rationale: >
       Establishes the concept hierarchy that lets §10.3.5 mid-path
       insertion and §14.8 replay merge/split decisions reason about
       generality without re-deriving from co-occurrence each time.
 
-  # ----- Meta-relation role predicates -----
+  # ----- Meta-relation attribute names -----
   #
-  # These are the predicates of meta-relations that replaced the
-  # Qualifiers struct (§7.2). Each is load-bearing because the
-  # corresponding hot-path index (§9.2) keys off it by name.
+  # Every meta-relation is an ordinary Relation whose attribute list
+  # includes a `target` (identifying the relation being modified) plus
+  # one of the modification-naming attributes below. Each is
+  # load-bearing because the corresponding hot-path index (§9.2) keys
+  # off it by name.
 
-  - element_id: PREDICATE_FRAME
+  - element_id: ATTR_TARGET
+    names: ["target"]
+    rationale: >
+      The head attribute of every meta-relation: identifies the
+      relation being modified (its value is `Term::Relation(R)`).
+      `meta_relations_by_subject[R]` indexes meta-relations by their
+      target's id so frame / supersedes / derived_from / valid_from
+      lookups are one HashMap probe + tiny filter.
+
+  - element_id: ATTR_FRAME
     names: ["frame"]
     rationale: >
-      Predicate of `(R, frame, F)` meta-relations. Indexed by
-      `relation_frame` for O(1) frame-scope queries during retrieval.
+      Attribute of `[target: R, frame: F]` meta-relations. Frame-scope
+      queries read `meta_relations_by_subject[R]` filtered to entries
+      with a `frame` attribute.
 
-  - element_id: PREDICATE_VALID_FROM
+  - element_id: ATTR_VALID_FROM
     names: ["valid_from"]
     rationale: >
-      Predicate of `(R, valid_from, T)` meta-relations — the start
-      point of valid-time. Half of the bitemporal split (§6 (3)).
+      Attribute of `[target: R, valid_from: T]` meta-relations — the
+      start point of valid-time. Half of the bitemporal split (§6 (3)).
 
-  - element_id: PREDICATE_VALID_TO
+  - element_id: ATTR_VALID_TO
     names: ["valid_to"]
     rationale: >
-      Predicate of `(R, valid_to, T)` meta-relations — the end point
-      of valid-time. Pairs with `valid_from`.
+      Attribute of `[target: R, valid_to: T]` meta-relations — the end
+      point of valid-time. Pairs with `valid_from`.
 
-  - element_id: PREDICATE_SOURCE
+  - element_id: ATTR_SOURCE
     names: ["source"]
     rationale: >
-      Predicate of `(R, source, S)` meta-relations. Carries
+      Attribute of `[target: R, source: S]` meta-relations. Carries
       external-pointer provenance (URL, file path, message id) into
-      the graph. Indexed by `relation_source`.
+      the graph; read via `meta_relations_by_subject[R]` filtered
+      for a `source` attribute.
 
-  - element_id: PREDICATE_MODALITY
-    names: ["modality"]
-    rationale: >
-      Predicate of `(R, modality, M)` meta-relations where M is one
-      of the six seeded modal elements. Replaces the deleted
-      `Modality` enum from earlier drafts.
-
-  - element_id: PREDICATE_SUPERSEDES
+  - element_id: ATTR_SUPERSEDES
     names: ["supersedes"]
     rationale: >
-      Predicate of `(R, supersedes, R')` meta-relations. Forms PROV-O
-      `wasRevisionOf` chains; indexed by `relation_supersedes` so
-      chain walks remain O(chain-length).
+      Attribute of `[target: R_new, supersedes: R_old]` meta-relations.
+      Forms PROV-O `wasRevisionOf` chains. Forward walk uses
+      `meta_relations_by_subject[R]` filtered for a `supersedes`
+      attribute; inverse walk ("what supersedes R?") uses
+      `meta_relations_by_object[R]`. Chain walks remain
+      O(chain-length).
 
-  - element_id: PREDICATE_DERIVED_FROM
+  - element_id: ATTR_DERIVED_FROM
     names: ["derived_from"]
     rationale: >
-      Predicate of `(R, derived_from, X)` meta-relations where X is
-      either an Element (cache relations derived from event elements)
-      or a Relation (e.g. cache relations derived from the event
-      relation that produced them). PROV-O `wasDerivedFrom`. Required
-      by Invariant 9.
+      Attribute of `[target: R, derived_from: X]` meta-relations where
+      X is either an Element (cache relations derived from event
+      elements) or a Relation (e.g. cache relations derived from the
+      event relation that produced them). PROV-O `wasDerivedFrom`.
+      Required by Invariant 9.
 
-  - element_id: PREDICATE_ANTECEDENT_OF
+  - element_id: ATTR_ANTECEDENT_OF
     names: ["antecedent_of"]
     rationale: >
-      Predicate of `(R, antecedent_of, R')` meta-relations encoding
-      conditional structure ("R holds if R' holds"). Replaces the
-      deleted `Qualifiers.condition` field.
+      Attribute of `[target: R, antecedent_of: R']` meta-relations
+      encoding conditional structure ("R holds if R' holds").
 
-# ---------------------------------------------------------------------
-# 2.5. Modal elements (6) — pointed at by `(R, modality, M)`
-#      meta-relations. Replace the deleted `Modality` enum.
-# ---------------------------------------------------------------------
+  # ----- Region structural attribute names -----
+  #
+  # §10 expresses region topology as ordinary relations between
+  # elements. The four attribute names below are the names of those
+  # relations' attributes; the region indices in §9.2 (`region_members`,
+  # `region_parents`, `region_children`, `region_lateral`,
+  # `region_prototypes`) are derived from them and read by hot-path
+  # routing in §11.6 / §10.2. Without these seeded, the loader would
+  # have to mint substrate-mechanism attribute names before writing
+  # the seed regions' own structural relations.
 
-modal_elements:
-
-  - element_id: MODAL_ACTUAL
+  - element_id: ATTR_MEMBER_OF
+    names: ["member_of"]
     rationale: >
-      Default modality for asserted world claims. Distinguishes "X is
-      the case" from possibility/desire/obligation/counterfactual.
+      Attribute of `[subject: E, member_of: R]` relations declaring
+      that element E lives inside region R. Indexed by
+      `region_members`; drives the active-region label-set bias in
+      §11.7.
 
-  - element_id: MODAL_POSSIBLE
+  - element_id: ATTR_PARENT_REGION
+    names: ["parent_region"]
     rationale: >
-      "Might / may / could" — uncertain truth. Without this modality,
-      possibility-laden inputs get stored as actual claims and
-      over-asserted.
+      Attribute of `[subject: R_a, parent_region: R_b]` relations
+      declaring R_a's parent in the region DAG. The relation's
+      `stats.confidence` is the parent-edge weight; mid-path
+      insertions (§10.3.5) write this relation as `Defeasible` until
+      replay confirms. Indexed by `region_parents` and
+      `region_children`.
 
-  - element_id: MODAL_DESIRED
+  - element_id: ATTR_LATERAL_REGION
+    names: ["lateral_region"]
     rationale: >
-      "Want / wish / hope" — deontic want-state. Distinguishes
-      "I want X" from "I have X."
+      Attribute of `[subject: R_a, lateral_region: R_b]` relations
+      connecting sibling regions for fast-pivot retrieval. Indexed by
+      `region_lateral`.
 
-  - element_id: MODAL_OBLIGATORY
+  - element_id: ATTR_PROTOTYPE
+    names: ["prototype"]
     rationale: >
-      "Must / shall / required to" — deontic obligation. Preserves
-      rule-shaped content through compression.
+      Attribute of `[subject: R, prototype: P]` relations attaching a
+      prototype element to a region. Each prototype element holds its
+      own inline embedding; `region_prototypes` indexes them for
+      cosine descent during region routing.
 
-  - element_id: MODAL_COUNTERFACTUAL
-    rationale: >
-      "If X had / would have" — hypothetical that did not occur.
-      Critical: counterfactual content must not be stored as actual.
+  # ----- Generic participant attribute names -----
+  #
+  # Extractors choose from these to anchor n-ary event participants
+  # (§11.9). `subject` is the catch-all head used when no
+  # frame-specific slot fits; the rest cover recurring event-shape
+  # participants. Replaces the old 11-entry "roles" category.
+  #
+  # None is structurally privileged — recognition reads
+  # `attribute_value_counts` / `attribute_co_counts` keyed by attribute
+  # name, not by any specific slot. Cold extractor proposals outside
+  # this set are minted via §11.7's mint-new-attribute-name path.
 
-  - element_id: MODAL_NEGATED
+  - element_id: ATTR_SUBJECT
+    names: ["subject"]
     rationale: >
-      Polarity-flipped claim. Replaces the deleted `Polarity` enum;
-      negation is just another modal stance.
+      Generic head attribute — extractors emit this for binary triples
+      when no frame-specific participant slot fits. Has no structural
+      privilege (no `relations_by_subject` index, no recognition rule
+      reads it); seeded so that "what is this relation about?" has a
+      stable default name.
+
+  - element_id: ATTR_ACTOR
+    names: ["actor"]
+    rationale: >
+      Animate participant of an event — distinct from `subject` because
+      change-shaped inputs (§19) often have an actor (the rescheduler /
+      editor) who isn't always the head of the binary surface form.
+
+  - element_id: ATTR_FROM
+    names: ["from"]
+    rationale: >
+      Origin or prior state of a change; supersession lookup (§11.10)
+      reads `from` to find the relation being superseded.
+
+  - element_id: ATTR_TO
+    names: ["to"]
+    rationale: >
+      Destination or new state of a change; pairs with `from` in every
+      change-shaped relation.
+
+  - element_id: ATTR_INSTRUMENT
+    names: ["instrument"]
+    rationale: >
+      Means or tool used in an action; populates the slot whose
+      absence systematically loses information on tool-using events.
+
+  - element_id: ATTR_PROPERTY
+    names: ["property"]
+    rationale: >
+      Attribute being set or changed in an event — the slot the §11.10
+      supersession lookup keys off alongside `target` to find the prior
+      cache relation.
+
+  - element_id: ATTR_REASON
+    names: ["reason"]
+    rationale: >
+      Cause or rationale; used in decision, revision, and causation
+      extractions. Necessary for "because" / "due to" expressions to
+      carry their justificatory content forward.
+
+  # Deliberately not seeded:
+  #   `time`     — temporal scope lives on `valid_from`/`valid_to`
+  #                meta-relations; value-Elements (§7.3) carry the
+  #                surface form ("Tuesday") and parse on comparison.
+  #   `location` — likewise, location lives on value-Elements and
+  #                domain-frame meta-relations; extractors mint a
+  #                within-relation location slot via §11.7 if needed.
+  #   `value`    — under attribute collapse, the "value" of an
+  #                attribute is the `value: Term` field itself; a
+  #                separate VALUE attribute name is redundant.
+  #   `agent` / `participant` — collapsed into `subject` (catch-all
+  #                head) and `actor` (animate event participant).
+
+  # ----- Behavioral modal attribute names -----
+  #
+  # Modality is just an attribute name in the uniform attribute-list
+  # model. These three are seeded because substrate behaviors
+  # condition on them by name: negated content must not be stored as
+  # actual; uncertain content propagates lower confidence; non_actual
+  # content must be isolated from actual-state caches.
+  #
+  # Surface modals (`might`, `must`, `would have`, `could`, …) are
+  # NOT seeded — they emerge as ordinary attribute-name elements via
+  # §11.7 and link to one of the three behavioral kinds via
+  # `subclass_of` (e.g. `(might, subclass_of, uncertain)`).
+  # Recognition walks the `subclass_of` cone, so "is this relation
+  # negated?" remains a small filter even after extensive runtime
+  # mints. Absence of any modal meta-relation = actual claim — there
+  # is no separate `actual` anchor.
+
+  - element_id: ATTR_NEGATED
+    names: ["negated"]
+    rationale: >
+      Attribute of `[target: R, negated: <surface-form>]` meta-
+      relations. Substrate behaviors that read this: don't merge
+      polarity-flipped claims into actual-state caches; weight the
+      relation lower in retrieval; preserve through compression.
+
+  - element_id: ATTR_UNCERTAIN
+    names: ["uncertain"]
+    rationale: >
+      Attribute of `[target: R, uncertain: <degree-or-surface-form>]`
+      meta-relations. Substrate behaviors: cap the relation's
+      `stats.confidence`, propagate uncertainty to derived relations,
+      prefer non-uncertain alternatives at retrieval. Captures
+      "might / could / perhaps" content without a fixed enum.
+
+  - element_id: ATTR_NON_ACTUAL
+    names: ["non_actual"]
+    rationale: >
+      Attribute of `[target: R, non_actual: <kind>]` meta-relations
+      for claims that are not about actual world state — counter-
+      factual ("if X had..."), desired ("I want X"), obligatory
+      ("you must X"), permissibility, etc. Substrate behaviors:
+      isolate from actual-state caches, do not propagate as if
+      asserted, retain for speech-act reasoning. v0 collapses
+      counterfactual / desired / obligatory under one anchor; v1 may
+      split if real usage demands behavioral differentiation.
+
+  - element_id: ATTR_GENERAL
+    names: ["general"]
+    rationale: >
+      Attribute of `[target: R, general: <kind>]` meta-relations for
+      habitual / generic / universal claims that hold typically rather
+      than for specific instances ("I usually go on Tuesdays", "all
+      dentists examine teeth", "in general X"). Substrate behaviors:
+      do NOT supersede a general claim from a specific event (a Tuesday
+      cancellation does not retract "I usually go on Tuesdays"); treat
+      valid-time as open-ended unless explicitly bounded; allow
+      defeasible exceptions to coexist without retracting the rule.
+      Surface modals like `usually`, `typically`, `always`, `in
+      general` are minted at runtime as `subclass_of: general`.
 
 # ---------------------------------------------------------------------
 # 3. Seed regions (15) — shape priors that bias §10.2 routing. Broad
@@ -169,6 +330,7 @@ modal_elements:
 regions:
 
   - element_id: REGION_ENTITIES
+    names: ["entities"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "A named or referred-to thing — person, organization,
                  place, object, artifact, proper-noun reference."
@@ -177,6 +339,7 @@ regions:
       proper-noun-heavy inputs have no shape-prior parent.
 
   - element_id: REGION_EVENTS
+    names: ["events"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Something that happened, will happen, or is happening
                  — an action, occurrence, temporally-anchored episode."
@@ -186,6 +349,7 @@ regions:
       descriptions during routing.
 
   - element_id: REGION_STATES
+    names: ["states"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Something is some way — has a property, holds a value,
                  occupies a location, plays a role, has a status."
@@ -194,6 +358,7 @@ regions:
       route via the entity region and lose the state-shape signal.
 
   - element_id: REGION_CHANGE_HISTORY
+    names: ["change_history", "change/history"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Something that was one way and is now different — a
                  value moved from an old state to a new state. Revisions,
@@ -203,6 +368,7 @@ regions:
       change-shaped inputs breaks supersession (§11.10).
 
   - element_id: REGION_RELATIONSHIPS
+    names: ["relationships"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Two or more things linked or associated — ownership,
                  membership, containment, dependency, kinship."
@@ -212,6 +378,7 @@ regions:
       misclassified.
 
   - element_id: REGION_QUANTITIES
+    names: ["quantities"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Counts, amounts, measures, ranges, thresholds,
                  comparisons, units, percentages."
@@ -221,6 +388,7 @@ regions:
       for downstream extraction.
 
   - element_id: REGION_TIME
+    names: ["time"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Dates, weekdays, durations, relative times, time
                  ranges, before/after expressions."
@@ -230,6 +398,7 @@ regions:
       pollute the entity region.
 
   - element_id: REGION_LOCATIONS
+    names: ["locations"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Places, addresses, spatial positions, regions of
                  space, containment relations grounded in space."
@@ -238,6 +407,7 @@ regions:
       role; separating them avoids contaminating entity coreference.
 
   - element_id: REGION_TASKS
+    names: ["tasks"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Work that is intended, active, blocked, completed,
                  deferred, or superseded — todos, plans, in-progress
@@ -247,6 +417,7 @@ regions:
       can cluster coherently across ticks.
 
   - element_id: REGION_DECISIONS
+    names: ["decisions"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "An option was selected from alternatives, with
                  rationale or criteria."
@@ -256,6 +427,7 @@ regions:
       preserves that signal.
 
   - element_id: REGION_PREFERENCES
+    names: ["preferences"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "A stated rule about how user/project behavior should
                  proceed — style preferences, conventions, do/don't
@@ -266,6 +438,7 @@ regions:
       events.
 
   - element_id: REGION_DEFINITIONS
+    names: ["definitions"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Explicit definitions, glosses, 'X is defined as Y'
                  forms, schema-establishing inputs."
@@ -275,166 +448,118 @@ regions:
       replay treat them with higher confidence.
 
   - element_id: REGION_PROVENANCE
+    names: ["provenance"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "An assertion accompanied by an external source pointer
                  — URL, file path, message id, citation."
     rationale: >
       Provenance-bearing inputs route here so §11.7 reliably attaches
-      `(R, source, S)` meta-relations and §14.5 can weight them
+      `[target: R, source: S]` meta-relations and §14.5 can weight them
       differently.
 
   - element_id: REGION_DOMAINS
+    names: ["domains"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Markers that establish or shift the topical domain of
                  surrounding inputs — 'in dental:', 'for project X'."
     rationale: >
-      Domain markers scope subsequent relations via `(R, frame, F)`;
-      a region for them lets the frame-extraction heuristic find them
-      reliably.
+      Domain markers scope subsequent relations via
+      `[target: R, frame: F]` meta-relations; a region for them lets
+      the frame-extraction heuristic find them reliably.
 
   - element_id: REGION_MODAL_NEGATED
+    names: ["modal_negated", "modality_or_negation"]
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Inputs that carry modality (might / must / should) or
                  negation, or that express uncertainty about content."
     rationale: >
-      Modality and negation are first-class via `(R, modality, M)`
-      meta-relations; a region for modality-heavy inputs ensures those
-      meta-relations get populated rather than dropped.
+      Modality and negation are first-class via the three behavioral
+      modal attribute names (`negated` / `uncertain` / `non_actual`)
+      on meta-relations; a region for modality-heavy inputs ensures
+      those meta-relations get populated rather than dropped.
 
 # ---------------------------------------------------------------------
-# 4. Seed roles (11) — dual-purpose: as `RoleBinding.role` element-ids
-#    in role bindings, and as predicates in flat-form role-binding
-#    relations (e.g. `(event, target, X)`).
-# ---------------------------------------------------------------------
-
-roles:
-
-  - element_id: ROLE_TARGET
-    rationale: >
-      What an event or change is done to or about; one of the four
-      load-bearing slots in change-shaped extraction (§19).
-
-  - element_id: ROLE_FROM
-    rationale: >
-      Origin or prior state of a change; supersession lookup (§11.10)
-      reads `from` to find the relation being superseded.
-
-  - element_id: ROLE_TO
-    rationale: >
-      Destination or new state of a change; pairs with `from` in every
-      change-shaped relation.
-
-  - element_id: ROLE_AGENT
-    rationale: >
-      Animate doer of an action — FrameNet's most-common semantic role
-      and the subject slot in agent-action extraction.
-
-  - element_id: ROLE_INSTRUMENT
-    rationale: >
-      Means or tool used in an action; populates the slot whose
-      absence systematically loses information on tool-using events.
-
-  - element_id: ROLE_TIME
-    rationale: >
-      Temporal anchor of an event or state; populates
-      `(R, valid_from, T)` for the resulting relation.
-
-  - element_id: ROLE_LOCATION
-    rationale: >
-      Spatial anchor; necessary because location is neither subject
-      nor object but recurs in event-shaped inputs.
-
-  - element_id: ROLE_ACTOR
-    rationale: >
-      Animate participant in an event — kept distinct from `agent`
-      because change-shaped inputs use `actor` for the rescheduler /
-      editor, who isn't always the action's grammatical subject.
-
-  - element_id: ROLE_PROPERTY
-    rationale: >
-      Attribute being set or changed; the second slot in
-      property-assignment and state-with-temporal-value extraction.
-
-  - element_id: ROLE_VALUE
-    rationale: >
-      Value being assigned to a property; pairs with `property` in
-      every state-shaped relation.
-
-  - element_id: ROLE_REASON
-    rationale: >
-      Cause or rationale; used in decision, revision, and causation
-      extractions. Necessary for "because" / "due to" expressions to
-      carry their justificatory content forward.
-
-# ---------------------------------------------------------------------
-# 5. Seed reference frames (8) — contextual scopes for
-#    `(R, frame, F)`. Frame elements scope other relations rather
-#    than participating directly.
+# 4. Seed reference frames (8) — contextual scopes pointed at by
+#    `[target: R, frame: F]` meta-relations. Frame elements scope
+#    other relations rather than participating directly.
 # ---------------------------------------------------------------------
 
 reference_frames:
 
   - element_id: FRAME_USER
+    names: ["user"]
     rationale: >
       Everything about the user themselves — preferences, role,
       identity. Scoping these relations to a user frame keeps them
       from contaminating project-level reasoning.
 
   - element_id: FRAME_PROJECT
+    names: ["project"]
     rationale: >
       Active project context. Multi-project Legend instances need a
       frame distinguishing project-A claims from project-B claims;
       without it, conflicting facts appear as contradictions.
 
   - element_id: FRAME_DOMAIN
+    names: ["domain"]
     rationale: >
       Domain-of-discourse marker (medical / dental / legal /
       engineering). Domain markers from REGION_DOMAINS land here.
 
   - element_id: FRAME_SESSION
+    names: ["session"]
     rationale: >
       Current-session context — recent ticks, current task, conversation
       thread. Distinct from project frame because session is shorter-
       lived and more transient.
 
   - element_id: FRAME_TEMPORAL_NOW
+    names: ["temporal_now", "now"]
     rationale: >
       Current valid-time scope. Used by cache relations to mark "this
       is the current state" without making the universal claim that
       it always was.
 
   - element_id: FRAME_TEMPORAL_PAST
+    names: ["temporal_past", "past"]
     rationale: >
       Historical scope; superseded relations land here so retrieval
       can distinguish "was true" from "is true" without walking every
       supersession chain.
 
   - element_id: FRAME_TEMPORAL_FUTURE
+    names: ["temporal_future", "future"]
     rationale: >
       Planned or anticipated scope. Tasks (intended status) and
       scheduled events live here; lets §14.7 decay treat them
       differently from past events.
 
   - element_id: FRAME_META
+    names: ["meta", "self"]
     rationale: >
       About Legend's own state — internal ticks, replay decisions,
       consolidation events. Self-reflective relations need their own
       frame so they don't compete with substantive inputs for focus.
 
 # ---------------------------------------------------------------------
-# 6. Seeded relations — instance_of / subclass_of bindings that pin
-#    seed elements into their structural roles.
+# 5. Seeded relations — bindings that pin seed elements into their
+#    structural roles.
+#
+#    Tuple shorthand: each `[A, attr, B]` denotes a Relation whose
+#    attribute list is `[subject: A, attr: B]`. `[A, attr, B, w]` adds
+#    `stats.confidence = w`. The loader expands these into full
+#    Relations under attribute collapse (§7.2).
 # ---------------------------------------------------------------------
 
 seeded_relations:
 
   region_class_pins:
     rationale: >
-      Each `(REGION_*, instance_of, REGION_CLASS)` is what lets §3.4's
+      Each `[REGION_*, instance_of, REGION_CLASS]` is what lets §3.4's
       "concept-targeted-by-many-instance_of-relations" rule recognize
       regions as a kind without a `RegionKind` enum. Note: REGION_CLASS
       itself is minted lazily on first pin; it is not a separate seeded
-      atom.
+      element.
     relations:
       - [REGION_ENTITIES,         instance_of, REGION_CLASS]
       - [REGION_EVENTS,           instance_of, REGION_CLASS]
@@ -452,29 +577,10 @@ seeded_relations:
       - [REGION_DOMAINS,          instance_of, REGION_CLASS]
       - [REGION_MODAL_NEGATED,    instance_of, REGION_CLASS]
 
-  role_predicate_pins:
-    rationale: >
-      Roles are predicates when they appear flat-form in role-binding
-      relations; pinning them as `(role, subclass_of, ROLE_PREDICATE)`
-      lets §11.7's predicate label-set rule find them all by walking
-      the ROLE_PREDICATE concept's `instance_of` cone.
-    relations:
-      - [ROLE_TARGET,     subclass_of, ROLE_PREDICATE]
-      - [ROLE_FROM,       subclass_of, ROLE_PREDICATE]
-      - [ROLE_TO,         subclass_of, ROLE_PREDICATE]
-      - [ROLE_AGENT,      subclass_of, ROLE_PREDICATE]
-      - [ROLE_INSTRUMENT, subclass_of, ROLE_PREDICATE]
-      - [ROLE_TIME,       subclass_of, ROLE_PREDICATE]
-      - [ROLE_LOCATION,   subclass_of, ROLE_PREDICATE]
-      - [ROLE_ACTOR,      subclass_of, ROLE_PREDICATE]
-      - [ROLE_PROPERTY,   subclass_of, ROLE_PREDICATE]
-      - [ROLE_VALUE,      subclass_of, ROLE_PREDICATE]
-      - [ROLE_REASON,     subclass_of, ROLE_PREDICATE]
-
   reference_frame_class_pins:
     rationale: >
-      Reference-frame elements are recognized via inbound
-      `(?r, frame, F)` count (§8); the
+      Reference-frame elements are recognized via inbound count of
+      `frame` attributes pointing at them (§8); the
       `instance_of REFERENCE_FRAME_CLASS` pin makes them findable
       before that count crosses threshold.
     relations:
@@ -486,3 +592,144 @@ seeded_relations:
       - [FRAME_TEMPORAL_PAST,   instance_of, REFERENCE_FRAME_CLASS]
       - [FRAME_TEMPORAL_FUTURE, instance_of, REFERENCE_FRAME_CLASS]
       - [FRAME_META,            instance_of, REFERENCE_FRAME_CLASS]
+
+  # The `parent_regions: [[parent, weight], ...]` field on each
+  # region above is interpreted by the loader as a
+  # `[region, parent_region, parent]` relation with
+  # `stats.confidence = weight`. The list is materialized below for
+  # explicitness; the loader writes these alongside the region
+  # elements themselves and the prototype Elements +
+  # `[region, prototype, P]` relations minted from the descriptor
+  # strings.
+  region_parent_pins:
+    rationale: >
+      Region topology lives in the relation graph (§10.1). Each seed
+      region's parent edge is a `[R, parent_region, parent]` relation;
+      `stats.confidence` carries the weight. The region indices in
+      §9.2 are derived from these relations on load.
+    relations:
+      - [REGION_ENTITIES,       parent_region, GENESIS, 1.0]
+      - [REGION_EVENTS,         parent_region, GENESIS, 1.0]
+      - [REGION_STATES,         parent_region, GENESIS, 1.0]
+      - [REGION_CHANGE_HISTORY, parent_region, GENESIS, 1.0]
+      - [REGION_RELATIONSHIPS,  parent_region, GENESIS, 1.0]
+      - [REGION_QUANTITIES,     parent_region, GENESIS, 1.0]
+      - [REGION_TIME,           parent_region, GENESIS, 1.0]
+      - [REGION_LOCATIONS,      parent_region, GENESIS, 1.0]
+      - [REGION_TASKS,          parent_region, GENESIS, 1.0]
+      - [REGION_DECISIONS,      parent_region, GENESIS, 1.0]
+      - [REGION_PREFERENCES,    parent_region, GENESIS, 1.0]
+      - [REGION_DEFINITIONS,    parent_region, GENESIS, 1.0]
+      - [REGION_PROVENANCE,     parent_region, GENESIS, 1.0]
+      - [REGION_DOMAINS,        parent_region, GENESIS, 1.0]
+      - [REGION_MODAL_NEGATED,  parent_region, GENESIS, 1.0]
+
+# ---------------------------------------------------------------------
+# 6. Intent prototype banks — Step 1's `InputWeight` vector (§11.2)
+#    is computed by cosine projection against these banks. Each
+#    dimension has a "high pole" bank (representative phrases that
+#    score high on the dimension) and, where applicable, a "low pole"
+#    bank (representative phrases that score low). At boot, each
+#    phrase is embedded with BGE-small; the bank's mean vector
+#    becomes the projection target.
+#
+#    Score formula:
+#      score(dim) = clamp(
+#          cosine(input_emb, mean_high_pole_emb)
+#        - cosine(input_emb, mean_low_pole_emb),
+#        0.0, 1.0)
+#
+#    These are v0 starting points. Calibrate against §19 + §20.5 once
+#    real input distributions are available. Banks are intentionally
+#    small (5–10 phrases) — the embedding model does the work, not the
+#    bank size.
+#
+#    Neuro analogs (rationale only — code doesn't reference these):
+#      conviction       — listener-evaluation of speaker certainty
+#      prediction_error — dopamine novelty / contradiction signal
+#      arousal          — norepinephrine emotional intensity signal
+#      inquisitive      — Legend-specific (single tick verb covers
+#                         encoding + retrieval)
+# ---------------------------------------------------------------------
+
+intent_prototypes:
+
+  conviction:
+    high_pole:
+      - "I know for certain that"
+      - "this is absolutely the case"
+      - "without a doubt"
+      - "definitely"
+      - "I am completely sure"
+      - "this is a fact"
+      - "obviously"
+      - "of course"
+    low_pole:
+      - "I think maybe"
+      - "I'm not sure if"
+      - "it might be that"
+      - "possibly"
+      - "I could be wrong but"
+      - "perhaps"
+      - "I'm guessing"
+
+  prediction_error:
+    # High pole = the linguistic shape of contradiction / novelty /
+    # surprise. Note: the actual contradiction component is computed
+    # from graph state at extraction time and adds to this score.
+    high_pole:
+      - "actually no"
+      - "that's wrong"
+      - "I take that back"
+      - "wait, that's not right"
+      - "scratch that"
+      - "I just learned that"
+      - "it turns out"
+      - "I never realized"
+      - "surprisingly"
+    low_pole:
+      - "as usual"
+      - "as I mentioned"
+      - "like I said before"
+      - "the same as always"
+
+  arousal:
+    # High pole = emotional intensity / urgency / importance markers.
+    # BGE-small captures the effect of caps and emphasis natively in
+    # tokenization, so we don't need explicit cap-handling.
+    high_pole:
+      - "I am furious that"
+      - "this is incredibly important"
+      - "I love this"
+      - "this is devastating"
+      - "I'm so excited about"
+      - "this matters more than anything"
+      - "I cannot stress enough"
+      - "this is urgent"
+    low_pole:
+      - "by the way"
+      - "as a side note"
+      - "incidentally"
+      - "for what it's worth"
+      - "just noting"
+
+  inquisitive:
+    # High pole = retrieval-shape — asking, finding, looking up. Not
+    # just questions ending in `?` — covers imperative search ("find
+    # when I last saw Dr. Rao") and indirect questions.
+    high_pole:
+      - "what time is my appointment"
+      - "when did I last see"
+      - "find when"
+      - "show me the"
+      - "do I have"
+      - "is there a"
+      - "where did I put"
+      - "which one was"
+      - "how many times have"
+    low_pole:
+      - "the appointment is at"
+      - "I just finished"
+      - "today I"
+      - "yesterday I saw"
+      - "the file is at"
