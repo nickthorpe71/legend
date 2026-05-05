@@ -1,8 +1,6 @@
-# R* — The Way of No Way
+# R\*
 
-R* is a practical style for writing Rust. Understand your data, write the concrete thing, compress only what repeats.
-
-There is no fixed way. There is the problem, there are the fundamentals, then the solution.
+R\* is a practical style for writing Rust. Understand your data, write the concrete thing, compress only what repeats.
 
 ---
 
@@ -10,21 +8,19 @@ There is no fixed way. There is the problem, there are the fundamentals, then th
 
 ## Data First
 
-Start every design by asking what the data looks like and how it flows through the program. Don't start with traits, interfaces, or architectural diagrams. Start with the structs.
+Start every design by asking what the data looks like and how it flows through the program. Start with the structs.
 
-Flat structs over nested hierarchies. `enum` variants over trait-object polymorphism — dynamic dispatch costs 10-15x more than a match arm and hides the actual code path. Choose containers by access pattern, not by habit.
+Flat structs over nested hierarchies. `enum` variants over trait-object polymorphism — dynamic dispatch can cost an order of magnitude more than a match arm in hot loops (workload-dependent, varies with inlining and branch prediction) and hides the actual code path.
 
-If you cannot describe the data layout on a whiteboard in under a minute, the design is too complex. The shape of the data determines the shape of the code. Get the data right and the code writes itself; get it wrong and no amount of abstraction will save you.
+The shape of the data determines the shape of the code. Get the data right and the code writes itself; get it wrong and no amount of abstraction will save you.
 
-Think about how the data is stored in memory. A `Vec<Entity>` where each entity holds its components is often better than separate systems connected by IDs — until [profiling](#how-to-measure) says otherwise. Contiguous data wins by default.
+Think about how the data is stored in memory. The rule is contiguous beats pointer-chasing — a `Vec<T>` of plain values outperforms `Vec<Box<T>>` or graphs of ID-linked heap objects. Whether to prefer array-of-structs (one `Vec<Entity>`) or struct-of-arrays (separate component vectors, ECS-style) depends on access pattern: iterate whole entities → AoS; iterate one field across many entities → SoA. [Profile](#how-to-measure) when it matters.
 
 ## Concrete Then Compress
 
-Write the inline, concrete solution first. Do not extract a function, trait, or module for *reuse* until a pattern has appeared at least three times. A function called from one site for reuse is indirection, not abstraction. (Extracting for *readability* — naming a block of logic to clarify a long function — is always fine.)
+Write the inline, concrete solution first. Do not extract a function, trait, or module for _reuse_ until a pattern has appeared at least three times. A function called from one site for reuse is indirection, not abstraction. (Extracting for _readability_ — naming a block of logic to clarify a long function — is always fine.)
 
 A clear 50-line function is often better than five abstractions.
-
-Compression means removing duplication that actually exists, not duplication you predict. Three similar blocks of code are a signal. Two are a coincidence. When you do extract, the new unit must justify itself: it must simplify every call site, not just centralize code.
 
 Resist the urge to generalize early. The first implementation teaches you what the problem actually is. The second shows you what varies. The third reveals the real abstraction.
 
@@ -49,8 +45,6 @@ fn load_state(path: &Path) -> Result<State>    // I/O is in the name
 fn calculate_score(feature: &Feature) -> f64    // pure: inputs in, output out
 ```
 
-Minimize nested conditionals. Flatten logic with early returns. Each function should have one job. A long function that does one thing sequentially is fine — a short function that does three things is not.
-
 Names should be explicit and descriptive. A reader should not need to navigate the entire codebase to understand a function.
 
 ```rust
@@ -63,12 +57,11 @@ fn process(b: &[u8]) -> Result<Feature>                          // too vague
 
 # The Rust Subset
 
-Rust is a large language. Most programs require only a small part of it. R* defines a practical subset.
+Rust is a large language. Most programs require only a small part of it. R\* defines a practical subset.
 
 ## Types
 
-Core: `struct`, `enum`, `Option<T>`, `Result<T, E>`, `Vec<T>`, `&[T]`, `String`, `&str`, `[T; N]`.
-Primitives: `i32`, `u32`, `usize`, `f32`, `f64`, `bool`.
+Core: `struct`, `enum`, `Option<T>`, `Result<T, E>`, `Vec<T>`, `&[T]`, `String`, `&str`.
 
 These form the foundation of most code.
 
@@ -91,7 +84,7 @@ Understand the cost. [Measure](#how-to-measure) if uncertain.
 **Lifetimes.** Most lifetimes are inferred — you will not write them often. When the compiler asks for one, it means a reference in the output must be tied to an input:
 
 ```rust
-fn first_word(s: &str) -> &str          // lifetime inferred: output lives as long as input
+fn first_word(s: &str) -> &str          // lifetime elided: output lives as long as input
 fn longest<'a>(a: &'a str, b: &'a str) -> &'a str   // explicit: both inputs must outlive output
 ```
 
@@ -107,7 +100,7 @@ Keep match arms short — extract complex arm bodies into functions.
 
 ## Iterators
 
-Core methods: `iter`, `map`, `filter`, `fold`, `collect`, `enumerate`, `zip`, `flat_map`. Everything else (`sum`, `count`, `any`, `all`, `find`) is a specialization of `fold` — use `fold` directly or use a loop.
+Core methods: `iter`, `map`, `filter`, `fold`, `collect`, `enumerate`, `zip`, `flat_map`.
 
 Use closures when they remain small. Chain freely for filter-map-collect patterns. When a chain exceeds three methods or the logic branches, use a loop instead.
 
@@ -126,24 +119,6 @@ for feature in &features {
 
 Loops for reasoning. Iterators for shaping data.
 
-## Traits and Generics
-
-Derive standard traits: `Debug`, `Clone`, `Default`, `PartialEq`. Use traits for small interface boundaries and library integration. Do not build trait hierarchies in application code.
-
-Use generics in utility functions and libraries. Avoid complex generic signatures in application code — concrete types are easier to read, debug, and compile.
-
-```rust
-fn find_by_key<T, K: PartialEq>(items: &[T], key: K, f: fn(&T) -> K) -> Option<&T>
-```
-
-## Macros
-
-Allowed: `println!`, `format!`, `vec!`, `assert!`, derive macros.
-
-No macro DSLs. No proc macros in application code unless the alternative is significantly worse. Code must remain visible and understandable — if you cannot read the expanded output in your head, the macro is too complex.
-
----
-
 # Data Design
 
 Prefer flat structs with explicit fields:
@@ -156,7 +131,19 @@ struct Feature {
 }
 ```
 
-Attach methods with `impl` blocks. Use `new()` as a constructor when initialization needs validation or defaults:
+Avoid methods and constructors in most cases.
+
+Do:
+
+```rust
+let my_feature = Feature {
+    id: FeatureId("f1".into()),
+    name: "a name".to_string(),
+    status: Status::Pending,
+};
+```
+
+Over:
 
 ```rust
 impl Feature {
@@ -166,7 +153,7 @@ impl Feature {
 }
 ```
 
-Do not use builder patterns for simple types — a `new()` function with clear parameters is almost always sufficient.
+Reach for `new` (or another named constructor) when there's a real reason: private fields that need a controlled construction path, invariants to validate, non-trivial defaults, or allocation/setup that callers should not repeat. Skip it when a struct literal says everything `new` would.
 
 Use newtypes to prevent confusion between semantically different values:
 
@@ -223,50 +210,11 @@ Use `?` to propagate `None` in functions that return `Option`. Use `map` to tran
 
 ---
 
-# Code Organization
-
-Organize modules by responsibility, not by layer:
-
-```
-storage/        # how data persists
-commands/       # what the program does
-memory/         # domain logic
-types.rs        # shared data definitions
-```
-
-Avoid `models/services/controllers/utils` layering. These names describe architectural roles, not what the code does.
-
-Default visibility: `pub(crate)`. Expose only what must be public. A public interface is a long-term commitment — keep it minimal. Every public function is a promise to future callers.
-
-Keep modules small enough to hold in your head. When a module grows large, look for a natural seam to split along. Split by responsibility, not by arbitrary size limits.
+# Dependencies
 
 Prefer the standard library. Add external crates when they clearly reduce complexity or risk. Prefer widely used, well-maintained crates. Audit transitive dependencies — a crate that pulls in 50 sub-crates for a simple task is not simple.
 
 You must be willing to take on the responsibility of any dependency you add.
-
----
-
-# Testing
-
-Put unit tests in the same file as the code they test, inside a `#[cfg(test)]` module at the bottom:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn score_zero_for_empty_input() {
-        assert_eq!(calculate_score(&Feature::default()), 0.0);
-    }
-}
-```
-
-Use `assert_eq!` for values, `assert!` for booleans. Name tests after the behavior they verify, not the function they call.
-
-Put integration tests in `tests/` when you need to test the public API as an outside caller would. Keep test files focused — one file per area of behavior, not one file per source file.
-
-Pure functions are trivially testable. This is another reason to prefer them.
 
 ---
 
@@ -278,9 +226,7 @@ Cache locality matters. Flat data in contiguous memory outperforms pointer-chasi
 
 Use synchronous code by default. Introduce async only when real I/O concurrency benefits exist.
 
-For shared state: `Arc<T>`, `Arc<Mutex<T>>`. Ownership transfer is usually simpler than lifetime gymnastics.
-
-Pure functions are inherently thread-safe — prefer them over shared mutable state. The less mutable state exists, the fewer concurrency bugs are possible.
+For shared state: `Arc<T>`, `Arc<Mutex<T>>`. Ownership transfer is usually simpler than lifetime gymnastics. The less mutable state exists, the fewer concurrency bugs are possible.
 
 ## How to Measure
 

@@ -1,3 +1,1 @@
-.legend/memory.lz4 merge=legend
-.legend/events.jsonl merge=legend
 models/gliner2-int8.bin filter=lfs diff=lfs merge=lfs -text

@@ -1,41 +1,8 @@
-# Build artifacts
-bin/
-build/
-*.o
+/target
 
-# Fastembed model cache (model is embedded in binary)
-.fastembed_cache/
-
-# Legend hook ephemeral files
-.legend/.last_query
-# Daemon write-ahead log — transient overlay on memory.lz4, truncated on
-# clean shutdown. Leftover WAL only exists if the daemon crashed.
-.legend/memory.wal
-
-# Test artifacts
-tests/tmp/
-.test_*
-*.pending-snap
-
-# Performance baseline raw logs (durable snapshot, not tracked)
-.perf/
-
-# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
-
-
-# Added by cargo
-
-/target
-
-
-# Added by cargo
-#
-# already existing elements were commented out
-
-#/target
