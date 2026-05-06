@@ -1,0 +1,657 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity & time
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Monotonic logical clock for the Hypergraph. Bumped once per `tick()` call.
+/// Used as a timestamp on every mint (`created_at`), every access
+/// (`last_seen`, `last_accessed`), and as the unit for decay / promotion
+/// windows (e.g. `promotion_window_ticks`). Not wall-clock time —
+/// real-world timestamps live on `Input.wall_clock`.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+pub struct Tick(pub u64);
+
+/// Local handle into `Hypergraph.elements`. Newtype around `u32` so the
+/// compiler refuses to mix it with `RelationId` or any other index. Not
+/// globally unique — when cross-store sync arrives, a separate stable
+/// identifier (e.g. `Ulid`) will sit alongside this on each Element.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub struct ElementId(pub u32);
+
+/// Local handle into `Hypergraph.relations`. Same pattern as `ElementId`.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub struct RelationId(pub u32);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hypergraph — Legend's model of the world
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The world model. Elements are bare identities; Relations are claims
+/// between them. The hot path reads from this alone; the WAL is for
+/// crash recovery between checkpoints.
+#[derive(Debug)]
+pub struct Hypergraph {
+    /// Concrete entities — concepts, surface forms, attribute-name elements,
+    /// region anchors, typed leaf values ("Tuesday", "6 pounds", "Berlin").
+    /// Each carries an inline embedding so similarity lookups don't need a
+    /// side table.
+    pub elements: Vec<Element>,
+
+    /// Claims/edges between elements. A relation is a flat list of named
+    /// attributes — meta-relations (frame, source, supersession, region
+    /// topology) are ordinary relations whose attribute list contains a
+    /// `Term::Relation(...)` value pointing at the parent.
+    pub relations: Vec<Relation>,
+
+    /// Logical now. Read at the start of each tick, embedded into every
+    /// `created_at` / `last_seen` field, then bumped before the next call.
+    pub clock: Tick,
+
+    /// Tuning constants every pipeline step reads. Step 2 produces a
+    /// per-tick adjusted Policy from this rest-state value; Steps 3–13
+    /// see the adjusted view. Only PFC writes the rest-state Policy.
+    pub policy: Policy,
+
+    /// Working-memory ring buffer of recent focal points. Step 5 inherits
+    /// `active_frame` from here when the input's frame is unset and not
+    /// shifting. Capacity is bounded by `policy.recent_focus_capacity`;
+    /// oldest entries fall off the back. `VecDeque` (not `Vec`) for O(1)
+    /// push-front / pop-back behavior.
+    pub recent_focus: std::collections::VecDeque<RecentFocusEntry>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Substrate types — what the Hypergraph is made of
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A bare identity in the world. Region topology, typed values, and
+/// attribute names are all just Elements — discrimination happens via
+/// the relations that mention them, not via a type tag on this struct.
+#[derive(Clone, Debug)]
+pub struct Element {
+    /// Stable handle within this Hypergraph.
+    pub id: ElementId,
+
+    /// Canonical surface form plus variants ("Tuesday", "Tue", "tues").
+    /// All forms decay if unused; the entry doesn't disappear until the
+    /// element itself decays out. `Vec<String>` because one logical
+    /// element legitimately has multiple labels.
+    pub names: Vec<String>,
+
+    /// Dynamic memory state — activation, salience, access counts, decay.
+    /// Updated by the pipeline on every access; the same shape as
+    /// `Relation.stats` because memory dynamics are uniform across
+    /// substrate primitives.
+    pub stats: MemoryStats,
+
+    /// Tick this element was minted. Used for age-based decay and
+    /// promotion-window calculations.
+    pub created_at: Tick,
+
+    /// Semantic anchor for this element. Populated at mint time from
+    /// `names` (or the originating span text for anonymous NER spans).
+    /// Read by region routing (Step 5) and anywhere similarity is needed.
+    /// Inline `Vec<f32>` so a single index lookup gets you the vector
+    /// without an extra hash hop.
+    pub embedding: Vec<f32>,
+}
+
+/// A claim that something is true about one or more elements. Six
+/// fields, no privileged predicate slot — the predicate is just an
+/// attribute named e.g. `"is_a"` whose value is the claimed type. Meta-
+/// relations (frame, source, supersession) are ordinary Relations whose
+/// attribute list includes `Term::Relation(target)` pointing at the
+/// relation they modify.
+#[derive(Clone, Debug)]
+pub struct Relation {
+    /// Stable handle.
+    pub id: RelationId,
+
+    /// Named slots filling this relation, typically 2–5 entries. The
+    /// attribute *name* is itself an Element (so renaming a role is a
+    /// graph operation, not a type change).
+    pub attributes: Vec<Attribute>,
+
+    /// Where this relation sits in the assertion lifecycle. Filtering on
+    /// status drives focus inclusion (Asserted/Entailed → focused;
+    /// Defeasible → flagged; Superseded → history; Retracted → hidden).
+    pub status: RelationStatus,
+
+    /// Dynamic memory state. Same shape as `Element.stats`.
+    pub stats: MemoryStats,
+
+    /// Hand-set ordering knob, primarily for tie-breaking when two
+    /// relations rank equal under salience/activation. Signed so it can
+    /// nudge in either direction. Defaults to 0.
+    pub priority: i8,
+
+    /// Tick this relation was minted.
+    pub created_at: Tick,
+}
+
+/// One named slot in a relation. The slot name is an Element (so the
+/// vocabulary of attribute names is itself part of the graph), the
+/// value is whatever fills it.
+#[derive(Clone, Copy, Debug)]
+pub struct Attribute {
+    /// Element naming this slot (e.g. the element whose canonical name
+    /// is `"SUBJECT"`, `"ACTOR"`, `"TARGET"`, `"target"` for meta-rels).
+    pub name: ElementId,
+
+    /// What fills the slot — concrete element or a nested relation
+    /// reference (used by meta-relations to point at their parent).
+    pub value: Term,
+}
+
+/// What an attribute slot can hold. Two variants is enough: most slots
+/// reference an Element (the concrete filler), meta-relations reference
+/// another Relation. No third "literal" variant — typed leaf values
+/// like "Tuesday" are themselves Elements whose surface form lives in
+/// `names` and whose semantics are parsed on comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Term {
+    /// Concrete filler.
+    Element(ElementId),
+
+    /// Nested or meta-relation reference. Used by meta-relations on
+    /// their `target` attribute to point at the parent relation.
+    Relation(RelationId),
+}
+
+/// The lifecycle state of a Relation's claim on truth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelationStatus {
+    /// Confirmed. In the active belief set; eligible for focus.
+    Asserted,
+
+    /// Derived from other Asserted/Entailed relations; not directly
+    /// observed but believed to follow.
+    Entailed,
+
+    /// Provisional. Counts toward replay confirmation but flagged with
+    /// `is_defeasible = true` in the frame and given lower base weight.
+    /// Promotes to Asserted once `policy.promotion_min_count` /
+    /// `promotion_min_diversity` thresholds are met within
+    /// `promotion_window_ticks`.
+    Defeasible,
+
+    /// Replaced by a newer claim. Excluded from `focused_relations` but
+    /// surfaced in the frame's `history` field for traceability.
+    Superseded,
+
+    /// Withdrawn entirely. Excluded from both focus and history.
+    Retracted,
+}
+
+/// Dynamic memory state attached to every Element and Relation. Same
+/// shape on both because memory dynamics (activation, decay, salience)
+/// are uniform across substrate primitives.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct MemoryStats {
+    /// Current tick's spreading-activation level. Recomputed each tick
+    /// during the focus walk; not durable across ticks (decays via
+    /// `policy.decay_rate` outside the focus radius).
+    pub activation: f32,
+
+    /// Belief strength. Mints start mid-range; updated by replay
+    /// confirmation, supersession, and explicit corrections.
+    pub confidence: f32,
+
+    /// Long-term durability. High = formative (easy to update, fast to
+    /// decay if unused); low = settled (hard to update, slow to decay).
+    /// Inverse of "stickiness" — fresh memories are plastic, old
+    /// reinforced ones aren't.
+    pub plasticity: f32,
+
+    /// Amygdala-style protection accumulator. Boosted by emotional /
+    /// surprising / high-stakes signals; floored by
+    /// `policy.salience_floor`. Resists decay even when activation is
+    /// low.
+    pub salience: f32,
+
+    /// Total times this element/relation has been read or activated.
+    /// Used as a tiebreaker and a decay input (rarely-accessed things
+    /// decay faster).
+    pub access_count: u32,
+
+    /// Bumped each tick this thing landed on the focus path *and* the
+    /// tick was judged successful (per Step 11 hebbian reinforcement).
+    /// Drives RRF rank in Step 13.
+    pub focus_success_count: u32,
+
+    /// Independent ticks supporting this claim. Distinct from
+    /// `access_count`: this counts re-derivation events, not lookups.
+    /// Used by the Defeasible → Asserted promotion gate.
+    pub support_count: u32,
+
+    /// Distinct evidence-source dimensions seen (e.g. distinct sources,
+    /// distinct windows, distinct frames). Promotes alongside
+    /// `support_count` to prevent single-source over-confidence.
+    pub support_diversity: u32,
+
+    /// Magnitude of the previous prediction's miss. Drives plasticity
+    /// updates: a big surprise should make the relation more plastic.
+    pub prediction_error: f32,
+
+    /// Tick this thing last appeared in input or was directly mentioned.
+    /// Distinct from `last_accessed` (which includes activation traversal).
+    pub last_seen: Tick,
+
+    /// Tick this thing was last touched by *any* access — input,
+    /// activation walk, retrieval. `Option` because a freshly minted
+    /// element may not have been accessed yet.
+    pub last_accessed: Option<Tick>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tick I/O — what comes in, what goes out
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One tick's worth of input. Distinct from the `source` (which is a
+/// meta-relation-shaped sibling parameter to `tick()`, not a property
+/// of the Input itself) and from `InputEcho` (which is the read-only
+/// echo embedded in the returned frame, sans wall_clock).
+#[derive(Clone, Debug)]
+pub struct Input {
+    /// Raw input text. The pipeline windows, embeds, and extracts
+    /// against this directly.
+    pub text: String,
+
+    /// Real-world timestamp at the moment of input. Used to anchor
+    /// temporal references ("yesterday", "now", "next Tuesday") in
+    /// Steps 6–7 and to populate `last_seen` semantics that need wall
+    /// time, not just Tick.
+    pub wall_clock: std::time::SystemTime,
+}
+
+/// Read-only echo of the input text in the returned frame. Not durable;
+/// the calling LLM can use it as a stable reference back to "what was
+/// said" without holding the original `Input` around.
+#[derive(Clone, Debug)]
+pub struct InputEcho {
+    pub text: String,
+}
+
+/// The output of every tick. Most fields are *gathered* from per-tick
+/// buffers that earlier steps populated as a side effect; Step 13's own
+/// work is just the `focused_relations` RRF merge and `next_actions`
+/// suggestions. The frame is a post-tick snapshot of the focused
+/// subgraph, not a pre-assembled answer — the calling LLM derives any
+/// natural-language response from the structural content.
+#[derive(Debug)]
+pub struct ConsciousAttentionFrame {
+    /// Which Hypergraph clock value produced this frame.
+    pub tick: Tick,
+
+    /// Echo of the input text. Not durable.
+    pub input: InputEcho,
+
+    /// 4-dim intent vector from Step 1 — cosine projection against the
+    /// intent prototype banks. Drives Step 2's policy adjustments.
+    pub intent: Intent,
+
+    /// The active frame at the time this tick ran. `None` when no frame
+    /// is active and the input doesn't establish one. Inherited from
+    /// `recent_focus` or set by a frame-shifting cue in Step 5.
+    pub active_frame: Option<ElementId>,
+
+    /// Regions that lit up during routing. Union of per-window
+    /// `route_regions(...)` results from Step 5.
+    pub active_regions: Vec<RegionActivation>,
+
+    /// The focused-relations ranked list, fused via RRF (Reciprocal
+    /// Rank Fusion) over Dense (path-reinforced focus set), Sparse
+    /// (BM25), and Path-reinforced (focus_success bumps from Step 11).
+    /// RRF merges ranked lists by `Σ 1 / (60 + rank_i)` — keeps ranks,
+    /// discards incompatibly-scaled raw scores. Asserted + Entailed
+    /// pass; Defeasible flagged with lower weight; Superseded/Retracted
+    /// excluded.
+    pub focused_relations: Vec<RelationActivation>,
+
+    /// For each focused R: meta-relations of `derived_from` / `source`
+    /// type, walked via `meta_relations_by_subject` index. Lets the
+    /// caller see *why* each focused relation is in the frame.
+    pub supporting_claims: Vec<ClaimRef>,
+
+    /// For each focused R: the supersession chain. Walked via
+    /// `meta_relations_by_subject` filtered to `supersedes` attributes.
+    /// Includes Superseded relations excluded from `focused_relations`.
+    pub history: Vec<ClaimRef>,
+
+    /// Per-tick uncertainty signals pushed by Steps 5, 6, 7, 9, 10.
+    /// Step 13 collects from a per-tick buffer and surfaces them so the
+    /// caller can act on disagreement, ungrounded time, ambiguous
+    /// coreference, low-confidence extraction, or detected contradictions.
+    pub uncertainty: Vec<UncertaintySignal>,
+
+    /// ElementIds minted during this tick. Recorded by Steps 8 and 9
+    /// into a per-tick write buffer. Overlaps with `focused_relations`
+    /// in ID space — exists as a flat-list shortcut for "what did this
+    /// tick change?" inspection.
+    pub durable_writes: Vec<ElementId>,
+
+    /// RelationIds whose status flipped to Superseded this tick.
+    /// Recorded by Step 10. Same shortcut role as `durable_writes`.
+    pub superseded: Vec<RelationId>,
+
+    /// Advisories the caller can act on after the frame returns.
+    /// `EnqueueReplay { kind }` schedules a background sweep;
+    /// `FollowUpQuery(text)` suggests the agent ask a clarifying
+    /// question.
+    pub next_actions: Vec<AttentionAction>,
+}
+
+/// Type alias used in the frame for clarity — these are RelationIds
+/// being treated as references to specific *claims*, not as plain
+/// graph handles. Same compiler representation; just naming.
+pub type ClaimRef = RelationId;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Policy — tuning knobs every pipeline step reads
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Tuning constants. The base Policy on the Hypergraph is the inter-tick
+/// rest state; Step 2 produces a per-tick adjusted Policy from it
+/// (using the intent from Step 1) that Steps 3–13 see. Tick-internal
+/// subroutines read `&Policy`; only PFC writes the rest state.
+#[derive(Clone, Debug)]
+pub struct Policy {
+    // ── Region routing ────────────────────────────────────────────────
+
+    /// Cosine threshold below which routing stops descending into a
+    /// region's children. Higher = stricter routing, fewer false
+    /// matches; lower = broader retrieval.
+    pub descend_threshold: f32,
+
+    /// Vigilance for accepting a leaf match. Absolute (not relative to
+    /// best alternative) so it acts as a quality floor regardless of
+    /// the rest of the routing tree. Intent-driven — Step 2 may scale
+    /// this up for high-precision intents.
+    pub leaf_vigilance: f32,
+
+    /// Similarity above which two prototypes in the same region merge
+    /// into one. Prevents prototype proliferation.
+    pub merge_threshold: f32,
+
+    /// Within-region variance above which a region splits its
+    /// prototypes into a new sub-region. Shapes the granularity of the
+    /// region DAG.
+    pub split_variance: f32,
+
+    /// Cosine threshold below which routing reports the input as
+    /// "void" — no region matches well enough. Triggers a
+    /// `DiffuseRouting` uncertainty signal.
+    pub void_threshold: f32,
+
+    /// Region activation level above which a region counts as "active"
+    /// in the frame's `active_regions`.
+    pub region_activation_threshold: f32,
+
+    // ── Attribute-name dedup ─────────────────────────────────────────
+
+    /// Cosine similarity threshold for collapsing two attribute-name
+    /// elements into one (Step 9 / §11.7). Strict by default so
+    /// `SUBJECT` and `ACTOR` stay distinct even though they overlap.
+    pub attribute_name_dedup_threshold: f32,
+
+    /// Threshold (per-tick attribute-name mint count) above which the
+    /// tick is flagged for priority replay-dedup. Bursts of new
+    /// attribute names usually mean drift, not legitimate vocabulary
+    /// growth.
+    pub attribute_name_mint_warning_count: u32,
+
+    // ── Mid-path DAG insertion ───────────────────────────────────────
+
+    /// Confidence-gap threshold for confirming a mid-path region
+    /// insertion. Tuned small so insertion is aggressive.
+    pub midpath_confirm_gap: f32,
+
+    /// Independent-evidence threshold for the same — ticks of
+    /// supporting signals before a mid-path candidate becomes a
+    /// permanent region.
+    pub midpath_confirm_evidence: u32,
+
+    /// Confidence-gap threshold for *moving* (re-parenting) an existing
+    /// region in the DAG. Higher bar than insertion because the move
+    /// invalidates more downstream state.
+    pub midpath_reparent_gap: f32,
+
+    // ── Defeasible → Asserted gate ───────────────────────────────────
+
+    /// Minimum independent ticks supporting a Defeasible relation
+    /// before it promotes to Asserted.
+    pub promotion_min_count: u32,
+
+    /// Minimum distinct evidence-source dimensions among those
+    /// supporting ticks. Prevents single-source promotion.
+    pub promotion_min_diversity: u32,
+
+    /// Window of ticks within which the count/diversity must accumulate.
+    /// Older support doesn't carry forward.
+    pub promotion_window_ticks: u32,
+
+    // ── Recognition thresholds ───────────────────────────────────────
+
+    /// Co-occurrence count above which a co-occurrence pattern is
+    /// recognized as a concept.
+    pub concept_recognition_threshold: u32,
+
+    /// Stricter version of the same for frame recognition — frames are
+    /// higher-stakes structures, so the bar is higher.
+    pub frame_recognition_threshold: u32,
+
+    // ── Memory dynamics ──────────────────────────────────────────────
+
+    /// Per-tick decay applied outside the focus radius by the
+    /// background sweep (§14.7).
+    pub decay_rate: f32,
+
+    /// Lower bound on `MemoryStats.salience`. Salience can climb but
+    /// never falls below this floor while the element/relation is
+    /// retained.
+    pub salience_floor: f32,
+
+    /// Hebbian learning rate — how much focus-co-occurrence bumps
+    /// `focus_success_count` and related stats. Intent-modulated by
+    /// Step 2.
+    pub hebbian_rate: f32,
+
+    /// Number of hops out from the focus path that escapes decay this
+    /// tick.
+    pub focus_decay_radius: u32,
+
+    /// Capacity of `Hypergraph.recent_focus`.
+    pub recent_focus_capacity: u32,
+
+    /// Minimum focus-success count for a relation to be eligible for
+    /// replay reinforcement.
+    pub replay_focus_floor: u32,
+
+    // ── Extractor confidence threshold ───────────────────────────────
+
+    /// NER assertion-confidence threshold. Below this, Step 6 mints the
+    /// relation as `Defeasible` rather than `Asserted`.
+    pub ner_assertion_threshold: f32,
+
+    // ── Replay ───────────────────────────────────────────────────────
+
+    /// Replay scheduling mode. Currently a single-variant placeholder
+    /// pending the replay subsystem's design.
+    pub replay_cadence: ReplayCadence,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            descend_threshold: 0.0,
+            leaf_vigilance: 0.0,
+            merge_threshold: 0.0,
+            split_variance: 0.0,
+            void_threshold: 0.0,
+            region_activation_threshold: 0.55,
+
+            attribute_name_dedup_threshold: 0.85,
+            attribute_name_mint_warning_count: 5,
+
+            midpath_confirm_gap: 0.05,
+            midpath_confirm_evidence: 3,
+            midpath_reparent_gap: 0.10,
+
+            promotion_min_count: 3,
+            promotion_min_diversity: 2,
+            promotion_window_ticks: 1000,
+
+            concept_recognition_threshold: 3,
+            frame_recognition_threshold: 5,
+
+            decay_rate: 0.0,
+            salience_floor: 0.0,
+            hebbian_rate: 0.0,
+            focus_decay_radius: 0,
+            recent_focus_capacity: 64,
+            replay_focus_floor: 3,
+
+            ner_assertion_threshold: 0.7,
+
+            replay_cadence: ReplayCadence::default(),
+        }
+    }
+}
+
+/// Replay scheduling mode. The doc references this on `Policy` but
+/// never enumerates the variants — single placeholder for now. Expand
+/// when the replay subsystem (§14.7 background sweep + downstream)
+/// gets concrete.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ReplayCadence {
+    #[default]
+    Default,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Working memory & per-tick activation snapshots
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One entry in `Hypergraph.recent_focus`. Step 5 walks this ring
+/// looking for an active frame to inherit when the input doesn't
+/// establish one of its own.
+#[derive(Clone, Copy, Debug)]
+pub struct RecentFocusEntry {
+    /// The focal element — what was attended to.
+    pub element: ElementId,
+
+    /// The attribute name binding `element` on its most recent focus
+    /// (e.g. SUBJECT, ACTOR, TARGET). `None` when the element was
+    /// focal but not in a recognized attribute role.
+    pub attribute: Option<ElementId>,
+
+    /// The active frame at the time this entry was pushed. Lets later
+    /// ticks distinguish "X was focused inside frame F" from "X was
+    /// focused frame-free".
+    pub frame: Option<ElementId>,
+
+    /// Tick this entry entered focus. Used to age out stale entries.
+    pub tick: Tick,
+}
+
+/// 4-dim intent vector produced by Step 1. Each component is a cosine
+/// projection of the input's window embedding against an intent
+/// prototype bank (the four banks come from the seed pack). Drives
+/// Step 2's policy adjustments. Maps onto neuromodulator analogs:
+/// conviction (cognitive), prediction_error (DA), arousal (NE),
+/// curiosity (retrieval vs assertion shape). Does NOT gate which
+/// steps run — only modulates how Steps 5/9/11/12 weight their work.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct Intent {
+    /// Speaker certainty / commitment of the assertion. High =
+    /// confident statements that should land as `Asserted` more
+    /// readily; low = hedged statements that lean `Defeasible`.
+    pub conviction: f32,
+
+    /// Novelty / contradiction signal — how much this input clashes
+    /// with existing claims. Dopamine analog. Drives plasticity bumps
+    /// and salience for surprising inputs.
+    pub prediction_error: f32,
+
+    /// Emotional intensity / importance. Norepinephrine analog. Lifts
+    /// salience and slows decay for the elements/relations involved.
+    pub arousal: f32,
+
+    /// Retrieval-shape vs assertion-shape. High = "what do I know
+    /// about X?" (retrieval-leaning); low = "X is true" (assertion-
+    /// leaning). Modulates how aggressively Step 13 surfaces history
+    /// and supporting claims.
+    pub curiosity: f32,
+}
+
+/// One region that lit up during Step 5 routing.
+#[derive(Clone, Copy, Debug)]
+pub struct RegionActivation {
+    /// The region anchor element.
+    pub region: ElementId,
+
+    /// Activation level — how strongly this region matched the input.
+    /// Above `policy.region_activation_threshold` to land in the frame.
+    pub activation: f32,
+}
+
+/// One relation in the frame's ranked focus list. Activation is the
+/// fused RRF score from Step 13.
+#[derive(Clone, Copy, Debug)]
+pub struct RelationActivation {
+    pub relation: RelationId,
+    pub activation: f32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Uncertainty & advisory signals
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One detected uncertainty signal. The pipeline pushes these into a
+/// per-tick buffer as side effects of Steps 5, 6, 7, 9, and 10; Step 13
+/// collects them into the frame's `uncertainty` field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UncertaintySignal {
+    /// Step 5: routing didn't converge — multiple regions matched
+    /// equivalently, or none matched above `void_threshold`.
+    DiffuseRouting,
+
+    /// Step 6/7: a temporal reference ("yesterday", "next Tuesday")
+    /// couldn't be resolved against `Input.wall_clock` plus context.
+    UngroundedTime,
+
+    /// Step 7: coreference resolution found multiple equally-plausible
+    /// candidates for a referring expression.
+    AmbiguousCoref,
+
+    /// Step 9/10: an extractor produced output below
+    /// `policy.ner_assertion_threshold` (relation minted as
+    /// `Defeasible`, signal raised so the caller knows).
+    LowConfidence,
+
+    /// Step 10: a candidate supersession lacks a clear winner —
+    /// the new claim and the existing one conflict but neither
+    /// dominates. The caller may want to ask a follow-up.
+    Contradiction,
+}
+
+/// An advisory action Step 13 emits in the frame's `next_actions`.
+/// The caller (typically the agent loop wrapping `tick()`) decides
+/// whether to act on each.
+#[derive(Clone, Debug)]
+pub enum AttentionAction {
+    /// Schedule a background replay sweep of the given kind. Doesn't
+    /// run inline — the caller hands this off to the replay thread.
+    EnqueueReplay { kind: ReplayKind },
+
+    /// Suggest the agent ask a clarifying follow-up question. Carries
+    /// the suggested prompt text as raw `String`.
+    FollowUpQuery(String),
+}
+
+/// What kind of background work to enqueue. Doc only names
+/// `BackgroundSweep` (the §14.7 decay sweep) — placeholder for now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayKind {
+    /// §14.7 decay sweep over everything outside the focus radius.
+    BackgroundSweep,
+}

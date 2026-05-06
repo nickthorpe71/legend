@@ -625,7 +625,7 @@ seeded_relations:
       - [REGION_MODAL_NEGATED,  parent_region, GENESIS, 1.0]
 
 # ---------------------------------------------------------------------
-# 6. Intent prototype banks — Step 1's `InputWeight` vector (§11.2)
+# 6. Intent prototype banks — Step 1's `Intent` vector (§11.2)
 #    is computed by cosine projection against these banks. Each
 #    dimension has a "high pole" bank (representative phrases that
 #    score high on the dimension) and, where applicable, a "low pole"
@@ -648,7 +648,7 @@ seeded_relations:
 #      conviction       — listener-evaluation of speaker certainty
 #      prediction_error — dopamine novelty / contradiction signal
 #      arousal          — norepinephrine emotional intensity signal
-#      inquisitive      — Legend-specific (single tick verb covers
+#      curiosity      — Legend-specific (single tick verb covers
 #                         encoding + retrieval)
 # ---------------------------------------------------------------------
 
@@ -713,7 +713,7 @@ intent_prototypes:
       - "for what it's worth"
       - "just noting"
 
-  inquisitive:
+  curiosity:
     # High pole = retrieval-shape — asking, finding, looking up. Not
     # just questions ending in `?` — covers imperative search ("find
     # when I last saw Dr. Rao") and indirect questions.

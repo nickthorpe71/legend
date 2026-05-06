@@ -1,0 +1,30 @@
+[package]
+name = "legend"
+version = "0.0.0"
+edition = "2024"
+authors = ["Nick Thorpe <nickthorpe71@gmail.com>"]
+description = "Long-term memory for LLMs."
+license = "MIT"
+repository = "https://github.com/nickthorpe71/legend"
+readme = "README.md"
+rust-version = "1.85"
+
+[lib]
+name = "legend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "legend"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+debug = true

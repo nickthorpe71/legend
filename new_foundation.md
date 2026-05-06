@@ -90,8 +90,8 @@ PHASES                 Step 0     WAL (Write-Ahead Log) append
                        Steps 1–7  read-mostly (&Hypergraph, parallel)
                        Steps 8–13 mutation    (&mut Hypergraph, seq)  (§4.2, §4.3)
 
-INPUT WEIGHT VECTOR    InputWeight { conviction, prediction_error,
-                                     arousal, inquisitive } — 4-dim,
+INTENT VECTOR          Intent { conviction, prediction_error,
+                                     arousal, curiosity } — 4-dim,
                        projected from BGE-small (BAAI General Embedding)
                        embedding via prototype banks; modulates
                        default_conf, salience, vigilance, hebbian_rate,
@@ -1061,9 +1061,9 @@ does during its slice of the tick.
         ├────────────────────────────────────────────────┤
         │            ─── READ-MOSTLY PHASE ───           │
         │            (&Hypergraph; parallelizable)       │
-        │  STEP 1   detect_intent  ─► InputWeight        │
+        │  STEP 1   detect_intent  ─► Intent        │
         │           (4-dim: conviction, prediction_error,│
-        │            arousal, inquisitive)               │
+        │            arousal, curiosity)               │
         │  STEP 2   adjust_policy  ─► Policy             │
         │  STEP 3   segment        ─► spans              │
         │  STEP 4   embed          ─► vectors per span   │
@@ -1118,14 +1118,14 @@ transaction time.
 Each tick threads through 14 steps (0–13). Steps 1–7 are read-mostly
 and parallelize where possible under `&Hypergraph`. Steps 8–13 are
 sequential under `&mut Hypergraph`. Every tick — statement, question,
-correction — runs the full pipeline; the `InputWeight` vector
+correction — runs the full pipeline; the `Intent` vector
 modulates *policy*, never which steps run.
 
 ```
 0.  log entry                  -> append (Tick, Input, ModelFingerprint) to WAL
                                   -- READ-MOSTLY PHASE BEGINS (&Hypergraph) --
-1.  detect intent              -> InputWeight (conviction, prediction_error,
-                                              arousal, inquisitive)
+1.  detect intent              -> Intent (conviction, prediction_error,
+                                              arousal, curiosity)
 2.  adjust policy              -> Policy updated for this tick
 3.  segment text               -> spans (sentence/clause/entity/value)
 4.  embed every span           -> Vec<(span, embedding)>
@@ -1164,9 +1164,9 @@ off:
 step  what it extracts                         why                                                         pays off in
 0     WAL entry (Tick, Input,                  durability — if we crash mid-tick, the input is recoverable boot-time replay
       ModelFingerprint)                        in dev; stamps the model fingerprint for boot checks         (§18.4)
-1     InputWeight (4-dim vector:               score how much this tick should change the substrate         Step 2 (sole consumer)
+1     Intent (4-dim vector:               score how much this tick should change the substrate         Step 2 (sole consumer)
       conviction, prediction_error,            along DA / NE / cognitive axes; policy is computed
-      arousal, inquisitive)                    from this vector, not from a categorical label
+      arousal, curiosity)                    from this vector, not from a categorical label
 2     adjusted Policy                          turn intent into the four knobs that govern this tick:      Steps 5, 9, 11, 12
                                                vigilance, plasticity, salience, default confidence         (every weighted op)
                                                (§10.6 table)
@@ -2056,7 +2056,6 @@ struct Policy {
     leaf_vigilance: f32,
     merge_threshold: f32,
     split_variance: f32,
-    max_prototypes_per_region: u32,
     void_threshold: f32,
 
     // Mid-path DAG insertion (§10.3.5). All tick-time insertions are
@@ -2315,7 +2314,7 @@ Region routing happens in the **read-mostly parallel phase** of the
 tick (Step 5). The algorithm walks the DAG from Genesis via the
 `region_children` and `region_prototypes` indices, considering the
 top-k children at each node by cosine similarity to the candidate
-node's prototype Elements (bounded by `max_prototypes_per_region`).
+node's prototype Elements.
 
 ```rust
 fn route_regions(
@@ -2497,9 +2496,11 @@ spans as entity candidates).
 
 ### 10.4 Multi-Prototype
 
-Each region carries up to **8 prototype Elements**
-(`Policy.max_prototypes_per_region`), attached by `(R, prototype, P)`
-relations. Each prototype Element holds its own inline embedding;
+Each region carries one or more **prototype Elements**, attached by
+`(R, prototype, P)` relations. The set is kept small by
+`policy.merge_threshold` (collapses near-duplicates) and
+`policy.split_variance` (splits high-scatter regions); no hard cap.
+Each prototype Element holds its own inline embedding;
 this is the storage shape that replaces the old per-prototype
 `(vector, weight, support_count)` payload — `weight` and
 `support_count` live in the prototype Element's `MemoryStats`, the
@@ -2540,9 +2541,9 @@ Legend-specific deltas on top of DDVFA:
   prototypes; require ≤ 2% recall@10 drop after any quantization
   change.
 
-**Input-weight policy modulators (the canonical "what does intent
+**Intent policy modulators (the canonical "what does intent
 change" mapping — referenced from §11.2 and §11.3).** Intent is a
-4-dimensional weight vector (`InputWeight` in §11.2), not a
+4-dimensional weight vector (`Intent` in §11.2), not a
 categorical label. Each dimension projects onto specific `Policy`
 knobs; the full mapping (all coefficients are v0 starting points;
 calibrate against §19 + §20.5 after Step 8):
@@ -2556,7 +2557,7 @@ prediction_error   dopamine (DA)      salience_multiplier,
                                       supersession_threshold
 arousal            norepinephrine     salience_multiplier,
                                       hebbian_rate
-inquisitive        (Legend-specific)  default_conf (reduces),
+curiosity        (Legend-specific)  default_conf (reduces),
                                       hebbian_rate (reduces)
 ```
 
@@ -2565,7 +2566,7 @@ The full policy formulas:
 ```text
 default_conf       = base_conf
                    * conviction
-                   * (1.0 - 0.7 * inquisitive)
+                   * (1.0 - 0.7 * curiosity)
 
 salience_multiplier = base_salience
                     + 1.0 * arousal
@@ -2576,7 +2577,7 @@ leaf_vigilance     = base_vigilance
                    + 0.20 * conviction
 
 hebbian_rate       = base_rate
-                   * (1.0 - 0.5 * inquisitive)
+                   * (1.0 - 0.5 * curiosity)
                    * (1.0 + 0.3 * arousal)
 
 supersession_threshold = base_threshold * (1.0 - prediction_error)
@@ -2595,7 +2596,7 @@ neuroscience finding:
   prediction-error inputs are precisely the ones where prior
   beliefs need to be revisited; low prediction-error inputs leave
   the cache alone (no DA spike, no supersession lookup).
-- **`conviction × (1 - inquisitive) → default_conf`** —
+- **`conviction × (1 - curiosity) → default_conf`** —
   separates "speaker certainty" from "speaker is asking." A
   high-conviction question still writes new content low-confidence
   because the speaker isn't asserting it; a low-conviction
@@ -2606,7 +2607,7 @@ neuroscience finding:
   (don't blur entities during corrections; don't blur entities
   during identity claims). Brainstorming (low both) loosens
   routing so neighboring concepts cross-pollinate.
-- **`(1 - inquisitive) × (1 + arousal) → hebbian_rate`** —
+- **`(1 - curiosity) × (1 + arousal) → hebbian_rate`** —
   questions traverse paths but reinforce them more lightly than
   statements (arousal still amplifies the effect when present).
 
@@ -2616,17 +2617,17 @@ old categorical enum collapses to derived labels:
 
 ```text
 "Statement"        ≈ moderate conviction, low prediction_error,
-                     low arousal, low inquisitive
-"Question"         ≈ inquisitive > 0.6
+                     low arousal, low curiosity
+"Question"         ≈ curiosity > 0.6
 "Correction"       ≈ prediction_error > 0.7 + conviction > 0.7
 "Identity"         ≈ conviction > 0.8 (+ entity-density signal)
 "TemporalUpdate"   ≈ prediction_error > 0.5 + temporal extraction
                      activity in Step 6
-"Brainstorming"    ≈ conviction < 0.3 + inquisitive < 0.5
+"Brainstorming"    ≈ conviction < 0.3 + curiosity < 0.5
 ```
 
 These aren't computed by the pipeline — they're how a debugger or
-the inspection harness summarizes a tick's `InputWeight` for a
+the inspection harness summarizes a tick's `Intent` for a
 human reader. Policy is computed from the vector directly.
 
 ---
@@ -2635,7 +2636,7 @@ human reader. Policy is computed from the vector directly.
 
 This section specifies the 14 steps (0–13) `tick` runs through. §4
 covered the conceptual shape; this section is the typed spec. Every
-tick runs every step regardless of input weight; the `InputWeight`
+tick runs every step regardless of intent; the `Intent`
 vector modulates `Policy` (§11.2 / §10.6), not which steps execute.
 
 ### 11.0 Per-Step Latency Budget
@@ -2708,8 +2709,8 @@ fn tick(
     wal_append(hg, &input);                                   // Step 0 (durability — §18.2)
 
     // --- Read-mostly phase (Steps 1–7, &Hypergraph) ---
-    let weight  = detect_intent(&input, hg);                  // Step 1 → InputWeight (4-dim)
-    let policy  = adjust_policy(&weight, &hg.policy);         // Step 2
+    let intent  = detect_intent(&input, hg);                  // Step 1 → Intent (4-dim)
+    let policy  = adjust_policy(&intent, &hg.policy);         // Step 2
     let units   = segment(&input);                            // Step 3
     let embeds  = embed(&units);                              // Step 4
     let (active_regions, region_delta)
@@ -2755,7 +2756,7 @@ substrate, along axes mapped to the neuromodulators that gate
 brain memory consolidation:
 
 ```rust
-struct InputWeight {
+struct Intent {
     /// Speaker certainty. High = "absolutely / definitely / I know";
     /// low = "maybe / I think / not sure". Drives default confidence
     /// for new relations and the Asserted/Defeasible threshold.
@@ -2784,7 +2785,7 @@ struct InputWeight {
     /// path reinforcement. No direct neuromodulator analog —
     /// Legend-specific because we have a single tick verb that
     /// covers both encoding and retrieval.
-    inquisitive: f32,          // [0.0, 1.0]
+    curiosity: f32,          // [0.0, 1.0]
 }
 ```
 
@@ -2801,7 +2802,7 @@ score(dim) =
   // clamped to [0.0, 1.0] after a sigmoid-style squash
 ```
 
-For `inquisitive` and `prediction_error`, the low pole is "no
+For `curiosity` and `prediction_error`, the low pole is "no
 signal" rather than an opposite signal, so the formula simplifies
 to `cosine(input_emb, mean_high_pole_emb)` clamped.
 
@@ -2819,17 +2820,17 @@ Plus one graph-state probe for `prediction_error`. Well under 1 ms.
 **No marker phrases. No punctuation rules. No hard-coded keywords.**
 Language judgment lives in the seed pack's prototype banks (data,
 swappable per Legend instance) and in the embedding model. The
-question "Find when I last saw Dr. Rao" lands as high `inquisitive`
+question "Find when I last saw Dr. Rao" lands as high `curiosity`
 without any `?` and without any "find" / "when" patterns in code —
-its BGE-small embedding sits closer to the inquisitive prototype
+its BGE-small embedding sits closer to the curiosity prototype
 bank than to the assertion bank.
 
-**What `InputWeight` does and does not change.** The vector feeds
+**What `Intent` does and does not change.** The vector feeds
 Step 2 (`adjust_policy`, §11.3) and through it modulates exactly
 five substrate knobs (`default_conf`, `vigilance`, `plasticity`,
 `salience_multiplier`, supersession-trigger threshold).
 
-`InputWeight` does **not** affect: which pipeline steps run, what
+`Intent` does **not** affect: which pipeline steps run, what
 gets extracted, whether `apply_region_delta` commits, whether
 `build_relations` writes, whether `reinforce_hebbian` or
 `decay_focus_radius` fire, the shape of the returned frame, or any
@@ -2838,13 +2839,13 @@ structural decision about elements/relations. Every tick runs Steps
 
 ### 11.3 Step 2 — Adjust Policy
 
-Pure scalar arithmetic — no model. PFC reads the `InputWeight`
+Pure scalar arithmetic — no model. PFC reads the `Intent`
 vector from Step 1 and computes the adjusted `Policy` by combining
 each dimension into the substrate knobs it drives. The base
 mappings (§10.6 specifies the formulas in full):
 
 ```text
-default_conf       = base_conf * conviction * (1.0 - 0.7 * inquisitive)
+default_conf       = base_conf * conviction * (1.0 - 0.7 * curiosity)
                      // high conviction non-questions write at high
                      // confidence; questions and hedges write low
 
@@ -2860,7 +2861,7 @@ leaf_vigilance     = base_vigilance
                    // routing so we don't blur entities; brainstorming
                    // (low conviction, low prediction_error) loosens
 
-hebbian_rate       = base_rate * (1.0 - 0.5 * inquisitive)
+hebbian_rate       = base_rate * (1.0 - 0.5 * curiosity)
                                 * (1.0 + 0.3 * arousal)
                    // questions reinforce paths but at lower magnitude
                    // than statements; arousal slightly amplifies
@@ -2879,7 +2880,7 @@ per-tick adjusted copy is what Steps 3–13 see.
 1. *"That's absolutely wrong! All the trees in my yard are under 4
    feet tall and will NEVER get taller"* —
    `conviction ≈ 0.95, prediction_error ≈ 0.90, arousal ≈ 0.85,
-   inquisitive ≈ 0.05`. Yields high `default_conf` (≈ 0.90) →
+   curiosity ≈ 0.05`. Yields high `default_conf` (≈ 0.90) →
    relations land Asserted; high salience multiplier (≈ 2.75) →
    the new state and its supersession history get strong decay
    protection; low supersession threshold → Step 10 actively
@@ -2887,7 +2888,7 @@ per-tick adjusted copy is what Steps 3–13 see.
 
 2. *"I'm not sure if the grass is green"* —
    `conviction ≈ 0.10, prediction_error ≈ 0.15, arousal ≈ 0.05,
-   inquisitive ≈ 0.20`. Yields very low `default_conf` (≈ 0.09) →
+   curiosity ≈ 0.20`. Yields very low `default_conf` (≈ 0.09) →
    any relation born this tick is Defeasible; near-zero salience
    bump → decays fast; high supersession threshold → Step 10 leaves
    prior beliefs alone.
@@ -3036,8 +3037,9 @@ desired behavior.
    when no child clears `policy.leaf_vigilance` (sub-threshold
    input → routed to `VOID`).
 
-Bounded by `policy.max_prototypes_per_region` (8) at each region,
-so each comparison is at most 8 dot products. The `RegionDelta`
+Each comparison is O(prototypes-in-region); the prototype set is
+kept small by `policy.merge_threshold` (collapses near-duplicates)
+and `policy.split_variance` (splits high-scatter regions). The `RegionDelta`
 returned alongside the `ActiveRegion` list captures proposed
 parent attachments, prototype-vector updates (k-means targets),
 and any newly-minted regions (§10.3.5 mid-path insertions); it is
@@ -3405,8 +3407,8 @@ is promoted to `Asserted` in this step when *all three* hold:
    (default 2) — the supporting ticks come from at least D distinct
    *evidence sources*, where source diversity is measured across:
    different `(R, source, S)` source elements, different
-   `InputWeight` regions (e.g. high-conviction-statement vs
-   inquisitive vs high-prediction-error mention), and different
+   `Intent` regions (e.g. high-conviction-statement vs
+   curiosity vs high-prediction-error mention), and different
    `active_frame` scopes. Three rephrasings of the same wrong claim
    from one source / weight-region / frame don't clear the bar.
 3. No contradicting relation has been written within the window
@@ -3457,7 +3459,7 @@ Output shape:
 struct ConsciousAttentionFrame {
     tick: Tick,
     input: InputEcho,
-    weight: InputWeight,
+    intent: Intent,
     active_frame: Option<ElementId>,
     active_regions: Vec<RegionActivation>,
     focused_relations: Vec<RelationActivation>,
@@ -3479,7 +3481,7 @@ contents; Step 13 only finalizes assembly.
 |---|---|---|---|
 | `tick` | The monotonic clock value at this tick's commit point. Lets the caller correlate with WAL entries, snapshot timestamps, and recent-focus tick stamps. | Step 13 | Read `hg.clock`. |
 | `input` | A read-only echo of the input text. Not a substrate citizen; discarded after the caller consumes the frame. Exists so the caller has the question/statement in hand alongside Legend's response without threading it separately. | Step 0 (captured at tick entry); Step 13 (returned) | Construct `InputEcho { text }` from the original `Input.text`. |
-| `weight` | The 4-dim `InputWeight { conviction, prediction_error, arousal, inquisitive }` (§11.2). Exposes how this tick was weighted, so the calling LLM can see "this tick was high-conviction correction-shaped" without reverse-engineering it. | Step 1 | Cosine projection of input embedding against per-dimension prototype banks (§16.6 / `seed_pack.yaml`'s `intent_prototypes`); held through the tick. Step 13 just attaches it. |
+| `intent` | The 4-dim `Intent { conviction, prediction_error, arousal, curiosity }` (§11.2). Exposes how this tick's intent vector landed, so the calling LLM can see "this tick was high-conviction correction-shaped" without reverse-engineering it. | Step 1 | Cosine projection of input embedding against per-dimension prototype banks (§16.6 / `seed_pack.yaml`'s `intent_prototypes`); held through the tick. Step 13 just attaches it. |
 | `active_frame` | The reference-frame element this tick operated under (e.g. `FRAME_USER`, `FRAME_PROJECT`). `None` if no frame was identified. Drives frame-relative supersession and frame-scoped retrieval. | Step 5 (carried forward from the previous tick's working memory unless this tick's input shifted frame) | Either inherited from `recent_focus`'s most recent entry's `frame`, or set by a frame-shifting cue extracted in Step 6 (e.g. a domain marker routing through `REGION_DOMAINS`). |
 | `active_regions` | The regions activated for *this tick*, with per-region similarity scores. The union across windows for multi-window inputs. Lets the caller see "this input touched events + change_history + time." | Step 5 | `route_regions(...)` results per window, unioned. Each entry is a `RegionActivation { region, similarity }`. |
 | `focused_relations` | The relations the caller reads its answer off of. Status-filtered: `Asserted` + `Entailed` by default; `Defeasible` flagged with `is_defeasible = true`; `Superseded` excluded (it lands in `history`); `Retracted` excluded entirely. | Step 13 | RRF merge over three signals — see §11.13 RRF prose below. |
@@ -3641,8 +3643,8 @@ fn separate_pattern(candidate: &Element, neighbors: &[&Element], p: &Policy)
     -> Decision;
 fn score_salience(relation: &Relation, p: &Policy) -> f32;
 fn detect_intent(input: &str, embeddings: &[Vec<f32>], hg: &Hypergraph)
-    -> InputWeight;
-fn adjust_policy(weight: &InputWeight, base: &Policy) -> Policy;
+    -> Intent;
+fn adjust_policy(intent: &Intent, base: &Policy) -> Policy;
 fn aggregate_focus(candidates: &[RelationCandidate],
                    path: &[ElementId],
                    p: &Policy)
@@ -4227,7 +4229,7 @@ prototype Element with that vector as its inline embedding, and writes
 inputs flow through.
 
 There is **no** question region. Question-shape lives in the
-`InputWeight.inquisitive` dimension (Step 1, §11.2), not in
+`Intent.curiosity` dimension (Step 1, §11.2), not in
 content routing. A question routes through the same regions as a
 statement on the same topic — "what time is my appointment?" goes
 through REGION_EVENTS / REGION_TIME.
@@ -5034,8 +5036,8 @@ REGION_EVENTS          similarity 0.84
 REGION_TIME            similarity 0.76
 ```
 
-Step 1 lands `InputWeight { conviction ≈ 0.20, prediction_error ≈
-0.05, arousal ≈ 0.0, inquisitive ≈ 0.85 }`; aggregate focus walks
+Step 1 lands `Intent { conviction ≈ 0.20, prediction_error ≈
+0.05, arousal ≈ 0.0, curiosity ≈ 0.85 }`; aggregate focus walks
 all `appointment instance_of` elements with non-superseded
 `current_time` relations and returns them.
 

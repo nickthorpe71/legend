@@ -45,8 +45,8 @@ PHASES                 Step 0     WAL (Write-Ahead Log) append
                        Steps 1–7  read-mostly (&Hypergraph, parallel)
                        Steps 8–13 mutation    (&mut Hypergraph, seq)  (§4.2, §4.3)
 
-INPUT WEIGHT VECTOR    InputWeight { conviction, prediction_error,
-                                     arousal, inquisitive } — 4-dim,
+INTENT VECTOR          Intent { conviction, prediction_error,
+                                     arousal, curiosity } — 4-dim,
                        projected from BGE-small (BAAI General
                        Embedding) embedding via prototype
                        banks; modulates default_conf, salience,
@@ -412,9 +412,9 @@ struct ModelFingerprint {
         ├────────────────────────────────────────────────┤
         │            ─── READ-MOSTLY PHASE ───           │
         │            (&Hypergraph; parallelizable)       │
-        │  STEP 1   detect_intent  ─► InputWeight        │
+        │  STEP 1   detect_intent  ─► Intent        │
         │           (4-dim: conviction, prediction_error,│
-        │            arousal, inquisitive)               │
+        │            arousal, curiosity)               │
         │  STEP 2   adjust_policy  ─► Policy             │
         │  STEP 3   window         ─► windows            │
         │           (SaT only if input > ~480 tokens)    │
@@ -521,11 +521,11 @@ change the substrate, along axes mapped to the brain's
 memory-consolidation neuromodulators:
 
 ```rust
-struct InputWeight {
+struct Intent {
     conviction: f32,         // speaker certainty (cognitive analog)
     prediction_error: f32,   // novelty / contradiction (DA analog)
     arousal: f32,            // emotional intensity / importance (NE analog)
-    inquisitive: f32,        // retrieval-shape vs assertion-shape
+    curiosity: f32,        // retrieval-shape vs assertion-shape
 }
 ```
 
@@ -548,7 +548,7 @@ bumped toward 1.0. This is the actual contradiction signal.
 **No marker phrases. No punctuation rules.** Language judgment
 lives in the seed pack's prototype banks (data, swappable per
 Legend instance) and in the embedding model. "Find when I last saw
-Dr. Rao" lands as high `inquisitive` without any `?` and without
+Dr. Rao" lands as high `curiosity` without any `?` and without
 any "find"/"when" patterns in code.
 
 Cost: 4 mean-pole cosines = 4 dot products per dimension, riding
@@ -560,7 +560,7 @@ the 4-vector to the substrate knobs via the §10.6 formulas:
 
 ```text
 default_conf       = base_conf * conviction
-                                * (1.0 - 0.7 * inquisitive)
+                                * (1.0 - 0.7 * curiosity)
 
 salience_multiplier = base_salience
                     + 1.0 * arousal              // NE analog
@@ -570,7 +570,7 @@ leaf_vigilance     = base_vigilance
                    + 0.20 * prediction_error
                    + 0.20 * conviction
 
-hebbian_rate       = base_rate * (1.0 - 0.5 * inquisitive)
+hebbian_rate       = base_rate * (1.0 - 0.5 * curiosity)
                                 * (1.0 + 0.3 * arousal)
 
 supersession_threshold = base_threshold * (1.0 - prediction_error)
@@ -580,14 +580,14 @@ Worked examples:
 
 - *"That's absolutely wrong! All trees in my yard are under 4 feet
   tall and will NEVER get taller"* — `conviction ≈ 0.95,
-  prediction_error ≈ 0.90, arousal ≈ 0.85, inquisitive ≈ 0.05`.
+  prediction_error ≈ 0.90, arousal ≈ 0.85, curiosity ≈ 0.05`.
   High `default_conf` → relations Asserted; high salience
   multiplier → strong decay protection; low supersession threshold
   → Step 10 actively searches prior cache for `(yard_trees,
   max_height, _)` to mark Superseded. Future query "max tree
   height in user's yard?" returns 4 ft.
 - *"I'm not sure if the grass is green"* — `conviction ≈ 0.10,
-  prediction_error ≈ 0.15, arousal ≈ 0.05, inquisitive ≈ 0.20`.
+  prediction_error ≈ 0.15, arousal ≈ 0.05, curiosity ≈ 0.20`.
   Very low `default_conf` → Defeasible; near-zero salience → fast
   decay; high supersession threshold → prior beliefs untouched.
 
@@ -670,9 +670,10 @@ the region's prototypes; descend into the top-k children whose
 score exceeds `policy.descend_threshold`. Stop when no child
 exceeds the threshold (leaf reached) or when no child clears
 `policy.leaf_vigilance` (sub-threshold input → routed to VOID).
-Bounded by `policy.max_prototypes_per_region` (8) at each region,
-so each comparison is at most 8 dot products. Parallelizes across
-windows via `par_iter`. Returns `(Vec<ActiveRegion>, RegionDelta)`;
+Each comparison is O(prototypes-in-region); the prototype set is
+kept small by `policy.merge_threshold` (collapses near-duplicates)
+and `policy.split_variance` (splits high-scatter regions).
+Parallelizes across windows via `par_iter`. Returns `(Vec<ActiveRegion>, RegionDelta)`;
 the `RegionDelta` is **held** until Step 8.
 
 **Step 6 — Run Extractors.** Run **per window** (Step 3). For
@@ -871,7 +872,7 @@ R.stats.salience = bounded_hebbian_bump(R.stats.salience, bump * p.hebbian_rate)
 1. `support_count >= policy.promotion_min_count` (3).
 2. `support_diversity >= policy.promotion_min_diversity` (2) —
    measured across distinct `(R, source, S)` source elements,
-   `InputWeight` regions (high-conviction-statement vs inquisitive
+   `Intent` regions (high-conviction-statement vs curiosity
    vs high-prediction-error), and `active_frame` scopes. Three
    rephrasings of the same wrong claim from one
    source/weight/frame don't clear the bar.
@@ -907,7 +908,7 @@ work. Step 13's own work is (a) the `focused_relations` RRF and
 struct ConsciousAttentionFrame {
     tick: Tick,
     input: InputEcho,
-    weight: InputWeight,                  // 4-dim vector from Step 1
+    intent: Intent,                  // 4-dim vector from Step 1
     active_frame: Option<ElementId>,
     active_regions: Vec<RegionActivation>,
     focused_relations: Vec<RelationActivation>,
@@ -926,7 +927,7 @@ Field-by-field, with the step that produces each field's contents:
 |---|---|---|
 | `tick` | 13 | Read `hg.clock`. |
 | `input` | 0 capture / 13 return | Echo of the input text; not durable. |
-| `weight` | 1 | Cosine projection against intent prototype banks (§seed pack). |
+| `intent` | 1 | Cosine projection against intent prototype banks (§seed pack). |
 | `active_frame` | 5 | Inherited from `recent_focus` or set by a frame-shifting cue. |
 | `active_regions` | 5 | Union of per-window `route_regions(...)` results. |
 | `focused_relations` | 13 | RRF over Dense (path-reinforced focus set) + Sparse (tantivy BM25) + Path-reinforced (focus_success bumps from Step 11). RRF (Cormack et al. 2009) merges ranked lists by `Σ 1 / (60 + rankᵢ)` — keeps ranks, discards incompatibly-scaled raw scores. |
@@ -1064,7 +1065,6 @@ struct Policy {
     leaf_vigilance: f32,                // absolute, intent-driven
     merge_threshold: f32,
     split_variance: f32,
-    max_prototypes_per_region: u32,     // 8
     void_threshold: f32,
     region_activation_threshold: f32,   // 0.55
 

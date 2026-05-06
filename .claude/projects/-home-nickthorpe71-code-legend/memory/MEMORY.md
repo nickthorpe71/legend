@@ -1,0 +1,2 @@
+- [No methods on types — functional style](feedback_avoid_impl_blocks.md) — Legend is FP; standard derives + Default OK, but never inherent methods (`impl Foo { fn ... }`)
+- [Don't repeat default values in field docstrings](feedback_no_default_values_in_field_doc.md) — defaults live in the `Default` impl only; docstrings carry rationale, not numbers
