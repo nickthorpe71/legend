@@ -3,6 +3,7 @@ use steps::detect_intent::detect_intent;
 use types::Input;
 
 pub mod embed;
+pub mod prototype_vectors;
 pub mod steps;
 pub mod types;
 
