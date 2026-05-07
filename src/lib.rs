@@ -1,9 +1,10 @@
 use std::time::SystemTime;
-use types::Input;
 use steps::detect_intent::detect_intent;
+use types::Input;
 
-pub mod types;
+pub mod embed;
 pub mod steps;
+pub mod types;
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -15,7 +16,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let input = Input {
         text: args[1].clone(),
-        wall_clock: SystemTime::now()
+        wall_clock: SystemTime::now(),
     };
     println!("Input: {:?}", input);
 

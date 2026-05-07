@@ -18,6 +18,11 @@ name = "legend"
 path = "src/main.rs"
 
 [dependencies]
+ort = {version = "2.0.0-rc.12", features = ["download-binaries"]}
+tokenizers = {version = "0.21", default-features = false, features = ["onig"]}
+
+[dev-dependencies]
+serde_yaml = "0.9"
 
 [profile.release]
 opt-level = 3
@@ -28,3 +33,6 @@ strip = "symbols"
 [profile.dev]
 opt-level = 0
 debug = true
+
+[profile.dev.package."*"]
+opt-level = 3
