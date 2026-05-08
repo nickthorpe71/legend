@@ -3,12 +3,14 @@ pub mod intent_classifiers;
 pub mod lexical_features;
 pub mod math;
 pub mod steps;
+pub mod tokenizer;
 pub mod types;
 
 use std::time::SystemTime;
 
 use steps::adjust_policy::adjust_policy;
 use steps::detect_intent::detect_intent;
+use steps::window_input::window_input;
 use types::{Hypergraph, Input};
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,6 +29,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let intent = detect_intent(&input.text);
     let policy = adjust_policy(&intent, &hg.policy);
+    let windows = window_input(&input);
 
     println!("intent");
     println!("  conviction       {:.3}", intent.conviction);
@@ -43,5 +46,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         "  supersession_threshold {:.3}",
         policy.supersession_threshold
     );
+
+    println!("windows ({})", windows.len());
+    for (i, w) in windows.iter().enumerate() {
+        println!("  [{i}] {} tokens", w.token_count);
+    }
     Ok(())
 }

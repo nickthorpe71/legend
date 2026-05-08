@@ -271,6 +271,24 @@ pub struct InputEcho {
     pub text: String,
 }
 
+/// One window of input text, the unit Steps 4–7 process as a single
+/// piece. Step 3 produces `Vec<Window>` from an `Input` — short inputs
+/// (≤480 tokens) yield one window with the original text; long inputs
+/// are split into multiple ≤480-token windows. The "logical pieces" of
+/// the input are not windows but the relations Step 6 extracts; a
+/// window is just a container for joint extraction.
+#[derive(Clone, Debug)]
+pub struct Window {
+    /// The window's text. For short inputs this is the original input
+    /// string; for long inputs it's the decoded text of one token-budget
+    /// chunk (lossy on whitespace/casing — see Step 3 notes).
+    pub text: String,
+
+    /// Token count under the bundled MiniLM tokenizer. Always
+    /// ≤ `WINDOW_TOKEN_BUDGET` by construction.
+    pub token_count: usize,
+}
+
 /// The output of every tick. Most fields are *gathered* from per-tick
 /// buffers that earlier steps populated as a side effect; Step 13's own
 /// work is just the `focused_relations` RRF merge and `next_actions`
@@ -356,7 +374,6 @@ pub type ClaimRef = RelationId;
 #[derive(Clone, Debug)]
 pub struct Policy {
     // ── Region routing ────────────────────────────────────────────────
-
     /// Cosine threshold below which routing stops descending into a
     /// region's children. Higher = stricter routing, fewer false
     /// matches; lower = broader retrieval.
@@ -387,7 +404,6 @@ pub struct Policy {
     pub region_activation_threshold: f32,
 
     // ── Attribute-name dedup ─────────────────────────────────────────
-
     /// Cosine similarity threshold for collapsing two attribute-name
     /// elements into one (Step 9 / §11.7). Strict by default so
     /// `SUBJECT` and `ACTOR` stay distinct even though they overlap.
@@ -400,7 +416,6 @@ pub struct Policy {
     pub attribute_name_mint_warning_count: u32,
 
     // ── Mid-path DAG insertion ───────────────────────────────────────
-
     /// Confidence-gap threshold for confirming a mid-path region
     /// insertion. Tuned small so insertion is aggressive.
     pub midpath_confirm_gap: f32,
@@ -416,7 +431,6 @@ pub struct Policy {
     pub midpath_reparent_gap: f32,
 
     // ── Defeasible → Asserted gate ───────────────────────────────────
-
     /// Minimum independent ticks supporting a Defeasible relation
     /// before it promotes to Asserted.
     pub promotion_min_count: u32,
@@ -430,7 +444,6 @@ pub struct Policy {
     pub promotion_window_ticks: u32,
 
     // ── Recognition thresholds ───────────────────────────────────────
-
     /// Co-occurrence count above which a co-occurrence pattern is
     /// recognized as a concept.
     pub concept_recognition_threshold: u32,
@@ -440,7 +453,6 @@ pub struct Policy {
     pub frame_recognition_threshold: u32,
 
     // ── Memory dynamics ──────────────────────────────────────────────
-
     /// Per-tick decay applied outside the focus radius by the
     /// background sweep (§14.7).
     pub decay_rate: f32,
@@ -467,7 +479,6 @@ pub struct Policy {
     pub replay_focus_floor: u32,
 
     // ── Extractor confidence threshold ───────────────────────────────
-
     /// NER assertion-confidence threshold. Below this, Step 6 mints the
     /// relation as `Defeasible` rather than `Asserted`.
     pub ner_assertion_threshold: f32,
@@ -479,7 +490,6 @@ pub struct Policy {
     // returns. Same field name, two roles — Step 2 reads each as
     // `base_*` and writes back the §10.6-formula result on the
     // returned Policy. Steps 3–13 only ever see the adjusted view.
-
     /// Default confidence assigned to newly-minted Asserted relations
     /// before extractor confidence multiplies it (§11.9, §3420).
     /// Formula: `default_conf = base_conf * conviction * (1 - 0.7 * curiosity)`.
@@ -500,7 +510,6 @@ pub struct Policy {
     pub supersession_threshold: f32,
 
     // ── Replay ───────────────────────────────────────────────────────
-
     /// Replay scheduling mode. Currently a single-variant placeholder
     /// pending the replay subsystem's design.
     pub replay_cadence: ReplayCadence,
