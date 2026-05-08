@@ -47,21 +47,23 @@ PHASES                 Step 0     WAL (Write-Ahead Log) append
 
 INTENT VECTOR          Intent { conviction, prediction_error,
                                      arousal, curiosity } — 4-dim,
-                       projected from BGE-small (BAAI General
-                       Embedding) embedding via prototype
-                       banks; modulates default_conf, salience,
-                       vigilance, hebbian_rate, supersession_threshold.
-                       Maps to DA / NE / cognitive analogs. Does NOT
-                       gate which steps run.                          (§10.6, §11.2)
+                       per-dim logistic-regression classifier over
+                       MiniLM embedding ++ lexical features (418 dims),
+                       trained build-time from seed pack; modulates
+                       default_conf, salience, vigilance, hebbian_rate,
+                       supersession_threshold. Maps to DA / NE /
+                       cognitive analogs. Does NOT gate which steps
+                       run.                                           (§10.6, §11.2)
 
 DURABILITY             snapshot (LZ4+MessagePack) + bounded WAL
                        (10 MB cap, LZ4 hot, zstd-19 closed),
                        checkpoint at N=1000 ticks ∨ S=5MB ∨ T=1hr,
                        boot fingerprint check refuses on mismatch     (§18)
 
-EMBEDDER               BGE-small-en-v1.5, INT8 inference, FP32 stored,
-                       pinned for life — model swap = re-ingest
-                       per recoverability matrix                      (§15.1, §18.4)
+EMBEDDER               all-MiniLM-L6-v2 (ONNX-quantized, ~23 MB),
+                       running through tract-onnx (pure-Rust runtime),
+                       384-dim, pinned for life — model swap =
+                       re-ingest per recoverability matrix            (§15.1, §18.4)
 
 LATENCY BUDGET (v0)    ~200–300 ms p50; GLiNER2 dominates             (§11.0, §15.1)
 
@@ -108,10 +110,12 @@ same structure, queried through different lenses.
 
 The single deepest commitment: ontology emerges from accumulated
 relational structure. The seed pack supplies **substrate-mechanism
-anchors** (meta-relation attribute names, four behavioral modal
-attribute names — `negated` / `uncertain` / `non_actual` / `general`)
-that recognition rules read by name; world-content categories emerge
-from extraction and replay.
+anchors** (meta-relation attribute names, five behavioral modal
+attribute names — `negated` / `uncertain` / `non_actual` / `general`
+/ `intervened`, four causal-relation attribute names — `caused` /
+`correlated_with` / `enables` / `prevents` — Pearl rung 1/2/3
+distinction, full doc §6 (8) + §16.3) that recognition rules read
+by name; world-content categories emerge from extraction and replay.
 
 ---
 
@@ -481,12 +485,14 @@ fn tick(
 ```text
 step  name                              p50 budget    notes
 0     log entry (WAL append)            <1 ms         LZ4 hot segment append
-1     detect_intent                     1–3 ms        cosine vs intent prototypes
+1     detect_intent                     5–15 ms       embedding + 4 logistic classifiers; today
+                                                      embeds independently (will share with Step 4
+                                                      once cached, then sub-ms marginal)
 2     adjust_policy                     <1 ms         scalar copy + multiplier
 3     window                            <1 ms (short) tokenize + length check
                                         +10–20 ms     SaT (~22M params) only when
                                         (long)         input > ~480 tokens
-4     embed                             5–20 ms       BGE-small INT8 per window
+4     embed                             5–20 ms       MiniLM-L6-v2 (quantized) per window
 5     route_regions                     5–15 ms       DAG (Directed Acyclic Graph) descent per window
 6     run_extractors                    130–208 ms    ★ GLiNER2 per window
                                         × N windows
@@ -525,35 +531,47 @@ struct Intent {
     conviction: f32,         // speaker certainty (cognitive analog)
     prediction_error: f32,   // novelty / contradiction (DA analog)
     arousal: f32,            // emotional intensity / importance (NE analog)
-    curiosity: f32,        // retrieval-shape vs assertion-shape
+    curiosity: f32,          // retrieval-shape vs assertion-shape
 }
 ```
 
-Each dimension is computed by cosine projection against a
-prototype bank shipped in the seed pack (boot-embedded with
-BGE-small). For each input:
+Each dimension has its own binary logistic-regression classifier,
+trained build-time from the seed pack and baked into the binary as
+a `.bin` blob (`[f32; 418]` weights + `f32` bias). At inference each
+classifier outputs `sigmoid(w·x + b)`.
 
-```text
-score(dim) = clamp(
-    cosine(input_emb, mean_high_pole_emb)
-  - cosine(input_emb, mean_low_pole_emb),
-  0.0, 1.0)
-```
+The 418-dim feature vector concatenates the all-MiniLM-L6-v2
+sentence embedding (384) with 34 hand-crafted lexical features
+(modals, person, question/imperative shape, negation, correction
+markers, intensity, punctuation, tense, length). Lexical features
+sit upstream of the embedding in causal order — speaker's intent →
+word choice → embedding — so they act as a Pearl front-door
+mediator that strips topic confounding from the intent signal. See
+full spec §11.2 for the rationale.
 
-`prediction_error` adds a graph-state component beyond the
-prototype bank: when speculative extraction shows a candidate
-relation would supersede an existing Asserted relation, score is
-bumped toward 1.0. This is the actual contradiction signal.
+Training combines two losses per dim:
 
-**No marker phrases. No punctuation rules.** Language judgment
-lives in the seed pack's prototype banks (data, swappable per
-Legend instance) and in the embedding model. "Find when I last saw
-Dr. Rao" lands as high `curiosity` without any `?` and without
-any "find"/"when" patterns in code.
+- **Logistic regression** with class-weighted gradient + L2.
+  Cross-class negatives (every other dim's phrases used as
+  negatives) force orthogonal directions across dims.
+- **Bradley-Terry contrastive** over `pairs[]` in the seed pack —
+  counterfactual sentence pairs that share a topic but flip the
+  intent axis (e.g. `"I am certain the meeting is at 3pm"` vs.
+  `"I think maybe the meeting is at 3pm"`). Forces
+  `score(high) > score(low)` for matched pairs.
 
-Cost: 4 mean-pole cosines = 4 dot products per dimension, riding
-on the BGE-small embedding Step 4 already produced. Plus one
-graph-state probe for `prediction_error`. Well under 1 ms.
+**Graph-state component for `prediction_error` (deferred).** Earlier
+spec called for `prediction_error` to bump when Step 6's candidate
+extraction would supersede an existing Asserted relation. Not yet
+implemented; current score is purely linguistic. Lands with Step 6
+/ Step 10.
+
+Cost: per-call dominated by embedding inference (~5–15 ms short
+input); lexical extraction + four 418-dim dot products are
+microseconds. **The pipeline should cache the input embedding and
+reuse it in Step 4 (Embed Windows)** — not yet wired, so for now
+Step 1 embeds independently and Step 4 will re-embed. With caching,
+Step 1's marginal cost drops to sub-ms.
 
 **Step 2 — Adjust Policy.** Pure scalar arithmetic — no model. Map
 the 4-vector to the substrate knobs via the §10.6 formulas:
@@ -609,8 +627,8 @@ Two paths by length:
   Cost: one tokenizer pass, ~µs. Risk of mid-relation split: zero.
 - **Long input (> ~480 tokens).** Invoke **SaT (Segment Any Text)**
   — a small ~22M-param ONNX (Open Neural Network Exchange) model
-  running through the same `ort`
-  runtime as BGE-small / GLiNER2 — to find sentence/paragraph
+  running through the same `ort` runtime as GLiNER2 (the embedder
+  uses tract-onnx; SaT/GLiNER2 are on `ort`) — to find sentence/paragraph
   boundaries that respect natural discourse breaks rather than
   blindly chopping at token counts. Greedy-group SaT segments into
   ≤480-token windows. If a single SaT segment exceeds the budget
@@ -624,17 +642,24 @@ forcing an internal split would risk separating an entity from its
 relation partner. SaT operates *between* GLiNER2 windows, not
 inside them.
 
-**Step 4 — Embed Windows.** **BGE-small-en-v1.5** (384-dim, 6
-transformer layers) running INT8-quantized through `ort` (the ONNX
-runtime crate). Tokenization is `tokenizers` (HuggingFace pure-Rust
+**Step 4 — Embed Windows.** **all-MiniLM-L6-v2** (384-dim, 6
+transformer layers, ONNX-quantized, ~23 MB) running through
+**tract-onnx** (pure-Rust ONNX runtime — no C++ deps, portable to any
+OS Rust supports). Model bytes are baked into the binary via
+`include_bytes!`. Tokenization is `tokenizers` (HuggingFace pure-Rust
 crate). Each window from Step 3 becomes one vector; for multi-window
-inputs, embedding calls fan out across windows via
-`rayon::par_iter`. INT8 inference is ~3–5 ms per call on a 4-core
-commodity CPU (Central Processing Unit). Single-window inputs (the
-common case) make one
-inference; multi-window inputs make N parallel inferences and the
-5–20 ms budget covers up to ~5 windows in parallel. FP32 stored —
-INT8 is inference-only, snapshot keeps the FP32 master.
+inputs, embedding calls fan out across windows via `rayon::par_iter`.
+Quantized inference is ~3–5 ms per call on a 4-core commodity CPU
+(Central Processing Unit). Single-window inputs (the common case)
+make one inference; multi-window inputs make N parallel inferences
+and the 5–20 ms budget covers up to ~5 windows in parallel. The
+runtime carries only the quantized model — no separate FP32 master,
+since tract-onnx loads quantized weights directly.
+
+**Sharing with Step 1.** Step 1 (`detect_intent`) currently embeds
+its input independently through the same model; the pipeline should
+cache that embedding once per window and let Step 4 reuse it
+instead of re-embedding. Not yet wired — see Step 1 note above.
 
 **Step 5 — Route Regions.** **Predictive prefilter, not authoritative
 placement.** Step 5's job is to identify which regions are active for
@@ -715,7 +740,7 @@ the step itself is the long pole:
 
 1. **Exact-match tantivy lookup** (BM25 (Best Match 25) index over element
    `names`). On hit, reuse the attribute-name Element.
-2. On miss: **embed `attr_label` with BGE-small** and run a
+2. On miss: **embed `attr_label` with the MiniLM embedder** and run a
    universal cosine search across **all** attribute-name elements
    (not just warm ones — synonyms might be cold). On any hit ≥
    `policy.attribute_name_dedup_threshold` (0.85), reuse the top hit
@@ -873,15 +898,19 @@ R.stats.salience = bounded_hebbian_bump(R.stats.salience, bump * p.hebbian_rate)
 2. `support_diversity >= policy.promotion_min_diversity` (2) —
    measured across distinct `(R, source, S)` source elements,
    `Intent` regions (high-conviction-statement vs curiosity
-   vs high-prediction-error), and `active_frame` scopes. Three
-   rephrasings of the same wrong claim from one
-   source/weight/frame don't clear the bar.
+   vs high-prediction-error), and `active_frame` scopes — *and*
+   topologically distinct in the source DAG (replay-maintained
+   `derived_from` annotation; full doc §11.11 + §14.8). Three
+   rephrasings of the same wrong claim from one source / weight /
+   frame don't clear the bar; nor do nominally-distinct sources
+   that all trace back to the same root event.
 3. No contradicting relation written within the window
    (one `meta_relations_by_object[R]` lookup + `supersedes`
    filter).
 
 Diversity check distinguishes "repeated assertion" from "converging
-evidence."
+evidence"; topological independence distinguishes "converging
+evidence" from "echo chamber." Pearl independence (full doc §6 (8)).
 
 **Step 12 — Focus-Radius Decay.** No model — bounded BFS (Breadth-First Search) + scalar
 multiplies. Walk outward from the focus set up to
@@ -927,7 +956,7 @@ Field-by-field, with the step that produces each field's contents:
 |---|---|---|
 | `tick` | 13 | Read `hg.clock`. |
 | `input` | 0 capture / 13 return | Echo of the input text; not durable. |
-| `intent` | 1 | Cosine projection against intent prototype banks (§seed pack). |
+| `intent` | 1 | Per-dim logistic-regression classifier over `embedding ++ lexical_features` (418 dims), trained build-time from `seed_pack.yaml`'s `intent_prototypes`. |
 | `active_frame` | 5 | Inherited from `recent_focus` or set by a frame-shifting cue. |
 | `active_regions` | 5 | Union of per-window `route_regions(...)` results. |
 | `focused_relations` | 13 | RRF over Dense (path-reinforced focus set) + Sparse (tantivy BM25) + Path-reinforced (focus_success bumps from Step 11). RRF (Cormack et al. 2009) merges ranked lists by `Σ 1 / (60 + rankᵢ)` — keeps ranks, discards incompatibly-scaled raw scores. |
@@ -1142,8 +1171,8 @@ builds. Inspect via `legend memory show-failures`.
 all consumers of a Legend instance share access. Consumers needing
 separation run separate Legend instances per trust boundary.
 
-**Embedder pin.** BGE-small-en-v1.5 with INT8 inference and FP32
-stored, pinned for life. A model swap means re-ingesting from
+**Embedder pin.** all-MiniLM-L6-v2 (ONNX-quantized) running through
+tract-onnx, pinned for life. A model swap means re-ingesting from
 `(R, source, S)` per the §15.1 recoverability matrix:
 
 ```text
@@ -1197,7 +1226,7 @@ holder death.
                        daemon (CLI-client)    one-shot
 snapshot deserialize   0 (in memory)          ~50–200 ms
 index rebuild          0                      ~10–30 ms
-ort + BGE-small load   0                      ~300–500 ms
+tract + MiniLM load    0                      ~300–500 ms
 embedder warm-up       0                      ~100–200 ms
 tick (§11.0)           ~200–300 ms            ~200–300 ms
 IPC (Inter-Process            ~1 ms                  ~5–10 ms
@@ -1217,16 +1246,20 @@ ad-hoc ticks.
 Pure Rust + deterministic ONNX.
 
 1. **`tokenizers`** (HuggingFace) — Apache-2.0, pure Rust.
-2. **`ort`** (pyke.io) — ONNX runtime.
-3. **BGE-small-en-v1.5** — 384-dim embedder, INT8 inference, FP32
-   stored, pinned for life.
-4. **`tantivy`** (current stable) — BM25 lexical index.
-5. **Temporal parser** — `chrono` + `chrono-english`.
-6. **`gline-rs` / `gliner2`** — pure-Rust GLiNER (Generalist
+2. **`tract-onnx`** (Sonos) — pure-Rust ONNX runtime; carries the
+   embedder. No C++ deps, portable to any OS Rust supports.
+3. **`ort`** (pyke.io) — separate ONNX runtime for the larger
+   transformer extractors (GLiNER2, SaT) where tract's coverage
+   isn't yet sufficient.
+4. **all-MiniLM-L6-v2 (quantized)** — 384-dim embedder, ONNX-
+   quantized, ~23 MB, baked into the binary, pinned for life.
+5. **`tantivy`** (current stable) — BM25 lexical index.
+6. **Temporal parser** — `chrono` + `chrono-english`.
+7. **`gline-rs` / `gliner2`** — pure-Rust GLiNER (Generalist
    Lightweight Named Entity Recognizer) on `ort`. 130–208 ms per
    window. ★ binding latency constraint.
-7. **Heuristic coref** — recency-based, written from scratch.
-8. **SaT (Segment Any Text)** — ~22M-param ONNX, loaded through
+8. **Heuristic coref** — recency-based, written from scratch.
+9. **SaT (Segment Any Text)** — ~22M-param ONNX, loaded through
    `ort`. Invoked **only** when input > ~480 tokens (§10.x Step 3).
    ~10–20 ms per call when invoked; zero overhead otherwise.
 
@@ -1234,12 +1267,12 @@ Pure Rust + deterministic ONNX.
 
 ## 12. The Seed Pack
 
-`seed_pack.yaml` at the repo root. ~51 elements:
+`seed_pack.yaml` at the repo root. ~55 elements:
 
 ```text
 anchors (2):                 GENESIS, VOID
 
-seeded attribute names (26):
+seeded attribute names (30):
   ontology (2):              instance_of, subclass_of
   meta-relation (8):         target, frame, valid_from, valid_to,
                              source, supersedes, derived_from,
@@ -1248,9 +1281,18 @@ seeded attribute names (26):
                              lateral_region, prototype
   generic participant (7):   subject, actor, from, to, instrument,
                              property, reason
-  behavioral modal (4):      negated, uncertain, non_actual, general
+  behavioral modal (5):      negated, uncertain, non_actual, general,
+                             intervened
                              (surface modals like `might` / `must` /
-                              `usually` emerge via `subclass_of`)
+                              `usually` / `rescheduled` emerge via
+                              `subclass_of`; `intervened` carries
+                              Pearl rung-2 do() semantics — full
+                              doc §6 (8))
+  causal-relation (4):       caused, correlated_with, enables,
+                             prevents
+                             (Pearl rung-1-vs-rung-2 commitment;
+                              "why" queries walk causal links only;
+                              full doc §6 (8))
 
 regions (15):             entities, events, states, change_history,
                           relationships, quantities, time, locations,
@@ -1286,8 +1328,9 @@ extraction machinery (§11.7). Domain concepts (`appointment`,
 ```text
 Code owns mechanics — substrate types, the tick pipeline,
   decay/reinforcement/replay machinery, the embedding interface.
-Seeds own priors — anchors, attribute names (including the 4
-  behavioral modal attribute names), regions, reference frames.
+Seeds own priors — anchors, attribute names (including the 5
+  behavioral modal attribute names and the 4 causal-relation
+  attribute names), regions, reference frames.
 Inputs own truth — Legend keeps distilled relations, not inputs.
 Replay owns consolidation — region splits/merges, mid-path inserts,
   cycle resolution, attribute-name dedup, the background decay sweep.
@@ -1460,7 +1503,7 @@ determinism is a separate concern and lives at the smoke-test tier.
 | 1 | §7 + §9 substrate types + indices | 50-element round-trip; supersession chain walks both directions; debug-asserts on Inv 9 | ~2 wk |
 | 2 | Snapshot + bounded WAL | Crash mid-corpus → restart → state matches; fingerprint check refuses on mismatch | ~1 wk |
 | 2.5 | CLI front-end + IPC + lock (§10.1) | `legend "..."` works in one-shot mode (cold-start ≤ 1.5 s); `legend start` brings up daemon; subsequent `legend "..."` lands in CLI-client mode at §11.0 latency; concurrent calls serialize on lock; stale socket from `kill -9 <daemon>` is cleaned up by next CLI call | ~1 wk |
-| 3 | Seed pack | ~51 elements boot in expected configuration; seeded `parent_region` / `prototype` relations populate the region indices | ~1.5 wk |
+| 3 | Seed pack | ~55 elements boot in expected configuration; seeded `parent_region` / `prototype` relations populate the region indices | ~1.5 wk |
 | 4 | Manual conformance set: §19 + §20.5 + non-appointment fixture (mocked extractors) | All four fixtures pass via direct add_element/add_relation | ~1 wk |
 | 5 | Embeddings + region routing | Spans land in expected regions; multi-prototype ≤ 8; creation rate decays | ~1.5 wk |
 | 6 | Windowing + temporal parser + NER + RE | Tick 1 (single-window) emits `Tuesday`, `Friday`, `DrRao`, reschedule triple without hand-coding; multi-paragraph synthetic input above the token threshold routes through SaT, produces N windows, yields a relation set matching its single-window equivalent; chat-message-sized inputs skip SaT (no model invocation in the per-step trace) | ~2.5 wk |

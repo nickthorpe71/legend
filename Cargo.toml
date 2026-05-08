@@ -18,11 +18,17 @@ name = "legend"
 path = "src/main.rs"
 
 [dependencies]
-ort = {version = "2.0.0-rc.12", features = ["download-binaries"]}
-tokenizers = {version = "0.21", default-features = false, features = ["onig"]}
+tract-onnx = "0.21"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 
 [dev-dependencies]
+criterion = "0.5"
+serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+
+[[bench]]
+name = "embed"
+harness = false
 
 [profile.release]
 opt-level = 3

@@ -92,8 +92,9 @@ PHASES                 Step 0     WAL (Write-Ahead Log) append
 
 INTENT VECTOR          Intent { conviction, prediction_error,
                                      arousal, curiosity } — 4-dim,
-                       projected from BGE-small (BAAI General Embedding)
-                       embedding via prototype banks; modulates
+                       per-dim logistic-regression classifier over
+                       MiniLM embedding ++ lexical features (418 dims),
+                       trained build-time from seed pack; modulates
                        default_conf, salience, vigilance, hebbian_rate,
                        supersession_threshold. Does NOT gate which steps
                        run. Maps to DA (dopamine) / NE (norepinephrine) /
@@ -104,7 +105,7 @@ DURABILITY             snapshot (LZ4+MessagePack) + bounded WAL
                        checkpoint at N=1000 ticks ∨ S=5MB ∨ T=1hr,
                        boot fingerprint check refuses on mismatch     (§18)
 
-EMBEDDER               BGE-small-en-v1.5, INT8 inference, FP32 stored,
+EMBEDDER               all-MiniLM-L6-v2 (ONNX-quantized) via tract-onnx,
                        pinned for life — model swap = re-ingest
                        per recoverability matrix                      (§15.1, §18.4)
 
@@ -203,7 +204,7 @@ Friday."*
 Legend processes this as a single discovery:
 
 1. **Embed and route.** The input is segmented into clauses, each
-   embedded by a pinned BGE-small encoder, then routed through the
+   embedded by a pinned MiniLM-L6-v2 encoder, then routed through the
    semantic-region DAG (Directed Acyclic Graph). Active regions:
    `appointments`, `dental_appointments`, `change_history`.
 2. **Run extractors.** NER (Named Entity Recognition), temporal
@@ -283,8 +284,9 @@ for crash recovery between snapshots. Snapshots are stamped with a
 version) that is checked at boot — refuse to start on mismatch. Boot =
 load latest snapshot, replay WAL suffix on top.
 
-**Embedder pin.** The embedder (BGE-small-en-v1.5) is pinned for
-Legend's lifetime. Model swap costs are stratified by source class
+**Embedder pin.** The embedder (all-MiniLM-L6-v2 quantized, via
+tract-onnx) is pinned for Legend's lifetime. Model swap costs are
+stratified by source class
 (§15.1 recoverability matrix); for coding-project use the unrecoverable
 share dominates over time. The pin is what the design costs, not a
 conservative default — treat as load-bearing infrastructure that does
@@ -361,13 +363,15 @@ the relation graph rather than inspecting a tag.
 *world-content* categories — what kinds of things exist in the
 modeled domain (concepts, instances, events, frames, attribute names).
 The seed pack does pre-declare a small set of *substrate-mechanism
-anchors*: the meta-relation attribute names (§7.2) and the three
+anchors*: the meta-relation attribute names (§7.2), the five
 behavioral modal attribute names (§16.3 — `negated`, `uncertain`,
-`non_actual`, `general`). Recognition machinery and meta-relation
-routing read these by name, so they have to be present at boot.
-Pre-committing the substrate's plumbing is not the same as
-pre-committing the world's ontology — the bet is about the
-latter.
+`non_actual`, `general`, `intervened`), and the four causal-relation
+attribute names (§16.3 — `caused`, `correlated_with`, `enables`,
+`prevents`). Recognition machinery, meta-relation routing, and
+"why"-shaped retrieval read these by name, so they have to be
+present at boot. Pre-committing the substrate's plumbing is not
+the same as pre-committing the world's ontology — the bet is about
+the latter.
 
 ### 1.7 Legend As A Bounded Observer
 
@@ -1413,6 +1417,45 @@ state) and the v1 inward-compression mechanism (template relations
 shortcutting recurring structure) follow from this framing. **Full
 argument in §1.7** — not repeated here.
 
+**8. Pearl's causal hierarchy** (Pearl 2009, *Causality*, 2nd ed.;
+Pearl & Mackenzie 2018, *The Book of Why*). The three-rung distinction
+between **association** (`P(Y|X)` — what we see together),
+**intervention** (`P(Y|do(X))` — what happens if we act), and
+**counterfactual** (`P(Y_x|x', y')` — what would have happened),
+with structural causal models (SCMs) and do-calculus as the
+machinery for moving between rungs. Legend applies the framework at
+several points and is shaped to support the rest cheaply later:
+
+- §11.2 trains intent classifiers with the lexical-feature vector
+  acting as a **front-door mediator** that strips topic confounding
+  from the embedding (linguistic surface form is causally upstream of
+  the embedding); cross-class negatives perform confounder adjustment
+  for the shared "first-person assertion shape"; Bradley-Terry pairs
+  are same-topic / flipped-axis controlled experiments.
+- §16.3's `intervened` behavioral modal distinguishes **rung-2
+  evidence** (an agent acted) from default **rung-1 observation**
+  (the world was seen to be that way). §11.10 supersession and
+  §11.11 reinforcement read it because do() severs prior causes —
+  intervention updates only the intervened claim; observation
+  updates the claim *and* propagates back to its latent causes.
+- §16.3's seeded **causal-relation attribute names** (`caused`,
+  `correlated_with`, `enables`, `prevents`) let the relation graph
+  carry the level of causal commitment a source actually claims —
+  the precondition for not collapsing rung-1 co-occurrence into
+  rung-2 causal structure during retrieval.
+- §7.2's `derived_from` chain *is* the substrate's structural causal
+  model — every relation that has one points back to the cause from
+  which it was derived. Replay's cycle resolution and §11.11's
+  topological-independence promotion gate (§14.8) walk this DAG
+  directly. `antecedent_of` plays the same role for conditional
+  rules.
+- Full **counterfactual queries** (Pearl's abduction / action /
+  prediction three-step) are deferred to v1+ (§24.9). The v0
+  substrate carries everything needed (`non_actual` modal,
+  `derived_from` DAG, the §11.13 frame-assembly pipeline) so the
+  query path is a non-mutating projection over an existing
+  hypergraph rather than a parallel mechanism.
+
 §22 (Source Map) gives full citations for each formalism above.
 
 ---
@@ -1446,7 +1489,7 @@ The seed pack gives some elements canonical names ("Change",
 lifecycle; noisy or unused names decay.
 
 **`embedding`** is the semantic anchor. Populated at mint time by
-embedding `names` with BGE-small (§15.1). Seed-pack elements get
+embedding `names` with the MiniLM embedder (§15.1). Seed-pack elements get
 embeddings at boot from descriptors or canonical names; extractors
 embed each newly-minted element from its surface form (or the
 originating span text for anonymous NER spans, held as a variant
@@ -1550,9 +1593,10 @@ slot) pointing at the modified relation via `Term::Relation`:
 | Uncertainty | `[uncertain: <degree-or-surface-form>, target: R]` — confidence-reducing modality |
 | Non-actual | `[non_actual: <kind>, target: R]` — claim is not about actual world state (counterfactual, desired, obligatory) |
 | General | `[general: <kind>, target: R]` — habitual / generic / universal claim that resists supersession by specific instances |
+| Intervention | `[intervened: <agent-or-surface>, target: R]` — agent-action evidence (Pearl rung 2, §6 (8)); do() severs prior causes for supersession (§11.10) and reinforcement updates only the intervened claim, not its latent causes (§11.11). Absence = default observation. |
 | Supersession backward link | `[supersedes: R_old, target: R_new]` |
-| Lineage | `[derived_from: X, target: R]` where X is an Element or Relation |
-| Conditional antecedent | `[antecedent_of: R', target: R]` |
+| Lineage | `[derived_from: X, target: R]` where X is an Element or Relation — Legend's structural causal model is the DAG these meta-relations form (§6 (8)) |
+| Conditional antecedent | `[antecedent_of: R', target: R]` — captures rule shape "R holds if R' holds"; substrate hook for v1 forward-chaining (§24.6) and counterfactual queries (§24.9) |
 
 Each meta-relation is just a Relation. It has its own status, stats,
 priority, decay, and can itself carry meta-relations (a frame-scoping
@@ -2481,7 +2525,7 @@ provisional insertion to one of three outcomes:
   node's children re-parent to the original (pre-insertion) parent
   via new `parent_region` relations.
 
-The stability gate is essential at BGE-small's 384 dimensions, where
+The stability gate is essential at MiniLM's 384 dimensions, where
 adjacent cosine differences of 0.02–0.05 are routinely within
 embedding noise. `confirm_gap` (default 0.05) and the multi-tick
 evidence requirement keep replay from churning provisional nodes in
@@ -2641,21 +2685,25 @@ vector modulates `Policy` (§11.2 / §10.6), not which steps execute.
 
 ### 11.0 Per-Step Latency Budget
 
-v0 budget table on commodity CPU (4-core, INT8 ONNX (Open Neural
-Network Exchange), BGE-small + GLiNER2-small via gline-rs). Numbers
-are p50 (50th-percentile) targets; p95 (95th-percentile) typically
-runs 1.5–2× p50 driven by GLiNER2 variance.
+v0 budget table on commodity CPU (4-core, ONNX (Open Neural Network
+Exchange) — MiniLM-L6-v2 quantized via tract-onnx for the embedder,
+GLiNER2-small via gline-rs/`ort` for extraction). Numbers are p50
+(50th-percentile) targets; p95 (95th-percentile) typically runs
+1.5–2× p50 driven by GLiNER2 variance.
 
 ```text
 step  name                              p50 budget    notes
 0     log entry (WAL append)            <1 ms         LZ4 hot segment append
-1     detect_intent                     1–3 ms        small-bank cosine vs intent prototypes
+1     detect_intent                     5–15 ms       embedding + 4 logistic classifiers; today
+                                                      embeds independently (will share with Step 4
+                                                      once cached, then sub-ms marginal)
 2     adjust_policy                     <1 ms         scalar copy + multiplier apply
 3     window                            <1 ms (short) tokenize + length check; no model
                                         +10–20 ms     SaT call only when input > ~480 tokens
                                         (long)
-4     embed                             5–20 ms       BGE-small INT8 per window (parallel
-                                                      across windows)
+4     embed                             5–20 ms       MiniLM-L6-v2 (quantized) per window
+                                                      (parallel across windows; should reuse the
+                                                      Step 1 embedding once caching lands)
 5     route_regions                     5–15 ms       DAG descent per window (parallel)
 6     run_extractors                    130–208 ms    ★ GLiNER2 per window — the long pole;
                                         × N windows   one inference call per window
@@ -2789,41 +2837,88 @@ struct Intent {
 }
 ```
 
-**How each dimension is scored.** The seed pack ships **prototype
-banks** per dimension — small sets of representative phrases per
-pole — embedded with BGE-small at boot (§16.3.5). For each
-dimension, the score is computed from the input's BGE-small
-embedding (already produced for Step 4):
+**How each dimension is scored.** Per-dimension binary
+logistic-regression classifiers, one per intent dim, each trained
+build-time from the seed pack and baked into the binary as a
+`.bin` blob of `[f32; 418]` weights + `f32` bias. At runtime each
+classifier outputs `sigmoid(w·x + b) ∈ [0, 1]`.
 
-```text
-score(dim) =
-    cosine(input_emb, mean_high_pole_emb)
-  - cosine(input_emb, mean_low_pole_emb)
-  // clamped to [0.0, 1.0] after a sigmoid-style squash
-```
+The 418-dim feature vector is the all-MiniLM-L6-v2 sentence
+embedding (384) concatenated with 34 hand-crafted lexical features:
+modal counts (epistemic strong/weak, deontic, certainty/uncertainty
+idioms), pronoun person, question shape (`?`, wh-words, auxiliary-
+verb-fronted, imperative-query stems), negation, correction /
+revision / discovery markers, continuity markers, intensifiers,
+emergency vocabulary, positive/negative emotion, importance vs.
+dismissal, punctuation density, caps ratio, tense, and length.
+The full list lives in `src/lexical_features.rs`.
 
-For `curiosity` and `prediction_error`, the low pole is "no
-signal" rather than an opposite signal, so the formula simplifies
-to `cosine(input_emb, mean_high_pole_emb)` clamped.
+The seed pack ships per-dim **phrase pools** (`high_pole`,
+`low_pole`) plus **counterfactual pairs** (`pairs[].high`,
+`pairs[].low`) — sentence pairs that share a topic but flip the
+intent axis. Training combines two losses:
 
-`prediction_error` adds a **graph-state component** beyond the
-prototype bank: when the extracted candidate relations from Step 6
-(speculatively scored against the existing graph) would supersede
-or contradict an existing Asserted relation, `prediction_error`
-gets bumped toward 1.0. This is the actual contradiction signal,
-distinct from the linguistic-surprise component.
+1. **Standard logistic regression** with class-weighted gradient +
+   L2. Positives = own dim's high pool ∪ pair-highs. Negatives =
+   own dim's low pool ∪ pair-lows ∪ **every phrase from the other
+   three dims**. The cross-class negatives push the learned
+   direction toward what's *unique* to this dim's high pole — Pearl
+   Level-2 confounder adjustment ("first-person assertion shape" is
+   common to all four dims; subtracting it leaves the dim-specific
+   signal).
+2. **Bradley-Terry contrastive** over own-dim pairs:
+   `−log sigmoid(w·(h − l))` per pair. Pearl Level-3 controlled
+   experiment — same topic, flipped intent — strips topical content
+   out of the learned weights and pins the axis to intent shape.
 
-**Cost.** Four mean-pole cosines per dimension = 4 dot products
-total, riding on the BGE-small embedding Step 4 already produced.
-Plus one graph-state probe for `prediction_error`. Well under 1 ms.
+**Lexical features as a front-door mediator.** The earlier draft of
+this section said *"no marker phrases, no punctuation rules, no
+hard-coded keywords."* That stance has been retired. Linguistic
+surface form (modals, person, mood, punctuation) is causally
+upstream of the embedding — the speaker's intent → word choice →
+embedding — so hand-crafted features capture intent signal cleanly,
+while the embedding alone carries intent confounded with topic.
+Front-door routing around the topic confound (Pearl, *Book of
+Why*, ch. 7) lifted held-out test accuracy from ~75% to 97.5% and
+collapsed paraphrase-invariance score deltas on the curiosity
+classifier from 0.33 to 0.06. The embedding still does most of the
+semantic work; the lexical features are 34 of 418 dims and act as a
+correction term.
 
-**No marker phrases. No punctuation rules. No hard-coded keywords.**
-Language judgment lives in the seed pack's prototype banks (data,
-swappable per Legend instance) and in the embedding model. The
-question "Find when I last saw Dr. Rao" lands as high `curiosity`
-without any `?` and without any "find" / "when" patterns in code —
-its BGE-small embedding sits closer to the curiosity prototype
-bank than to the assertion bank.
+**Graph-state component for `prediction_error` (deferred).** The
+earlier spec called for `prediction_error` to be bumped toward 1.0
+when Step 6's candidate extraction would supersede an existing
+Asserted relation — the "actual contradiction" signal beyond the
+linguistic-surprise component. Not yet implemented. Current
+`prediction_error` is purely linguistic. The graph-state probe is
+expected to land alongside Step 6 / Step 10. **Causal framing
+(§6 (8)).** Binary contradiction is the v0 shape; the natural
+extension scores the *information shift* between the substrate's
+current causal-model prediction over the affected fluents (walking
+`derived_from` and `antecedent_of`) and the new claim — surprise is
+high when the new evidence contradicts what the existing structural
+model would have predicted, modest when it just adds detail. Once
+`intervened` (§16.3) lands, observation-vs-intervention status
+weights the probe: contradicting an observation is more informative
+about substrate error than contradicting an interventional claim
+(the latter is just the world being changed).
+
+**Cost.** Today the per-call cost is dominated by the embedding
+inference (~5–15 ms for short inputs); the four 418-dim dot
+products and the lexical-feature extraction are microseconds each.
+**The pipeline should cache the input embedding once and reuse it
+in Step 4 (Embed Windows).** Currently it isn't cached — Step 1
+embeds independently and Step 4 will re-embed when wired up. Once
+caching lands, Step 1's marginal cost drops back to sub-ms (lexical
+features + 4 dot products).
+
+**No reliance on punctuation alone.** Even with the lexical
+features, the embedding is still load-bearing. The question "Find
+when I last saw Dr. Rao" lands as high `curiosity` driven by the
+embedding plus the imperative-query-stem feature; "I don't know
+where he is" lands as low conviction driven by the weak-epistemic
+modal plus the negation feature plus the embedding. Neither cue
+alone determines the score.
 
 **What `Intent` does and does not change.** The vector feeds
 Step 2 (`adjust_policy`, §11.3) and through it modulates exactly
@@ -2956,15 +3051,16 @@ behavior, since longer inputs carry more relations.
 
 ### 11.5 Step 4 — Embed Windows
 
-**BGE-small-en-v1.5** (384-dim, 6 transformer layers) running
-INT8-quantized through `ort` (the ONNX runtime crate, §15.1).
-Tokenization is `tokenizers` (HuggingFace pure-Rust crate, §15.1).
-Each window from Step 3 becomes one vector; for multi-window inputs,
-embedding calls fan out across windows via `rayon::par_iter`. INT8
-inference is ~3–5 ms per call on a 4-core commodity CPU. Single-
-window inputs (the common case) make one inference; multi-window
-inputs make N parallel inferences and the §11.0 5–20 ms budget
-covers up to ~5 windows in parallel.
+**all-MiniLM-L6-v2** (384-dim, 6 transformer layers, ONNX-quantized,
+~23 MB) running through **tract-onnx** (pure-Rust ONNX runtime,
+§15.1; no C++ deps). Model bytes are baked into the binary via
+`include_bytes!`. Tokenization is `tokenizers` (HuggingFace pure-Rust
+crate, §15.1). Each window from Step 3 becomes one vector; for
+multi-window inputs, embedding calls fan out across windows via
+`rayon::par_iter`. Quantized inference is ~3–5 ms per call on a
+4-core commodity CPU. Single-window inputs (the common case) make
+one inference; multi-window inputs make N parallel inferences and
+the §11.0 5–20 ms budget covers up to ~5 windows in parallel.
 
 **Per-window, never one averaged vector for a many-window input** —
 later questions target small facts; cross-window averaging would mix
@@ -2973,9 +3069,16 @@ the embedding *is* a window-level vector; that's the right
 granularity because relations within the window cohere semantically
 by construction.)
 
-**FP32 stored, INT8 inference-only.** Snapshots keep the FP32
-master inline on each Element's `embedding` field; the INT8 form is
-re-derived from FP32 at inference time and never persisted (§15.1).
+**Storage format.** tract-onnx loads the quantized weights directly,
+so we don't carry a separate FP32 master alongside. Snapshots keep
+the embedding output (the L2-normalized 384-dim FP32 vector) inline
+on each Element's `embedding` field — that's an output of the
+quantized model, not the model weights themselves.
+
+**Sharing with Step 1.** Step 1 (`detect_intent`) embeds the input
+through the same model. The pipeline should cache that embedding
+once and have Step 4 reuse it instead of re-embedding the same input
+text. Not yet wired — see §11.2.
 
 The substrate is dimension-agnostic at the type level, but the seed
 pack's prototypes are dim-specific; swapping dimensions requires
@@ -3109,6 +3212,39 @@ All extractor output carries confidence. The tick's `source`
 parameter (§9.6, §11.1) flows into `(R, source, source)`
 meta-relations on the resulting relations during Step 9.
 
+**Causal-shape extraction conventions (§6 (8)).** Three conventions
+sit on top of the four extractors above; none requires a new model
+in v0, only that the relation-extraction step bias its label set
+and emit the right meta-relations:
+
+- **Tag agent-action verbs with `intervened`.** When the
+  relation-extractor's verb belongs to the surface lexicon for
+  agent action (`reschedule`, `move`, `set`, `configure`, `decide`,
+  `cancel`, `ship`, `revert`, `merge`, `deploy`, `delete`), emit a
+  `[target: R, intervened: <verb-element>]` meta-relation alongside
+  the base relation. Verb elements link to `intervened` via
+  `subclass_of` (§16.3); recognition walks the cone, so the
+  surface lexicon stays open. Default — no tag, no `intervened`
+  meta-relation — means observation. Steps 10 and 11 read the tag
+  for do()-shaped supersession and reinforcement (§11.10, §11.11).
+- **Prefer causal vs. correlational attribute names from
+  linguistic markers.** "X caused Y" / "Y because X" / "X led to Y" /
+  "due to X" → `caused`. "X enabled Y" / "made it possible for Y"
+  → `enables`. "X prevented Y" / "blocked Y" → `prevents`.
+  "X tends to happen with Y" / "X and Y both" / "comes with X" →
+  `correlated_with`. The four canonical names are seeded (§16.3);
+  surface variants emerge as ordinary attribute-name elements
+  pinned via `subclass_of`. Without these conventions, GLiNER2
+  collapses correlational and causal claims onto whatever surface
+  attr_label the input used and Legend loses the rung distinction
+  the seed pack created the names for.
+- **Capture conditionals as `antecedent_of`, not as flattened
+  base relations.** "If X happens, Y" / "Y holds when X" / "Y
+  unless X" → emit a base relation for Y plus a meta-relation
+  `[target: R_y, antecedent_of: R_x]`. Forward-chaining is §24.6's
+  job to add later; v0's job is to *record the shape* so v1 has
+  substrate to read from on day one (§16.3).
+
 **Attribute-name label set.** GLiNER2's relation-extraction labels come
 from, in order:
 
@@ -3202,6 +3338,15 @@ all "it" pronouns to the most-recent-anything, which fails on
 multi-attribute ticks like §19's Tick 5 ("the dentist moved it again
 to Monday" — "it" should resolve to the appointment, not to the
 dentist or the previous date).
+
+Filtering the candidate set by `attribute` (the grammatical slot
+the candidate was bound under in its prior focus) is **back-door-
+style adjustment** (Pearl, §6 (8)): "most recent thing" confounds
+"what the speaker just referred to" through "what was just
+mentioned in any role"; conditioning on the slot blocks that
+confounding path so the remaining signals (name, embedding, frame,
+relation support) carry causal information about identity rather
+than slot-mixed correlation.
 
 Rules:
 
@@ -3353,6 +3498,20 @@ attribute, inverse via `meta_relations_by_object[R]` filtered the same
 way) remain O(chain-length) — one HashMap lookup plus a 0–3-element
 filter per hop.
 
+**`intervened` modulates the trigger threshold (§6 (8), §16.3).**
+When the event carries an `intervened` meta-relation (the agent
+acted on the world — `rescheduled`, `set`, `cancelled`, …), prior
+cache supersession fires unconditionally regardless of confidence
+gaps: do() severs prior causes by definition, so the previous
+state's confidence is irrelevant. When the event lacks
+`intervened` (default observation), the existing
+`policy.supersession_threshold` (§10.6, intent-modulated) applies —
+an observed contradiction may indicate the substrate's prior model
+was wrong somewhere upstream rather than a clean state transition,
+so high prior confidence raises the bar for flipping. Both paths
+produce the same `Superseded` flip + `supersedes` meta-relation;
+only the gate condition differs.
+
 ### 11.11 Step 11 — Hebbian + Salience
 
 Pure arithmetic over `MemoryStats` — no model. Two updates fire:
@@ -3404,20 +3563,29 @@ is promoted to `Asserted` in this step when *all three* hold:
    the relation has been observed across at least N independent ticks
    within `policy.promotion_window_ticks`.
 2. `stats.support_diversity >= policy.promotion_min_diversity`
-   (default 2) — the supporting ticks come from at least D distinct
-   *evidence sources*, where source diversity is measured across:
-   different `(R, source, S)` source elements, different
-   `Intent` regions (e.g. high-conviction-statement vs
-   curiosity vs high-prediction-error mention), and different
-   `active_frame` scopes. Three rephrasings of the same wrong claim
-   from one source / weight-region / frame don't clear the bar.
+   (default 2) — the supporting ticks come from at least D
+   *topologically distinct* evidence sources. Distinctness is
+   measured across: different `(R, source, S)` source elements,
+   different `Intent` regions (e.g. high-conviction-statement vs.
+   curiosity vs. high-prediction-error mention), and different
+   `active_frame` scopes — *and* the source elements themselves
+   must be topologically independent in the source DAG. Step 11
+   reads a replay-maintained annotation that maps each source
+   element to its independent-root id (replay walks `derived_from`
+   chains; §14.8), so two sources that trace back to the same
+   root event count as one rather than two. Two Slack messages
+   from the same user reposting the same git commit are downstream
+   of one root event and don't clear the bar.
 3. No contradicting relation has been written within the window
    (one `meta_relations_by_object[R]` lookup + `supersedes` filter).
 
 The diversity check is what distinguishes "repeated assertion" from
-"converging evidence." Without it, an extractor that rephrases the
-same input three times auto-promotes wrong content; with it,
-promotion requires actually different evidence.
+"converging evidence" — and the topological-independence extension
+is what distinguishes "converging evidence" from "echo chamber."
+Without it, an extractor that rephrases the same input three times
+auto-promotes wrong content; with it, promotion requires actually
+independent evidence in the Pearl sense (§6 (8) — independent
+causes, not just nominally distinct ids).
 
 ### 11.12 Step 12 — Focus-Radius Decay
 
@@ -3481,7 +3649,7 @@ contents; Step 13 only finalizes assembly.
 |---|---|---|---|
 | `tick` | The monotonic clock value at this tick's commit point. Lets the caller correlate with WAL entries, snapshot timestamps, and recent-focus tick stamps. | Step 13 | Read `hg.clock`. |
 | `input` | A read-only echo of the input text. Not a substrate citizen; discarded after the caller consumes the frame. Exists so the caller has the question/statement in hand alongside Legend's response without threading it separately. | Step 0 (captured at tick entry); Step 13 (returned) | Construct `InputEcho { text }` from the original `Input.text`. |
-| `intent` | The 4-dim `Intent { conviction, prediction_error, arousal, curiosity }` (§11.2). Exposes how this tick's intent vector landed, so the calling LLM can see "this tick was high-conviction correction-shaped" without reverse-engineering it. | Step 1 | Cosine projection of input embedding against per-dimension prototype banks (§16.6 / `seed_pack.yaml`'s `intent_prototypes`); held through the tick. Step 13 just attaches it. |
+| `intent` | The 4-dim `Intent { conviction, prediction_error, arousal, curiosity }` (§11.2). Exposes how this tick's intent vector landed, so the calling LLM can see "this tick was high-conviction correction-shaped" without reverse-engineering it. | Step 1 | Per-dim logistic-regression classifier over `embedding ++ lexical_features` (418 dims), trained build-time from `seed_pack.yaml`'s `intent_prototypes` (high/low pools + counterfactual pairs). Held through the tick; Step 13 just attaches it. |
 | `active_frame` | The reference-frame element this tick operated under (e.g. `FRAME_USER`, `FRAME_PROJECT`). `None` if no frame was identified. Drives frame-relative supersession and frame-scoped retrieval. | Step 5 (carried forward from the previous tick's working memory unless this tick's input shifted frame) | Either inherited from `recent_focus`'s most recent entry's `frame`, or set by a frame-shifting cue extracted in Step 6 (e.g. a domain marker routing through `REGION_DOMAINS`). |
 | `active_regions` | The regions activated for *this tick*, with per-region similarity scores. The union across windows for multi-window inputs. Lets the caller see "this input touched events + change_history + time." | Step 5 | `route_regions(...)` results per window, unioned. Each entry is a `RegionActivation { region, similarity }`. |
 | `focused_relations` | The relations the caller reads its answer off of. Status-filtered: `Asserted` + `Entailed` by default; `Defeasible` flagged with `is_defeasible = true`; `Superseded` excluded (it lands in `history`); `Retracted` excluded entirely. | Step 13 | RRF merge over three signals — see §11.13 RRF prose below. |
@@ -3642,8 +3810,11 @@ fn route_regions(input_embeddings: &[Vec<f32>], hg: &Hypergraph, p: &Policy)
 fn separate_pattern(candidate: &Element, neighbors: &[&Element], p: &Policy)
     -> Decision;
 fn score_salience(relation: &Relation, p: &Policy) -> f32;
-fn detect_intent(input: &str, embeddings: &[Vec<f32>], hg: &Hypergraph)
-    -> Intent;
+fn detect_intent(input: &str) -> Intent;
+// v0: no Hypergraph dependency yet (graph-state probe for
+// `prediction_error` is deferred — see §11.2). The eventual signature
+// will take `embeddings: &[Vec<f32>]` (cached from Step 4) and
+// `hg: &Hypergraph` for the supersession-candidate probe.
 fn adjust_policy(intent: &Intent, base: &Policy) -> Policy;
 fn aggregate_focus(candidates: &[RelationCandidate],
                    path: &[ElementId],
@@ -3939,6 +4110,18 @@ relations; the relation graph stays the source of truth. Replay jobs:
   name elements' embeddings converge within
   `policy.attribute_name_dedup_threshold`. Priority-bumped for ticks
   that fired the §11.7 mint-rate warning.
+- **maintain source-DAG independence annotations (§11.11 promotion
+  gate, §6 (8)).** Walk `derived_from` (and other lineage) chains
+  over cited `(R, source, S)` source elements; for each source,
+  cache the id of its independent root (the ancestor reached when
+  no further `derived_from` link exists). Step 11's
+  `support_diversity` check reads this annotation so two sources
+  with the same root count as one. Cheap incremental update on
+  any tick that wrote a new source element or new `derived_from`
+  meta-relation; full sweep periodic. Catches echo-chamber
+  repromotion — the same input rephrased through multiple
+  downstream sources — where nominal id-distinctness would
+  otherwise pass the gate.
 - resolve provisional coreference.
 - compact redundant relations.
 - materialize useful derived relations.
@@ -3999,9 +4182,15 @@ Pure Rust plus deterministic ONNX. No Python, no JVM, no sidecars.
 
 1. **`tokenizers` (HuggingFace)** — tokenization. Apache-2.0, pure
    Rust. Golden-vector tests against reference outputs.
-2. **`ort` (pyke.io)** — ONNX runtime. The single inference path.
-3. **BGE-small-en-v1.5** as the embedder, INT8-quantized for inference
-   latency only (FP32 stored in v0). Pinned for Legend's lifetime
+2. **`tract-onnx` (Sonos)** — pure-Rust ONNX runtime. Carries the
+   embedder. No C++ deps; portable to any OS Rust supports. The
+   embedder weights are baked into the binary via `include_bytes!`.
+3. **`ort` (pyke.io)** — ONNX runtime for the larger transformer
+   extractors (GLiNER2, SaT) where tract's coverage is not yet
+   sufficient. Two inference paths is a deliberate split, not a
+   long-term invariant; tract is preferred where it works.
+4. **all-MiniLM-L6-v2 (ONNX-quantized, ~23 MB)** as the embedder.
+   384-dim, 6 transformer layers. Pinned for Legend's lifetime
    (§18.4). A model swap is a deliberate, hard, one-time event.
    Legend does not retain raw text or per-input records, so there is
    no in-place re-embedding migration. The only path on swap is to
@@ -4072,7 +4261,8 @@ Pure Rust plus deterministic ONNX. No Python, no JVM, no sidecars.
    based, defensible per Centering Theory + Hobbs' algorithm baselines.
 8. **SaT (Segment Any Text)** — Frohmann et al. 2024, ~22M params,
    ONNX-exportable, multilingual sentence/paragraph segmentation.
-   Loaded through the same `ort` runtime as BGE-small / GLiNER2.
+   Loaded through the `ort` runtime alongside GLiNER2 (the embedder
+   uses tract-onnx; SaT and GLiNER2 are on `ort`).
    **Invoked conditionally**: only on inputs that exceed GLiNER2's
    ~480-token safe window (§11.4). Short inputs — the common case
    for chat-message-sized ticks — skip SaT entirely. ~10–20 ms per
@@ -4109,7 +4299,7 @@ Solo developer, evenings/weekends:
 | Component | Estimate |
 |---|---|
 | `tokenizers` integration + golden-vector tests | ~0.25 wk |
-| `ort` integration + BGE-small round-trip | ~2 wk |
+| tract-onnx integration + MiniLM round-trip | ~2 wk |
 | `tantivy` integration + Legend's index schema | ~0.5 wk |
 | Temporal parser (`chrono-english` + uncertainty layer) | ~2.5 wk |
 | `gline-rs` integration + zero-shot relation calls | ~0.5 wk |
@@ -4159,10 +4349,13 @@ The seed pack has three categories:
 
 Reference frames round out the pack so `[frame: F, target: R]`
 meta-relations can be written without minting fresh elements per
-tick. Modality is handled via the three behavioral attribute names
-above (`negated` / `uncertain` / `non_actual`) — there is no
-separate "modal elements" category, since modality is just an
-attribute name in the uniform attribute-list model.
+tick. Modality is handled via the five behavioral attribute names
+above (`negated` / `uncertain` / `non_actual` / `general` /
+`intervened`) — there is no separate "modal elements" category,
+since modality is just an attribute name in the uniform attribute-
+list model. Causal commitment (rung 1 vs rung 2 — §6 (8)) is
+handled the same way via the four causal-relation attribute names
+(`caused` / `correlated_with` / `enables` / `prevents`).
 
 ### 16.1 Code / Seed / Input Boundary
 
@@ -4264,57 +4457,88 @@ extractor, and §10's region structural relations read by name:
   None of these names is structurally privileged — recognition reads
   `attribute_value_counts` / `attribute_co_counts` keyed by attribute
   name, not by any specific slot.
-- **Behavioral modal attribute names** (4): `negated`, `uncertain`,
-  `non_actual`, `general`. These are the *behavioral kinds* of
-  modality — substrate behaviors condition on them by name (negated
-  content must not be stored as actual; uncertain content propagates
-  lower confidence; non_actual content must be isolated from
-  actual-state caches; general content resists supersession by
-  specific instances and carries open-ended valid-time). Form:
-  `[target: R, negated: <surface-form>]` /
+- **Behavioral modal attribute names** (5): `negated`, `uncertain`,
+  `non_actual`, `general`, `intervened`. These are the *behavioral
+  kinds* of modality — substrate behaviors condition on them by name
+  (negated content must not be stored as actual; uncertain content
+  propagates lower confidence; non_actual content must be isolated
+  from actual-state caches; general content resists supersession by
+  specific instances and carries open-ended valid-time; intervened
+  content is the result of an agent acting on the world rather than
+  a passive observation, so supersession severs prior causes and
+  reinforcement updates only the intervened claim — Pearl rung-2
+  evidence vs. default rung-1 observation; §6 (8), §11.10, §11.11).
+  Form: `[target: R, negated: <surface-form>]` /
   `[target: R, uncertain: <degree-or-surface>]` /
   `[target: R, non_actual: <kind>]` /
-  `[target: R, general: <kind>]`. New surface modals
-  (`might`, `must`, `would have`, `usually`, `typically`) emerge as
-  ordinary attribute-name elements via §11.7 and link to one of
-  these four via `subclass_of` (e.g.
+  `[target: R, general: <kind>]` /
+  `[target: R, intervened: <agent-or-surface>]`. New surface modals
+  (`might`, `must`, `would have`, `usually`, `typically`,
+  `rescheduled`, `set`) emerge as ordinary attribute-name elements
+  via §11.7 and link to one of these five via `subclass_of` (e.g.
   `(might, subclass_of, uncertain)`,
-  `(usually, subclass_of, general)`); recognition walks the
+  `(usually, subclass_of, general)`,
+  `(rescheduled, subclass_of, intervened)`); recognition walks the
   `subclass_of` cone. Absence of any modal meta-relation = actual
-  specific claim — there is no separate `actual` anchor.
+  observed specific claim — there is no separate `actual` or
+  `observed` anchor; observation is the default.
+
+- **Causal-relation attribute names** (4): `caused`,
+  `correlated_with`, `enables`, `prevents`. Carry the *level of
+  causal commitment* the source actually claims, so retrieval can
+  walk only causally-grounded relations when answering "why" without
+  collapsing rung-1 co-occurrence into rung-2 causal structure.
+  Active form: `(subject: refactor_X, caused: deadline_slip)` reads
+  as "refactor_X caused deadline_slip"; "deadline_slip was caused
+  by refactor_X" extracts to the same active form. Surface aliases
+  (`led to`, `produced`, `because of`, `due to`, `goes with`,
+  `tends to follow`, `blocks`, `unblocks`) emerge via §11.7 and
+  pin to the appropriate causal anchor via `subclass_of`. §11.7
+  spells out the extractor convention; §6 (8) gives the rationale.
 
 All other attribute names emerge per §11.7's mint-new-attribute-name
 path.
 
-**Why four behavioral kinds, extensibly.** Substrate behaviors
+**`antecedent_of` is load-bearing in v0 even though §24.6 forward-
+chaining is deferred.** Conditionals expressed in input ("the deploy
+fails if the migration ran first", "I cancel if it rains") are
+captured as `[target: R, antecedent_of: R']` meta-relations on the
+introducing tick — recording the conditional structure now so v1's
+forward-chainer has substrate to read from on day one. Walking the
+antecedent DAG is also the substrate-side hook for §24.9's
+counterfactual queries.
+
+**Why five behavioral kinds, extensibly.** Substrate behaviors
 genuinely need *some* anchor to recognize "don't store this as
 actual" (negation), "lower the propagated confidence" (uncertainty),
-"isolate from actual-state caches" (non-actuality), and "this is a
-typical-case rule, not a specific instance — don't supersede it from
-specific events" (generality). Four attribute-name anchors give
-those behaviors a stable target without fixing the surface
-vocabulary: extractors mint `might` / `must` / `would have` /
-`usually` / `typically` as ordinary attribute-name elements and pin
-them to the appropriate behavioral anchor via `subclass_of`.
-Recognition walks the cone. The substrate-mechanism carve-out
-(§1.6) shrinks from "6 fixed modal elements" to "4 behavioral kinds
-with extensible subclasses" — same shape as concept emergence
-(`instance_of: <kind>`), applied to modality. Speech-act-shaped
-modals (desired, obligatory) all subclass `non_actual` in v0;
-habitual / generic / universal modals (usually, typically, always,
-in general) all subclass `general`. v1 may introduce finer
-behavioral kinds if real usage demands them.
+"isolate from actual-state caches" (non-actuality), "this is a
+typical-case rule, not a specific instance — don't supersede it
+from specific events" (generality), and "this claim is the result of
+an agent acting, not a passive observation, so do() severs prior
+causes" (intervention — Pearl's rung-2 lift, §6 (8)). Five attribute-
+name anchors give those behaviors a stable target without fixing the
+surface vocabulary: extractors mint `might` / `must` / `would have` /
+`usually` / `typically` / `rescheduled` / `set` as ordinary
+attribute-name elements and pin them to the appropriate behavioral
+anchor via `subclass_of`. Recognition walks the cone. Same shape as
+concept emergence (`instance_of: <kind>`), applied to modality.
+Speech-act-shaped modals (desired, obligatory) all subclass
+`non_actual` in v0; habitual / generic / universal modals (usually,
+typically, always, in general) all subclass `general`; agent-action
+verbs (rescheduled, moved, set, configured, decided) all subclass
+`intervened`. v1 may introduce finer behavioral kinds if real usage
+demands them.
 
 ### 16.4 Seed Pack Manifest
 
-Total seed elements: ~51 (2 anchors + 26 seeded attribute-name
+Total seed elements: ~55 (2 anchors + 30 seeded attribute-name
 elements + 15 regions + 8 reference frames). Inline names below; full
 rationales in `seed_pack.yaml`.
 
 ```text
 anchors (2):                 GENESIS, VOID
 
-seeded attribute names (26):
+seeded attribute names (30):
   ontology (2):              instance_of, subclass_of
   meta-relation (8):         target, frame, valid_from, valid_to,
                              source, supersedes, derived_from,
@@ -4323,11 +4547,16 @@ seeded attribute names (26):
                              lateral_region, prototype
   generic participant (7):   subject, actor, from, to, instrument,
                              property, reason
-  behavioral modal (4):      negated, uncertain, non_actual, general
+  behavioral modal (5):      negated, uncertain, non_actual, general,
+                             intervened
                              (recognition walks subclass_of cone;
                               `might` / `must` / `usually` /
-                              `typically` are minted at runtime as
-                              subclasses)
+                              `typically` / `rescheduled` are minted
+                              at runtime as subclasses)
+  causal-relation (4):       caused, correlated_with, enables,
+                             prevents
+                             (Pearl-rung commitment of a relation;
+                              §6 (8))
 
 regions (15):             entities, events, states, change_history,
                           relationships, quantities, time, locations,
@@ -4647,7 +4876,7 @@ reserve `legend "..."` for occasional ad-hoc ticks.**
 |---|---|---|
 | Snapshot deserialization | 0 (already in memory) | ~50–200 ms |
 | Index rebuild | 0 | ~10–30 ms |
-| ort + BGE-small load | 0 (already loaded) | ~300–500 ms |
+| tract + MiniLM load | 0 (already loaded) | ~300–500 ms |
 | Embedder warm-up | 0 (already warm) | ~100–200 ms |
 | Tick (§11.0 budget) | ~200–300 ms p50 | ~200–300 ms p50 |
 | IPC (Inter-Process Communication) / lock overhead | ~1 ms | ~5–10 ms |
@@ -5180,9 +5409,10 @@ determinism contracts:
   `add_relation`, no NLP") and continues through every later step.
   Substrate conformance does **not** call ONNX.
 - **Full-stack smoke tests.** Run the actual extractor stack
-  (BGE-small, GLiNER2 via gline-rs, chrono-english) on the same
-  fixtures. Pin CI hardware to a fixed machine class
-  (linux x86_64 AVX2 (Advanced Vector Extensions 2), INT8 ONNX). Assert structural shape (which
+  (MiniLM via tract-onnx, GLiNER2 via gline-rs, chrono-english) on
+  the same fixtures. Pin CI hardware to a fixed machine class
+  (linux x86_64 AVX2 (Advanced Vector Extensions 2), quantized ONNX).
+  Assert structural shape (which
   elements/relations exist, statuses, supersession links) but allow
   ε-tolerance on confidence values. Cross-machine determinism is
   out of substrate scope; ONNX FP rounding can shift confidences
@@ -5194,12 +5424,12 @@ independently of any extractor output.
 
 ### Step 0 — Foundation Infrastructure (~1 wk)
 
-**Build:** Add v0 crates (`ort`, `tokenizers`, `tantivy`, `gline-rs`,
-`chrono-english`, `rayon`, `hashbrown`, `lz4`, `rmp-serde`, `serde`).
-Round-trip BGE-small via `EmbeddingWrapper` against a
-`sentence-transformers` parity oracle. Wire the inspection harness
-(serialize → deserialize → pretty-print, including region-proliferation
-over time per §10.6).
+**Build:** Add v0 crates (`tract-onnx`, `ort`, `tokenizers`,
+`tantivy`, `gline-rs`, `chrono-english`, `rayon`, `hashbrown`, `lz4`,
+`rmp-serde`, `serde`). Round-trip the MiniLM-L6-v2 quantized model
+through tract-onnx against a `sentence-transformers` parity oracle.
+Wire the inspection harness (serialize → deserialize → pretty-print,
+including region-proliferation over time per §10.6).
 **Done:** bit-identical round-trip; embedding parity; harness prints
 region creation rate.
 
@@ -5261,16 +5491,16 @@ size correctly.
 ### Step 3 — Seed Pack (~1.5 wk)
 
 **Build:** Hand-author the seed pack per §16 + `seed_pack.yaml`:
-2 anchors (Genesis, Void) + 26 seeded attribute-name elements
+2 anchors (Genesis, Void) + 30 seeded attribute-name elements
 (2 ontology + 8 meta-relation + 4 region structural + 7 generic
-participant + 4 behavioral modal — see §16.4) + 15 regions + 8
-reference frames. Embed descriptor strings at boot to mint each
-region's initial prototype Element with that descriptor's vector as
-its inline embedding, then write the seed relations
-(`[subject: R, instance_of: REGION_CLASS]`,
+participant + 5 behavioral modal + 4 causal-relation — see §16.4)
++ 15 regions + 8 reference frames. Embed descriptor strings at boot
+to mint each region's initial prototype Element with that
+descriptor's vector as its inline embedding, then write the seed
+relations (`[subject: R, instance_of: REGION_CLASS]`,
 `[subject: R, parent_region: parent]`,
 `[subject: R, prototype: P]`). Serialize as `seed_v0.msgpack.lz4`.
-**Done:** boot shows ~51 elements in expected configuration; 2D
+**Done:** boot shows ~55 elements in expected configuration; 2D
 projection of region descriptor embeddings clusters sensibly;
 meta-relation and region indices populate from the seeded
 relations.
@@ -5299,8 +5529,9 @@ bounded at 8; region-creation rate decays after first 20 ticks.
 ### Step 6 — Windowing + Temporal Parser + NER + Relation Extraction (~2.5 wk)
 
 **Build:** §11.4 input windowing — token-count check that triggers
-SaT (~22M-param ONNX, loaded through the same `ort` runtime as
-BGE-small) only for inputs above ~480 tokens; greedy grouping of
+SaT (~22M-param ONNX, loaded through `ort` alongside GLiNER2; the
+embedder is on tract-onnx) only for inputs above ~480 tokens;
+greedy grouping of
 SaT segments into ≤480-token windows; rayon fan-out across windows
 for Steps 4–6. `chrono-english` for the 80% temporal coverage + thin
 uncertainty-grounding layer; `gline-rs` zero-shot NER + relations
@@ -5487,7 +5718,7 @@ the rest are background and reference.
     meta-relations (everything Wikidata calls a qualifier is, in
     Legend, a relation whose subject is the modified relation), but
     the role catalogue (frame, valid_from/to, source, modality —
-    where Legend splits modality into three behavioral attribute
+    where Legend splits modality into five behavioral attribute
     names, §16.3) maps directly. See §7.2.
 13. **JTMS (Justification-based Truth Maintenance System) / ATMS
     (Assumption-based Truth Maintenance System)** — Doyle 1979;
@@ -5568,8 +5799,11 @@ comparison), replay-driven structural emergence.
 
 30. **Sentence-BERT** — Reimers & Gurevych 2019, arXiv 1908.10084. Why
     raw BERT is not an embedding model.
-31. **BGE technical report** — arXiv 2309.07597. The v0 embedding
-    model.
+31. **MiniLM** — Wang et al. 2020, arXiv 2002.10957.
+    "Deep Self-Attention Distillation for Task-Agnostic Compression
+    of Pre-Trained Transformers." The v0 embedding model
+    (`all-MiniLM-L6-v2`, sentence-transformers fine-tune,
+    ONNX-quantized).
 32. **GLiNER paper** — arXiv 2311.08526. Zero-shot NER used by
     `gline-rs`.
 33. **`tokenizers`** — HuggingFace, Apache-2.0, pure-Rust.
@@ -5606,8 +5840,11 @@ comparison), replay-driven structural emergence.
 
 Considered and dropped: Stanford OpenIE (JVM), AllenNLP SRL docs
 (Python), BERT paper (not an embedding model — see Sentence-BERT),
-MiniLM (subsumed by BGE-small lineage), LoCoMo (scoring controversy
-— §20.6).
+BGE-small (initial pick; replaced by MiniLM-L6-v2 quantized once we
+moved the embedder to pure-Rust tract-onnx — both are
+sentence-transformers 384-dim models, MiniLM gives faster inference
+on 6 layers vs. 12 with comparable retrieval quality on our
+workload), LoCoMo (scoring controversy — §20.6).
 
 ---
 
@@ -5822,3 +6059,41 @@ intermediate-region candidate upfront rather than waiting for replay
 to discover it via mid-path insertion (§10.3.5). This accelerates the
 cases where the components are already known, without changing the
 general replay-driven discovery path.
+
+### 24.9 Counterfactual Queries As Non-Actual-Modal Ticks
+
+Pearl rung 3 (§6 (8)). v0 commits to one verb (`tick`, §12) and
+"no separate query API"; counterfactual queries should preserve
+both. The shape: a counterfactual *is* a tick whose input carries
+`non_actual` modal content ("what if I hadn't rescheduled?", "if
+the migration had run first, would the deploy have failed?"); Step
+13 returns a counterfactual subgraph instead of an actual one.
+
+Pearl's three-step procedure maps onto existing Legend machinery:
+
+| Pearl step | Legend operation |
+|---|---|
+| **Abduction** — update `P(U)` given evidence | The supporting-claims walk Step 13 already runs for the actual frame: collect supporting relations and `derived_from` ancestors. No new mechanism. |
+| **Action** — surgically replace `X` with `X = x` | Tick-local, **non-mutating** projection over the hypergraph: hide the relation(s) the counterfactual severs and mask their `derived_from` descendants in the read view. |
+| **Prediction** — compute `Y` under the modified model | Run Step 13's same path traversal against the projected hypergraph; emit the resulting `focused_relations` back to the caller, every relation in the counterfactual subgraph tagged via `non_actual` so the caller can distinguish counterfactual from actual content. |
+
+The substrate carries everything needed: `non_actual` modal for
+tagging the input claim and the projected output, `derived_from`
+DAG as the structural causal model to walk, `antecedent_of` for
+conditional rules to re-fire under the projection, the §11.13
+frame-assembly pipeline for the read-only output. No new substrate
+shape — only a query-time projection layer over existing reads,
+plus an extractor-side convention for recognizing counterfactual
+sentence shapes ("what if", "would have", "had X been"). Counter-
+factual ticks are non-mutating by definition; Step 0 still appends
+to the WAL but Steps 8–12 are skipped, and the returned
+`ConsciousAttentionFrame.durable_writes` is empty.
+
+What v0 does *not* do but should not preclude: actually compute
+Pearl-correct counterfactual probabilities. v0 will return a
+*structural* answer ("which relations would change, and to what?")
+rather than a calibrated probability; calibration needs richer SCM
+annotation than the substrate currently carries (functional
+equations on the `derived_from` DAG, exogenous-variable priors).
+**Design now, build later** — the v0 substrate is shaped so this
+projection-over-existing-state fits without parallel infrastructure.

@@ -9,9 +9,9 @@
 # else emerges via extraction and replay (§3.4: "the seed pack is
 # bootstrapping, not a closed vocabulary").
 #
-# Counts:    2 anchors + 26 seeded attribute-name elements
+# Counts:    2 anchors + 30 seeded attribute-name elements
 #          + 15 regions + 8 reference frames
-#          ≈ 51 elements
+#          ≈ 55 elements
 #
 # Predicates and roles collapse into one uniform "attribute name"
 # namespace (§7.2 attribute collapse). Every attribute on a Relation
@@ -263,19 +263,26 @@ seeded_attribute_names:
   # ----- Behavioral modal attribute names -----
   #
   # Modality is just an attribute name in the uniform attribute-list
-  # model. These three are seeded because substrate behaviors
+  # model. These five are seeded because substrate behaviors
   # condition on them by name: negated content must not be stored as
   # actual; uncertain content propagates lower confidence; non_actual
-  # content must be isolated from actual-state caches.
+  # content must be isolated from actual-state caches; general claims
+  # resist supersession by specific instances; intervened content is
+  # the result of an agent acting (Pearl rung 2 — new_foundation.md
+  # §6 (8)) so do() severs prior causes for supersession (§11.10)
+  # and reinforcement updates only the intervened claim (§11.11).
   #
-  # Surface modals (`might`, `must`, `would have`, `could`, …) are
-  # NOT seeded — they emerge as ordinary attribute-name elements via
-  # §11.7 and link to one of the three behavioral kinds via
-  # `subclass_of` (e.g. `(might, subclass_of, uncertain)`).
+  # Surface modals (`might`, `must`, `would have`, `usually`,
+  # `rescheduled`, `set`, …) are NOT seeded — they emerge as ordinary
+  # attribute-name elements via §11.7 and link to one of these five
+  # behavioral kinds via `subclass_of` (e.g.
+  # `(might, subclass_of, uncertain)`,
+  # `(rescheduled, subclass_of, intervened)`).
   # Recognition walks the `subclass_of` cone, so "is this relation
   # negated?" remains a small filter even after extensive runtime
-  # mints. Absence of any modal meta-relation = actual claim — there
-  # is no separate `actual` anchor.
+  # mints. Absence of any modal meta-relation = actual observed
+  # specific claim — observation is the default; there is no separate
+  # `actual` or `observed` anchor.
 
   - element_id: ATTR_NEGATED
     names: ["negated"]
@@ -319,6 +326,81 @@ seeded_attribute_names:
       defeasible exceptions to coexist without retracting the rule.
       Surface modals like `usually`, `typically`, `always`, `in
       general` are minted at runtime as `subclass_of: general`.
+
+  - element_id: ATTR_INTERVENED
+    names: ["intervened"]
+    rationale: >
+      Attribute of `[target: R, intervened: <agent-or-surface>]` meta-
+      relations for claims that are the result of an agent acting on
+      the world rather than a passive observation — Pearl rung-2
+      evidence (new_foundation.md §6 (8)). Substrate behaviors:
+      §11.10 supersession fires unconditionally regardless of prior
+      confidence (do() severs prior causes by definition); §11.11
+      reinforcement updates only the intervened claim, not its latent
+      causes (intervention says the world was just changed, not that
+      the prior model was wrong upstream). Surface verbs `rescheduled`
+      / `moved` / `set` / `cancelled` / `decided` / `deployed` /
+      `merged` / `reverted` / `configured` are minted at runtime as
+      `subclass_of: intervened`. Absence of this meta-relation is the
+      default — observation, not intervention; there is no separate
+      `observed` anchor.
+
+  # ----- Causal-relation attribute names -----
+  #
+  # Carry the level of causal commitment a source actually claims —
+  # "X caused Y" (rung 2) vs. "X tends to happen with Y" (rung 1) —
+  # so retrieval can walk only causally-grounded relations when
+  # answering "why" without collapsing co-occurrence into causal
+  # structure. Pearl rung distinction (new_foundation.md §6 (8));
+  # extractor convention in §11.7 maps surface markers to these names.
+  # Active form only: "Y was caused by X" extracts to
+  # `(subject: X, caused: Y)`; the passive form is normalized at
+  # extraction. Surface aliases (`led to`, `produced`, `because`,
+  # `goes with`, `blocks`, `unblocks`) emerge via §11.7 and pin via
+  # `subclass_of`.
+
+  - element_id: ATTR_CAUSED
+    names: ["caused"]
+    rationale: >
+      Attribute of `(subject: X, caused: Y)` relations claiming X
+      caused Y — Pearl rung-2 commitment. "Why did Y happen?" queries
+      walk relations where Y is the value of `caused` (or a
+      `subclass_of` descendant); "what tends to happen with Y?"
+      queries walk `correlated_with` instead. Without this seeded,
+      "X led to Y" / "Y because X" / "X caused Y" all collapse onto
+      whatever surface attr_label the input used and Legend loses the
+      rung-1-vs-rung-2 distinction the framework requires.
+
+  - element_id: ATTR_CORRELATED_WITH
+    names: ["correlated_with"]
+    rationale: >
+      Attribute of `(subject: X, correlated_with: Y)` for purely
+      observational co-occurrence — Pearl rung-1 evidence — when the
+      source actually only claims "tends to happen together" without
+      committing to causal structure. Critical contrast to `caused`:
+      walking `correlated_with` for "why did Y happen?" returns
+      lower-confidence answers and surfaces an `UncertaintySignal`
+      so the consumer LLM can flag the rung distinction at the
+      attention-frame boundary.
+
+  - element_id: ATTR_ENABLES
+    names: ["enables"]
+    rationale: >
+      Attribute of `(subject: X, enables: Y)` claims — X is a
+      necessary or sufficient prerequisite for Y. Distinct from
+      `caused` because enabling is dispositional ("the migration
+      enables the deploy" doesn't say the deploy will happen, only
+      that without the migration it can't). Surface aliases:
+      `makes possible`, `unblocks`, `permits`.
+
+  - element_id: ATTR_PREVENTS
+    names: ["prevents"]
+    rationale: >
+      Attribute of `(subject: X, prevents: Y)` claims — X blocks
+      or precludes Y. Negative-causal form. Distinct from `negated`
+      (which polarity-flips a single claim) because prevention is
+      relational and forward-looking. Surface aliases: `blocks`,
+      `stops`, `keeps from`, `precludes`.
 
 # ---------------------------------------------------------------------
 # 3. Seed regions (15) — shape priors that bias §10.2 routing. Broad
@@ -473,10 +555,11 @@ regions:
     descriptor: "Inputs that carry modality (might / must / should) or
                  negation, or that express uncertainty about content."
     rationale: >
-      Modality and negation are first-class via the three behavioral
-      modal attribute names (`negated` / `uncertain` / `non_actual`)
-      on meta-relations; a region for modality-heavy inputs ensures
-      those meta-relations get populated rather than dropped.
+      Modality and negation are first-class via the five behavioral
+      modal attribute names (`negated` / `uncertain` / `non_actual` /
+      `general` / `intervened`) on meta-relations; a region for
+      modality-heavy inputs ensures those meta-relations get
+      populated rather than dropped.
 
 # ---------------------------------------------------------------------
 # 4. Seed reference frames (8) — contextual scopes pointed at by
@@ -629,9 +712,10 @@ seeded_relations:
 #    is computed by cosine projection against these banks. Each
 #    dimension has a "high pole" bank (representative phrases that
 #    score high on the dimension) and, where applicable, a "low pole"
-#    bank (representative phrases that score low). At boot, each
-#    phrase is embedded with BGE-small; the bank's mean vector
-#    becomes the projection target.
+#    bank (representative phrases that score low). When prototype
+#    vectors are regenerated, each phrase is embedded with the bundled
+#    all-MiniLM-L6-v2 quantized model; the bank's mean vector becomes
+#    the projection target.
 #
 #    Score formula:
 #      score(dim) = clamp(
@@ -648,88 +732,382 @@ seeded_relations:
 #      conviction       — listener-evaluation of speaker certainty
 #      prediction_error — dopamine novelty / contradiction signal
 #      arousal          — norepinephrine emotional intensity signal
-#      curiosity      — Legend-specific (single tick verb covers
-#                         encoding + retrieval)
+#      curiosity       — Legend-specific retrieval / lookup pressure
+#                         (single tick verb covers encoding + retrieval)
 # ---------------------------------------------------------------------
 
 intent_prototypes:
 
   conviction:
+    # High pole = explicit certainty / commitment to a claim. Avoid
+    # generic discourse markers that can appear without real
+    # confidence.
     high_pole:
       - "I know for certain that"
       - "this is absolutely the case"
       - "without a doubt"
-      - "definitely"
+      - "I'm certain that"
       - "I am completely sure"
       - "this is a fact"
-      - "obviously"
-      - "of course"
+      - "there is no question that"
+      - "I can say with confidence that"
+      - "definitely the case"
+      - "absolutely true"
+      - "there is zero doubt"
+      - "make no mistake"
+      - "I'm 100% sure"
+      - "this is undeniable"
+      - "you can count on it"
+      - "guaranteed"
+      - "indisputably"
+      - "this is well-established"
+      - "I am absolutely certain that the meeting is at 3pm"
+      - "There's no question that this code is broken"
+      - "I know for a fact that water boils at 100 degrees"
+      - "Without a doubt, she was at the conference yesterday"
+      - "I'm completely sure the deployment finished"
+      - "It's an established fact that the server is in Ohio"
+      - "I can guarantee that the report is accurate"
+      - "There is no doubt the database is corrupted"
+      - "I'm one hundred percent certain that the file was deleted"
+      - "Definitely true that the package was delivered"
+    pairs:
+      - high: "I am absolutely certain that the meeting is at 3pm"
+        low:  "I think maybe the meeting is at 3pm"
+      - high: "Without a doubt the deployment finished"
+        low:  "I'm not sure if the deployment finished"
+      - high: "It's a fact that the bug is in the parser"
+        low:  "It might be that the bug is in the parser"
+      - high: "I know for certain the server is in Ohio"
+        low:  "Perhaps the server is in Ohio"
+      - high: "There's no question Alice was at the conference"
+        low:  "I'm not sure if Alice was at the conference"
+      - high: "I'm completely sure the file is in /tmp"
+        low:  "I could be wrong, but I think the file is in /tmp"
+      - high: "I can guarantee the report is accurate"
+        low:  "I have a hunch the report is accurate"
+      - high: "There is no doubt the database is corrupted"
+        low:  "It seems like the database might be corrupted"
+      - high: "I'm 100% certain the file was deleted"
+        low:  "Tentatively, the file might have been deleted"
+      - high: "Definitely true that the package was delivered"
+        low:  "I'm guessing the package was delivered"
+      - high: "Indisputably, we shipped on time"
+        low:  "I'm not entirely sure if we shipped on time"
+      - high: "Make no mistake, the API is documented"
+        low:  "I'm leaning toward thinking the API is documented"
+      - high: "You can count on the build succeeding"
+        low:  "Maybe the build will succeed"
+      - high: "It's well-established that the test passes"
+        low:  "If I had to guess, the test passes"
+    # Low pole = hedging, uncertainty, and tentative language.
     low_pole:
       - "I think maybe"
       - "I'm not sure if"
+      - "I don't know for sure"
       - "it might be that"
-      - "possibly"
+      - "I'm uncertain whether"
       - "I could be wrong but"
       - "perhaps"
       - "I'm guessing"
+      - "it seems like"
+      - "I'm not entirely sure"
+      - "could be that"
+      - "I have a hunch"
+      - "I suspect"
+      - "tentatively"
+      - "I'm leaning toward"
+      - "my best guess is"
+      - "in all likelihood"
+      - "if I had to guess"
+      - "I'm not 100% on this"
+      - "I think maybe the meeting got moved"
+      - "I'm not sure if the deployment finished"
+      - "It might be that the server is down"
+      - "I could be wrong, but I think the file is in /tmp"
+      - "Perhaps we should reconsider the deadline"
+      - "I'm guessing the temperature is around 70"
+      - "It seems like the test is flaky"
+      - "I'm not entirely sure when the report is due"
+      - "Maybe she was at the conference, I don't remember"
+      - "I have a hunch that the bug is in the parser"
 
   prediction_error:
-    # High pole = the linguistic shape of contradiction / novelty /
-    # surprise. Note: the actual contradiction component is computed
-    # from graph state at extraction time and adds to this score.
+    # High pole = revision, contradiction, and surprise language that
+    # signals "update this model of the world". Keep this focused on
+    # claim-correction shape; graph-derived contradiction still adds on
+    # top elsewhere.
     high_pole:
       - "actually no"
       - "that's wrong"
       - "I take that back"
       - "wait, that's not right"
       - "scratch that"
-      - "I just learned that"
+      - "I was mistaken"
+      - "on second thought"
+      - "correction:"
       - "it turns out"
-      - "I never realized"
-      - "surprisingly"
+      - "I hadn't realized that"
+      - "let me correct that"
+      - "no wait"
+      - "strike that"
+      - "actually I was wrong"
+      - "I misremembered"
+      - "I had it backwards"
+      - "ignore what I just said"
+      - "to be clear, I was incorrect"
+      - "I want to retract"
+      - "let me revise"
+      - "Actually no, the meeting is at 3pm not 2pm"
+      - "Wait, that's not right — the file is in /tmp not /var"
+      - "Scratch that, the server is in Ohio not Texas"
+      - "I take that back, the deployment hasn't finished"
+      - "I was mistaken, the conference was last week"
+      - "On second thought, the test is failing"
+      - "Correction: the database is named prod_v2"
+      - "It turns out the package was never delivered"
+      - "I had it backwards — Alice fixed the bug, not Bob"
+      - "Let me revise: the report is due Friday, not Thursday"
+    pairs:
+      - high: "Actually no, the meeting is at 3pm not 2pm"
+        low:  "As usual, the meeting is at 3pm"
+      - high: "Wait, that's not right — the file is in /tmp not /var"
+        low:  "Like before, the file is in /tmp"
+      - high: "Scratch that, the server is in Ohio not Texas"
+        low:  "As expected, the server is in Ohio"
+      - high: "I take that back, the deployment hasn't finished"
+        low:  "On track, the deployment finished"
+      - high: "I was mistaken, the conference was last week"
+        low:  "Right on schedule, the conference is this week"
+      - high: "On second thought, the test is failing"
+        low:  "No surprises, the test is passing"
+      - high: "Correction: the database is named prod_v2"
+        low:  "Same as always, the database is named prod"
+      - high: "It turns out the package was never delivered"
+        low:  "As predicted, the package was delivered"
+      - high: "I had it backwards — Alice fixed the bug, not Bob"
+        low:  "Just like before, Alice fixed the bug"
+      - high: "Let me revise: the report is due Friday, not Thursday"
+        low:  "Nothing new, the report is due Friday"
+      - high: "Actually I was wrong about the deadline"
+        low:  "As I'd anticipated, the deadline holds"
+      - high: "Strike that, the build is broken"
+        low:  "Business as usual, the build is green"
+      - high: "I hadn't realized the API changed"
+        low:  "Consistent with last week, the API is unchanged"
+      - high: "No wait, the temperature dropped 10 degrees"
+        low:  "Exactly as predicted, the temperature dropped"
+    # Low pole = continuity, repetition, and expectation-confirming
+    # language.
     low_pole:
       - "as usual"
-      - "as I mentioned"
+      - "nothing new here"
+      - "just like before"
       - "like I said before"
       - "the same as always"
+      - "as expected"
+      - "exactly as expected"
+      - "no surprises"
+      - "as predicted"
+      - "consistent with"
+      - "right on track"
+      - "no change"
+      - "business as usual"
+      - "as I'd anticipated"
+      - "according to plan"
+      - "matches what I thought"
+      - "As usual, the meeting started late"
+      - "Nothing new here, the deployment finished on time"
+      - "Just like before, the test is passing"
+      - "Like I said earlier, the file is in /tmp"
+      - "The same as always, the server is responsive"
+      - "As expected, the build succeeded"
+      - "Exactly as predicted, the temperature dropped"
+      - "No surprises with the report, it's on time"
+      - "Right on track with the project timeline"
+      - "Business as usual at the office today"
 
   arousal:
     # High pole = emotional intensity / urgency / importance markers.
-    # BGE-small captures the effect of caps and emphasis natively in
-    # tokenization, so we don't need explicit cap-handling.
+    # The embedding model already captures emphasis and punctuation, so
+    # these phrases should focus on actual stakes rather than typography.
     high_pole:
       - "I am furious that"
       - "this is incredibly important"
-      - "I love this"
+      - "I'm deeply upset that"
       - "this is devastating"
       - "I'm so excited about"
-      - "this matters more than anything"
+      - "this is an emergency"
       - "I cannot stress enough"
       - "this is urgent"
+      - "I'm extremely worried about"
+      - "this is critical"
+      - "I'm absolutely thrilled"
+      - "I'm horrified that"
+      - "this matters more than anything"
+      - "this is a disaster"
+      - "I'm beside myself"
+      - "this is the most important thing"
+      - "drop everything"
+      - "this cannot wait"
+      - "I am furious that the deployment broke production"
+      - "This is incredibly important — the meeting is in 5 minutes"
+      - "I'm deeply upset that the report was delayed"
+      - "This is devastating news about the project"
+      - "I'm so excited about the new feature launch"
+      - "This is an emergency — the database is down"
+      - "I cannot stress enough how critical this fix is"
+      - "This is urgent, we need to ship by tomorrow"
+      - "I'm absolutely thrilled with the team's progress"
+      - "This is a disaster, the entire system crashed"
+    pairs:
+      - high: "I am furious that the deployment broke production"
+        low:  "FYI the deployment broke production"
+      - high: "This is incredibly important — the meeting is in 5 minutes"
+        low:  "By the way, the meeting is in 5 minutes"
+      - high: "I'm deeply upset that the report was delayed"
+        low:  "Just noting that the report was delayed"
+      - high: "This is devastating news about the project"
+        low:  "Side note about the project"
+      - high: "I'm absolutely thrilled about the new feature launch"
+        low:  "Incidentally, the new feature launched"
+      - high: "This is an emergency — the database is down"
+        low:  "Minor thing — the database is down"
+      - high: "I cannot stress enough how critical this fix is"
+        low:  "No rush on this fix, low priority"
+      - high: "This is urgent, we need to ship by tomorrow"
+        low:  "Whenever you have time, we ship by tomorrow"
+      - high: "I'm extremely worried about the production outage"
+        low:  "Just noting the production outage"
+      - high: "This is a disaster, the entire system crashed"
+        low:  "Not a big deal, the system crashed briefly"
+      - high: "Drop everything, the build is broken in main"
+        low:  "At your leisure, the build is broken in main"
+      - high: "I'm horrified that the data was leaked"
+        low:  "FYI the data was leaked"
+      - high: "This matters more than anything — we lost the customer"
+        low:  "Trivial update — we lost the customer"
+      - high: "This cannot wait, the API is returning 500s"
+        low:  "No hurry, the API is returning 500s"
+    # Low pole = incidental, low-stakes, low-urgency framing.
     low_pole:
       - "by the way"
       - "as a side note"
       - "incidentally"
-      - "for what it's worth"
+      - "no rush"
       - "just noting"
+      - "not a big deal"
+      - "whenever you have time"
+      - "no pressure"
+      - "minor thing"
+      - "small note"
+      - "trivial"
+      - "at your leisure"
+      - "no hurry"
+      - "low priority"
+      - "fyi"
+      - "nothing critical"
+      - "By the way, the meeting got rescheduled"
+      - "As a side note, the file format changed"
+      - "Incidentally, I noticed a typo in the docs"
+      - "No rush on the report, it's not due for weeks"
+      - "Just noting that the build was 2 seconds slower"
+      - "Not a big deal, but the test took a long time"
+      - "Whenever you get a chance, could you look at this"
+      - "Minor thing — the icon is slightly misaligned"
+      - "No hurry, this can wait until next sprint"
+      - "FYI, the package will arrive tomorrow"
 
   curiosity:
-    # High pole = retrieval-shape — asking, finding, looking up. Not
-    # just questions ending in `?` — covers imperative search ("find
-    # when I last saw Dr. Rao") and indirect questions.
+    # High pole = retrieval-shape — asking, finding, checking memory,
+    # or requesting recall. Avoid generic assistant-command stems that
+    # are not specifically about lookup.
     high_pole:
       - "what time is my appointment"
       - "when did I last see"
       - "find when"
-      - "show me the"
-      - "do I have"
-      - "is there a"
+      - "remind me when"
+      - "look up whether"
+      - "check if I have"
       - "where did I put"
-      - "which one was"
+      - "what did I say about"
       - "how many times have"
+      - "search for"
+      - "tell me when"
+      - "do I know"
+      - "have I ever"
+      - "what was the name of"
+      - "did I"
+      - "show me"
+      - "is there a record of"
+      - "can you look up"
+      - "remember if"
+      - "What time was the meeting on Tuesday"
+      - "When did I last commit to that repo"
+      - "Find when I last spoke to Alice"
+      - "Look up whether I sent the report"
+      - "Check if I have a meeting at 3pm"
+      - "Where did I put the deployment notes"
+      - "What did I say about the database migration"
+      - "How many times have I deployed this week"
+      - "Did I ever mention the bug to Bob"
+      - "Remind me when the project deadline is"
+    pairs:
+      - high: "What time was the meeting on Tuesday?"
+        low:  "The meeting on Tuesday was at 3pm"
+      - high: "When did I last commit to that repo?"
+        low:  "I last committed to that repo yesterday"
+      - high: "Find when I last spoke to Alice"
+        low:  "I last spoke to Alice on Monday"
+      - high: "Look up whether I sent the report"
+        low:  "I sent the report on Friday"
+      - high: "Check if I have a meeting at 3pm"
+        low:  "I have a meeting at 3pm"
+      - high: "Where did I put the deployment notes?"
+        low:  "The deployment notes are in /docs"
+      - high: "What did I say about the database migration?"
+        low:  "I said the database migration ran clean"
+      - high: "How many times have I deployed this week?"
+        low:  "I deployed three times this week"
+      - high: "Did I ever mention the bug to Bob?"
+        low:  "I mentioned the bug to Bob yesterday"
+      - high: "Remind me when the project deadline is"
+        low:  "The project deadline is next Friday"
+      - high: "Search for whether the test passed"
+        low:  "The test passed on the third try"
+      - high: "Do I know the file path for the config?"
+        low:  "The config file path is /etc/app.yaml"
+      - high: "Have I ever talked to the security team?"
+        low:  "I talked to the security team last quarter"
+      - high: "Show me when I created this PR"
+        low:  "I created this PR on Tuesday"
+    # Low pole = reporting, asserting, or narrating rather than
+    # requesting retrieval.
     low_pole:
       - "the appointment is at"
       - "I just finished"
       - "today I"
       - "yesterday I saw"
       - "the file is at"
+      - "I remember that"
+      - "here's what happened"
+      - "I worked on"
+      - "we decided"
+      - "the result was"
+      - "I noticed"
+      - "there's a"
+      - "she told me"
+      - "the team agreed"
+      - "I observed"
+      - "we found"
+      - "I encountered"
+      - "The appointment is at 3pm tomorrow"
+      - "I just finished the report"
+      - "Today I deployed the new feature"
+      - "Yesterday I saw the bug in the logs"
+      - "The file is at /var/log/app.log"
+      - "I remember that the meeting was last Tuesday"
+      - "Here's what happened: the build failed at step 3"
+      - "I worked on the API integration this morning"
+      - "The team decided to ship next week"
+      - "We found a bug in the parser"

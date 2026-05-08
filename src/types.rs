@@ -28,7 +28,7 @@ pub struct RelationId(pub u32);
 /// The world model. Elements are bare identities; Relations are claims
 /// between them. The hot path reads from this alone; the WAL is for
 /// crash recovery between checkpoints.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Hypergraph {
     /// Concrete entities — concepts, surface forms, attribute-name elements,
     /// region anchors, typed leaf values ("Tuesday", "6 pounds", "Berlin").
@@ -472,6 +472,33 @@ pub struct Policy {
     /// relation as `Defeasible` rather than `Asserted`.
     pub ner_assertion_threshold: f32,
 
+    // ── Intent-modulated knobs (Step 2 outputs) ──────────────────────
+    //
+    // These five fields hold the rest-state base on the Hypergraph's
+    // Policy and the adjusted scalar on the per-tick Policy that Step 2
+    // returns. Same field name, two roles — Step 2 reads each as
+    // `base_*` and writes back the §10.6-formula result on the
+    // returned Policy. Steps 3–13 only ever see the adjusted view.
+
+    /// Default confidence assigned to newly-minted Asserted relations
+    /// before extractor confidence multiplies it (§11.9, §3420).
+    /// Formula: `default_conf = base_conf * conviction * (1 - 0.7 * curiosity)`.
+    /// Confident statements raise it; questions / hedges drop it.
+    pub default_conf: f32,
+
+    /// Multiplier applied to per-tick salience bumps in the hebbian
+    /// reinforcement step (§11.11). Formula:
+    /// `salience_multiplier = base_salience + arousal + prediction_error`.
+    /// Surprise + emotional intensity → harder encoding.
+    pub salience_multiplier: f32,
+
+    /// Threshold above which Step 10 actively searches for and marks
+    /// prior relations as Superseded. Formula:
+    /// `supersession_threshold = base_threshold * (1 - prediction_error)`.
+    /// High prediction-error inputs lower the bar so contradictions
+    /// trigger lookup; low-PE inputs leave the cache alone.
+    pub supersession_threshold: f32,
+
     // ── Replay ───────────────────────────────────────────────────────
 
     /// Replay scheduling mode. Currently a single-variant placeholder
@@ -511,6 +538,14 @@ impl Default for Policy {
             replay_focus_floor: 3,
 
             ner_assertion_threshold: 0.7,
+
+            // §10.6 base values. `default_conf = 1.0` lines up with the
+            // worked examples (high-conviction → ~0.90, hedged → ~0.09).
+            // The other two are mid-range placeholders pending §19
+            // calibration.
+            default_conf: 1.0,
+            salience_multiplier: 1.0,
+            supersession_threshold: 0.5,
 
             replay_cadence: ReplayCadence::default(),
         }
