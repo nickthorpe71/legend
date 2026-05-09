@@ -7,6 +7,9 @@
 *~
 .DS_Store
 
+# Generated hypergraph snapshots — regenerate via dump_hypergraph_md
+/inspect/
+
 
 # Added by cargo
 #

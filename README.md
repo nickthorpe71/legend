@@ -4,9 +4,13 @@ Long-term memory for LLMs. v2 rewrite in Rust.
 
 ## Status
 
-v0 in progress. Step 1 (per-dimension intent detection) is built and
-tested; Steps 2–13 are next. See `new_foundation_v0_core.md` for the v0
-scope.
+v0 in progress. Built and tested:
+- Step 1 — per-dimension intent detection
+- Step 2 — policy adjustment
+- Seeded substrate — 72 elements / 53 relations boot from `seed_pack.yaml`
+
+Next: Step 4 region routing, then extractors. See
+`new_foundation_v0_core.md` for the v0 scope.
 
 ## Build
 
@@ -14,26 +18,45 @@ scope.
 cargo build --release
 ```
 
-The all-MiniLM-L6-v2 ONNX model (~23 MB) and the four trained intent
-classifiers are baked into the binary via `include_bytes!` — no
-network access or external files at runtime.
+Baked into the binary via `include_bytes!` — no network access or
+external files at runtime:
+- all-MiniLM-L6-v2 ONNX model (~23 MB)
+- Four trained intent classifiers
+- Seed hypergraph (~120 KB)
 
 ## Try it
 
 ```bash
 ./target/release/legend "I am absolutely certain that the meeting is at 3pm"
-# conviction       0.51
-# prediction_error 0.33
-# arousal          0.41
-# curiosity        0.25
+# intent
+#   conviction       0.507
+#   prediction_error 0.331
+#   arousal          0.413
+#   curiosity        0.246
+# policy (adjusted)
+#   default_conf           0.420
+#   ...
+# seed graph
+#   elements         72
+#   relations        53
+#   region children of GENESIS  15
 ```
 
 ## Tests / benchmarks
 
 ```bash
-cargo run --release --example test_intent       # held-out accuracy
-cargo run --release --example audit_classifiers # diagnostics
+cargo test --lib                                # unit tests
+cargo run --release --example test_intent       # held-out intent accuracy
+cargo run --release --example audit_classifiers # classifier diagnostics
+cargo run --release --example dump_hypergraph_md  # snapshot to inspect/seed.md
 cargo bench                                     # criterion benches
+```
+
+## Regenerate baked artifacts
+
+```bash
+cargo run --release --example gen_intent_classifiers  # → src/intent_classifiers/*.bin
+cargo run --release --example gen_seed_graph          # → src/seed/graph.bin
 ```
 
 ## Docs

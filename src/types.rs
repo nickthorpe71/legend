@@ -16,11 +16,11 @@ pub struct Tick(pub u64);
 /// compiler refuses to mix it with `RelationId` or any other index. Not
 /// globally unique — when cross-store sync arrives, a separate stable
 /// identifier (e.g. `Ulid`) will sit alongside this on each Element.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct ElementId(pub u32);
 
 /// Local handle into `Hypergraph.relations`. Same pattern as `ElementId`.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct RelationId(pub u32);
 
 // ─────────────────────────────────────────────────────────────────────────────
