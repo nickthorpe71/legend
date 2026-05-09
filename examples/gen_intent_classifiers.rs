@@ -34,6 +34,7 @@
 #[path = "shared/mod.rs"]
 mod shared;
 
+use legend::embed::embed_text;
 use legend::intent_classifiers::featurize;
 use legend::math::sigmoid;
 use shared::{dims, load_seed_pack};
@@ -59,8 +60,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (_, pair) in &dim_pairs {
         let high = featurize_pool(&pair.high_pole);
         let low = featurize_pool(&pair.low_pole);
-        let pair_high: Vec<Vec<f32>> = pair.pairs.iter().map(|p| featurize(&p.high)).collect();
-        let pair_low: Vec<Vec<f32>> = pair.pairs.iter().map(|p| featurize(&p.low)).collect();
+        let pair_high: Vec<Vec<f32>> = pair
+            .pairs
+            .iter()
+            .map(|p| {
+                let embedding = embed_text(&p.high);
+                featurize(&p.high, &embedding)
+            })
+            .collect();
+        let pair_low: Vec<Vec<f32>> = pair
+            .pairs
+            .iter()
+            .map(|p| {
+                let embedding = embed_text(&p.low);
+                featurize(&p.low, &embedding)
+            })
+            .collect();
         features.push(Featurized {
             high,
             low,
@@ -163,7 +178,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn featurize_pool(phrases: &[String]) -> Vec<Vec<f32>> {
-    phrases.iter().map(|s| featurize(s)).collect()
+    phrases
+        .iter()
+        .map(|s| {
+            let embedding = embed_text(s);
+            featurize(s, &embedding)
+        })
+        .collect()
 }
 
 // Logistic regression with class-weighted gradient + L2, plus a Bradley-Terry

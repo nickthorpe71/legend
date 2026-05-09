@@ -16,6 +16,7 @@
 #[path = "shared/mod.rs"]
 mod shared;
 
+use legend::embed::embed_text;
 use legend::intent_classifiers::{
     Classifier, IntentClassifiers, featurize, load_intent_classifiers,
 };
@@ -93,7 +94,10 @@ fn diagnostic_2_top_activators(clfs: &IntentClassifiers, pack: &SeedPack) {
     );
     let featurized: Vec<(String, &str, &str, Vec<f32>)> = all_phrases
         .iter()
-        .map(|(s, d, p)| (s.clone(), *d, *p, featurize(s)))
+        .map(|(s, d, p)| {
+            let embedding = embed_text(s);
+            (s.clone(), *d, *p, featurize(s, &embedding))
+        })
         .collect();
 
     let classifiers: [(&str, &Classifier); 4] = [
@@ -216,7 +220,8 @@ fn diagnostic_3_paraphrase_invariance(clfs: &IntentClassifiers) {
         let mut all_scores: [Vec<f32>; 4] = [vec![], vec![], vec![], vec![]];
 
         for variant in paras {
-            let feats = featurize(variant);
+            let embedding = embed_text(variant);
+            let feats = featurize(variant, &embedding);
             for (i, (_, clf)) in classifiers.iter().enumerate() {
                 let s = sigmoid(clf.bias + dot(&feats, &clf.weights));
                 all_scores[i].push(s);

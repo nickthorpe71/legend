@@ -6,6 +6,7 @@
 //! Loads the model once, runs through ~50 inputs grouped by expected
 //! dimension, and reports both per-input scores and per-group accuracy.
 
+use legend::embed::embed_text;
 use legend::steps::detect_intent::detect_intent;
 use legend::types::Intent;
 
@@ -130,7 +131,8 @@ fn main() {
     ];
 
     // Warm up the model and classifiers.
-    let _ = detect_intent("warm-up");
+    let warmup_emb = embed_text("warm-up");
+    let _ = detect_intent("warm-up", &warmup_emb);
 
     let mut total_correct = 0usize;
     let mut total_evaluated = 0usize;
@@ -144,7 +146,8 @@ fn main() {
         let mut group_evaluated = 0;
 
         for &input in group.inputs {
-            let intent = detect_intent(input);
+            let embedding = embed_text(input);
+            let intent = detect_intent(input, &embedding);
             let (label, result) = grade(&intent, group.expected_dim, group.direction);
             let truncated = truncate(input, 60);
             println!(

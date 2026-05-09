@@ -1,4 +1,4 @@
-use crate::embed::{EMBEDDING_DIM, embed_text};
+use crate::embed::EMBEDDING_DIM;
 use crate::lexical_features::{LEXICAL_FEATURE_COUNT, extract_lexical_features};
 
 /// Total feature count: BGE/MiniLM sentence embedding (384) + hand-crafted
@@ -42,8 +42,19 @@ const CURIOSITY: &[u8] = include_bytes!("intent_classifiers/curiosity.bin");
 /// lexical features (34). Total `CLASSIFIER_FEATURE_COUNT` (= 418) dims.
 /// Single source of truth for the layout — both the build-time trainer and
 /// the runtime classifier call this.
-pub fn featurize(text: &str) -> Vec<f32> {
-    let mut v = embed_text(text);
+///
+/// Takes the embedding as input rather than computing it, so the runtime
+/// pipeline can compute the embedding once and reuse it across Step 1
+/// (intent) and Step 4 (the embedding itself, consumed by Step 5 routing).
+/// Build-time trainer call sites compute their own embedding per phrase.
+pub fn featurize(text: &str, embedding: &[f32]) -> Vec<f32> {
+    debug_assert_eq!(
+        embedding.len(),
+        EMBEDDING_DIM,
+        "embedding must be EMBEDDING_DIM"
+    );
+    let mut v: Vec<f32> = Vec::with_capacity(CLASSIFIER_FEATURE_COUNT);
+    v.extend_from_slice(embedding);
     v.extend_from_slice(&extract_lexical_features(text));
     debug_assert_eq!(v.len(), CLASSIFIER_FEATURE_COUNT);
     v

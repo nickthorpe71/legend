@@ -87,8 +87,8 @@ PROCESS MODEL          single binary; daemon mode (`legend start`) or
 
 PHASES                 Step 0     WAL (Write-Ahead Log) append
                                   (durability I/O)
-                       Steps 1–7  read-mostly (&Hypergraph, parallel)
-                       Steps 8–13 mutation    (&mut Hypergraph, seq)  (§4.2, §4.3)
+                       Steps 1–6  read-mostly (&Hypergraph, parallel)
+                       Steps 7–12 mutation    (&mut Hypergraph, seq)  (§4.2, §4.3)
 
 INTENT VECTOR          Intent { conviction, prediction_error,
                                      arousal, curiosity } — 4-dim,
@@ -929,7 +929,7 @@ Recognition is a function of the indices; the indices are derived
 from the relations.
 
 **The seed pack is bootstrapping, not a closed vocabulary.** Attribute
-names, concepts, and participant slots all emerge by default — Step 6
+names, concepts, and participant slots all emerge by default — Step 5
 (§11.7) mints new attribute-name elements from extractor proposals.
 The handful of attribute names that *are* seeded (`instance_of`,
 `subclass_of`, the participant attribute names, and the meta-relation
@@ -1069,22 +1069,24 @@ does during its slice of the tick.
         │           (4-dim: conviction, prediction_error,│
         │            arousal, curiosity)               │
         │  STEP 2   adjust_policy  ─► Policy             │
-        │  STEP 3   segment        ─► spans              │
-        │  STEP 4   embed          ─► vectors per span   │
-        │  STEP 5   route_regions  ─► active_regions +   │
+        │  STEP 3   REMOVED in v0 — caller chunks long   │
+        │           inputs; tick accepts ≤480 tokens     │
+        │           (input embedding computed at tick    │
+        │           entry; consumed by Steps 1 & 4)      │
+        │  STEP 4   route_regions  ─► active_regions +   │
         │                              held RegionDelta  │
-        │  STEP 6   run_extractors ─► proposals          │
+        │  STEP 5   run_extractors ─► proposals          │
         │           ★ GLiNER2 = the long pole            │
-        │  STEP 7   coreference    ─► reuse decisions    │
+        │  STEP 6   coreference    ─► reuse decisions    │
         ├────────────────────────────────────────────────┤
         │            ─── MUTATION PHASE ───              │
         │            (&mut Hypergraph; sequential)       │
-        │  STEP 8   apply_region_delta                   │
-        │  STEP 9   build_relations + events             │
-        │  STEP 10  supersession + cache                 │
-        │  STEP 11  Hebbian + salience                   │
-        │  STEP 12  focus-radius decay                   │
-        │  STEP 13  aggregate_focus  ─►                  │
+        │  STEP 7   apply_region_delta                   │
+        │  STEP 8   build_relations + events             │
+        │  STEP 9   supersession + cache                 │
+        │  STEP 10  Hebbian + salience                   │
+        │  STEP 11  focus-radius decay                   │
+        │  STEP 12  aggregate_focus  ─►                  │
         └──────────────────┬─────────────────────────────┘
                               │
                               ▼
@@ -1094,8 +1096,8 @@ does during its slice of the tick.
                   enqueue_replay (post-tick)
 ```
 
-Steps 1–7 produce proposals against `&Hypergraph` (no commits).
-Steps 8–13 apply all proposals in one mutation pass under `&mut`.
+Steps 1–6 produce proposals against `&Hypergraph` (no commits).
+Steps 7–12 apply all proposals in one mutation pass under `&mut`.
 §4.3 details what each step extracts and where it pays off.
 
 ### 4.1 Input
@@ -1108,7 +1110,7 @@ An `Input` carries:
 
 `tick` takes an optional `source: Option<ElementId>` as a sibling
 parameter (a pointer to a source element — Slack message id, file
-path, URL, modeled as ordinary elements). When present, Step 9–10
+path, URL, modeled as ordinary elements). When present, Step 8
 attaches `(R, source, source)` meta-relations to relations born this
 tick. Source is meta-relation-shaped — provenance about a claim,
 not a property of the text — so it stays out of the `Input` struct
@@ -1117,10 +1119,10 @@ not a property of the text — so it stays out of the `Input` struct
 Inputs are one stream. Discoveries arrive in tick order; tick order is
 transaction time.
 
-### 4.2 The Fourteen Steps
+### 4.2 The Thirteen Steps
 
-Each tick threads through 14 steps (0–13). Steps 1–7 are read-mostly
-and parallelize where possible under `&Hypergraph`. Steps 8–13 are
+Each tick threads through 13 steps (0–12). Steps 1–6 are read-mostly
+and parallelize where possible under `&Hypergraph`. Steps 7–12 are
 sequential under `&mut Hypergraph`. Every tick — statement, question,
 correction — runs the full pipeline; the `Intent` vector
 modulates *policy*, never which steps run.
@@ -1155,7 +1157,7 @@ input citizen to preserve).
 ### 4.3 Pre-Mutation Diagnosis: What We Learn Before Changing State
 
 Every tick has a clean phase split. Steps 0–7 *diagnose* the input
-without touching hypergraph state. Steps 8–13 *commit* what falls out
+without touching hypergraph state. Steps 7–12 *commit* what falls out
 of the diagnosis. The diagnosis is read-only and parallelizable; the
 commit is sequential under `&mut`. Nothing in the diagnosis decides
 "should we mutate" — every tick mutates. The diagnosis decides *what*
@@ -1171,30 +1173,29 @@ step  what it extracts                         why                              
 1     Intent (4-dim vector:               score how much this tick should change the substrate         Step 2 (sole consumer)
       conviction, prediction_error,            along DA / NE / cognitive axes; policy is computed
       arousal, curiosity)                    from this vector, not from a categorical label
-2     adjusted Policy                          turn intent into the four knobs that govern this tick:      Steps 5, 9, 11, 12
+2     adjusted Policy                          turn intent into the four knobs that govern this tick:      Steps 4, 8, 10, 11
                                                vigilance, plasticity, salience, default confidence         (every weighted op)
                                                (§10.6 table)
-3     spans (sentence/clause/entity/value)     give every meaningful unit its own embedding so later       Step 4, Step 6
-                                               questions can target small facts, not averaged blobs
-4     embedding per span + tick-level vector   dense semantic anchors for routing, similarity, salience    Steps 5, 6, 7,
-                                                                                                            and inlined on the
-                                                                                                            Element.embedding
-                                                                                                            field for any
-                                                                                                            element written
-                                                                                                            in Step 9
-5     active_regions + RegionDelta (held)      identify the conceptual locale (which DAG branches the      Step 6 (warm-attribute-
+3     REMOVED in v0                            (was: spans / windowing). Caller chunks long inputs;        —
+                                               one tick = one ≤480-token unit.
+4     input embedding (tick-level)             dense semantic anchor for routing and salience;             Step 1 (intent feature
+      (computed at tick entry)                 computed once at tick entry; threaded into Step 1 and       vector), Step 4 (route_
+                                               Step 4. Inlined on Element.embedding for any element        regions query vector),
+                                               written in Step 8.                                          Element.embedding
+                                                                                                            (§7.3) on mint
+5     active_regions + RegionDelta (held)      identify the conceptual locale (which DAG branches the      Step 5 (warm-attribute-
                                                input lives in); compute proposed DAG structural changes    name bias on label set),
-                                               but DO NOT commit them yet                                   Step 8 (commit the
-                                                                                                            held delta), Step 13
+                                               but DO NOT commit them yet                                  Step 7 (commit the
+                                                                                                            held delta), Step 12
                                                                                                             (active_regions in frame)
-6     element + relation proposals             turn diagnosed text into structural candidates              Step 9 (build base
-      (with confidence per proposal)                                                                        relations and events),
-                                                                                                            Step 10 (recognize
+6     element + relation proposals             turn diagnosed text into structural candidates              Step 8 (build base
+      (with confidence per proposal)                                                                       relations and events),
+                                                                                                            Step 9 (recognize
                                                                                                             from/to/property
                                                                                                             shape for supersession)
-7     coreference decisions (reuse vs. mint)   reconcile each candidate with prior identity; decide        Step 9 (which
-                                               whether "Dr. Rao" = existing DrRao element or a new one      ElementIds bind to
-                                                                                                            each role), Step 11
+7     coreference decisions (reuse vs. mint)   reconcile each candidate with prior identity; decide        Step 8 (which
+                                               whether "Dr. Rao" = existing DrRao element or a new one     ElementIds bind to
+                                                                                                            each role), Step 10
                                                                                                             (reinforcement target —
                                                                                                             reused elements get
                                                                                                             their existing path
@@ -1203,18 +1204,18 @@ step  what it extracts                         why                              
 
 Two things to notice:
 
-1. **Steps 1–7 cannot be skipped.** Even on a question that mints
+1. **Steps 1–6 cannot be skipped.** Even on a question that mints
    nothing, we still classify intent (so reinforcement weight is
    right), run extractors (a question can introduce new entities),
    and score coreference (so "it" resolves correctly for the focus
    set). The full diagnosis runs every tick.
-2. **Steps 1–7 do not commit.** `route_regions` returns a
+2. **Steps 1–6 do not commit.** `route_regions` returns a
    `RegionDelta` rather than applying it; extractor output is a
    `Vec<Proposal>`, not a write; coreference produces a decision
    table, not a merge. All of these are values held in tick-local
-   state until Step 8 opens the mutation phase.
+   state until Step 7 opens the mutation phase.
 
-The parallelism story falls out of (2): because Steps 4–7 hold
+The parallelism story falls out of (2): because Steps 4–6 hold
 `&Hypergraph` only, embedding + region routing + extractor calls run
 under `rayon::par_iter` per span at no risk of conflict — roughly
 5–7× tick speedup on a modern multicore CPU (Central Processing Unit) vs. fully sequential.
@@ -1263,7 +1264,7 @@ both views.
 - Events are first-class; corrections supersede via PROV-O-style
   chains rather than overwriting.
 - Every input is one call to `tick`, which threads through 14 steps
-  (Steps 0–13: read-mostly diagnosis 1–7, mutation 8–13) and returns
+  (Steps 0–12: read-mostly diagnosis 1–6, mutation 7–12) and returns
   an attention frame; replay enqueue is the post-tick handoff.
 - Brain regions are functions, not modules. None own state.
 - Snapshot + bounded WAL; pinned embedder; no transcript storage.
@@ -1651,7 +1652,7 @@ M_source = Relation {
 
 `M_frame` and `M_source` are ordinary Relations whose `target`
 attribute holds `Term::Relation(42)`. They land in
-`meta_relations_by_subject[42]` on Step 9–10 commit, so retrieval
+`meta_relations_by_subject[42]` on Step 8 commit, so retrieval
 finds them with one HashMap lookup followed by a tiny filter on
 attribute name (typical relations have 0–3 meta-relations). Reflective
 reasoning ("what is the modality of M_frame itself?") walks the same
@@ -1691,7 +1692,7 @@ fn frame_of(hg: &Hypergraph, r: RelationId) -> Option<ElementId> {
 ```
 
 These indices are **derived state**, rebuilt on load and updated
-incrementally during Steps 9–10. The relation graph is the source of
+incrementally during Steps 8–9. The relation graph is the source of
 truth. Reading "what's the frame of R?" is one HashMap lookup plus
 a 0–3-element scan — effectively O(1).
 
@@ -1701,7 +1702,7 @@ attribute name exactly when it appears in the `name` field of some
 relation's attribute list (§3.4). Identity is established by names and
 by incoming `subclass_of` / `instance_of` relations that place it in a
 broader category. New attribute names enter the system either via the
-seed pack (§16) or via Step 6 extractor proposals; minting policy and
+seed pack (§16) or via Step 5 extractor proposals; minting policy and
 label-set resolution are specified in §11.7.
 
 **`instance_of` vs. `has_role` convention.** `instance_of` is reserved
@@ -1837,7 +1838,7 @@ expensive.
 ### 8.1 The Indices
 
 Per-element derived state, rebuilt on load and updated incrementally
-during the mutation phase (Steps 9–10: `build_relations` writes the
+during the mutation phase (Steps 8–9: `build_relations` writes the
 relation, `apply_supersession_and_cache` updates the indices):
 
 - `attribute_value_counts: HashMap<ElementId, HashMap<ElementId, u32>>`
@@ -2190,10 +2191,10 @@ Tick-internal subroutines read `&Policy`; only PFC writes it.
 
 ### 9.4 Concurrency Model
 
-- **Read-mostly parallel phase** (Steps 4–7): `&Hypergraph` shared
+- **Read-mostly parallel phase** (Steps 4–6): `&Hypergraph` shared
   across `rayon::par_iter` workers. No interior mutability. No
   locking.
-- **Mutation phase** (Steps 8–13): single `&mut Hypergraph` owned by
+- **Mutation phase** (Steps 7–12): single `&mut Hypergraph` owned by
   the tick driver. Sequential.
 - **Replay** (background thread): receives a snapshot clone of
   `Hypergraph`, computes proposed mutations, sends a batch back via a
@@ -2338,7 +2339,7 @@ expressed via four seeded attribute names:
 Hot-path routing (§10.2, §11.6) reads the derived
 `region_parents` / `region_children` / `region_lateral` /
 `region_prototypes` / `region_members` indices populated from these
-relations during Step 9–10 commit; reflective traversal can walk the
+relations during Step 7 commit; reflective traversal can walk the
 relations directly.
 
 The DAG topology is what makes Legend handle polysemy — `Tuesday` in
@@ -2355,7 +2356,7 @@ exactly what the relation graph and `MemoryStats` carry.
 ### 10.2 Region Routing (Read-Only) + Application (Mutation)
 
 Region routing happens in the **read-mostly parallel phase** of the
-tick (Step 5). The algorithm walks the DAG from Genesis via the
+tick (Step 4). The algorithm walks the DAG from Genesis via the
 `region_children` and `region_prototypes` indices, considering the
 top-k children at each node by cosine similarity to the candidate
 node's prototype Elements.
@@ -2408,7 +2409,7 @@ struct NewRegion {
 ```
 
 `RegionDelta` is held until the mutation phase, where
-`apply_region_delta` (Step 8) commits the relations and applies
+`apply_region_delta` (Step 7) commits the relations and applies
 spherical k-means prototype embedding updates.
 
 ### 10.3 Thresholds, Merge, Split
@@ -2666,7 +2667,7 @@ old categorical enum collapses to derived labels:
 "Correction"       ≈ prediction_error > 0.7 + conviction > 0.7
 "Identity"         ≈ conviction > 0.8 (+ entity-density signal)
 "TemporalUpdate"   ≈ prediction_error > 0.5 + temporal extraction
-                     activity in Step 6
+                     activity in Step 5
 "Brainstorming"    ≈ conviction < 0.3 + curiosity < 0.5
 ```
 
@@ -2694,40 +2695,36 @@ GLiNER2-small via gline-rs/`ort` for extraction). Numbers are p50
 ```text
 step  name                              p50 budget    notes
 0     log entry (WAL append)            <1 ms         LZ4 hot segment append
-1     detect_intent                     5–15 ms       embedding + 4 logistic classifiers; today
-                                                      embeds independently (will share with Step 4
-                                                      once cached, then sub-ms marginal)
+1     detect_intent                     5–15 ms       4 logistic classifiers over the precomputed
+                                                      embedding + lexical features; sub-ms marginal
+                                                      cost since the embedding is shared
 2     adjust_policy                     <1 ms         scalar copy + multiplier apply
-3     window                            <1 ms (short) tokenize + length check; no model
-                                        +10–20 ms     SaT call only when input > ~480 tokens
-                                        (long)
-4     embed                             5–20 ms       MiniLM-L6-v2 (quantized) per window
-                                                      (parallel across windows; should reuse the
-                                                      Step 1 embedding once caching lands)
-5     route_regions                     5–15 ms       DAG descent per window (parallel)
-6     run_extractors                    130–208 ms    ★ GLiNER2 per window — the long pole;
-                                        × N windows   one inference call per window
-7     score_coreference                 2–5 ms        small candidate sets, recency-based
-8     apply_region_delta                2–5 ms        k-means prototype updates
-9     build_relations                   3–8 ms        hashmap inserts + index updates
-10    supersession + cache              2–5 ms        chain walks via meta_relations_by_subject filter on supersedes
-11    reinforce_hebbian + salience      2–5 ms        Oja-rule bumps along focused path
-12    decay_focus_radius                3–8 ms        bounded by policy.focus_decay_radius
-13    aggregate_focus + enqueue_replay  2–5 ms        RRF merge + handoff to replay thread
+3     REMOVED in v0                     —             caller chunks long inputs (§11.4)
+                                                      (input embedding computed at tick entry,
+                                                      ~5–15 ms; consumed by Steps 1 & 4 — was Step 4)
+4     route_regions                     5–15 ms       DAG descent (one input per tick)
+5     run_extractors                    130–208 ms    ★ GLiNER2 — the long pole; one inference call
+6     score_coreference                 2–5 ms        small candidate sets, recency-based
+7     apply_region_delta                2–5 ms        k-means prototype updates
+8     build_relations                   3–8 ms        hashmap inserts + index updates
+9     supersession + cache              2–5 ms        chain walks via meta_relations_by_subject filter on supersedes
+10    reinforce_hebbian + salience      2–5 ms        Oja-rule bumps along focused path
+11    decay_focus_radius                3–8 ms        bounded by policy.focus_decay_radius
+12    aggregate_focus + enqueue_replay  2–5 ms        RRF merge + handoff to replay thread
                                         ─────────
-                                        ~160–290 ms p50  (single-window input, the common case)
+                                        ~160–290 ms p50  (single tick, ≤480 tokens)
 
-★ GLiNER2 is v0's binding latency constraint. Steps 4–5 parallelize
-across windows via rayon::par_iter; Step 6 is one call per window.
-A single-window tick (the common case for chat-message-sized inputs)
-hits the ~160–290 ms p50. Long inputs add SaT (~10–20 ms once) plus
-N × GLiNER2 (~130–208 ms each) — linear in window count, the right
-behavior since longer inputs carry more relations. The p50 floor
-moves with whichever zero-shot extractor is in slot 6, not with
+★ GLiNER2 is v0's binding latency constraint. With Step 3 removed
+each tick processes a single ≤480-token unit (one inference call
+through GLiNER2), so the p50 floor moves linearly with extractor
+choice rather than with window count. Long inputs are the caller's
+responsibility (chunk into multiple ticks); the binding constraint
+is per-tick GLiNER2 cost, not aggregate input length. The p50 floor
+moves with whichever zero-shot extractor is in slot 5, not with
 infrastructure changes elsewhere.
 ```
 
-The path to sub-100 ms p50 is replacing or augmenting Step 6:
+The path to sub-100 ms p50 is replacing or augmenting Step 5:
 
 - **Pattern fast-path (§24.1).** Surface-pattern templates handle
   common shapes (~5–20 ms) with GLiNER2 fallback for novel inputs.
@@ -2737,7 +2734,7 @@ The path to sub-100 ms p50 is replacing or augmenting Step 6:
   mini class call replaces NER + RE + temporal + heuristic coref.
   ~50–150 ms on CPU INT8. Disruptive but flexible.
 - **Smaller GLiNER variant.** A calibration-only change during
-  Step 6 of the build (§21). Floor ~50–80 ms if the smaller variant
+  bootstrap Step 6 (§21). Floor ~50–80 ms if the smaller variant
   passes §19 + §20.5 quality gates.
 
 Read-path / background-work splitting (§24.2) addresses non-extractor
@@ -2752,38 +2749,44 @@ fn tick(
     input: Input,
     source: Option<ElementId>,         // tick-level provenance pointer; written
                                        // as (R, source, source) meta-relations
-                                       // on relations born this tick (Step 9–10)
+                                       // on relations born this tick (Step 8–9)
 ) -> ConsciousAttentionFrame {
     wal_append(hg, &input);                                   // Step 0 (durability — §18.2)
 
-    // --- Read-mostly phase (Steps 1–7, &Hypergraph) ---
-    let intent  = detect_intent(&input, hg);                  // Step 1 → Intent (4-dim)
+    // --- Read-mostly phase (Steps 1–6, &Hypergraph) ---
+    // Tick entry: validate input size + compute the input embedding
+    // once. The embedding feeds Step 1 (intent classifier features)
+    // and Step 4 (region routing). v0 collapses what was Step 4
+    // ("embed") into this single up-front computation. See §11.5.
+    let embedding = embed(&input);
+    let intent  = detect_intent(&input, &embedding, hg);      // Step 1 → Intent (4-dim)
     let policy  = adjust_policy(&intent, &hg.policy);         // Step 2
-    let units   = segment(&input);                            // Step 3
-    let embeds  = embed(&units);                              // Step 4
+    // Step 3 (segment/window) — REMOVED in v0. Caller chunks long
+    // inputs into multiple ticks; one tick = one ≤480-token unit.
+    // See §11.4 for rationale.
     let (active_regions, region_delta)
-                = route_regions(&embeds, hg, &policy);        // Step 5  (delta held, not applied)
+                = route_regions(&embedding, hg, &policy);     // Step 4 (delta held, not applied)
     let extractions
-                = run_extractors(&units, &active_regions,
-                                 &policy, hg);                // Step 6
-    let coref   = score_coreference(&extractions, hg);        // Step 7
+                = run_extractors(&input, &active_regions,
+                                 &policy, hg);                // Step 5
+    let coref   = score_coreference(&extractions, hg);        // Step 6
 
-    // --- Mutation phase (Steps 8–13, &mut Hypergraph) ---
-    apply_region_delta(hg, region_delta);                     // Step 8
+    // --- Mutation phase (Steps 7–12, &mut Hypergraph) ---
+    apply_region_delta(hg, region_delta);                     // Step 7
     let (relations, events)
-                = build_relations(&extractions, &coref, hg);  // Step 9
-    apply_supersession_and_cache(hg, &relations, &events);    // Step 10
-    reinforce_hebbian(hg, &focused_path, &policy);            // Step 11
-    decay_focus_radius(hg, &focused_path, &policy);           // Step 12
-    let attn = aggregate_focus(&relations, &policy);          // Step 13
+                = build_relations(&extractions, &coref, hg);  // Step 8
+    apply_supersession_and_cache(hg, &relations, &events);    // Step 9
+    reinforce_hebbian(hg, &focused_path, &policy);            // Step 10
+    decay_focus_radius(hg, &focused_path, &policy);           // Step 11
+    let attn = aggregate_focus(&relations, &policy);          // Step 12
     enqueue_replay(hg, &attn);     // also schedules background decay sweep
     attn
 }
 ```
 
-The phase boundary is strict: Steps 1–7 take `&Hypergraph` and produce
+The phase boundary is strict: Steps 1–6 take `&Hypergraph` and produce
 proposals (`region_delta`, `extractions`, `coref`); no hypergraph state
-changes during this window. Step 8 onward takes `&mut Hypergraph` and
+changes during this window. Step 7 onward takes `&mut Hypergraph` and
 commits all proposals together. `apply_region_delta` is the first
 mutation, not part of the read-mostly phase.
 
@@ -2887,11 +2890,11 @@ correction term.
 
 **Graph-state component for `prediction_error` (deferred).** The
 earlier spec called for `prediction_error` to be bumped toward 1.0
-when Step 6's candidate extraction would supersede an existing
+when Step 5's candidate extraction would supersede an existing
 Asserted relation — the "actual contradiction" signal beyond the
 linguistic-surprise component. Not yet implemented. Current
 `prediction_error` is purely linguistic. The graph-state probe is
-expected to land alongside Step 6 / Step 10. **Causal framing
+expected to land alongside Step 5 / Step 9. **Causal framing
 (§6 (8)).** Binary contradiction is the v0 shape; the natural
 extension scores the *information shift* between the substrate's
 current causal-model prediction over the affected fluents (walking
@@ -2903,14 +2906,11 @@ weights the probe: contradicting an observation is more informative
 about substrate error than contradicting an interventional claim
 (the latter is just the world being changed).
 
-**Cost.** Today the per-call cost is dominated by the embedding
-inference (~5–15 ms for short inputs); the four 418-dim dot
-products and the lexical-feature extraction are microseconds each.
-**The pipeline should cache the input embedding once and reuse it
-in Step 4 (Embed Windows).** Currently it isn't cached — Step 1
-embeds independently and Step 4 will re-embed when wired up. Once
-caching lands, Step 1's marginal cost drops back to sub-ms (lexical
-features + 4 dot products).
+**Cost.** The input embedding is computed once at tick entry
+(~5–15 ms for short inputs; see §11.5) and threaded through to
+Step 1 here and Step 4 (region routing). Step 1's marginal cost is
+sub-ms — lexical-feature extraction + four 418-dim dot products —
+since the heavy embedding work has already happened.
 
 **No reliance on punctuation alone.** Even with the lexical
 features, the embedding is still load-bearing. The question "Find
@@ -2930,7 +2930,7 @@ gets extracted, whether `apply_region_delta` commits, whether
 `build_relations` writes, whether `reinforce_hebbian` or
 `decay_focus_radius` fire, the shape of the returned frame, or any
 structural decision about elements/relations. Every tick runs Steps
-0–13 regardless. The only knobs are the weights inside those steps.
+0–12 regardless. The only knobs are the weights inside those steps.
 
 ### 11.3 Step 2 — Adjust Policy
 
@@ -2968,7 +2968,7 @@ supersession_threshold = base_threshold * (1.0 - prediction_error)
 
 Every tick-internal subroutine reads `&Policy`; only PFC writes it.
 The base `Policy` on `Hypergraph` is the inter-tick rest state; the
-per-tick adjusted copy is what Steps 3–13 see.
+per-tick adjusted copy is what Steps 4–12 see.
 
 **Worked examples:**
 
@@ -2978,96 +2978,92 @@ per-tick adjusted copy is what Steps 3–13 see.
    curiosity ≈ 0.05`. Yields high `default_conf` (≈ 0.90) →
    relations land Asserted; high salience multiplier (≈ 2.75) →
    the new state and its supersession history get strong decay
-   protection; low supersession threshold → Step 10 actively
+   protection; low supersession threshold → Step 9 actively
    searches for prior cache relations to mark Superseded.
 
 2. *"I'm not sure if the grass is green"* —
    `conviction ≈ 0.10, prediction_error ≈ 0.15, arousal ≈ 0.05,
    curiosity ≈ 0.20`. Yields very low `default_conf` (≈ 0.09) →
    any relation born this tick is Defeasible; near-zero salience
-   bump → decays fast; high supersession threshold → Step 10 leaves
+   bump → decays fast; high supersession threshold → Step 9 leaves
    prior beliefs alone.
 
 Cost is a handful of multiplies — well under 1 ms.
 
-### 11.4 Step 3 — Window The Input
+### 11.4 Step 3 — REMOVED in v0
 
-The input is chunked into one or more **windows** sized to fit
-GLiNER2's max-input length (~512 tokens). Each window is what Steps
-4–7 process as a single piece — Step 4 embeds it, Step 5 routes it,
-Step 6 extracts entities and relations *over the entire window
-together*. The "logical pieces" of the input are not the windows;
-they are the relations Step 6 produces (§11.7). A window is a
-container for joint extraction, not a semantic unit.
+The original spec called for a `window_input` step that chunked long
+inputs into one or more **windows** via SaT (Segment Any Text). v0
+drops this step entirely: **one tick = one window, max 480 tokens.**
+Long-input chunking is the caller's responsibility (LLM client,
+ingestion script, human user) — they have better context about
+natural boundaries (paragraph structure, semantic units, document
+hierarchy) than this layer can recover from raw text alone.
 
-**Two paths, by length:**
+**Why removed.** Three independent reasons that compound:
 
-- **Short input (≤ ~480 tokens, the common case).** No segmentation.
-  The whole input passes through Steps 4–7 as one window. Cost: one
-  tokenizer pass to count, ~µs. Risk of splitting in the middle of
-  a relation: zero, because there is no split.
+1. **SaT is too large to bundle.** The smallest variant
+   (`segment-any-text/sat-3l-sm`) is ~409 MB FP16 / ~817 MB FP32.
+   XLM-RoBERTa's 250K-vocab embedding table dominates regardless of
+   layer count — `sat-1l-sm` is barely smaller. Bundling adds
+   hundreds of MB to the binary; runtime download adds first-run
+   network friction across every dev machine.
 
-- **Long input (> ~480 tokens).** Invoke **SaT** (Segment Any Text;
-  Frohmann et al. 2024) — a small ~22M-param ONNX model running
-  through `ort` (§15.1) — to find sentence/paragraph boundaries.
-  Group SaT's segments greedily into windows that each fit within
-  the token budget. If a single SaT segment exceeds the budget
-  (rare — a wall-of-text URL list, a code block, a stream-of-
-  consciousness paragraph), fall back to token-budget windowing
-  for that one segment only. Cost: ~10–20 ms for SaT + ~µs for the
-  greedy grouping pass.
+2. **SaT requires `ort`, which is disqualified.** SaT and GLiNER2
+   were both spec'd on `ort` (the pyke.io binding to Microsoft's
+   C++ ONNX Runtime). That runtime fails to link cleanly on dev
+   machines we care about, and re-introducing native-link friction
+   per machine is non-negotiable. Tract is the only acceptable
+   runtime — and SaT loads in tract only after a manual FP16→FP32
+   conversion that nearly doubles the size.
 
-The 480-token threshold (vs. GLiNER2's 512) leaves a safety margin
-for special tokens, positional buffer, and any coref-context bytes
-the extractor consumes from the window's edges.
+3. **UAX#29 sentence-aware packing isn't good enough.** A pure-Rust
+   alternative via `unicode-segmentation` was prototyped end-to-end.
+   It mis-splits on common abbreviations (`Mr. Henderson` → split
+   between `Mr.` and `Henderson`), `Dr.`, `Inc.`, `p.m.`, `U.S.`,
+   etc. The ~10% mis-split rate hits exactly the cases that matter
+   for downstream relation extraction — separating named-entity
+   tokens across window boundaries breaks the very relations Step 5
+   would otherwise extract.
 
-**Why SaT, not regex.** A regex sentence splitter handles 90% of
-inputs correctly but mis-splits on quotes, abbreviations, URLs,
-ellipses, and code. SaT handles those uniformly, multilingually,
-and in a single sub-20 ms call — small enough that running it on
-the rare long input is cheap, never on short ones is free. SaT does
-not do *relation-aware* segmentation (a relation that genuinely
-spans paragraphs can still get split); coreference (§11.8) and
-working memory (`recent_focus`) handle that case by linking
-entities across windows on Step 7.
+**The contract.** Callers submit ≤480 tokens per `tick()` call.
+Inputs above the budget are rejected at the tick boundary with an
+explicit error carrying the actual count and the limit; the caller
+chunks and re-submits as multiple ticks. The 480-token threshold
+matches GLiNER2's 512-token max minus a safety margin for special
+tokens, positional buffer, and coref-context bytes.
 
-**Why coupled to Step 6, not independent.** Within each window,
-GLiNER2 sees the whole window at once and finds all relations
-across all sentences in it; sentence boundaries inside a window
-are not consulted. Pre-splitting at sub-window granularity would
-risk separating an entity from its relation partner, which is the
-exact failure mode this design avoids. So Step 3 windows; Step 6
-extracts; the relations themselves are the smallest semantic
-units, not anything Step 3 produces. This is the §1.6 "emergent
-ontology" bet applied at the input level: the structure of the
-input is read from extraction, not declared by segmentation.
+**What didn't change.** References to "windows" elsewhere in this
+doc remain accurate — there is still one window per tick, and Steps
+4–6 still operate on it as a unit. Plural-window orchestration code
+(rayon fan-out across windows, multi-window coreference linking,
+multi-window relation merging) is simply not exercised in v0.
 
-**Latency.** Short inputs add ~µs to the tick. Long inputs add SaT
-(~10–20 ms) plus N × GLiNER2 (~130–208 ms each, where N is the
-window count). For typical chat-message-sized inputs, this is one
-window and the SaT cost is zero. For long-form note ingestion,
-the cost scales linearly with input length — which is the right
-behavior, since longer inputs carry more relations.
+**Latency.** Step 3 contributes 0 ms. The validation check (single
+tokenizer pass to count) lives wherever the tick entry point gates
+input — counted under Step 0 / WAL append, not its own line.
 
-### 11.5 Step 4 — Embed Windows
+**Future re-introduction.** Long-form ingestion can grow back into
+the pipeline post-v0 if a real use case demands it — most likely as
+a separate layer above `tick()` that hands off pre-chunked
+sub-inputs, rather than as a Step 3 inside the pipeline. By then
+either tract's op coverage may have grown to admit SaT, or a smaller
+multilingual segmenter may have appeared.
+
+### 11.5 Tick Entry — Input Embedding
+
+(Was Step 4 in the original spec; folded into tick entry in v0 so
+Step 1 and Step 4 share one inference. The MiniLM call is no longer
+its own pipeline step — it runs once before Step 1 and the result
+threads through.)
 
 **all-MiniLM-L6-v2** (384-dim, 6 transformer layers, ONNX-quantized,
 ~23 MB) running through **tract-onnx** (pure-Rust ONNX runtime,
 §15.1; no C++ deps). Model bytes are baked into the binary via
 `include_bytes!`. Tokenization is `tokenizers` (HuggingFace pure-Rust
-crate, §15.1). Each window from Step 3 becomes one vector; for
-multi-window inputs, embedding calls fan out across windows via
-`rayon::par_iter`. Quantized inference is ~3–5 ms per call on a
-4-core commodity CPU. Single-window inputs (the common case) make
-one inference; multi-window inputs make N parallel inferences and
-the §11.0 5–20 ms budget covers up to ~5 windows in parallel.
-
-**Per-window, never one averaged vector for a many-window input** —
-later questions target small facts; cross-window averaging would mix
-concept boundaries and break region routing. (Within a single window,
-the embedding *is* a window-level vector; that's the right
-granularity because relations within the window cohere semantically
-by construction.)
+crate, §15.1). Quantized inference is ~3–5 ms per call on a 4-core
+commodity CPU. With Step 3 removed there are no multi-window
+fan-outs — one tick, one input, one inference.
 
 **Storage format.** tract-onnx loads the quantized weights directly,
 so we don't carry a separate FP32 master alongside. Snapshots keep
@@ -3075,20 +3071,25 @@ the embedding output (the L2-normalized 384-dim FP32 vector) inline
 on each Element's `embedding` field — that's an output of the
 quantized model, not the model weights themselves.
 
-**Sharing with Step 1.** Step 1 (`detect_intent`) embeds the input
-through the same model. The pipeline should cache that embedding
-once and have Step 4 reuse it instead of re-embedding the same input
-text. Not yet wired — see §11.2.
+**Consumers within the tick.**
+1. **Step 1 (`detect_intent`)** — feeds the embedding into the
+   feature vector (embedding ++ lexical features → 4 logistic
+   classifiers).
+2. **Step 4 (`route_regions`)** — uses the same embedding as the
+   query vector for DAG descent over region prototypes.
+
+Both consumers receive `&[f32]` borrows of the same allocation; no
+clone, no second inference call.
 
 The substrate is dimension-agnostic at the type level, but the seed
 pack's prototypes are dim-specific; swapping dimensions requires
 re-embedding the seed and re-running the boot fingerprint check
 (§18.4).
 
-### 11.6 Step 5 — Route Through Regions
+### 11.6 Step 4 — Route Through Regions
 
 **The job.** Identify which regions of the DAG are *active for this
-tick*, so Step 6's extractor can warm-bias its attribute-name label
+tick*, so Step 5's extractor can warm-bias its attribute-name label
 set toward attribute names that already live near this input
 semantically. This is a **fast predictive prefilter**, not the
 substrate's authoritative answer about where new elements belong.
@@ -3098,10 +3099,10 @@ twice per tick, with different inputs and different jobs:
 
 | Phase | Step | Input | Job | Persistence |
 |---|---|---|---|---|
-| Predictive | **Step 5** (here) | the **window's** ephemeral embedding | "what KIND of input is this?" → bias Step 6's label set | the window embedding is discarded after the tick |
-| Authoritative | **Step 8** (§11.8a) | each minted **element's** own inline embedding | "where does this element belong?" → write `member_of` relations + spherical k-means prototype updates | element embeddings persist; region membership is durable |
+| Predictive | **Step 4** (here) | the **window's** ephemeral embedding | "what KIND of input is this?" → bias Step 5's label set | the window embedding is discarded after the tick |
+| Authoritative | **Step 7** (§11.8a) | each minted **element's** own inline embedding | "where does this element belong?" → write `member_of` relations + spherical k-means prototype updates | element embeddings persist; region membership is durable |
 
-Step 5's window-embedding routing exists specifically to break a
+Step 4's window-embedding routing exists specifically to break a
 chicken-and-egg between extraction and biasing: extraction wants the
 warm label set; the warm label set requires knowing which regions
 are active; knowing active regions normally requires already-minted
@@ -3110,18 +3111,18 @@ elements; minting requires extraction. The window embedding gives a
 verb shape, the from/to construction, the change-vs-state cue —
 things that don't reduce to any single extracted element) and lets
 extraction proceed with a correctly tuned label set on its first
-pass. Step 8 then does the authoritative placement once the actual
+pass. Step 7 then does the authoritative placement once the actual
 elements exist and have their own persistent embeddings.
 
 This is why the substrate's "where does X live?" answer comes from
-Step 8, not Step 5 — and why the window embedding is correctly
+Step 7, not Step 4 — and why the window embedding is correctly
 ephemeral while element embeddings persist.
 
 **Mechanics.** Read-only DAG descent — no model, just cosine
 similarity over already-computed vectors. Each window's embedding
 runs `route_regions(...)` (§10.2) against the DAG. Parallelizes
 across windows via `rayon::par_iter`. The active-regions set
-surfaced to Step 6 is the **union** of each window's routing
+surfaced to Step 5 is the **union** of each window's routing
 results — multi-window inputs touch multiple regions, which is the
 desired behavior.
 
@@ -3146,27 +3147,24 @@ and `policy.split_variance` (splits high-scatter regions). The `RegionDelta`
 returned alongside the `ActiveRegion` list captures proposed
 parent attachments, prototype-vector updates (k-means targets),
 and any newly-minted regions (§10.3.5 mid-path insertions); it is
-**held** through the read-mostly phase and committed by Step 8
+**held** through the read-mostly phase and committed by Step 7
 (§11.8a).
 
-The `active_regions` set seeds extractor attention in Step 6 —
+The `active_regions` set seeds extractor attention in Step 5 —
 when a region is active, attribute names authored within relations
 whose participants are members of that region (per the
 `region_members` index over `member_of` relations) get a small
 label-set priority, so GLiNER2 prefers the lexicon's "warm"
 attribute names over cold ones.
 
-### 11.7 Step 6 — Run Extractors
+### 11.7 Step 5 — Run Extractors
 
-Run **per window** (Step 3). For single-window inputs (the common
-case), this section runs once. For multi-window inputs, it runs N
-times — extractors fan out across windows via `rayon::par_iter`,
-each window producing its own (entity, relation) candidates that
-merge into a single proposal stream for Step 7. Within each window
-the extractor sees the entire window at once; sentence boundaries
-inside a window are not consulted, which is what makes
-cross-sentence relations recoverable without pre-segmentation
-hazards (§11.4).
+One call per tick over the whole input (Step 3 was removed; one
+tick = one ≤480-token unit, see §11.4). The extractor sees the
+entire input at once; sentence boundaries inside the input are not
+consulted, which is what makes cross-sentence relations
+recoverable without pre-segmentation hazards. The output is the
+(entity, relation) candidate stream that feeds Step 6.
 
 The v0 extractor stack runs four extractors sequentially within the
 step (the step itself is the latency long pole because of GLiNER2):
@@ -3181,7 +3179,7 @@ step (the step itself is the latency long pole because of GLiNER2):
   existing `(span_element, instance_of, K)` — if one is already
   present on this element, no new relation is created and the
   existing one's `MemoryStats` are reinforced via the normal
-  Step 10 path. NER confidence ≥ `policy.ner_assertion_threshold`
+  Step 8 path. NER confidence ≥ `policy.ner_assertion_threshold`
   → `Entailed`; below → `Defeasible`. Anonymous spans (no surface
   name) are minted with `name = "<kind>_<counter>"` where
   `<kind>` is taken from the highest-confidence `instance_of`
@@ -3199,7 +3197,7 @@ step (the step itself is the latency long pole because of GLiNER2):
   binding latency constraint and does not parallelize.** Emits
   typed `(subj_span, attr_label, obj_span, confidence)` quads — each
   binds a subject Element and an object Element via an attribute name
-  (the relation built in Step 9 has at minimum
+  (the relation built in Step 8 has at minimum
   `[subject: subj, attr_label: obj]`).
 - **Heuristic coref** — pure Rust, recency-based, no model.
   Pronouns (he / she / it / they / this / that) and definite
@@ -3210,7 +3208,7 @@ step (the step itself is the latency long pole because of GLiNER2):
 
 All extractor output carries confidence. The tick's `source`
 parameter (§9.6, §11.1) flows into `(R, source, source)`
-meta-relations on the resulting relations during Step 9.
+meta-relations on the resulting relations during Step 8.
 
 **Causal-shape extraction conventions (§6 (8)).** Three conventions
 sit on top of the four extractors above; none requires a new model
@@ -3225,7 +3223,7 @@ and emit the right meta-relations:
   the base relation. Verb elements link to `intervened` via
   `subclass_of` (§16.3); recognition walks the cone, so the
   surface lexicon stays open. Default — no tag, no `intervened`
-  meta-relation — means observation. Steps 10 and 11 read the tag
+  meta-relation — means observation. Steps 9 and 10 read the tag
   for do()-shaped supersession and reinforcement (§11.10, §11.11).
 - **Prefer causal vs. correlational attribute names from
   linguistic markers.** "X caused Y" / "Y because X" / "X led to Y" /
@@ -3252,7 +3250,7 @@ from, in order:
    participant attribute names) — always included.
 2. The "warm" attribute names: attribute-name elements whose
    `MemoryStats` activation is above a floor. This is what active
-   regions modulate — when Step 5 returned active regions, attribute
+   regions modulate — when Step 4 returned active regions, attribute
    names whose participants live in those regions get included even if
    their activation has decayed somewhat. Bounds open-vocabulary drift
    without freezing extraction to seed coverage.
@@ -3282,7 +3280,7 @@ Relation. The `attr_label` becomes the *attribute name* of one slot in
 the relation's attribute list; the subject and object Elements are
 bound via separately seeded attribute names (typically `subject` for
 the head, `attr_label` itself for the object — see §7.2 worked example).
-Step 9 assembles the full attribute list.
+Step 8 assembles the full attribute list.
 
 **Why the cosine search is universal, not warm-only.** Attribute-name
 synonyms ("rescheduled to" / "moved to" / "changed to") embed close
@@ -3304,10 +3302,10 @@ cases where synchronous dedup didn't catch a synonym cluster.
 proposes intermediate DAG nodes upfront when both components of a
 compound noun are already in the lexicon. See §24.8 for the v1+ form.
 
-### 11.8 Step 7 — Coreference Scoring
+### 11.8 Step 6 — Coreference Scoring
 
 Pure Rust scorer — no model. Operates on **entity-mention spans
-returned by Step 6's NER and relation extractor** — not on Step 3's
+returned by Step 5's NER and relation extractor** — not on Step 3's
 windows (windows are containers; mentions are what coref resolves).
 A "span" here is a contiguous slice of source text that an extractor
 identified as referring to something — a pronoun ("it", "they"), a
@@ -3361,18 +3359,18 @@ dentate gyrus) is the dampening function on the merge side: when two
 candidates are close-but-distinct on a discriminating role, force them
 apart.
 
-### 11.8a Step 8 — Apply Region Delta
+### 11.8a Step 7 — Apply Region Delta
 
 The first mutation step — no model. This is the **authoritative**
-phase of region routing (the predictive prefilter ran in Step 5,
-§11.6). Step 5 used the window's ephemeral embedding to identify
-which regions are active for biasing extraction; Step 8 now uses
+phase of region routing (the predictive prefilter ran in Step 4,
+§11.6). Step 4 used the window's ephemeral embedding to identify
+which regions are active for biasing extraction; Step 7 now uses
 the actual *element* embeddings (each minted Element's persistent
 inline `embedding` field) to update the substrate's belief about
 where elements belong. After this step, region membership is the
 DAG's source of truth.
 
-The `RegionDelta` returned by Step 5 (held through the read-mostly
+The `RegionDelta` returned by Step 4 (held through the read-mostly
 phase) is now committed:
 
 - **Parent attachments.** Each `(child, parent, weight)` becomes (or
@@ -3394,10 +3392,10 @@ phase) is now committed:
 The region indices (`region_parents`, `region_children`,
 `region_lateral`, `region_prototypes`, `region_members`) update
 incrementally as these relations land. After this step the DAG
-reflects whatever §10.2 routing decided, and Steps 9–13 see the
+reflects whatever §10.2 routing decided, and Steps 8–12 see the
 updated topology.
 
-### 11.9 Step 9 — Build Relations and Events
+### 11.9 Step 8 — Build Relations and Events
 
 No model — pure HashMap inserts + index updates. Each surviving
 extractor proposal becomes a Relation whose **attribute list** is
@@ -3461,7 +3459,7 @@ reschedule_event_1 [target: appointment_1,
                     to: Friday]                  [Asserted]
 ```
 
-### 11.10 Step 10 — Supersession and Cache
+### 11.10 Step 9 — Supersession and Cache
 
 No model — index lookups + status flips. For each new event-shaped
 relation (Event Calculus fluent update, §14.4) whose attribute list
@@ -3512,7 +3510,7 @@ so high prior confidence raises the bar for flipping. Both paths
 produce the same `Superseded` flip + `supersedes` meta-relation;
 only the gate condition differs.
 
-### 11.11 Step 11 — Hebbian + Salience
+### 11.11 Step 10 — Hebbian + Salience
 
 Pure arithmetic over `MemoryStats` — no model. Two updates fire:
 
@@ -3539,7 +3537,7 @@ tick, compute:
 score_salience(R, p) =
     p.salience_floor
   + 1.0  if R has an exact-value attribute (date-named, number-named, named entity)
-  + 1.0  if R was just produced by supersession (Step 10) — preserve correction history
+  + 1.0  if R was just produced by supersession (Step 9) — preserve correction history
   + 0.5  if R is a user-stated preference (frame-scoped FRAME_USER + an attribute name is preference-shaped)
   + 0.5  if R is in this tick's focus set (focus-bearing on this tick)
   + 0.0  otherwise
@@ -3569,7 +3567,7 @@ is promoted to `Asserted` in this step when *all three* hold:
    different `Intent` regions (e.g. high-conviction-statement vs.
    curiosity vs. high-prediction-error mention), and different
    `active_frame` scopes — *and* the source elements themselves
-   must be topologically independent in the source DAG. Step 11
+   must be topologically independent in the source DAG. Step 10
    reads a replay-maintained annotation that maps each source
    element to its independent-root id (replay walks `derived_from`
    chains; §14.8), so two sources that trace back to the same
@@ -3587,7 +3585,7 @@ auto-promotes wrong content; with it, promotion requires actually
 independent evidence in the Pearl sense (§6 (8) — independent
 causes, not just nominally distinct ids).
 
-### 11.12 Step 12 — Focus-Radius Decay
+### 11.12 Step 11 — Focus-Radius Decay
 
 No model — bounded BFS (Breadth-First Search) + scalar multiplies. Decay during the tick
 is **bounded to the focus radius** so the read-mostly-then-mutate
@@ -3611,13 +3609,13 @@ thread, computes a delta against a snapshot, and the next tick applies
 it under `&mut`. Decay weakens **access paths**, never destroys
 focus-bearing relations (Invariants 2, 8).
 
-### 11.13 Step 13 — Assemble Attention Frame
+### 11.13 Step 12 — Assemble Attention Frame
 
 No model. The frame is a **post-tick snapshot of the focused
 subgraph** — not a pre-assembled answer. Most fields are not
-*computed* in Step 13; they are *gathered* from per-tick buffers
+*computed* in Step 12; they are *gathered* from per-tick buffers
 that earlier steps populated as a side effect of doing their own
-work. The two things Step 13 itself produces are (a) the
+work. The two things Step 12 itself produces are (a) the
 `focused_relations` RRF (Reciprocal Rank Fusion; Cormack et al.
 2009) over three already-computed signals plus a single tantivy
 BM25 (Best Match 25) query, and (b) the `next_actions` suggestions.
@@ -3643,22 +3641,22 @@ struct ConsciousAttentionFrame {
 #### Field-by-field reference
 
 The "When" column names the step whose work *produces* the field's
-contents; Step 13 only finalizes assembly.
+contents; Step 12 only finalizes assembly.
 
 | Field | What it carries | When | How |
 |---|---|---|---|
-| `tick` | The monotonic clock value at this tick's commit point. Lets the caller correlate with WAL entries, snapshot timestamps, and recent-focus tick stamps. | Step 13 | Read `hg.clock`. |
-| `input` | A read-only echo of the input text. Not a substrate citizen; discarded after the caller consumes the frame. Exists so the caller has the question/statement in hand alongside Legend's response without threading it separately. | Step 0 (captured at tick entry); Step 13 (returned) | Construct `InputEcho { text }` from the original `Input.text`. |
-| `intent` | The 4-dim `Intent { conviction, prediction_error, arousal, curiosity }` (§11.2). Exposes how this tick's intent vector landed, so the calling LLM can see "this tick was high-conviction correction-shaped" without reverse-engineering it. | Step 1 | Per-dim logistic-regression classifier over `embedding ++ lexical_features` (418 dims), trained build-time from `seed_pack.yaml`'s `intent_prototypes` (high/low pools + counterfactual pairs). Held through the tick; Step 13 just attaches it. |
-| `active_frame` | The reference-frame element this tick operated under (e.g. `FRAME_USER`, `FRAME_PROJECT`). `None` if no frame was identified. Drives frame-relative supersession and frame-scoped retrieval. | Step 5 (carried forward from the previous tick's working memory unless this tick's input shifted frame) | Either inherited from `recent_focus`'s most recent entry's `frame`, or set by a frame-shifting cue extracted in Step 6 (e.g. a domain marker routing through `REGION_DOMAINS`). |
-| `active_regions` | The regions activated for *this tick*, with per-region similarity scores. The union across windows for multi-window inputs. Lets the caller see "this input touched events + change_history + time." | Step 5 | `route_regions(...)` results per window, unioned. Each entry is a `RegionActivation { region, similarity }`. |
-| `focused_relations` | The relations the caller reads its answer off of. Status-filtered: `Asserted` + `Entailed` by default; `Defeasible` flagged with `is_defeasible = true`; `Superseded` excluded (it lands in `history`); `Retracted` excluded entirely. | Step 13 | RRF merge over three signals — see §11.13 RRF prose below. |
-| `supporting_claims` | Provenance pointers for `focused_relations`: the events and sources that produced the focused state. Lets the caller answer "where did this come from?" without an extra round-trip. | Step 13 | For each focused relation `R`, walk `meta_relations_by_subject[R]` filtered to entries with `derived_from` or `source` attributes; collect the resulting `RelationId`s. |
-| `history` | Superseded ancestors of focused relations — what was true *before*. Lets the caller distinguish "is true now" from "was true." Bounded by the supersession chain depth. | Step 13 | For each focused relation `R`, walk `meta_relations_by_subject[R]` filtered to entries with a `supersedes` attribute, collecting the chain of `Superseded` predecessors. |
-| `uncertainty` | Per-tick signals the caller may want to verify, follow up on, or surface to the user. Each entry is an `UncertaintySignal` variant: `LowConfidence(R)`, `Contradiction { a, b }`, `AmbiguousCoref { span, candidates }`, `UngroundedTime(R)`, `DiffuseRouting`. | Steps 5, 6, 7, 9, 10 (each step pushes signals into a per-tick buffer as it detects them) | Step 5 emits `DiffuseRouting` when no region clears `policy.region_activation_threshold`. Step 6 emits `UngroundedTime(R)` when chrono-english fails to ground a temporal expression. Step 7 emits `AmbiguousCoref` when no coref candidate exceeds the merge threshold. Step 9 emits `LowConfidence(R)` for relations under `policy.ner_assertion_threshold`. Step 10 emits `Contradiction` when a write would create a contradiction with an `Asserted` peer. Step 13 collects the buffer into the frame. |
-| `durable_writes` | The `ElementId`s newly minted by this tick — what was *added* to the substrate. Lets the caller see "Legend learned about appointment_1 and reschedule_event_1 just now." | Steps 8, 9 (each mint records the new id into the per-tick write buffer) | Step 8 `apply_region_delta` records new region / prototype / member-of element mints. Step 9 `build_relations` records new entity / attribute-name mints. The buffer is finalized in Step 13. |
-| `superseded` | Relation IDs flipped to `Superseded` status in this tick — what was *revised*. Pairs with `history` (which carries the same ids in their relation form, walked through the chain) but at the surface as a flat list for quick "what did this tick invalidate?" inspection. | Step 10 | Each `Superseded`-status flip in the supersession routine records the affected `RelationId` into the per-tick supersession buffer. |
-| `next_actions` | Advisory suggestions for the caller / orchestrator: `EnqueueReplay { kind }` when this tick triggered a replay job (e.g. mid-path insertion confirmation, attribute-name dedup warning), `FollowUpQuery(text)` when an `UncertaintySignal::AmbiguousCoref` left a question unresolved that asking the user could answer cheaply. Not commands; the caller decides whether to act. | Step 13 | Step 13 inspects the assembled frame (especially `uncertainty` and any replay flags raised in Steps 5–11) and emits `AttentionAction` variants. The replay-enqueue itself happens in §11.14, after Step 13 returns. |
+| `tick` | The monotonic clock value at this tick's commit point. Lets the caller correlate with WAL entries, snapshot timestamps, and recent-focus tick stamps. | Step 12 | Read `hg.clock`. |
+| `input` | A read-only echo of the input text. Not a substrate citizen; discarded after the caller consumes the frame. Exists so the caller has the question/statement in hand alongside Legend's response without threading it separately. | Step 0 (captured at tick entry); Step 12 (returned) | Construct `InputEcho { text }` from the original `Input.text`. |
+| `intent` | The 4-dim `Intent { conviction, prediction_error, arousal, curiosity }` (§11.2). Exposes how this tick's intent vector landed, so the calling LLM can see "this tick was high-conviction correction-shaped" without reverse-engineering it. | Step 1 | Per-dim logistic-regression classifier over `embedding ++ lexical_features` (418 dims), trained build-time from `seed_pack.yaml`'s `intent_prototypes` (high/low pools + counterfactual pairs). Held through the tick; Step 12 just attaches it. |
+| `active_frame` | The reference-frame element this tick operated under (e.g. `FRAME_USER`, `FRAME_PROJECT`). `None` if no frame was identified. Drives frame-relative supersession and frame-scoped retrieval. | Step 4 (carried forward from the previous tick's working memory unless this tick's input shifted frame) | Either inherited from `recent_focus`'s most recent entry's `frame`, or set by a frame-shifting cue extracted in Step 5 (e.g. a domain marker routing through `REGION_DOMAINS`). |
+| `active_regions` | The regions activated for *this tick*, with per-region similarity scores. The union across windows for multi-window inputs. Lets the caller see "this input touched events + change_history + time." | Step 4 | `route_regions(...)` results per window, unioned. Each entry is a `RegionActivation { region, similarity }`. |
+| `focused_relations` | The relations the caller reads its answer off of. Status-filtered: `Asserted` + `Entailed` by default; `Defeasible` flagged with `is_defeasible = true`; `Superseded` excluded (it lands in `history`); `Retracted` excluded entirely. | Step 12 | RRF merge over three signals — see §11.13 RRF prose below. |
+| `supporting_claims` | Provenance pointers for `focused_relations`: the events and sources that produced the focused state. Lets the caller answer "where did this come from?" without an extra round-trip. | Step 12 | For each focused relation `R`, walk `meta_relations_by_subject[R]` filtered to entries with `derived_from` or `source` attributes; collect the resulting `RelationId`s. |
+| `history` | Superseded ancestors of focused relations — what was true *before*. Lets the caller distinguish "is true now" from "was true." Bounded by the supersession chain depth. | Step 12 | For each focused relation `R`, walk `meta_relations_by_subject[R]` filtered to entries with a `supersedes` attribute, collecting the chain of `Superseded` predecessors. |
+| `uncertainty` | Per-tick signals the caller may want to verify, follow up on, or surface to the user. Each entry is an `UncertaintySignal` variant: `LowConfidence(R)`, `Contradiction { a, b }`, `AmbiguousCoref { span, candidates }`, `UngroundedTime(R)`, `DiffuseRouting`. | Steps 4, 5, 6, 8, 9 (each step pushes signals into a per-tick buffer as it detects them) | Step 4 emits `DiffuseRouting` when no region clears `policy.region_activation_threshold`. Step 5 emits `UngroundedTime(R)` when chrono-english fails to ground a temporal expression. Step 6 emits `AmbiguousCoref` when no coref candidate exceeds the merge threshold. Step 8 emits `LowConfidence(R)` for relations under `policy.ner_assertion_threshold`. Step 9 emits `Contradiction` when a write would create a contradiction with an `Asserted` peer. Step 12 collects the buffer into the frame. |
+| `durable_writes` | The `ElementId`s newly minted by this tick — what was *added* to the substrate. Lets the caller see "Legend learned about appointment_1 and reschedule_event_1 just now." | Steps 7, 8 (each mint records the new id into the per-tick write buffer) | Step 7 `apply_region_delta` records new region / prototype / member-of element mints. Step 8 `build_relations` records new entity / attribute-name mints. The buffer is finalized in Step 12. |
+| `superseded` | Relation IDs flipped to `Superseded` status in this tick — what was *revised*. Pairs with `history` (which carries the same ids in their relation form, walked through the chain) but at the surface as a flat list for quick "what did this tick invalidate?" inspection. | Step 9 | Each `Superseded`-status flip in the supersession routine records the affected `RelationId` into the per-tick supersession buffer. |
+| `next_actions` | Advisory suggestions for the caller / orchestrator: `EnqueueReplay { kind }` when this tick triggered a replay job (e.g. mid-path insertion confirmation, attribute-name dedup warning), `FollowUpQuery(text)` when an `UncertaintySignal::AmbiguousCoref` left a question unresolved that asking the user could answer cheaply. Not commands; the caller decides whether to act. | Step 12 | Step 12 inspects the assembled frame (especially `uncertainty` and any replay flags raised in Steps 4–10) and emits `AttentionAction` variants. The replay-enqueue itself happens in §11.14, after Step 12 returns. |
 
 #### How `focused_relations` is computed
 
@@ -3690,10 +3688,10 @@ The three input signals:
    embeddings systematically underweight (the `DrRao` element, the
    file path `src/foo.rs`, the issue id `#42`). The query terms are
    derived from the input text and from the focus set's element
-   names. The lookup fires *in Step 13* and feeds RRF alongside the
+   names. The lookup fires *in Step 12* and feeds RRF alongside the
    dense signal.
 3. **Path-reinforced.** Relations whose `MemoryStats.focus_success_count`
-   was bumped this tick (Step 11) get a vote weight from cone
+   was bumped this tick (Step 10) get a vote weight from cone
    neighbors that reinforced together.
 
 RRF merges all three rankings into a single
@@ -3813,7 +3811,7 @@ fn score_salience(relation: &Relation, p: &Policy) -> f32;
 fn detect_intent(input: &str) -> Intent;
 // v0: no Hypergraph dependency yet (graph-state probe for
 // `prediction_error` is deferred — see §11.2). The eventual signature
-// will take `embeddings: &[Vec<f32>]` (cached from Step 4) and
+// will take `embeddings: &[Vec<f32>]` (cached from tick entry) and
 // `hg: &Hypergraph` for the supersession-candidate probe.
 fn adjust_policy(intent: &Intent, base: &Policy) -> Policy;
 fn aggregate_focus(candidates: &[RelationCandidate],
@@ -3860,7 +3858,7 @@ plasticity, salience floor.
 
 ### 13.6 Hebbian Learning
 
-Fires inside the co-activation step (Step 11). Bounded by
+Fires inside the co-activation step (Step 10). Bounded by
 `Policy.hebbian_rate` and the Oja-rule operators (§14.9).
 
 ### 13.7 Path-Aware Reinforcement — `reinforce_path`
@@ -4033,7 +4031,7 @@ utility =
 
 Decay runs in two passes:
 
-1. **Focus-radius decay (in tick, Step 12).** Walk outward from the
+1. **Focus-radius decay (in tick, Step 11).** Walk outward from the
    focus set up to `policy.focus_decay_radius` hops; decay each
    element/relation's `activation` by a utility-modulated rate:
    `decay = policy.decay_rate * (1 - normalize(utility))`. This is
@@ -4102,7 +4100,7 @@ relations; the relation graph stays the source of truth. Replay jobs:
   current-state-bearing version). Emit a retraction meta-relation
   for lineage; the retracted relation flips to
   `RelationStatus::Retracted` rather than being deleted.
-- merge duplicate attribute-name elements — Step 6 mint-time dedup
+- merge duplicate attribute-name elements — Step 5 mint-time dedup
   (§11.7) is the primary defense; this replay job is **cleanup-only**,
   catching attribute-name elements whose embeddings drifted into
   convergence after their initial mint or whose surface labels were too
@@ -4114,7 +4112,7 @@ relations; the relation graph stays the source of truth. Replay jobs:
   gate, §6 (8)).** Walk `derived_from` (and other lineage) chains
   over cited `(R, source, S)` source elements; for each source,
   cache the id of its independent root (the ancestor reached when
-  no further `derived_from` link exists). Step 11's
+  no further `derived_from` link exists). Step 10's
   `support_diversity` check reads this annotation so two sources
   with the same root count as one. Cheap incremental update on
   any tick that wrote a new source element or new `derived_from`
@@ -4158,7 +4156,7 @@ unboundedly with corpus size.
 
 ### 14.9 Bounded Hebbian Operators
 
-The Oja-rule-derived bounded Hebbian update used by §14.6 and Step 11
+The Oja-rule-derived bounded Hebbian update used by §14.6 and Step 10
 (§11.11):
 
 ```text
@@ -4185,10 +4183,14 @@ Pure Rust plus deterministic ONNX. No Python, no JVM, no sidecars.
 2. **`tract-onnx` (Sonos)** — pure-Rust ONNX runtime. Carries the
    embedder. No C++ deps; portable to any OS Rust supports. The
    embedder weights are baked into the binary via `include_bytes!`.
-3. **`ort` (pyke.io)** — ONNX runtime for the larger transformer
-   extractors (GLiNER2, SaT) where tract's coverage is not yet
-   sufficient. Two inference paths is a deliberate split, not a
-   long-term invariant; tract is preferred where it works.
+3. **~~`ort` (pyke.io)~~ — REMOVED.** Originally spec'd as a second
+   ONNX runtime for GLiNER2 and SaT alongside tract. Disqualified:
+   `ort` (Microsoft's C++ ONNX Runtime via pyke.io binding) fails to
+   link cleanly on dev machines we care about, and re-introducing
+   native-link friction per machine is non-negotiable. Tract is the
+   only acceptable runtime. Consequence: SaT is dropped (§11.4),
+   GLiNER2 is open (item 6 below), `gline-rs` is unusable as-is
+   (hard dep on `ort`).
 4. **all-MiniLM-L6-v2 (ONNX-quantized, ~23 MB)** as the embedder.
    384-dim, 6 transformer layers. Pinned for Legend's lifetime
    (§18.4). A model swap is a deliberate, hard, one-time event.
@@ -4230,7 +4232,7 @@ Pure Rust plus deterministic ONNX. No Python, no JVM, no sidecars.
 5. **Temporal parser** — `chrono` + `chrono-english` for the easy 80% +
    thin uncertainty-grounding layer. Carries grounding uncertainty.
    Used at two sites:
-   (a) **Extraction (Step 6)** — recognizes date / weekday / duration
+   (a) **Extraction (Step 5)** — recognizes date / weekday / duration
    spans in input text and mints them as value-Elements with the
    surface form as a name (e.g. an Element named `"Tuesday"` or
    `"2026-04-30"`); the parser's confidence rides into the resulting
@@ -4240,38 +4242,34 @@ Pure Rust plus deterministic ONNX. No Python, no JVM, no sidecars.
    exact-value spare (§13.8) re-parse the relevant value-Elements'
    names on demand. v0 stores no parsed form (§7.3); parse cost is
    negligible relative to GLiNER2's 130–208 ms.
-6. **`gline-rs` / `gliner2`** — pure-Rust GLiNER inference on `ort`.
-   Zero-shot NER + relation extraction. ~130–208 ms/call across 5–50
-   labels. The `gline-rs` crate handles the GLiNER1 NER model;
-   `gliner2` (when stable in pure-Rust form) handles the relation-
-   extraction extension. Verify which crate exposes the relation-
-   extraction surface at integration time; the substrate spec is
-   indifferent to the crate boundary as long as the input/output
-   contract holds.
+6. **NER + relation extraction — OPEN.** Spec called for `gline-rs`
+   / `gliner2` (pure-Rust GLiNER inference on `ort`) for zero-shot
+   NER + RE at ~130–208 ms/call. Both crates have a hard dep on
+   `ort` (item 3 above), so this slot is unresolved. Smoke-tested
+   in tract: GLiNER2's encoder is DeBERTa-v3-large (1024 hidden, 24
+   layers); tract refuses on the disentangled-attention `Clip` op
+   over symbolic shape values. Real options for v0:
+   (a) try a BERT-backbone GLiNER variant (e.g.
+   `gliner-community/gliner_large-v2.5`) and verify tract loads it,
+   (b) write our own span-prediction head in Rust on top of a
+   tract-loaded encoder, (c) defer NER and use mocked extractors per
+   the §19 conformance gate. Decision deferred to Step 6 design.
 
-   **★ Binding latency constraint in v0.** GLiNER2 is one inference
-   call per tick and does not parallelize. It owns ~60–80% of the
-   tick budget by itself; everything else (embedding, routing, coref,
-   supersession, reinforcement, decay, frame assembly) sums to
-   ~30–60 ms. The path to sub-100 ms p50 ticks runs through replacing
-   or augmenting this slot — pattern fast-paths (§24.1), unified
-   tiny-LLM extractor (§24.7), or a smaller GLiNER variant if it
-   passes §19 + §20.5. See §11.0 for the per-step budget table.
+   **★ Binding latency constraint in v0.** Whatever lands here is
+   the long pole. The path to sub-100 ms p50 ticks runs through
+   replacing or augmenting this slot — pattern fast-paths (§24.1),
+   unified tiny-LLM extractor (§24.7), or a smaller GLiNER variant
+   if it passes §19 + §20.5. See §11.0 for the per-step budget table.
 7. **Heuristic coreference** — write from scratch in Rust. Recency-
    based, defensible per Centering Theory + Hobbs' algorithm baselines.
-8. **SaT (Segment Any Text)** — Frohmann et al. 2024, ~22M params,
-   ONNX-exportable, multilingual sentence/paragraph segmentation.
-   Loaded through the `ort` runtime alongside GLiNER2 (the embedder
-   uses tract-onnx; SaT and GLiNER2 are on `ort`).
-   **Invoked conditionally**: only on inputs that exceed GLiNER2's
-   ~480-token safe window (§11.4). Short inputs — the common case
-   for chat-message-sized ticks — skip SaT entirely. ~10–20 ms per
-   call when invoked. Picked over regex sentence-splitters because it
-   handles quotes, abbreviations, URLs, code blocks, and ellipses
-   uniformly; picked over heavier discourse parsers (EDU (Elementary
-   Discourse Unit) parsers, RST (Rhetorical Structure Theory)) because
-   the simpler sentence/paragraph granularity is what fits GLiNER2's
-   window without splitting in the middle of a relation.
+8. **~~SaT (Segment Any Text)~~ — REMOVED.** Original spec invoked
+   SaT only on inputs > 480 tokens via the `ort` runtime. Three
+   blockers compound: SaT's smallest variant is ~409 MB FP16
+   (XLM-RoBERTa's 250K vocab dominates), `ort` is disqualified, and
+   the pure-Rust UAX#29 fallback mis-splits on common abbreviations
+   (`Mr.`, `Dr.`, `Inc.`, `p.m.`). v0 rejects oversized inputs at the
+   tick boundary instead — chunking is the caller's responsibility
+   (§11.4).
 
 ### 15.2 What We Drop In v0
 
@@ -4302,10 +4300,10 @@ Solo developer, evenings/weekends:
 | tract-onnx integration + MiniLM round-trip | ~2 wk |
 | `tantivy` integration + Legend's index schema | ~0.5 wk |
 | Temporal parser (`chrono-english` + uncertainty layer) | ~2.5 wk |
-| `gline-rs` integration + zero-shot relation calls | ~0.5 wk |
+| NER + RE (open — gline-rs ruled out by `ort` dep, see §15.1.6) | ~1 wk |
 | Heuristic coref | ~1 wk |
-| SaT integration + windowing logic + multi-window fan-out | ~0.5 wk |
-| **v0 model-stack total** | **~7.5 wk** |
+| ~~SaT integration + windowing logic + multi-window fan-out~~ — REMOVED with Step 3 (§11.4) | — |
+| **v0 model-stack total** | **~7 wk** |
 
 Plus substrate, seed pack, pipeline, replay (§21): ~9–11 wk
 additional (lighter than earlier estimates because patterns are
@@ -4328,7 +4326,7 @@ seeded element with a one-sentence reason for being there.
 
 **Seeding Criterion.** Seed an element only if it is **load-bearing
 for recognition or for the v0 extraction machinery** — i.e. one of
-the §3.4 recognition rules, the Step 6 extractor stack (§11.7), or
+the §3.4 recognition rules, the Step 5 extractor stack (§11.7), or
 replay (§14.8) must be able to read its name or its prototype to
 function. Everything else emerges via extraction and replay (§3.4:
 "the seed pack is bootstrapping, not a closed vocabulary").
@@ -4429,7 +4427,7 @@ through REGION_EVENTS / REGION_TIME.
 
 ### 16.3 Seeded Attribute Names
 
-Attribute-name elements §3.4's recognition rules, §11.7's Step 6
+Attribute-name elements §3.4's recognition rules, §11.7's Step 5
 extractor, and §10's region structural relations read by name:
 
 - **`instance_of`, `subclass_of`** — concept-hierarchy attribute names.
@@ -4707,7 +4705,7 @@ no exceptions. The §1.5 / §7.4 commitment holds in production
 without softening.
 
 In **development builds only**, a bounded in-memory ring captures
-inputs that emitted no relations after Step 9, for diagnosing
+inputs that emitted no relations after Step 8, for diagnosing
 "why didn't Legend learn about X?" failures during extractor
 calibration. Gated behind `LEGEND_DEV_QUARANTINE=1`; production
 builds compile this out and reject the flag.
@@ -4940,7 +4938,7 @@ REGION_ENTITIES        similarity 0.81  (covers Dr. Rao mention)
 REGION_TIME            similarity 0.78  (covers Tuesday/Friday)
 ```
 
-The active regions bias the attribute-name label set in Step 6
+The active regions bias the attribute-name label set in Step 5
 toward warm attribute names from these parts of the graph.
 
 (The triple shorthand below — `S attr O` — denotes a Relation with
@@ -4972,7 +4970,7 @@ added meta-relations (modifications to the above):
   (R10, derived_from, reschedule_event_1)           [Entailed]
   (R9,  supersedes,   R10)                          [Entailed]
 
-stats updates (Step 11):
+stats updates (Step 10):
   MemoryStats reinforced along the focused path —
   reschedule_event_1, appointment_1, DrRao, Tuesday, Friday, and the
   relations binding them.
@@ -5526,23 +5524,19 @@ discipline (§9.7).
 **Done:** every span lands in the expected region; multi-prototype
 bounded at 8; region-creation rate decays after first 20 ticks.
 
-### Step 6 — Windowing + Temporal Parser + NER + Relation Extraction (~2.5 wk)
+### Step 6 — Temporal Parser + NER + Relation Extraction (~2.5 wk)
 
-**Build:** §11.4 input windowing — token-count check that triggers
-SaT (~22M-param ONNX, loaded through `ort` alongside GLiNER2; the
-embedder is on tract-onnx) only for inputs above ~480 tokens;
-greedy grouping of
-SaT segments into ≤480-token windows; rayon fan-out across windows
-for Steps 4–6. `chrono-english` for the 80% temporal coverage + thin
-uncertainty-grounding layer; `gline-rs` zero-shot NER + relations
-running per window.
-**Done:** Tick 1 (single-window) emits `Tuesday`, `Friday`, `DrRao`,
-and the reschedule triple without hand-coding; a synthetic
-multi-paragraph input above the token threshold routes through SaT,
-produces N windows, and yields one merged proposal stream that
-matches its single-window equivalent's relation set on the §19
-walkthrough's content; chat-message-sized inputs measurably skip
-SaT (no model invocation visible in the per-step trace).
+**Build:** Input-size validation at the tick boundary (reject inputs
+> 480 tokens with an explicit error carrying the actual count and
+the limit; caller chunks). `chrono-english` for the 80% temporal
+coverage + thin uncertainty-grounding layer. NER + RE: see §15.1.6
+— `gline-rs` is ruled out by its `ort` dep, decision deferred to
+this step.
+**Done:** Tick 1 emits `Tuesday`, `Friday`, `DrRao`, and the
+reschedule triple without hand-coding; oversized inputs return a
+rejection with a clear "got N tokens, max 480, please chunk"
+message and do not partially process. (Original gate also tested
+SaT-driven multi-window equivalence — REMOVED with Step 3, §11.4.)
 
 ### Step 7 — Event Reification + Supersession Cache (~1.5 wk)
 
@@ -5948,7 +5942,7 @@ Patterns are simultaneously a **quality** play and a **latency** play:
 
 The v1 work is: implement `Term::Variable` and a `pattern_matchers`
 payload table; add an `activate_patterns` step before extraction (or as
-a fast-path that short-circuits Step 6 on match); add a replay job
+a fast-path that short-circuits Step 5 on match); add a replay job
 that clusters concrete relation shapes and mints new pattern
 relations with `Defeasible` status; add the `Defeasible → Asserted`
 promotion path for patterns specifically.
@@ -5958,7 +5952,7 @@ promotion path for patterns specifically.
 ### 24.2 Latency Optimization (Secondary Contributors)
 
 v0 targets ~200–300 ms p50 per tick. The path to sub-100 ms is
-dominated by Step 6 (zero-shot relation extraction) — see §15.1's
+dominated by Step 5 (zero-shot relation extraction) — see §15.1's
 GLiNER2 callout, §24.1's pattern fast-path, and §24.7's unified
 tiny-LLM extractor. Those are the *primary* paths; this section
 lists the **secondary** contributors that help once the long pole
@@ -5967,7 +5961,7 @@ is shorter.
 - **Read-path / background-work split.** v0 already pushes the
   full-graph decay sweep (§14.7) and attribute-name dedup (§14.8) onto
   the replay thread, so the tick path is mostly free of these. v1 can
-  push the remaining incremental decay (Step 12) onto a per-tick
+  push the remaining incremental decay (Step 11) onto a per-tick
   background hand-off if profiling shows it on the critical path.
   Unlike pre-rewrite expectations, this split is small: the decay
   budget at §11.0 is 3–8 ms, not tens of ms.
@@ -5976,10 +5970,10 @@ is shorter.
   hash probe. Saves ~1–3 ms per tick.
 - **Splitting the wide `MemoryStats` struct** into parallel
   `Vec<f32>` columns for cache locality (already in §23 deferred
-  questions). Saves a few ms on Steps 11–12.
+  questions). Saves a few ms on Steps 10–11.
 
 These together knock 5–15 ms off a tick. They are not a substitute
-for Step 6 changes; they are what closes the last gap once the
+for Step 5 changes; they are what closes the last gap once the
 extractor slot is faster.
 
 ### 24.3 Hierarchical / Composed Frames
@@ -6067,15 +6061,15 @@ Pearl rung 3 (§6 (8)). v0 commits to one verb (`tick`, §12) and
 both. The shape: a counterfactual *is* a tick whose input carries
 `non_actual` modal content ("what if I hadn't rescheduled?", "if
 the migration had run first, would the deploy have failed?"); Step
-13 returns a counterfactual subgraph instead of an actual one.
+12 returns a counterfactual subgraph instead of an actual one.
 
 Pearl's three-step procedure maps onto existing Legend machinery:
 
 | Pearl step | Legend operation |
 |---|---|
-| **Abduction** — update `P(U)` given evidence | The supporting-claims walk Step 13 already runs for the actual frame: collect supporting relations and `derived_from` ancestors. No new mechanism. |
+| **Abduction** — update `P(U)` given evidence | The supporting-claims walk Step 12 already runs for the actual frame: collect supporting relations and `derived_from` ancestors. No new mechanism. |
 | **Action** — surgically replace `X` with `X = x` | Tick-local, **non-mutating** projection over the hypergraph: hide the relation(s) the counterfactual severs and mask their `derived_from` descendants in the read view. |
-| **Prediction** — compute `Y` under the modified model | Run Step 13's same path traversal against the projected hypergraph; emit the resulting `focused_relations` back to the caller, every relation in the counterfactual subgraph tagged via `non_actual` so the caller can distinguish counterfactual from actual content. |
+| **Prediction** — compute `Y` under the modified model | Run Step 12's same path traversal against the projected hypergraph; emit the resulting `focused_relations` back to the caller, every relation in the counterfactual subgraph tagged via `non_actual` so the caller can distinguish counterfactual from actual content. |
 
 The substrate carries everything needed: `non_actual` modal for
 tagging the input claim and the projected output, `derived_from`
@@ -6086,7 +6080,7 @@ shape — only a query-time projection layer over existing reads,
 plus an extractor-side convention for recognizing counterfactual
 sentence shapes ("what if", "would have", "had X been"). Counter-
 factual ticks are non-mutating by definition; Step 0 still appends
-to the WAL but Steps 8–12 are skipped, and the returned
+to the WAL but Steps 7–11 are skipped, and the returned
 `ConsciousAttentionFrame.durable_writes` is empty.
 
 What v0 does *not* do but should not preclude: actually compute

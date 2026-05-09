@@ -23,8 +23,11 @@ static CLASSIFIERS: LazyLock<IntentClassifiers> = LazyLock::new(load_intent_clas
 /// Lexical features (modal counts, person, mood, punctuation, tense)
 /// serve as a front-door mediator capturing intent-causing syntax cleanly,
 /// without the topic confounding the embedding carries.
-pub fn detect_intent(input_text: &str) -> Intent {
-    let features = featurize(input_text);
+///
+/// Takes the embedding precomputed by the caller — the same vector also
+/// feeds Step 4 (region routing). One embedding per tick, never two.
+pub fn detect_intent(input_text: &str, embedding: &[f32]) -> Intent {
+    let features = featurize(input_text, embedding);
     let c = &*CLASSIFIERS;
 
     Intent {

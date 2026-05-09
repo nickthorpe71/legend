@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Identity & time
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,7 +30,7 @@ pub struct RelationId(pub u32);
 /// The world model. Elements are bare identities; Relations are claims
 /// between them. The hot path reads from this alone; the WAL is for
 /// crash recovery between checkpoints.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Hypergraph {
     /// Concrete entities — concepts, surface forms, attribute-name elements,
     /// region anchors, typed leaf values ("Tuesday", "6 pounds", "Berlin").
@@ -47,16 +49,125 @@ pub struct Hypergraph {
     pub clock: Tick,
 
     /// Tuning constants every pipeline step reads. Step 2 produces a
-    /// per-tick adjusted Policy from this rest-state value; Steps 3–13
+    /// per-tick adjusted Policy from this rest-state value; Steps 4–12
     /// see the adjusted view. Only PFC writes the rest-state Policy.
     pub policy: Policy,
 
-    /// Working-memory ring buffer of recent focal points. Step 5 inherits
+    /// Working-memory ring buffer of recent focal points. Step 4 inherits
     /// `active_frame` from here when the input's frame is unset and not
     /// shifting. Capacity is bounded by `policy.recent_focus_capacity`;
     /// oldest entries fall off the back. `VecDeque` (not `Vec`) for O(1)
     /// push-front / pop-back behavior.
     pub recent_focus: std::collections::VecDeque<RecentFocusEntry>,
+
+    // ── Derived indices ────────────────────────────────────────────────
+    //
+    // Denormalized read caches over `relations` and `elements`. They are
+    // *never* serialized into the seed bin or any future snapshot —
+    // `seed::rebuild_indices(&mut hg)` rebuilds them after deserialization
+    // and after any test that hand-builds the graph. Keeping them out of
+    // the on-disk format means the relation graph is the single source
+    // of truth and we can change index shapes without versioning the bin.
+    /// Surface-form lookup — every element name maps to its `ElementId`s.
+    /// Drives attribute-name resolution at extractor mint time, name-based
+    /// boot lookups, and debug dumps. `Vec<ElementId>` per name because
+    /// the canonical-name space is shared across elements (e.g. `"object"`
+    /// legitimately resolves to both a coding-region element and a
+    /// philosophy-region element — disambiguation happens via region
+    /// routing, not here).
+    pub by_name: HashMap<String, Vec<ElementId>>,
+
+    /// DAG-descent topology read by Step 4 region routing. For each
+    /// region `R`, the list of its child regions (regions whose own
+    /// `parent_region` attribute points at `R`). Derived from
+    /// `parent_region` relations on every load; the relation graph is
+    /// authoritative.
+    pub region_children: HashMap<ElementId, Vec<ElementId>>,
+
+    /// Inverse of `region_children` — for each region `R`, the list of
+    /// its parents along with the parent-edge confidence weight (read
+    /// from each `parent_region` relation's `stats.confidence`).
+    /// Multi-parent attachment is allowed (§10.2); regions can sit
+    /// under multiple parents with different weights.
+    pub region_parents: HashMap<ElementId, Vec<(ElementId, f32)>>,
+
+    /// For each region `R`, the prototype Elements attached via
+    /// `(R, prototype, P)` relations. Read by Step 4 routing — at each
+    /// candidate region, the score is `max cosine` over each prototype's
+    /// inline `embedding`. v0 day zero ships one prototype per seeded
+    /// region (built from the YAML `descriptor`); replay grows or merges
+    /// the set per §10.4 / §14.8.
+    pub region_prototypes: HashMap<ElementId, Vec<ElementId>>,
+
+    // ── Anchor IDs ─────────────────────────────────────────────────────
+    //
+    // Cached at seed-load time so hot-path lookups don't have to round-
+    // trip through `by_name`. A `Default`-constructed Hypergraph fills
+    // these with `ElementId(u32::MAX)` sentinels — useful for tests but
+    // unusable in production (any lookup against a sentinel ID will
+    // panic on the elements bounds check).
+    /// Sink for retracted / pruned elements that must remain referenceable
+    /// without participating in routing or focus. Step 4 routes
+    /// sub-threshold inputs here. Seeded as `ElementId(0)` at gen time.
+    pub void: ElementId,
+
+    /// Root of the region DAG — every seeded region declares Genesis as
+    /// a parent, so Step 4 routing always has a single starting point.
+    /// Seeded as `ElementId(1)` at gen time.
+    pub genesis: ElementId,
+
+    /// The class element targeted by every seeded region's
+    /// `(R, instance_of, REGION_CLASS)` pin. §3.4's
+    /// concept-of-many-instances recognition reads this; eagerly minted
+    /// by the seed-pack generator (the YAML treats it as lazy, but a
+    /// stable boot-time ID is cheaper than minting on first reference).
+    pub region_class: ElementId,
+
+    /// Same role as `region_class` for reference frames — every
+    /// `(F, instance_of, REFERENCE_FRAME_CLASS)` pin points here.
+    /// Eagerly minted at gen time.
+    pub reference_frame_class: ElementId,
+
+    /// Cached ID of the seeded `subject` attribute name. Stored as a
+    /// field so `rebuild_indices` and downstream extractors don't
+    /// round-trip through `by_name["subject"]` on the hot path.
+    pub subject_attr: ElementId,
+
+    /// Cached ID of the seeded `parent_region` attribute name. Used by
+    /// `rebuild_indices` to know which relations to project into
+    /// `region_children` / `region_parents`.
+    pub parent_region_attr: ElementId,
+
+    /// Cached ID of the seeded `prototype` attribute name. Same role
+    /// as `parent_region_attr`, but for the prototype index.
+    pub prototype_attr: ElementId,
+}
+
+impl Default for Hypergraph {
+    /// Empty Hypergraph with sentinel anchor IDs (`ElementId(u32::MAX)`).
+    /// Useful for tests that hand-build state. Production callers should
+    /// use `seed::load_seed_graph()` — sentinel IDs will fail any real
+    /// element/relation lookup.
+    fn default() -> Self {
+        Self {
+            elements: Vec::new(),
+            relations: Vec::new(),
+            clock: Tick::default(),
+            policy: Policy::default(),
+            recent_focus: std::collections::VecDeque::new(),
+            by_name: HashMap::new(),
+            region_children: HashMap::new(),
+            region_parents: HashMap::new(),
+            region_prototypes: HashMap::new(),
+            void: ElementId(u32::MAX),
+            genesis: ElementId(u32::MAX),
+            region_class: ElementId(u32::MAX),
+            reference_frame_class: ElementId(u32::MAX),
+            subject_attr: ElementId(u32::MAX),
+            parent_region_attr: ElementId(u32::MAX),
+            prototype_attr: ElementId(u32::MAX),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,7 +200,7 @@ pub struct Element {
 
     /// Semantic anchor for this element. Populated at mint time from
     /// `names` (or the originating span text for anonymous NER spans).
-    /// Read by region routing (Step 5) and anywhere similarity is needed.
+    /// Read by region routing (Step 4) and anywhere similarity is needed.
     /// Inline `Vec<f32>` so a single index lookup gets you the vector
     /// without an extra hash hop.
     pub embedding: Vec<f32>,
@@ -214,8 +325,8 @@ pub struct MemoryStats {
     pub access_count: u32,
 
     /// Bumped each tick this thing landed on the focus path *and* the
-    /// tick was judged successful (per Step 11 hebbian reinforcement).
-    /// Drives RRF rank in Step 13.
+    /// tick was judged successful (per Step 10 hebbian reinforcement).
+    /// Drives RRF rank in Step 12.
     pub focus_success_count: u32,
 
     /// Independent ticks supporting this claim. Distinct from
@@ -243,54 +354,10 @@ pub struct MemoryStats {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tick I/O — what comes in, what goes out
+// Tick I/O
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// One tick's worth of input. Distinct from the `source` (which is a
-/// meta-relation-shaped sibling parameter to `tick()`, not a property
-/// of the Input itself) and from `InputEcho` (which is the read-only
-/// echo embedded in the returned frame, sans wall_clock).
-#[derive(Clone, Debug)]
-pub struct Input {
-    /// Raw input text. The pipeline windows, embeds, and extracts
-    /// against this directly.
-    pub text: String,
-
-    /// Real-world timestamp at the moment of input. Used to anchor
-    /// temporal references ("yesterday", "now", "next Tuesday") in
-    /// Steps 6–7 and to populate `last_seen` semantics that need wall
-    /// time, not just Tick.
-    pub wall_clock: std::time::SystemTime,
-}
-
-/// Read-only echo of the input text in the returned frame. Not durable;
-/// the calling LLM can use it as a stable reference back to "what was
-/// said" without holding the original `Input` around.
-#[derive(Clone, Debug)]
-pub struct InputEcho {
-    pub text: String,
-}
-
-/// One window of input text, the unit Steps 4–7 process as a single
-/// piece. Step 3 produces `Vec<Window>` from an `Input` — short inputs
-/// (≤480 tokens) yield one window with the original text; long inputs
-/// are split into multiple ≤480-token windows. The "logical pieces" of
-/// the input are not windows but the relations Step 6 extracts; a
-/// window is just a container for joint extraction.
-#[derive(Clone, Debug)]
-pub struct Window {
-    /// The window's text. For short inputs this is the original input
-    /// string; for long inputs it's the decoded text of one token-budget
-    /// chunk (lossy on whitespace/casing — see Step 3 notes).
-    pub text: String,
-
-    /// Token count under the bundled MiniLM tokenizer. Always
-    /// ≤ `WINDOW_TOKEN_BUDGET` by construction.
-    pub token_count: usize,
-}
-
 /// The output of every tick. Most fields are *gathered* from per-tick
-/// buffers that earlier steps populated as a side effect; Step 13's own
+/// buffers that earlier steps populated as a side effect; Step 12's own
 /// work is just the `focused_relations` RRF merge and `next_actions`
 /// suggestions. The frame is a post-tick snapshot of the focused
 /// subgraph, not a pre-assembled answer — the calling LLM derives any
@@ -301,7 +368,7 @@ pub struct ConsciousAttentionFrame {
     pub tick: Tick,
 
     /// Echo of the input text. Not durable.
-    pub input: InputEcho,
+    pub input_echo: String,
 
     /// 4-dim intent vector from Step 1 — cosine projection against the
     /// intent prototype banks. Drives Step 2's policy adjustments.
@@ -309,16 +376,16 @@ pub struct ConsciousAttentionFrame {
 
     /// The active frame at the time this tick ran. `None` when no frame
     /// is active and the input doesn't establish one. Inherited from
-    /// `recent_focus` or set by a frame-shifting cue in Step 5.
+    /// `recent_focus` or set by a frame-shifting cue in Step 4.
     pub active_frame: Option<ElementId>,
 
     /// Regions that lit up during routing. Union of per-window
-    /// `route_regions(...)` results from Step 5.
+    /// `route_regions(...)` results from Step 4.
     pub active_regions: Vec<RegionActivation>,
 
     /// The focused-relations ranked list, fused via RRF (Reciprocal
     /// Rank Fusion) over Dense (path-reinforced focus set), Sparse
-    /// (BM25), and Path-reinforced (focus_success bumps from Step 11).
+    /// (BM25), and Path-reinforced (focus_success bumps from Step 10).
     /// RRF merges ranked lists by `Σ 1 / (60 + rank_i)` — keeps ranks,
     /// discards incompatibly-scaled raw scores. Asserted + Entailed
     /// pass; Defeasible flagged with lower weight; Superseded/Retracted
@@ -335,20 +402,20 @@ pub struct ConsciousAttentionFrame {
     /// Includes Superseded relations excluded from `focused_relations`.
     pub history: Vec<ClaimRef>,
 
-    /// Per-tick uncertainty signals pushed by Steps 5, 6, 7, 9, 10.
-    /// Step 13 collects from a per-tick buffer and surfaces them so the
+    /// Per-tick uncertainty signals pushed by Steps 4, 5, 6, 8, 9.
+    /// Step 12 collects from a per-tick buffer and surfaces them so the
     /// caller can act on disagreement, ungrounded time, ambiguous
     /// coreference, low-confidence extraction, or detected contradictions.
     pub uncertainty: Vec<UncertaintySignal>,
 
-    /// ElementIds minted during this tick. Recorded by Steps 8 and 9
+    /// ElementIds minted during this tick. Recorded by Steps 7 and 8
     /// into a per-tick write buffer. Overlaps with `focused_relations`
     /// in ID space — exists as a flat-list shortcut for "what did this
     /// tick change?" inspection.
     pub durable_writes: Vec<ElementId>,
 
     /// RelationIds whose status flipped to Superseded this tick.
-    /// Recorded by Step 10. Same shortcut role as `durable_writes`.
+    /// Recorded by Step 9. Same shortcut role as `durable_writes`.
     pub superseded: Vec<RelationId>,
 
     /// Advisories the caller can act on after the frame returns.
@@ -369,7 +436,7 @@ pub type ClaimRef = RelationId;
 
 /// Tuning constants. The base Policy on the Hypergraph is the inter-tick
 /// rest state; Step 2 produces a per-tick adjusted Policy from it
-/// (using the intent from Step 1) that Steps 3–13 see. Tick-internal
+/// (using the intent from Step 1) that Steps 4–12 see. Tick-internal
 /// subroutines read `&Policy`; only PFC writes the rest state.
 #[derive(Clone, Debug)]
 pub struct Policy {
@@ -405,7 +472,7 @@ pub struct Policy {
 
     // ── Attribute-name dedup ─────────────────────────────────────────
     /// Cosine similarity threshold for collapsing two attribute-name
-    /// elements into one (Step 9 / §11.7). Strict by default so
+    /// elements into one (Step 8 / §11.9). Strict by default so
     /// `SUBJECT` and `ACTOR` stay distinct even though they overlap.
     pub attribute_name_dedup_threshold: f32,
 
@@ -479,7 +546,7 @@ pub struct Policy {
     pub replay_focus_floor: u32,
 
     // ── Extractor confidence threshold ───────────────────────────────
-    /// NER assertion-confidence threshold. Below this, Step 6 mints the
+    /// NER assertion-confidence threshold. Below this, Step 5 mints the
     /// relation as `Defeasible` rather than `Asserted`.
     pub ner_assertion_threshold: f32,
 
@@ -489,7 +556,7 @@ pub struct Policy {
     // Policy and the adjusted scalar on the per-tick Policy that Step 2
     // returns. Same field name, two roles — Step 2 reads each as
     // `base_*` and writes back the §10.6-formula result on the
-    // returned Policy. Steps 3–13 only ever see the adjusted view.
+    // returned Policy. Steps 4–12 only ever see the adjusted view.
     /// Default confidence assigned to newly-minted Asserted relations
     /// before extractor confidence multiplies it (§11.9, §3420).
     /// Formula: `default_conf = base_conf * conviction * (1 - 0.7 * curiosity)`.
@@ -502,7 +569,7 @@ pub struct Policy {
     /// Surprise + emotional intensity → harder encoding.
     pub salience_multiplier: f32,
 
-    /// Threshold above which Step 10 actively searches for and marks
+    /// Threshold above which Step 9 actively searches for and marks
     /// prior relations as Superseded. Formula:
     /// `supersession_threshold = base_threshold * (1 - prediction_error)`.
     /// High prediction-error inputs lower the bar so contradictions
@@ -575,7 +642,7 @@ pub enum ReplayCadence {
 // Working memory & per-tick activation snapshots
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One entry in `Hypergraph.recent_focus`. Step 5 walks this ring
+/// One entry in `Hypergraph.recent_focus`. Step 4 walks this ring
 /// looking for an active frame to inherit when the input doesn't
 /// establish one of its own.
 #[derive(Clone, Copy, Debug)]
@@ -603,7 +670,7 @@ pub struct RecentFocusEntry {
 /// Step 2's policy adjustments. Maps onto neuromodulator analogs:
 /// conviction (cognitive), prediction_error (DA), arousal (NE),
 /// curiosity (retrieval vs assertion shape). Does NOT gate which
-/// steps run — only modulates how Steps 5/9/11/12 weight their work.
+/// steps run — only modulates how Steps 4/8/10/11 weight their work.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Intent {
     /// Speaker certainty / commitment of the assertion. High =
@@ -622,12 +689,12 @@ pub struct Intent {
 
     /// Retrieval-shape vs assertion-shape. High = "what do I know
     /// about X?" (retrieval-leaning); low = "X is true" (assertion-
-    /// leaning). Modulates how aggressively Step 13 surfaces history
+    /// leaning). Modulates how aggressively Step 12 surfaces history
     /// and supporting claims.
     pub curiosity: f32,
 }
 
-/// One region that lit up during Step 5 routing.
+/// One region that lit up during Step 4 routing.
 #[derive(Clone, Copy, Debug)]
 pub struct RegionActivation {
     /// The region anchor element.
@@ -639,7 +706,7 @@ pub struct RegionActivation {
 }
 
 /// One relation in the frame's ranked focus list. Activation is the
-/// fused RRF score from Step 13.
+/// fused RRF score from Step 12.
 #[derive(Clone, Copy, Debug)]
 pub struct RelationActivation {
     pub relation: RelationId,
@@ -651,34 +718,34 @@ pub struct RelationActivation {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// One detected uncertainty signal. The pipeline pushes these into a
-/// per-tick buffer as side effects of Steps 5, 6, 7, 9, and 10; Step 13
+/// per-tick buffer as side effects of Steps 4, 5, 6, 8, and 9; Step 12
 /// collects them into the frame's `uncertainty` field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UncertaintySignal {
-    /// Step 5: routing didn't converge — multiple regions matched
+    /// Step 4: routing didn't converge — multiple regions matched
     /// equivalently, or none matched above `void_threshold`.
     DiffuseRouting,
 
-    /// Step 6/7: a temporal reference ("yesterday", "next Tuesday")
+    /// Step 5/6: a temporal reference ("yesterday", "next Tuesday")
     /// couldn't be resolved against `Input.wall_clock` plus context.
     UngroundedTime,
 
-    /// Step 7: coreference resolution found multiple equally-plausible
+    /// Step 6: coreference resolution found multiple equally-plausible
     /// candidates for a referring expression.
     AmbiguousCoref,
 
-    /// Step 9/10: an extractor produced output below
+    /// Step 5/8: an extractor produced output below
     /// `policy.ner_assertion_threshold` (relation minted as
     /// `Defeasible`, signal raised so the caller knows).
     LowConfidence,
 
-    /// Step 10: a candidate supersession lacks a clear winner —
+    /// Step 9: a candidate supersession lacks a clear winner —
     /// the new claim and the existing one conflict but neither
     /// dominates. The caller may want to ask a follow-up.
     Contradiction,
 }
 
-/// An advisory action Step 13 emits in the frame's `next_actions`.
+/// An advisory action Step 12 emits in the frame's `next_actions`.
 /// The caller (typically the agent loop wrapping `tick()`) decides
 /// whether to act on each.
 #[derive(Clone, Debug)]

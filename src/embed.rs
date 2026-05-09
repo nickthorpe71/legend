@@ -9,6 +9,20 @@ use tract_onnx::prelude::*;
 /// hidden size, this changes in lockstep.
 pub const EMBEDDING_DIM: usize = 384;
 
+/// True token count of `text` under the bundled MiniLM tokenizer.
+/// Used by `lib::run` to gate inputs against `MAX_INPUT_TOKENS` before
+/// any pipeline step runs. Uses an *untruncated* tokenizer instance so
+/// the count is accurate even when the input exceeds MiniLM's 512-token
+/// max-position limit (the embedder's own tokenizer truncates at 512;
+/// this one does not).
+pub fn token_count(text: &str) -> usize {
+    UNTRUNCATED_TOKENIZER
+        .encode(text, true)
+        .expect("tokenization failed")
+        .get_ids()
+        .len()
+}
+
 /// Compute a semantic embedding vector using all-MiniLM-L6-v2 quantized (384-dim).
 ///
 /// The model is embedded in the binary — no download or network access needed.
@@ -42,6 +56,20 @@ struct SentenceModel {
 // We use all-MiniLM-L6-v2 quantized (~23MB) over BAAI/bge-small-en-v1.5 (~45MB)
 // for faster inference (6 layers vs 12) and smaller binary size. Both produce
 // 384-dim embeddings.
+// Same tokenizer.json as the embedder, but with truncation and padding
+// both cleared so `token_count` reports the *true* length even for
+// inputs above MiniLM's 512-token cap. Used only by `token_count`. The
+// bundled `tokenizer.json` ships with `padding: Fixed(128)` baked in,
+// so without `with_padding(None)` every short input would report as
+// 128 tokens.
+static UNTRUNCATED_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
+    let bytes: &[u8] = include_bytes!("../models/all-MiniLM-L6-v2-q/tokenizer.json");
+    let mut t = Tokenizer::from_bytes(bytes).expect("Failed to load embedded tokenizer");
+    t.with_truncation(None).expect("clear truncation");
+    t.with_padding(None);
+    t
+});
+
 static SENTENCE_MODEL: LazyLock<SentenceModel> = LazyLock::new(|| {
     let tokenizer_bytes: &[u8] = include_bytes!("../models/all-MiniLM-L6-v2-q/tokenizer.json");
     let mut tokenizer =
