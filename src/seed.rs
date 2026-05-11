@@ -103,6 +103,7 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
     hg.region_children.clear();
     hg.region_parents.clear();
     hg.region_prototypes.clear();
+    hg.region_stats.clear();
 
     for e in &hg.elements {
         for name in &e.names {
@@ -139,6 +140,47 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
                     .push(target);
             }
         }
+    }
+
+    // Compute per-region mean + variance over prototype embeddings.
+    // Two-pass population variance — n is bounded (typically 1–30 per
+    // region) so naive arithmetic is numerically fine; switch to
+    // Welford if regions ever grow into the hundreds.
+    for (&region_id, proto_ids) in &hg.region_prototypes {
+        if proto_ids.is_empty() {
+            continue;
+        }
+        let n = proto_ids.len();
+        let mut mean = vec![0.0f32; EMBEDDING_DIM];
+        for &p in proto_ids {
+            let emb = &hg.elements[p.0 as usize].embedding;
+            for (i, &v) in emb.iter().enumerate() {
+                mean[i] += v;
+            }
+        }
+        let inv_n = 1.0 / n as f32;
+        for m in &mut mean {
+            *m *= inv_n;
+        }
+        let mut var = vec![0.0f32; EMBEDDING_DIM];
+        for &p in proto_ids {
+            let emb = &hg.elements[p.0 as usize].embedding;
+            for (i, &v) in emb.iter().enumerate() {
+                let d = v - mean[i];
+                var[i] += d * d;
+            }
+        }
+        for v in &mut var {
+            *v *= inv_n;
+        }
+        hg.region_stats.insert(
+            region_id,
+            crate::types::RegionStats {
+                mean,
+                var,
+                n: n as u32,
+            },
+        );
     }
 }
 
@@ -328,10 +370,11 @@ mod tests {
     #[test]
     fn loads_expected_counts() {
         let hg = load_seed_graph();
-        // 2 anchors + 30 attrs + 15 regions + 8 frames + 2 classes + 15 prototypes
-        assert_eq!(hg.elements.len(), 72);
-        // 15 region-class + 8 frame-class + 15 region-parent + 15 prototype-attach
-        assert_eq!(hg.relations.len(), 53);
+        // 2 anchors + 30 attrs + 14 regions + 8 frames + 2 classes + 280 prototypes
+        // (14 regions × 20 examples per region)
+        assert_eq!(hg.elements.len(), 336);
+        // 14 region-class + 8 frame-class + 14 region-parent + 280 prototype-attach
+        assert_eq!(hg.relations.len(), 316);
     }
 
     #[test]
@@ -355,17 +398,17 @@ mod tests {
     }
 
     #[test]
-    fn region_children_of_genesis_has_15_entries() {
+    fn region_children_of_genesis_has_14_entries() {
         let hg = load_seed_graph();
         let children = hg
             .region_children
             .get(&hg.genesis)
-            .expect("GENESIS should have 15 region children");
-        assert_eq!(children.len(), 15);
+            .expect("GENESIS should have 14 region children");
+        assert_eq!(children.len(), 14);
     }
 
     #[test]
-    fn every_seeded_region_has_one_prototype_with_full_embedding() {
+    fn every_seeded_region_has_twenty_prototypes_with_full_embedding() {
         let hg = load_seed_graph();
         let regions = hg
             .region_children
@@ -378,16 +421,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("region {region:?} should have prototypes"));
             assert_eq!(
                 protos.len(),
-                1,
-                "region {region:?} should have exactly one prototype"
+                20,
+                "region {region:?} should have exactly 20 prototypes (one per YAML example)"
             );
-            let proto = &hg.elements[protos[0].0 as usize];
-            assert_eq!(
-                proto.embedding.len(),
-                EMBEDDING_DIM,
-                "prototype {:?} embedding has wrong length",
-                proto.id,
-            );
+            for proto_id in protos {
+                let proto = &hg.elements[proto_id.0 as usize];
+                assert_eq!(
+                    proto.embedding.len(),
+                    EMBEDDING_DIM,
+                    "prototype {:?} embedding has wrong length",
+                    proto.id,
+                );
+            }
         }
     }
 
@@ -396,8 +441,141 @@ mod tests {
         let mut hg = load_seed_graph();
         let before_children = hg.region_children.clone();
         let before_protos = hg.region_prototypes.clone();
+        let before_stats = hg.region_stats.clone();
         rebuild_indices(&mut hg);
         assert_eq!(hg.region_children, before_children);
         assert_eq!(hg.region_prototypes, before_protos);
+        assert_eq!(hg.region_stats, before_stats);
+    }
+
+    #[test]
+    fn region_stats_built_for_every_seed_region() {
+        let hg = load_seed_graph();
+        let regions = hg
+            .region_children
+            .get(&hg.genesis)
+            .expect("GENESIS region children");
+        assert_eq!(
+            hg.region_stats.len(),
+            regions.len(),
+            "stats count should match region count"
+        );
+        for region in regions {
+            assert!(
+                hg.region_stats.contains_key(region),
+                "region {region:?} missing from region_stats"
+            );
+        }
+    }
+
+    #[test]
+    fn region_stats_dimensions_match_embedding_dim() {
+        let hg = load_seed_graph();
+        for (region, stats) in &hg.region_stats {
+            assert_eq!(
+                stats.mean.len(),
+                EMBEDDING_DIM,
+                "region {region:?} mean has wrong length",
+            );
+            assert_eq!(
+                stats.var.len(),
+                EMBEDDING_DIM,
+                "region {region:?} var has wrong length",
+            );
+            assert!(stats.n >= 1, "region {region:?} stats.n should be ≥ 1");
+        }
+    }
+
+    /// With the 20-examples-per-region seed, every region's stats
+    /// should have n=20 and non-trivial variance (the 20 example
+    /// embeddings are different points in space, so the spread is
+    /// non-zero in some dimensions).
+    #[test]
+    fn region_stats_have_twenty_examples_and_non_trivial_variance() {
+        let hg = load_seed_graph();
+        for (region, stats) in &hg.region_stats {
+            assert_eq!(stats.n, 20, "region {region:?} expected n=20 at v0 seed");
+            let total_var: f32 = stats.var.iter().sum();
+            assert!(
+                total_var > 0.0,
+                "region {region:?} has zero summed variance — examples must be identical embeddings, which is impossible",
+            );
+        }
+    }
+
+    /// Hand-built synthetic Hypergraph exercises the multi-prototype
+    /// path the seed doesn't yet hit. Three prototypes per region with
+    /// known embeddings → verify mean and variance arithmetic.
+    #[test]
+    fn region_stats_multi_prototype_arithmetic() {
+        use crate::types::{Element, ElementId, MemoryStats, Tick, Term, Relation, RelationId, RelationStatus, Attribute};
+
+        // Element ids: 0=subject_attr, 1=prototype_attr, 2=region, 3..6 = protos
+        let mk_elem = |id: u32, embedding: Vec<f32>| Element {
+            id: ElementId(id),
+            names: vec![format!("e{id}")],
+            stats: MemoryStats::default(),
+            created_at: Tick(0),
+            embedding,
+        };
+        let zero = vec![0.0f32; EMBEDDING_DIM];
+        let mut hg = Hypergraph::default();
+        hg.subject_attr = ElementId(0);
+        hg.prototype_attr = ElementId(1);
+        hg.parent_region_attr = ElementId(99); // unused, just non-conflicting
+
+        hg.elements.push(mk_elem(0, zero.clone()));
+        hg.elements.push(mk_elem(1, zero.clone()));
+        hg.elements.push(mk_elem(2, zero.clone())); // region
+        // Three prototype embeddings — only the first dim varies.
+        let mut e3 = zero.clone();
+        e3[0] = 0.0;
+        let mut e4 = zero.clone();
+        e4[0] = 1.0;
+        let mut e5 = zero.clone();
+        e5[0] = 2.0;
+        hg.elements.push(mk_elem(3, e3));
+        hg.elements.push(mk_elem(4, e4));
+        hg.elements.push(mk_elem(5, e5));
+
+        // Three relations: (region, prototype, proto_i)
+        for (i, proto_id) in [3u32, 4, 5].iter().enumerate() {
+            hg.relations.push(Relation {
+                id: RelationId(i as u32),
+                attributes: vec![
+                    Attribute {
+                        name: hg.subject_attr,
+                        value: Term::Element(ElementId(2)),
+                    },
+                    Attribute {
+                        name: hg.prototype_attr,
+                        value: Term::Element(ElementId(*proto_id)),
+                    },
+                ],
+                stats: MemoryStats::default(),
+                created_at: Tick(0),
+                status: RelationStatus::Asserted,
+                priority: 0,
+            });
+        }
+
+        rebuild_indices(&mut hg);
+
+        let stats = hg
+            .region_stats
+            .get(&ElementId(2))
+            .expect("region should have stats");
+        assert_eq!(stats.n, 3);
+        // Mean: (0 + 1 + 2) / 3 = 1.0 in dim 0, zero elsewhere.
+        assert!((stats.mean[0] - 1.0).abs() < 1e-6);
+        for &m in &stats.mean[1..] {
+            assert_eq!(m, 0.0);
+        }
+        // Population variance in dim 0:
+        //   ((0-1)² + (1-1)² + (2-1)²) / 3 = (1 + 0 + 1) / 3 = 2/3
+        assert!((stats.var[0] - 2.0 / 3.0).abs() < 1e-6);
+        for &v in &stats.var[1..] {
+            assert_eq!(v, 0.0);
+        }
     }
 }

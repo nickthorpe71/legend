@@ -99,6 +99,15 @@ pub struct Hypergraph {
     /// the set per §10.4 / §14.8.
     pub region_prototypes: HashMap<ElementId, Vec<ElementId>>,
 
+    /// For each region `R`, the per-dimension mean + variance of its
+    /// prototype elements' embeddings. Computed from
+    /// `region_prototypes[R]` during `rebuild_indices`; lets Step 4
+    /// score input via diagonal Mahalanobis distance instead of
+    /// max-cosine when many-prototype data is available. With a single
+    /// prototype `var` collapses to all-zeros — Step 4 mixes a
+    /// variance prior at use time to keep the score well-defined.
+    pub region_stats: HashMap<ElementId, RegionStats>,
+
     // ── Anchor IDs ─────────────────────────────────────────────────────
     //
     // Cached at seed-load time so hot-path lookups don't have to round-
@@ -159,6 +168,7 @@ impl Default for Hypergraph {
             region_children: HashMap::new(),
             region_parents: HashMap::new(),
             region_prototypes: HashMap::new(),
+            region_stats: HashMap::new(),
             void: ElementId(u32::MAX),
             genesis: ElementId(u32::MAX),
             region_class: ElementId(u32::MAX),
@@ -470,6 +480,27 @@ pub struct Policy {
     /// in the frame's `active_regions`.
     pub region_activation_threshold: f32,
 
+    /// Variance prior (ε) added to every per-dimension variance during
+    /// diagonal-Mahalanobis routing in Step 4. Two roles:
+    /// 1. Numerical stability — prevents divide-by-zero when a region
+    ///    has only one prototype (variance = 0).
+    /// 2. Bootstrap smoothing — when n is small, the empirical variance
+    ///    is unreliable, and ε mixes in a "background uncertainty"
+    ///    floor. With n = 20 seed prototypes the prior is small enough
+    ///    not to dominate; with n = 1 (a newly-minted mid-path region)
+    ///    it dominates and routing falls back to centroid-cosine.
+    pub variance_prior: f32,
+
+    /// Number of top-scoring prototypes per region averaged into the
+    /// cosine score (option 2 of §4 fusion notes). Replaces the
+    /// previous max-pool with mean-of-top-K so a single surface-
+    /// overlap prototype can't dominate a region's score — requires
+    /// prototype agreement before a region ranks high. K = 3 is a
+    /// reasonable default for 20-prototype seed regions; raise it to
+    /// require broader agreement, lower to recover max-pool behavior
+    /// (K = 1 reproduces max exactly).
+    pub cosine_top_k: u32,
+
     // ── Attribute-name dedup ─────────────────────────────────────────
     /// Cosine similarity threshold for collapsing two attribute-name
     /// elements into one (Step 8 / §11.9). Strict by default so
@@ -585,12 +616,20 @@ pub struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            descend_threshold: 0.0,
-            leaf_vigilance: 0.0,
+            // Option-D fusion: cosine drives descent + leaf_vigilance
+            // (its wide dynamic range is decisive at sharp boundaries),
+            // Mahalanobis drives region_activation_threshold (its
+            // distribution-awareness focuses the active set on regions
+            // the input actually fits). Thresholds are interpreted in
+            // the respective metric's scale.
+            descend_threshold: 0.05,
+            leaf_vigilance: 0.05,
             merge_threshold: 0.0,
             split_variance: 0.0,
             void_threshold: 0.0,
             region_activation_threshold: 0.55,
+            variance_prior: 0.001,
+            cosine_top_k: 3,
 
             attribute_name_dedup_threshold: 0.85,
             attribute_name_mint_warning_count: 5,
@@ -703,6 +742,79 @@ pub struct RegionActivation {
     /// Activation level — how strongly this region matched the input.
     /// Above `policy.region_activation_threshold` to land in the frame.
     pub activation: f32,
+}
+
+/// Per-dimension mean + variance of a region's prototype embeddings.
+/// Populated by `seed::rebuild_indices` after `region_prototypes` is
+/// built; consumed by Step 4 routing for diagonal Mahalanobis scoring.
+///
+/// Length invariant: `mean.len() == var.len() == EMBEDDING_DIM` (384).
+/// With `n == 1` the variance is all-zeros (a single point has no
+/// spread); Step 4 applies a variance prior at use time so the
+/// Mahalanobis denominator never collapses.
+///
+/// `PartialEq` is derived for the idempotency test in `seed::tests` —
+/// rebuild_indices over identical inputs yields bit-identical stats
+/// because the arithmetic is deterministic in iteration order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionStats {
+    /// Per-dimension mean of the prototype embeddings.
+    pub mean: Vec<f32>,
+
+    /// Per-dimension variance of the prototype embeddings.
+    /// Computed as `Σ(xᵢ − μ)² / n` (population variance — we treat
+    /// the prototype set as the full population for this region, not
+    /// a sample drawn from a larger population).
+    pub var: Vec<f32>,
+
+    /// Number of prototype embeddings folded into mean/var. Step 4
+    /// uses this to weight the variance prior — small `n` → trust the
+    /// prior more; large `n` → trust the empirical variance.
+    pub n: u32,
+}
+
+/// What Step 4 routing proposes to do to the substrate. Held through
+/// the read-mostly phase, applied by Step 7 (`apply_region_delta`)
+/// during the mutation phase. Verbatim from §10.2 of `new_foundation.md`.
+#[derive(Default, Debug, Clone)]
+pub struct RegionDelta {
+    /// `(child, parent, weight)` — committed as new
+    /// `(child, parent_region, parent)` relations with
+    /// `stats.confidence = weight`, or as confidence reinforcement on
+    /// existing `parent_region` relations.
+    pub parent_attachments: Vec<(ElementId, ElementId, f32)>,
+
+    /// `(prototype_element, target_embedding)` — committed by
+    /// overwriting the prototype Element's inline `embedding` via
+    /// spherical k-means: `new = normalize(old + lr · (target − old))`
+    /// where `lr = proto.stats.plasticity * policy.hebbian_rate`.
+    /// Step 4 stores only the target; Step 7 reads policy + plasticity
+    /// and does the math.
+    pub prototype_updates: Vec<(ElementId, Vec<f32>)>,
+
+    /// Empty in v0 Step 4 — mid-path insertion (§10.3.5) needs span-
+    /// level embeddings, which only exist after Step 6 mints elements.
+    /// Step 8 owns this list. Field exists so the struct stays stable
+    /// across pipeline phases.
+    pub new_regions: Vec<NewRegion>,
+
+    /// Empty in v0 Step 4 for the same reason — authoritative member
+    /// assignment uses each minted element's own embedding (Step 8).
+    pub new_members: Vec<(ElementId, ElementId)>,
+
+    /// Number of routing branches that died at sub-threshold quality
+    /// (best child below `policy.leaf_vigilance`). Surfaces in the
+    /// frame as a routing-quality signal.
+    pub void_count: u32,
+}
+
+/// Mid-path insertion candidate. Populated by Step 8 from span-level
+/// embeddings; written by Step 7 as a Defeasible `parent_region`
+/// relation pending replay confirmation. Not used in v0 Step 4.
+#[derive(Debug, Clone)]
+pub struct NewRegion {
+    pub parent: ElementId,
+    pub initial_prototype: Vec<f32>,
 }
 
 /// One relation in the frame's ranked focus list. Activation is the

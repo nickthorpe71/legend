@@ -48,16 +48,20 @@ pub struct RawElement {
     pub rationale: String,
 }
 
-/// Region entries carry two extras the generator needs: `parent_regions`
+/// Region entries carry the generator's inputs: `parent_regions`
 /// (becomes one `parent_region` relation per parent, with the float as
-/// `stats.confidence`) and `descriptor` (gets MiniLM-embedded to
-/// produce the region's day-zero prototype Element).
+/// `stats.confidence`), `descriptor` (human-readable category definition,
+/// kept for documentation), and `examples` (concrete representative
+/// sentences that get MiniLM-embedded into per-region prototype elements
+/// and drive mean/variance estimation for region-stats routing).
 #[derive(Deserialize)]
 pub struct RawRegion {
     pub element_id: String,
     pub names: Vec<String>,
     pub parent_regions: Vec<(String, f32)>,
     pub descriptor: String,
+    #[serde(default)]
+    pub examples: Vec<String>,
     pub rationale: String,
 }
 

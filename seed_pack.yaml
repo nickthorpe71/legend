@@ -403,10 +403,16 @@ seeded_attribute_names:
       `stops`, `keeps from`, `precludes`.
 
 # ---------------------------------------------------------------------
-# 3. Seed regions (15) — shape priors that bias §10.2 routing. Broad
+# 3. Seed regions (14) — shape priors that bias §10.2 routing. Broad
 #    enough that any domain's inputs find a parent on first contact.
 #    No question region — question-shape is INTENT (§11.2), not a
 #    routing target.
+#
+#    Each region carries an `examples` list (20 concrete representative
+#    sentences). gen_seed_graph embeds each example into its own
+#    prototype Element; the resulting set drives both multi-prototype
+#    max-pool routing (cosine vs best example) and region-stats
+#    routing (Mahalanobis distance against mean/variance of the set).
 # ---------------------------------------------------------------------
 
 regions:
@@ -416,6 +422,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "A named or referred-to thing — person, organization,
                  place, object, artifact, proper-noun reference."
+    examples:
+      - "this is Sarah, our lead designer"
+      - "meet my colleague Maya"
+      - "I want you to meet my brother Sam"
+      - "her name is Maria Reyes"
+      - "let me introduce Dr. Patel"
+      - "the company is called Verve"
+      - "a startup called Pylon"
+      - "the project is named Apollo"
+      - "the book's title is The Magic Mountain"
+      - "the framework goes by React Native"
+      - "the new MacBook on the desk"
+      - "that red Tesla in the driveway"
+      - "the manuscript Sarah sent over"
+      - "the old oak tree behind the house"
+      - "her favorite coffee mug"
+      - "she's the one in the blue jacket"
+      - "that's Tom from accounting"
+      - "the man with the briefcase"
+      - "the woman who spoke earlier"
+      - "he goes by Marcus"
     rationale: >
       Most inputs introduce or re-mention entities; without this region,
       proper-noun-heavy inputs have no shape-prior parent.
@@ -425,19 +452,31 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Something that happened, will happen, or is happening
                  — an action, occurrence, temporally-anchored episode."
+    examples:
+      - "I called my mom this morning"
+      - "Sarah arrived around noon"
+      - "we had dinner at that new Italian place"
+      - "I finally finished the book last night"
+      - "she sent me an email yesterday"
+      - "the deploy went live on Tuesday"
+      - "Acme launched their new product"
+      - "the meeting started fifteen minutes late"
+      - "we shipped the feature this morning"
+      - "the team merged the PR after lunch"
+      - "the conference starts next week"
+      - "her flight lands at 3pm"
+      - "the launch is scheduled for Friday"
+      - "it rained all afternoon"
+      - "the package arrived earlier than expected"
+      - "the power went out briefly"
+      - "he opened the package carefully"
+      - "the chef burned the sauce"
+      - "they cancelled the reservation"
+      - "she signed the contract"
     rationale: >
       Events are the second-most-common shape after entities; they need
       their own parent so event-shaped clauses don't collide with state
       descriptions during routing.
-
-  - element_id: REGION_STATES
-    names: ["states"]
-    parent_regions: [[GENESIS, 1.0]]
-    descriptor: "Something is some way — has a property, holds a value,
-                 occupies a location, plays a role, has a status."
-    rationale: >
-      "X is Y" inputs need a state-shaped routing target so they don't
-      route via the entity region and lose the state-shape signal.
 
   - element_id: REGION_CHANGE_HISTORY
     names: ["change_history", "change/history"]
@@ -445,6 +484,27 @@ regions:
     descriptor: "Something that was one way and is now different — a
                  value moved from an old state to a new state. Revisions,
                  corrections, reschedules, updates."
+    examples:
+      - "the meeting moved from Tuesday to Friday"
+      - "my flight got rescheduled to the next morning"
+      - "they pushed the deadline back a week"
+      - "the launch was bumped from June to August"
+      - "the price went from $10 to $20"
+      - "the rent increased by 200 dollars"
+      - "the team grew from 5 to 12 people"
+      - "the ticket moved from open to closed"
+      - "her status switched from active to on leave"
+      - "the project pivoted from B2C to B2B"
+      - "actually it was Wednesday not Thursday"
+      - "correction: the total is 47 not 45"
+      - "I meant Monday, sorry"
+      - "she changed her mind about the job offer"
+      - "they reverted the decision after the meeting"
+      - "the API was updated from v2 to v3"
+      - "they migrated the database to Postgres"
+      - "he moved from New York to LA"
+      - "she switched majors halfway through college"
+      - "I quit drinking coffee last month"
     rationale: >
       Change is the §19 walkthrough's central scenario; mis-routing
       change-shaped inputs breaks supersession (§11.10).
@@ -454,6 +514,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Two or more things linked or associated — ownership,
                  membership, containment, dependency, kinship."
+    examples:
+      - "Sarah is my sister"
+      - "Maria is Tom's mother"
+      - "Bob and Alice have been married for ten years"
+      - "we've been friends since college"
+      - "the car belongs to Jenny"
+      - "Acme owns the building on 5th"
+      - "the keys are Dave's"
+      - "Liam works for Anthropic"
+      - "she reports to the VP of engineering"
+      - "Maya is Tim's lawyer"
+      - "Carlos is part of the design team"
+      - "she's a member of the board"
+      - "the cat is part of our family"
+      - "Liam joined the engineering org last week"
+      - "the deploy depends on the database migration"
+      - "the frontend service calls the auth API"
+      - "his account is linked to mine"
+      - "Jane and Mike are dating"
+      - "the two cases are connected"
+      - "Sarah and Marcus collaborated on the paper"
     rationale: >
       Multi-entity relations are common but neither event-shaped nor
       state-shaped; they need their own region to avoid being
@@ -464,6 +545,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Counts, amounts, measures, ranges, thresholds,
                  comparisons, units, percentages."
+    examples:
+      - "there are 47 employees in the company"
+      - "I have three meetings tomorrow"
+      - "she owns seven cats"
+      - "the file contains 1200 lines"
+      - "the contract is worth $50,000"
+      - "it costs around fifteen dollars"
+      - "the budget is $1.2 million"
+      - "our revenue hit $4M this quarter"
+      - "the room is 12 feet wide"
+      - "the package weighs about 8 pounds"
+      - "the box measures 24 inches across"
+      - "between 100 and 200 people attended"
+      - "the temperature ranges from 60 to 80 degrees"
+      - "it takes anywhere from 2 to 4 hours"
+      - "30% of the team is remote"
+      - "roughly half the users opted in"
+      - "only a quarter of the responses are valid"
+      - "twice as many as last quarter"
+      - "about three times more expensive"
+      - "fewer than 5% reported issues"
     rationale: >
       Quantitative inputs systematically have a different surface shape
       than qualitative ones; a dedicated region preserves that signal
@@ -474,6 +576,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Dates, weekdays, durations, relative times, time
                  ranges, before/after expressions."
+    examples:
+      - "let's meet at 3pm tomorrow"
+      - "say 9 in the morning works"
+      - "around midnight is fine"
+      - "half past noon"
+      - "March 5th, 2026"
+      - "the 15th of next month"
+      - "it's due by June 1st"
+      - "due Friday"
+      - "next Tuesday"
+      - "it happened yesterday afternoon"
+      - "two weeks from now"
+      - "earlier today"
+      - "for about two hours"
+      - "all afternoon"
+      - "the next 30 minutes"
+      - "from 9 to 5"
+      - "from Monday through Wednesday"
+      - "anytime after 6pm"
+      - "before the deadline"
+      - "right after lunch"
     rationale: >
       Temporal expressions are extracted by a dedicated parser (§15.1)
       that needs a region to route into so temporal elements don't
@@ -484,6 +607,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Places, addresses, spatial positions, regions of
                  space, containment relations grounded in space."
+    examples:
+      - "I'm at the coffee shop on Main Street"
+      - "we're meeting at her apartment"
+      - "the conference is at the Hilton downtown"
+      - "she lives in a brownstone in Brooklyn"
+      - "425 Folsom Street, suite 200"
+      - "the office is on the third floor"
+      - "it's in the building next to the bank"
+      - "I'm in Tokyo for the week"
+      - "the team is based in Berlin"
+      - "the venue is somewhere in the Mission district"
+      - "we're flying into Heathrow"
+      - "the keys are on the kitchen counter"
+      - "the file is in the top drawer"
+      - "there's a coffee mug next to the laptop"
+      - "the package is sitting by the door"
+      - "head north on highway 101"
+      - "the exit is just past the bridge"
+      - "she's working from home today"
+      - "we're outside on the patio"
+      - "let's meet in the conference room"
     rationale: >
       Locations have entity-like surface form but distinct semantic
       role; separating them avoids contaminating entity coreference.
@@ -494,6 +638,27 @@ regions:
     descriptor: "Work that is intended, active, blocked, completed,
                  deferred, or superseded — todos, plans, in-progress
                  activities."
+    examples:
+      - "I need to finish the report by Friday"
+      - "we should ship the feature next week"
+      - "I'm planning to call the dentist tomorrow"
+      - "she has to renew her passport soon"
+      - "I'm working on the proposal right now"
+      - "she's drafting the contract"
+      - "the team is debugging the deploy issue"
+      - "pick up the dry cleaning"
+      - "don't forget to email Sarah back"
+      - "remember to book the flight"
+      - "I finished the deck this morning"
+      - "she submitted the application yesterday"
+      - "we wrapped up the migration last week"
+      - "the launch is blocked on legal review"
+      - "we put the redesign on hold"
+      - "I keep pushing this off"
+      - "my list for tomorrow: groceries, gym, call mom"
+      - "the agenda has three items"
+      - "there are five things I still need to do"
+      - "let's break this into smaller tasks"
     rationale: >
       Task-shaped inputs route here so trigger lemmas (do, must, will)
       can cluster coherently across ticks.
@@ -503,6 +668,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "An option was selected from alternatives, with
                  rationale or criteria."
+    examples:
+      - "we decided to go with the Postgres migration over MongoDB"
+      - "she chose Stanford over MIT"
+      - "they went with the cheaper option in the end"
+      - "I picked the chicken instead of the fish"
+      - "we're hiring Maria because her timezone overlaps with the team"
+      - "I'm taking the train; it's faster door-to-door"
+      - "they cancelled the project due to budget cuts"
+      - "she rejected the offer because it lacked equity"
+      - "I decided to take the job offer"
+      - "she's settling on the blue dress"
+      - "we landed on the new logo design"
+      - "the committee approved the proposal"
+      - "the board voted to delay the launch"
+      - "we agreed to push the deadline"
+      - "we're pivoting to enterprise customers"
+      - "they decided to open a second office in Austin"
+      - "the team chose Rust for the rewrite"
+      - "I'm going with vanilla today"
+      - "she opted for the early retirement package"
+      - "he decided against the surgery"
     rationale: >
       Decisions have a recurring slot shape (chosen / alternatives /
       rationale) distinct from generic state changes; a dedicated region
@@ -514,6 +700,27 @@ regions:
     descriptor: "A stated rule about how user/project behavior should
                  proceed — style preferences, conventions, do/don't
                  directives."
+    examples:
+      - "always use TypeScript over plain JavaScript"
+      - "prefer functional components over class components"
+      - "use 2-space indentation, not tabs"
+      - "snake_case for filenames, camelCase for variables"
+      - "I prefer terse responses without preamble"
+      - "send updates in Slack, not email"
+      - "ping me on the chat thread, don't DM"
+      - "summaries first, details on request"
+      - "don't commit without running the test suite"
+      - "never force push to main"
+      - "always pair on production deploys"
+      - "open a PR for any change over 50 lines"
+      - "we use Vitest for unit tests, not Jest"
+      - "all PRs need at least one approval"
+      - "database migrations require a rollback plan"
+      - "document every public API change"
+      - "I always take meetings in the morning if possible"
+      - "I don't drink coffee after 2pm"
+      - "I work best with at least 90 minutes of focus time"
+      - "I prefer async over real-time when possible"
     rationale: >
       Preferences are persistent, valid-time-open relations that need
       a stable region so they survive decay differently from one-off
@@ -524,6 +731,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Explicit definitions, glosses, 'X is defined as Y'
                  forms, schema-establishing inputs."
+    examples:
+      - "a quaternion is an extension of complex numbers to four dimensions"
+      - "RAG stands for retrieval-augmented generation"
+      - "an embedding is a dense vector representation of input"
+      - "ACID means atomicity, consistency, isolation, durability"
+      - "spherical k-means is k-means run on the unit sphere"
+      - "a hypergraph is a graph where edges can connect more than two nodes"
+      - "cosine similarity measures the angle between two vectors"
+      - "a deadlock occurs when two processes wait on each other indefinitely"
+      - "a User has a name, email, and password hash"
+      - "the API response contains status, data, and error fields"
+      - "each Element has an ID, name, and embedding"
+      - "LLM stands for large language model"
+      - "CRDT is short for conflict-free replicated data type"
+      - "PR is short for pull request"
+      - "we define a prime as a number divisible only by 1 and itself"
+      - "let X be a finite set of integers"
+      - 'by "consensus" we mean unanimous agreement among participants'
+      - "in topology, an open set is one that doesn't contain its boundary"
+      - "in finance, EBITDA refers to earnings before interest, taxes, depreciation, and amortization"
+      - "in our system, a tick is one execution of the read-mutate pipeline"
     rationale: >
       Definitions seed concept-hierarchy edges (`subclass_of`)
       directly; isolating them from incidental state assertions lets
@@ -534,6 +762,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "An assertion accompanied by an external source pointer
                  — URL, file path, message id, citation."
+    examples:
+      - "see https://arxiv.org/abs/2310.04567 for the details"
+      - "the methodology is described at example.com/methods"
+      - "as documented in the wiki article on flow control"
+      - "per the GitHub issue at github.com/org/repo/issues/42"
+      - "see /docs/architecture.md for the full design"
+      - "the spec is in shared/design/v2.pdf"
+      - "documented in the codebase at src/router/index.ts"
+      - "that's covered in the onboarding handbook page 12"
+      - "Alice mentioned that the deploy was rolled back"
+      - "Bob said the database is fine now"
+      - "according to Maya, the launch is delayed"
+      - "the PM told me the timeline shifted"
+      - "per the Slack thread in #engineering"
+      - "as discussed in yesterday's standup"
+      - "the email from finance confirmed the budget"
+      - "per the message from Carlos on Friday"
+      - "according to the latest quarterly report"
+      - "as the spec states in section 4.2"
+      - "per the Anthropic paper on constitutional AI"
+      - "tracked in JIRA-1234"
     rationale: >
       Provenance-bearing inputs route here so §11.7 reliably attaches
       `[target: R, source: S]` meta-relations and §14.5 can weight them
@@ -544,6 +793,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Markers that establish or shift the topical domain of
                  surrounding inputs — 'in dental:', 'for project X'."
+    examples:
+      - "in dental:"
+      - "for project Atlas:"
+      - "context: medical billing"
+      - "switching to security"
+      - "mobile team specifically:"
+      - "switching topics to the budget review"
+      - "moving on to the security audit"
+      - "now let's talk about onboarding"
+      - "shifting focus to the backend"
+      - "let's address deployment now"
+      - "in the context of the new pricing model"
+      - "within the iOS codebase"
+      - "as it pertains to the auth flow"
+      - "when discussing compliance"
+      - "with respect to the new API design"
+      - "for the chemistry project specifically"
+      - "in our marketing context"
+      - "for the auth service"
+      - "within the mobile team's scope"
+      - "for project Helios"
     rationale: >
       Domain markers scope subsequent relations via
       `[target: R, frame: F]` meta-relations; a region for them lets
@@ -554,6 +824,27 @@ regions:
     parent_regions: [[GENESIS, 1.0]]
     descriptor: "Inputs that carry modality (might / must / should) or
                  negation, or that express uncertainty about content."
+    examples:
+      - "she might come to the meeting"
+      - "this could be a database issue"
+      - "we may need to revisit the design"
+      - "it would be better with two examples"
+      - "you should probably double-check"
+      - "I'm not sure about the timeline"
+      - "maybe she changed her mind"
+      - "it's probably fine"
+      - "I think the deploy worked"
+      - "perhaps we missed something"
+      - "we don't have a clear answer yet"
+      - "it's not what I expected"
+      - "she didn't get the message"
+      - "we never finalized the design"
+      - "there's no record of it"
+      - "I doubt that will work"
+      - "I'm skeptical about the new policy"
+      - "I'm not entirely convinced"
+      - "she might not come"
+      - "we shouldn't proceed without legal sign-off"
     rationale: >
       Modality and negation are first-class via the five behavioral
       modal attribute names (`negated` / `uncertain` / `non_actual` /
@@ -646,7 +937,6 @@ seeded_relations:
     relations:
       - [REGION_ENTITIES,         instance_of, REGION_CLASS]
       - [REGION_EVENTS,           instance_of, REGION_CLASS]
-      - [REGION_STATES,           instance_of, REGION_CLASS]
       - [REGION_CHANGE_HISTORY,   instance_of, REGION_CLASS]
       - [REGION_RELATIONSHIPS,    instance_of, REGION_CLASS]
       - [REGION_QUANTITIES,       instance_of, REGION_CLASS]
@@ -693,7 +983,6 @@ seeded_relations:
     relations:
       - [REGION_ENTITIES,       parent_region, GENESIS, 1.0]
       - [REGION_EVENTS,         parent_region, GENESIS, 1.0]
-      - [REGION_STATES,         parent_region, GENESIS, 1.0]
       - [REGION_CHANGE_HISTORY, parent_region, GENESIS, 1.0]
       - [REGION_RELATIONSHIPS,  parent_region, GENESIS, 1.0]
       - [REGION_QUANTITIES,     parent_region, GENESIS, 1.0]

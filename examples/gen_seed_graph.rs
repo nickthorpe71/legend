@@ -3,13 +3,14 @@
 //!
 //! Run: `cargo run --release --example gen_seed_graph`
 //!
-//! Why this exists: the v0 substrate boots with ~55 seeded elements
+//! Why this exists: the v0 substrate boots with ~54 seeded elements
 //! (anchors, attribute names, regions, frames) plus eagerly-minted
-//! `REGION_CLASS` / `REFERENCE_FRAME_CLASS` plus one prototype Element
-//! per region (embedding the YAML's `descriptor` text via MiniLM).
-//! Step 4 region routing has nothing to descend into until this graph
-//! ships, so this generator is the prerequisite for any meaningful
-//! routing work.
+//! `REGION_CLASS` / `REFERENCE_FRAME_CLASS` plus **one prototype
+//! Element per `examples` entry per region** (20 examples × 14
+//! regions = 280 prototypes). Each prototype's embedding is
+//! `embed_text(example)`; routing scores input via max-cosine across
+//! the per-region prototype set (and via mean/variance built from
+//! the same set in `region_stats`).
 //!
 //! Pattern matches `gen_intent_classifiers.rs`: build-time tool that
 //! reads YAML + runs the embedder + writes a tightly-packed
@@ -21,25 +22,26 @@
 //! 1. VOID at ElementId(0), GENESIS at ElementId(1) — anchor IDs are
 //!    fixed by the `Hypergraph` struct's contract.
 //! 2. The 30 seeded attribute names in YAML declaration order.
-//! 3. The 15 seeded regions.
+//! 3. The 14 seeded regions.
 //! 4. The 8 seeded reference frames.
 //! 5. REGION_CLASS, REFERENCE_FRAME_CLASS — the YAML treats these as
 //!    lazy (minted on first pin); we mint them eagerly so the runtime
 //!    has stable IDs to cache.
-//! 6. One prototype Element per region. Name: `<region>_proto_0`.
-//!    Embedding: `embed_text(region.descriptor)`.
+//! 6. One prototype Element per `examples` entry on each region.
+//!    Name: `<region>_proto_<i>`. Embedding: `embed_text(example)`.
+//!    With 20 examples × 14 regions = 280 prototype elements.
 //!
-//! Total: 2 + 30 + 15 + 8 + 2 + 15 = 72 elements.
+//! Total: 2 + 30 + 14 + 8 + 2 + 280 = 336 elements.
 //!
 //! ── Relation minting order ───────────────────────────────────────────
 //!
-//! 1. 15 region_class_pins — `[REGION_X, instance_of, REGION_CLASS]`.
+//! 1. 14 region_class_pins — `[REGION_X, instance_of, REGION_CLASS]`.
 //! 2. 8 reference_frame_class_pins.
-//! 3. 15 region_parent_pins — carry confidence weights from the YAML.
-//! 4. 15 prototype-attachment pins — synthesized from the region/proto
-//!    pairs minted in step 6 above.
+//! 3. 14 region_parent_pins — carry confidence weights from the YAML.
+//! 4. 280 prototype-attachment pins — one per prototype minted in
+//!    step 6 above.
 //!
-//! Total: 53 relations.
+//! Total: 316 relations.
 //!
 //! ── Binary format (consumed by src/seed.rs) ──────────────────────────
 //!
@@ -200,20 +202,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         embed_text("reference_frame_class"),
     );
 
-    // ── 6. Prototype elements (one per region, embedding from descriptor) ──
-    let mut region_to_proto: HashMap<ElementId, ElementId> = HashMap::new();
+    // ── 6. Prototype elements (one per example per region) ────────────
+    // Each region's `examples` list in YAML becomes a parallel list of
+    // prototype Elements. Name: `<region>_proto_<i>`. The descriptor
+    // is *not* embedded — it stays in YAML as human-readable metadata.
+    let mut region_to_protos: HashMap<ElementId, Vec<ElementId>> = HashMap::new();
     for raw in &pack.regions {
         let region_id = symbol_to_id[&raw.element_id];
-        let proto_name = format!("{}_proto_0", raw.names[0]);
-        let proto_symbol = format!("{}_PROTO_0", raw.element_id);
-        let proto_id = mint_element(
-            &mut elements,
-            &mut symbol_to_id,
-            &proto_symbol,
-            vec![proto_name],
-            embed_text(&raw.descriptor),
+        assert!(
+            !raw.examples.is_empty(),
+            "region {} has no examples — seed pack regression",
+            raw.element_id,
         );
-        region_to_proto.insert(region_id, proto_id);
+        let mut protos: Vec<ElementId> = Vec::with_capacity(raw.examples.len());
+        for (i, example) in raw.examples.iter().enumerate() {
+            let proto_name = format!("{}_proto_{i}", raw.names[0]);
+            let proto_symbol = format!("{}_PROTO_{i}", raw.element_id);
+            let proto_id = mint_element(
+                &mut elements,
+                &mut symbol_to_id,
+                &proto_symbol,
+                vec![proto_name],
+                embed_text(example),
+            );
+            protos.push(proto_id);
+        }
+        region_to_protos.insert(region_id, protos);
     }
 
     // Cached attribute IDs the runtime will read from the bin header.
@@ -263,22 +277,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── 8. Prototype-attachment relations ─────────────────────────────
+    // One `(region, prototype, proto_i)` relation per prototype minted
+    // in section 6. Total = sum of `examples.len()` across regions.
     for raw in &pack.regions {
         let region_id = symbol_to_id[&raw.element_id];
-        let proto_id = region_to_proto[&region_id];
-        mint_relation(
-            &mut relations,
-            subject_attr_id,
-            region_id,
-            prototype_attr_id,
-            proto_id,
-            1.0,
-        );
+        for &proto_id in &region_to_protos[&region_id] {
+            mint_relation(
+                &mut relations,
+                subject_attr_id,
+                region_id,
+                prototype_attr_id,
+                proto_id,
+                1.0,
+            );
+        }
     }
 
     // Sanity checks — fail loudly if the YAML's shape drifted.
-    assert_eq!(elements.len(), 72, "expected 72 elements");
-    assert_eq!(relations.len(), 53, "expected 53 relations");
+    // 2 anchors + 30 attrs + 14 regions + 8 frames + 2 classes + 280
+    // prototypes (14 regions × 20 examples) = 336 elements.
+    // 14 region-class + 8 frame-class + 14 region-parent + 280
+    // prototype-attach = 316 relations.
+    assert_eq!(elements.len(), 336, "expected 336 elements");
+    assert_eq!(relations.len(), 316, "expected 316 relations");
 
     // ── 9. Serialize ──────────────────────────────────────────────────
     let mut buf: Vec<u8> = Vec::new();
