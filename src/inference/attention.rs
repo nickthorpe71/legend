@@ -22,6 +22,7 @@ use crate::inference::weights::LayerWeights;
 /// 1.0 for real tokens, 0.0 for padding. Returns the attention
 /// output (post `attn_out_w` projection) in a freshly allocated
 /// `Vec<f32>` of length `seq_len * hidden`.
+#[allow(clippy::too_many_arguments)]
 pub fn self_attention(
     x: &[f32],
     seq_len: usize,

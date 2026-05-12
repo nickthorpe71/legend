@@ -168,10 +168,7 @@ unsafe fn layernorm_row_avx2(row: &mut [f32], gamma: &[f32], beta: &[f32], eps: 
     }
     let mut tmp = [0.0f32; 8];
     unsafe { _mm256_storeu_ps(tmp.as_mut_ptr(), sum_v) };
-    let mut sum = tmp.iter().sum::<f32>();
-    for kk in tail_start..cols {
-        sum += row[kk];
-    }
+    let sum = tmp.iter().sum::<f32>() + row[tail_start..].iter().sum::<f32>();
     let mean = sum * inv_cols;
 
     // ── Pass 2: var sum ────────────────────────────────────────────
@@ -184,8 +181,8 @@ unsafe fn layernorm_row_avx2(row: &mut [f32], gamma: &[f32], beta: &[f32], eps: 
     }
     unsafe { _mm256_storeu_ps(tmp.as_mut_ptr(), var_v) };
     let mut var_sum = tmp.iter().sum::<f32>();
-    for kk in tail_start..cols {
-        let d = row[kk] - mean;
+    for &v in &row[tail_start..] {
+        let d = v - mean;
         var_sum += d * d;
     }
     let inv_std = 1.0 / (var_sum * inv_cols + eps).sqrt();
@@ -254,8 +251,8 @@ unsafe fn exp_avx2(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
     let x = unsafe { _mm256_min_ps(x, _mm256_set1_ps(88.0)) };
     let x = unsafe { _mm256_max_ps(x, _mm256_set1_ps(-88.0)) };
 
-    let log2e = unsafe { _mm256_set1_ps(1.442_695_04_f32) };
-    let ln2 = unsafe { _mm256_set1_ps(0.693_147_18_f32) };
+    let log2e = unsafe { _mm256_set1_ps(std::f32::consts::LOG2_E) };
+    let ln2 = unsafe { _mm256_set1_ps(std::f32::consts::LN_2) };
 
     // n = round(x · log2(e))
     let n = unsafe {
@@ -299,17 +296,17 @@ unsafe fn gelu_inplace_avx2(x: &mut [f32]) {
     let chunks = len / 8;
     let tail_start = chunks * 8;
 
-    let inv_sqrt2 = unsafe { _mm256_set1_ps(0.707_106_77_f32) };
-    let half = unsafe { _mm256_set1_ps(0.5_f32) };
-    let one = unsafe { _mm256_set1_ps(1.0_f32) };
-    let sign_mask_v = unsafe { _mm256_set1_ps(-0.0_f32) }; // 0x80000000 bit pattern
-    let p_v = unsafe { _mm256_set1_ps(0.327_591_1_f32) };
-    let a1 = unsafe { _mm256_set1_ps(0.254_829_59_f32) };
-    let a2 = unsafe { _mm256_set1_ps(-0.284_496_73_f32) };
-    let a3 = unsafe { _mm256_set1_ps(1.421_413_74_f32) };
-    let a4 = unsafe { _mm256_set1_ps(-1.453_152_03_f32) };
-    let a5 = unsafe { _mm256_set1_ps(1.061_405_43_f32) };
-    let neg_one = unsafe { _mm256_set1_ps(-1.0_f32) };
+    let inv_sqrt2 = unsafe { _mm256_set1_ps(std::f32::consts::FRAC_1_SQRT_2) };
+    let half = unsafe { _mm256_set1_ps(0.5) };
+    let one = unsafe { _mm256_set1_ps(1.0) };
+    let sign_mask_v = unsafe { _mm256_set1_ps(-0.0) }; // 0x80000000 bit pattern
+    let p_v = unsafe { _mm256_set1_ps(ERF_P) };
+    let a1 = unsafe { _mm256_set1_ps(ERF_A1) };
+    let a2 = unsafe { _mm256_set1_ps(ERF_A2) };
+    let a3 = unsafe { _mm256_set1_ps(ERF_A3) };
+    let a4 = unsafe { _mm256_set1_ps(ERF_A4) };
+    let a5 = unsafe { _mm256_set1_ps(ERF_A5) };
+    let neg_one = unsafe { _mm256_set1_ps(-1.0) };
 
     for c in 0..chunks {
         let xv = unsafe { _mm256_loadu_ps(x.as_ptr().add(c * 8)) };
@@ -338,25 +335,38 @@ unsafe fn gelu_inplace_avx2(x: &mut [f32]) {
     }
 
     // Scalar tail.
-    const INV_SQRT_2: f32 = 0.707_106_77_f32;
     for v in &mut x[tail_start..] {
-        *v = 0.5 * *v * (1.0 + erf(*v * INV_SQRT_2));
+        *v = 0.5 * *v * (1.0 + erf(*v * std::f32::consts::FRAC_1_SQRT_2));
     }
 }
 
-/// Abramowitz & Stegun 7.1.26 rational approximation of `erf`.
-/// Max abs error ~1.5e-7, well within fp32 precision.
+// Abramowitz & Stegun 7.1.26 erf approximation coefficients.
+// erf(x) ≈ sign(x) · (1 − ((((A5·t + A4)·t + A3)·t + A2)·t + A1)·t·exp(−x²))
+// where t = 1/(1 + P·|x|). Max abs error ~1.5e-7, well within f32.
+// Kept in published 8-digit form for greppability against the
+// literature, even though f32 rounds the trailing digit away.
+// Used by both scalar [`erf`] and AVX2 [`gelu_inplace_avx2`].
+#[allow(clippy::excessive_precision)]
+const ERF_A1: f32 = 0.254_829_59;
+#[allow(clippy::excessive_precision)]
+const ERF_A2: f32 = -0.284_496_73;
+#[allow(clippy::excessive_precision)]
+const ERF_A3: f32 = 1.421_413_74;
+#[allow(clippy::excessive_precision)]
+const ERF_A4: f32 = -1.453_152_03;
+#[allow(clippy::excessive_precision)]
+const ERF_A5: f32 = 1.061_405_43;
+const ERF_P: f32 = 0.327_591_1;
+
+/// Scalar A&S 7.1.26 erf approximation. See the `ERF_*` constants above.
 fn erf(x: f32) -> f32 {
-    let a1 = 0.254_829_59_f32;
-    let a2 = -0.284_496_73_f32;
-    let a3 = 1.421_413_74_f32;
-    let a4 = -1.453_152_03_f32;
-    let a5 = 1.061_405_43_f32;
-    let p = 0.327_591_1_f32;
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let ax = x.abs();
-    let t = 1.0 / (1.0 + p * ax);
-    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-ax * ax).exp();
+    let t = 1.0 / (1.0 + ERF_P * ax);
+    let y = 1.0
+        - (((((ERF_A5 * t + ERF_A4) * t) + ERF_A3) * t + ERF_A2) * t + ERF_A1)
+            * t
+            * (-ax * ax).exp();
     sign * y
 }
 
@@ -465,7 +475,7 @@ mod tests {
         let gamma = vec![1.0; 4];
         let beta = vec![0.0; 4];
         layernorm_inplace(&mut x, 1, 4, &gamma, &beta, 1e-12);
-        let expected = [-1.341_640_8, -0.447_213_60, 0.447_213_60, 1.341_640_8];
+        let expected = [-1.341_640_8, -0.447_213_6, 0.447_213_6, 1.341_640_8];
         for (a, b) in x.iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-5, "got {a}, expected {b}");
         }

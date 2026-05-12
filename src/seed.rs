@@ -186,10 +186,10 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
 
 fn find_subject(r: &Relation, subject_attr: ElementId) -> Option<ElementId> {
     for a in &r.attributes {
-        if a.name == subject_attr {
-            if let Term::Element(e) = a.value {
-                return Some(e);
-            }
+        if a.name == subject_attr
+            && let Term::Element(e) = a.value
+        {
+            return Some(e);
         }
     }
     None
@@ -522,10 +522,12 @@ mod tests {
             embedding,
         };
         let zero = vec![0.0f32; EMBEDDING_DIM];
-        let mut hg = Hypergraph::default();
-        hg.subject_attr = ElementId(0);
-        hg.prototype_attr = ElementId(1);
-        hg.parent_region_attr = ElementId(99); // unused, just non-conflicting
+        let mut hg = Hypergraph {
+            subject_attr: ElementId(0),
+            prototype_attr: ElementId(1),
+            parent_region_attr: ElementId(99), // unused, just non-conflicting
+            ..Default::default()
+        };
 
         hg.elements.push(mk_elem(0, zero.clone()));
         hg.elements.push(mk_elem(1, zero.clone()));

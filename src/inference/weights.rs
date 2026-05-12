@@ -91,6 +91,7 @@ impl Weights {
         let _padding = r.u32();
         let layer_norm_eps = r.f32();
 
+        #[allow(clippy::manual_is_multiple_of)]
         if hidden_size % num_heads != 0 {
             return Err(format!(
                 "hidden_size {hidden_size} not divisible by num_heads {num_heads}"

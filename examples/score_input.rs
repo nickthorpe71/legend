@@ -37,7 +37,7 @@ fn main() {
         let mut best: Option<(ElementId, f32)> = None;
         for &proto in protos {
             let sim = dot(&embedding, &hg.elements[proto.0 as usize].embedding);
-            if best.map_or(true, |(_, s)| sim > s) {
+            if best.is_none_or(|(_, s)| sim > s) {
                 best = Some((proto, sim));
             }
         }

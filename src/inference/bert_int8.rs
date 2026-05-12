@@ -178,8 +178,9 @@ struct ScratchInt8 {
     mask_bias: Vec<f32>, // additive softmax mask: 0 / -1e9
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_layer_int8(
-    x: &mut Vec<f32>,
+    x: &mut [f32],
     seq_len: usize,
     hidden: usize,
     intermediate: usize,
@@ -244,6 +245,7 @@ fn run_layer_int8(
         for i in 0..seq_len {
             let q_row = &scratch.q[i * hidden + head_off..i * hidden + head_off + head_dim];
             let scores_row = &mut scratch.scores[i * seq_len..(i + 1) * seq_len];
+            #[allow(clippy::needless_range_loop)]
             for j in 0..seq_len {
                 let k_row = &scratch.k[j * hidden + head_off..j * hidden + head_off + head_dim];
                 let dot = dot_fp32(q_row, k_row);
@@ -256,9 +258,11 @@ fn run_layer_int8(
             let scores_row = &scratch.scores[i * seq_len..(i + 1) * seq_len];
             let out_row =
                 &mut scratch.attn_concat[i * hidden + head_off..i * hidden + head_off + head_dim];
+            #[allow(clippy::needless_range_loop)]
             for d in 0..head_dim {
                 out_row[d] = 0.0;
             }
+            #[allow(clippy::needless_range_loop)]
             for j in 0..seq_len {
                 let s = scores_row[j];
                 let v_row = &scratch.v[j * hidden + head_off..j * hidden + head_off + head_dim];

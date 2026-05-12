@@ -95,10 +95,10 @@ fn main() -> TractResult<()> {
         // out via downcast — tract's Const stores `Arc<Tensor>`.
         // tract's Const op stores its tensor in the outlet fact's
         // `value` field (a `GenericFactoid<Arc<Tensor>>`).
-        if let Ok(fact) = model.outlet_fact(OutletId::new(n.id, 0)) {
-            if let Some(t) = fact.value.concretize() {
-                consts.insert(n.name.clone(), t.as_ref().clone());
-            }
+        if let Ok(fact) = model.outlet_fact(OutletId::new(n.id, 0))
+            && let Some(t) = fact.value.concretize()
+        {
+            consts.insert(n.name.clone(), t.as_ref().clone());
         }
     }
     eprintln!("indexed {} constants", consts.len());
@@ -164,9 +164,7 @@ fn main() -> TractResult<()> {
     write_f32_slice(&mut out, &emb_ln_beta)?;
 
     // ── Per-layer weights ──
-    for layer in 0..NUM_LAYERS as usize {
-        let [q, k, v, attn_out, ffn_int, ffn_out] = MATMUL_IDS[layer];
-
+    for (layer, &[q, k, v, attn_out, ffn_int, ffn_out]) in MATMUL_IDS.iter().enumerate() {
         let q_w = dequant_per_channel_i8(&consts, q);
         let q_b = read_f32(
             &consts,

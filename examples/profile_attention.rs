@@ -17,11 +17,12 @@ use legend::inference::{WeightsInt8, bert_int8};
 use tokenizers::Tokenizer;
 
 fn time<F: FnMut()>(label: &str, iters: usize, mut f: F) -> f64 {
-    let _ = f();
-    let _ = f();
+    // Two warm up invocations of the function before calling it.
+    f();
+    f();
     let t = Instant::now();
     for _ in 0..iters {
-        let _ = f();
+        f();
     }
     let us = t.elapsed().as_micros() as f64 / iters as f64;
     println!("  {label:<55} {us:>8.2} μs");
@@ -164,9 +165,7 @@ fn main() {
             for i in 0..seq_len {
                 let scores_row = &scores[i * seq_len..(i + 1) * seq_len];
                 let out_row = &mut attn_concat[i * h + head_off..i * h + head_off + head_dim];
-                for d in 0..head_dim {
-                    out_row[d] = 0.0;
-                }
+                out_row.fill(0.0);
                 for j in 0..seq_len {
                     let s = scores_row[j];
                     let v_row = &v_buf[j * h + head_off..j * h + head_off + head_dim];

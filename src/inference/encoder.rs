@@ -17,8 +17,9 @@ use crate::inference::ops::{
 };
 use crate::inference::weights::LayerWeights;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_layer(
-    x: &mut Vec<f32>,
+    x: &mut [f32],
     seq_len: usize,
     hidden: usize,
     intermediate: usize,

@@ -83,17 +83,16 @@ fn categorize(hg: &Hypergraph) -> Categorized {
         let mut subj = None;
         let mut points_at_frame_class = false;
         for a in &r.attributes {
-            if a.name == hg.subject_attr {
-                if let Term::Element(s) = a.value {
-                    subj = Some(s);
-                }
+            if a.name == hg.subject_attr
+                && let Term::Element(s) = a.value
+            {
+                subj = Some(s);
             }
-            if a.name == instance_of {
-                if let Term::Element(t) = a.value {
-                    if t == hg.reference_frame_class {
-                        points_at_frame_class = true;
-                    }
-                }
+            if a.name == instance_of
+                && let Term::Element(t) = a.value
+                && t == hg.reference_frame_class
+            {
+                points_at_frame_class = true;
             }
         }
         if let (Some(s), true) = (subj, points_at_frame_class) {
@@ -235,7 +234,7 @@ fn write_dag_diagram(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
             continue;
         }
         if let Some(children) = hg.region_children.get(&node) {
-            let mut sorted_children: Vec<_> = children.iter().copied().collect();
+            let mut sorted_children: Vec<_> = children.to_vec();
             sorted_children.sort();
             for child in sorted_children {
                 let parent_label = mermaid_id(hg, node);
@@ -251,7 +250,7 @@ fn write_dag_diagram(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
             }
         }
         if let Some(protos) = hg.region_prototypes.get(&node) {
-            let mut sorted_protos: Vec<_> = protos.iter().copied().collect();
+            let mut sorted_protos: Vec<_> = protos.to_vec();
             sorted_protos.sort();
             for proto in sorted_protos {
                 let parent_label = mermaid_id(hg, node);
@@ -450,10 +449,10 @@ fn write_relations_grouped(s: &mut String, hg: &Hypergraph) {
     for r in &hg.relations {
         let mut subject: Option<ElementId> = None;
         for a in &r.attributes {
-            if a.name == hg.subject_attr {
-                if let Term::Element(s) = a.value {
-                    subject = Some(s);
-                }
+            if a.name == hg.subject_attr
+                && let Term::Element(s) = a.value
+            {
+                subject = Some(s);
             }
         }
         let Some(subj) = subject else {

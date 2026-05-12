@@ -298,11 +298,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn scan_group_for_states(group_name: &str, group: &RawRelGroup, found: &mut Vec<String>) {
     for (i, entry) in group.relations.iter().enumerate() {
         for value in entry {
-            if let serde_yaml::Value::String(s) = value {
-                if s == "REGION_STATES" {
-                    found.push(format!("{group_name}[{i}]: {entry:?}"));
-                    break;
-                }
+            if let serde_yaml::Value::String(s) = value
+                && s == "REGION_STATES"
+            {
+                found.push(format!("{group_name}[{i}]: {entry:?}"));
+                break;
             }
         }
     }

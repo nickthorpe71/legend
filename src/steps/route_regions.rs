@@ -212,6 +212,7 @@ pub(crate) fn mahalanobis_similarity(
     debug_assert_eq!(embedding.len(), stats.mean.len());
     debug_assert_eq!(embedding.len(), stats.var.len());
     let mut d_squared = 0.0f32;
+    #[allow(clippy::needless_range_loop)]
     for i in 0..embedding.len() {
         let diff = embedding[i] - stats.mean[i];
         let var_smoothed = stats.var[i] + variance_prior;
@@ -283,11 +284,14 @@ mod tests {
             embedding,
         };
 
-        let mut hg = Hypergraph::default();
-        hg.subject_attr = ElementId(0);
-        hg.prototype_attr = ElementId(1);
-        hg.parent_region_attr = ElementId(2);
-        hg.genesis = ElementId(3);
+        let mut hg = Hypergraph {
+            subject_attr: ElementId(0),
+            prototype_attr: ElementId(1),
+            parent_region_attr: ElementId(2),
+            genesis: ElementId(3),
+            ..Default::default()
+        };
+
         let zero = vec![0.0f32; EMBEDDING_DIM];
         // Elements 0..3 — attr names + genesis sentinel.
         for i in 0..4 {
@@ -341,13 +345,15 @@ mod tests {
         // Route a vector pointing the opposite way from the prototype.
         let mut anti = vec![0.0f32; EMBEDDING_DIM];
         anti[0] = -1.0;
-        let mut policy = Policy::default();
         // n=1 → variance is all zero → Mahalanobis dominated by the
         // prior. With prior=0.001 and diff=2.0 in one dim, D² = 4/0.001
         // = 4000; normalized = 4000/384 ≈ 10.4; similarity ≈ 0.087.
         // Set leaf_vigilance comfortably above to force a void.
-        policy.leaf_vigilance = 0.5;
-        policy.variance_prior = 0.001;
+        let policy = Policy {
+            leaf_vigilance: 0.5,
+            variance_prior: 0.001,
+            ..Default::default()
+        };
 
         let result = route_regions(&anti, &hg, &policy);
         assert_eq!(result.delta.void_count, 1);

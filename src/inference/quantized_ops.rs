@@ -48,12 +48,12 @@ pub struct QMatmulScratch {
     pub act_u8: Vec<u8>,
     pub acc: Vec<i32>,
     pub a_scales: Vec<f32>,
-    /// Tracks which fp32 input the scratch was last quantized for so
-    /// callers running multiple matmuls against the same input
-    /// (Q/K/V projection over the same `x`) can skip re-quantizing.
-    /// Hash is a 64-bit FNV-style digest over the input pointer + len
-    /// + first/last fp32 value; collisions are astronomically rare in
-    /// the per-layer hot path.
+    // Tracks which fp32 input the scratch was last quantized for so
+    // callers running multiple matmuls against the same input
+    // (Q/K/V projection over the same `x`) can skip re-quantizing.
+    // Hash is a 64-bit FNV-style digest over the input pointer + len
+    // + first/last fp32 value; collisions are astronomically rare in
+    // the per-layer hot path.
     pub last_input_token: u64,
 }
 
@@ -91,6 +91,7 @@ pub fn quantize_activation(x: &[f32], m: usize, k: usize, scratch: &mut QMatmulS
         let a_scale = (row_max_abs / 127.0).max(1e-12);
         scratch.a_scales[i] = a_scale;
         let inv_scale = 1.0 / a_scale;
+        #[allow(clippy::needless_range_loop)]
         for kk in 0..k {
             let q = (row[kk] * inv_scale).round().clamp(-127.0, 127.0) as i32;
             scratch.act_i8[i * k + kk] = q as i8;
@@ -129,6 +130,7 @@ unsafe fn quantize_row_avx2(row: &[f32], a_i8: &mut [i8], a_u8: &mut [u8]) -> f3
     let mut tmp = [0.0f32; 8];
     unsafe { _mm256_storeu_ps(tmp.as_mut_ptr(), max_v) };
     let mut max_abs = tmp.iter().copied().fold(0.0f32, f32::max);
+    #[allow(clippy::needless_range_loop)]
     for kk in tail_start..k {
         max_abs = max_abs.max(row[kk].abs());
     }
@@ -252,6 +254,7 @@ fn input_token(x: &[f32], m: usize, k: usize) -> u64 {
 /// quantization when called with the same `x` repeatedly — this
 /// matters for Q/K/V projections, which all run against the same
 /// post-LayerNorm activation.
+#[allow(clippy::too_many_arguments)]
 pub fn quantized_matmul(
     x: &[f32],
     m: usize,
@@ -274,6 +277,7 @@ pub fn quantized_matmul(
 /// Dispatch to the fastest available INT8 matmul kernel. All kernels
 /// produce `c[i, j] = Σ_k a_i8[i, k] · b[k, j]` regardless of which
 /// path runs.
+#[allow(clippy::too_many_arguments)]
 fn matmul_i8_dispatch(
     m: usize,
     k: usize,
@@ -626,6 +630,7 @@ pub fn dequant_embedding_row(q_data: &[i8], scale: f32, cols: usize, row: usize,
 /// SIMD pass per token. Replaces three `dequant_embedding_row` calls
 /// plus a fp32 add loop with a single fused loop — eliminates two
 /// passes over fp32 memory.
+#[allow(clippy::too_many_arguments)]
 pub fn dequant_and_sum_token_embedding(
     word_q: &[i8],
     word_scale: f32,
