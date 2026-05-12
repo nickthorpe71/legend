@@ -17,7 +17,7 @@ use crate::inference::ops::{
     softmax_inplace,
 };
 use crate::inference::quantized_ops::{
-    dequant_and_sum_token_embedding, quantized_matmul, QMatmulScratch,
+    QMatmulScratch, dequant_and_sum_token_embedding, quantized_matmul,
 };
 use crate::inference::weights_int8::{LayerWeightsInt8, WeightsInt8};
 
@@ -174,8 +174,8 @@ struct ScratchInt8 {
     attn_out: Vec<f32>,
     ffn_int: Vec<f32>,
     ffn_out: Vec<f32>,
-    mask_f: Vec<f32>,     // attention mask, fp32
-    mask_bias: Vec<f32>,  // additive softmax mask: 0 / -1e9
+    mask_f: Vec<f32>,    // attention mask, fp32
+    mask_bias: Vec<f32>, // additive softmax mask: 0 / -1e9
 }
 
 fn run_layer_int8(
@@ -254,7 +254,8 @@ fn run_layer_int8(
         // out[i, head_off+d] = Σ_j scores[i, j] * V[j, head_off+d]
         for i in 0..seq_len {
             let scores_row = &scratch.scores[i * seq_len..(i + 1) * seq_len];
-            let out_row = &mut scratch.attn_concat[i * hidden + head_off..i * hidden + head_off + head_dim];
+            let out_row =
+                &mut scratch.attn_concat[i * hidden + head_off..i * hidden + head_off + head_dim];
             for d in 0..head_dim {
                 out_row[d] = 0.0;
             }

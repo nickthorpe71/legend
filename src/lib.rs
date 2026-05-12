@@ -109,8 +109,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
-    let activated: HashSet<ElementId> =
-        route.active_regions.iter().map(|ra| ra.region).collect();
+    let activated: HashSet<ElementId> = route.active_regions.iter().map(|ra| ra.region).collect();
     let descended: HashSet<ElementId> = route
         .delta
         .parent_attachments
@@ -131,10 +130,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         "  {:<20} {:>8} {:>8}  status",
         "region (under GENESIS)", "cosine", "M-sim"
     );
-    println!(
-        "  {:-<20} {:->8} {:->8}  --------------------",
-        "", "", ""
-    );
+    println!("  {:-<20} {:->8} {:->8}  --------------------", "", "", "");
     for (name, cosine, mahalanobis, id) in &scored {
         let status = if activated.contains(id) {
             "active"
@@ -145,9 +141,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             "below descend"
         };
-        println!(
-            "  {name:<20} {cosine:>+8.4} {mahalanobis:>+8.4}  {status}"
-        );
+        println!("  {name:<20} {cosine:>+8.4} {mahalanobis:>+8.4}  {status}");
     }
 
     println!();

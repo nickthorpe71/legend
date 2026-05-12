@@ -254,15 +254,13 @@ fn write_f32<W: Write>(w: &mut W, v: f32) -> std::io::Result<()> {
     w.write_all(&v.to_le_bytes())
 }
 fn write_f32_slice<W: Write>(w: &mut W, slice: &[f32]) -> std::io::Result<()> {
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * 4)
-    };
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * 4) };
     w.write_all(bytes)
 }
 fn write_i8_slice<W: Write>(w: &mut W, slice: &[i8]) -> std::io::Result<()> {
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
-    };
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len()) };
     w.write_all(bytes)
 }
 
@@ -289,9 +287,7 @@ impl<'a> Reader<'a> {
         let mut out = vec![0.0f32; n];
         let byte_len = n * 4;
         let src = &self.bytes[self.pos..self.pos + byte_len];
-        let dst = unsafe {
-            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len)
-        };
+        let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
         dst.copy_from_slice(src);
         self.pos += byte_len;
         out

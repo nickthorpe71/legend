@@ -4,14 +4,14 @@
 use std::time::Instant;
 
 use legend::embed::embed_text;
-use legend::inference::{bert_int8, WeightsInt8};
 use legend::inference::ops::{
     gelu_inplace, l2_normalize_inplace, layernorm_inplace, masked_mean_pool, matmul, matmul_at_bt,
     softmax_inplace,
 };
 use legend::inference::quantized_ops::{
-    quantize_activation, quantized_matmul_prequant, QMatmulScratch,
+    QMatmulScratch, quantize_activation, quantized_matmul_prequant,
 };
+use legend::inference::{WeightsInt8, bert_int8};
 use tokenizers::Tokenizer;
 
 fn time<F: FnMut() -> R, R>(label: &str, iters: usize, mut f: F) -> f64 {
@@ -87,13 +87,37 @@ fn main() {
     let mut out_inter = vec![0.0f32; seq_len * inter];
 
     let qkv_time = time("matmul QKV (h→h)", 5000, || {
-        quantized_matmul_prequant(seq_len, h, h, &layer.q_w, &layer.q_b, &mut out_h, &mut scratch);
+        quantized_matmul_prequant(
+            seq_len,
+            h,
+            h,
+            &layer.q_w,
+            &layer.q_b,
+            &mut out_h,
+            &mut scratch,
+        );
     });
     let ffn_int_time = time("matmul FFN-int (h→inter)", 5000, || {
-        quantized_matmul_prequant(seq_len, h, inter, &layer.ffn_int_w, &layer.ffn_int_b, &mut out_inter, &mut scratch);
+        quantized_matmul_prequant(
+            seq_len,
+            h,
+            inter,
+            &layer.ffn_int_w,
+            &layer.ffn_int_b,
+            &mut out_inter,
+            &mut scratch,
+        );
     });
     let ffn_out_time = time("matmul FFN-out (inter→h)", 5000, || {
-        quantized_matmul_prequant(seq_len, inter, h, &layer.ffn_out_w, &layer.ffn_out_b, &mut out_h, &mut scratch);
+        quantized_matmul_prequant(
+            seq_len,
+            inter,
+            h,
+            &layer.ffn_out_w,
+            &layer.ffn_out_b,
+            &mut out_h,
+            &mut scratch,
+        );
     });
 
     // Per-row activation quantize.
@@ -133,14 +157,32 @@ fn main() {
     let k_head = vec![0.5f32; seq_len * head_dim];
     let mut scores_buf = vec![0.0f32; seq_len * seq_len];
     let attn_qkt_time = time("matmul Q·K^T (seq×head_dim → seq×seq)", 5000, || {
-        matmul_at_bt(seq_len, head_dim, seq_len, &q_head, &k_head, &mut scores_buf);
+        matmul_at_bt(
+            seq_len,
+            head_dim,
+            seq_len,
+            &q_head,
+            &k_head,
+            &mut scores_buf,
+        );
     });
 
     let v_head = vec![0.5f32; seq_len * head_dim];
     let mut head_out = vec![0.0f32; seq_len * head_dim];
-    let attn_sv_time = time("matmul scores·V (seq×seq → seq×head_dim)", 5000, || {
-        matmul(seq_len, seq_len, head_dim, &scores_buf, &v_head, &mut head_out);
-    });
+    let attn_sv_time = time(
+        "matmul scores·V (seq×seq → seq×head_dim)",
+        5000,
+        || {
+            matmul(
+                seq_len,
+                seq_len,
+                head_dim,
+                &scores_buf,
+                &v_head,
+                &mut head_out,
+            );
+        },
+    );
 
     let pool = vec![0.5f32; seq_len * h];
     let mask_f: Vec<f32> = mask.iter().map(|&m| m as f32).collect();

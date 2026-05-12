@@ -68,11 +68,7 @@ pub struct RegionScore {
 /// Mid-path insertion (§10.3.5) is deliberately skipped here — that
 /// pass uses span-level embeddings that don't exist until Step 6
 /// mints elements. Step 8 owns it.
-pub fn route_regions(
-    embedding: &[f32],
-    hg: &Hypergraph,
-    policy: &Policy,
-) -> RouteResult {
+pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> RouteResult {
     let mut active_regions: Vec<RegionActivation> = Vec::new();
     let mut delta = RegionDelta::default();
     let mut uncertainty: Vec<UncertaintySignal> = Vec::new();
@@ -126,18 +122,13 @@ pub fn route_regions(
                 // Mean-of-top-K cosine: averages out single-outlier
                 // spikes. K is capped at the prototype count.
                 let k = (policy.cosine_top_k as usize).min(sims.len()).max(1);
-                let cosine_score = sims.iter().take(k).map(|(_, s)| *s).sum::<f32>()
-                    / k as f32;
+                let cosine_score = sims.iter().take(k).map(|(_, s)| *s).sum::<f32>() / k as f32;
                 // Mahalanobis-similarity if stats are available;
                 // otherwise reuse the cosine so the fusion gates still
                 // make a decision (degrades gracefully for a hand-
                 // built test graph that skipped stats population).
                 let mahalanobis_score = match hg.region_stats.get(&child) {
-                    Some(stats) => mahalanobis_similarity(
-                        embedding,
-                        stats,
-                        policy.variance_prior,
-                    ),
+                    Some(stats) => mahalanobis_similarity(embedding, stats, policy.variance_prior),
                     None => cosine_score,
                 };
                 scored.push((child, cosine_score, mahalanobis_score, best_proto));
@@ -233,7 +224,7 @@ pub(crate) fn mahalanobis_similarity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embed::{embed_text, EMBEDDING_DIM};
+    use crate::embed::{EMBEDDING_DIM, embed_text};
     use crate::seed::load_seed_graph;
     use crate::types::{Hypergraph, Policy, UncertaintySignal};
 
@@ -272,10 +263,7 @@ mod tests {
         let result = route_regions(&embedding, &hg, &policy);
 
         assert!(result.active_regions.is_empty());
-        assert_eq!(
-            result.uncertainty,
-            vec![UncertaintySignal::DiffuseRouting]
-        );
+        assert_eq!(result.uncertainty, vec![UncertaintySignal::DiffuseRouting]);
     }
 
     /// VOID routing: build a synthetic Hypergraph where the input is
@@ -284,8 +272,8 @@ mod tests {
     #[test]
     fn routes_to_void_when_below_leaf_vigilance() {
         use crate::types::{
-            Attribute, Element, ElementId, MemoryStats, Relation, RelationId, RelationStatus,
-            Term, Tick,
+            Attribute, Element, ElementId, MemoryStats, Relation, RelationId, RelationStatus, Term,
+            Tick,
         };
         let mk_elem = |id: u32, embedding: Vec<f32>| Element {
             id: ElementId(id),
@@ -364,10 +352,7 @@ mod tests {
         let result = route_regions(&anti, &hg, &policy);
         assert_eq!(result.delta.void_count, 1);
         assert!(result.active_regions.is_empty());
-        assert_eq!(
-            result.uncertainty,
-            vec![UncertaintySignal::DiffuseRouting]
-        );
+        assert_eq!(result.uncertainty, vec![UncertaintySignal::DiffuseRouting]);
     }
 
     /// `Hypergraph::default()` has no `region_children` entries — even
@@ -383,10 +368,7 @@ mod tests {
 
         assert!(result.active_regions.is_empty());
         assert!(result.delta.parent_attachments.is_empty());
-        assert_eq!(
-            result.uncertainty,
-            vec![UncertaintySignal::DiffuseRouting]
-        );
+        assert_eq!(result.uncertainty, vec![UncertaintySignal::DiffuseRouting]);
     }
 
     /// Mahalanobis-similarity arithmetic, hand-checked.
@@ -436,10 +418,7 @@ mod tests {
         let s = mahalanobis_similarity(&x, &stats, 0.001);
         // D² = (0.1)² / 0.001 = 10. normalized = 10/384. score = 1 / (1 + 10/384) ≈ 0.974.
         let expected = 1.0 / (1.0 + 10.0 / EMBEDDING_DIM as f32);
-        assert!(
-            (s - expected).abs() < 1e-5,
-            "expected {expected}, got {s}"
-        );
+        assert!((s - expected).abs() < 1e-5, "expected {expected}, got {s}");
         assert!(s.is_finite(), "score should be finite, got {s}");
     }
 }

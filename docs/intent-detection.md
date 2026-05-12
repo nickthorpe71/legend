@@ -20,24 +20,24 @@ text
 ```
 
 The lexical features sit in front of the embedding as a
-*front-door mediator* (Pearl): linguistic surface form is causally
+_front-door mediator_ (Pearl): linguistic surface form is causally
 upstream of the embedding, so it captures intent signal cleanly while
 the embedding carries intent confounded with topic.
 
 ## Files
 
-| Path | What |
-|---|---|
-| `seed_pack.yaml` → `intent_prototypes` | High/low pole phrases + counterfactual pairs per dim |
-| `src/embed.rs` | tract-onnx wrapper. `embed_text(&str) -> Vec<f32>`, `EMBEDDING_DIM = 384` |
-| `src/lexical_features.rs` | `extract_lexical_features(&str) -> [f32; 34]` |
-| `src/intent_classifiers.rs` | Loads the four `.bin` blobs at startup |
-| `src/intent_classifiers/<dim>.bin` | Trained weights — 418 f32 + 1 f32 bias, little-endian |
-| `src/steps/detect_intent.rs` | Runtime: featurize + score |
-| `examples/gen_intent_classifiers.rs` | **Trainer** — produces the `.bin` files |
-| `examples/audit_classifiers.rs` | Diagnostics: weight cosines, top activators, paraphrase Δ |
-| `examples/test_intent.rs` | Held-out accuracy check (40 inputs across 8 groups) |
-| `examples/shared/mod.rs` | Serde types for the seed pack (dev-only deps) |
+| Path                                   | What                                                                      |
+| -------------------------------------- | ------------------------------------------------------------------------- |
+| `seed_pack.yaml` → `intent_prototypes` | High/low pole phrases + counterfactual pairs per dim                      |
+| `src/embed.rs`                         | tract-onnx wrapper. `embed_text(&str) -> Vec<f32>`, `EMBEDDING_DIM = 384` |
+| `src/lexical_features.rs`              | `extract_lexical_features(&str) -> [f32; 34]`                             |
+| `src/intent_classifiers.rs`            | Loads the four `.bin` blobs at startup                                    |
+| `src/intent_classifiers/<dim>.bin`     | Trained weights — 418 f32 + 1 f32 bias, little-endian                     |
+| `src/steps/detect_intent.rs`           | Runtime: featurize + score                                                |
+| `examples/gen_intent_classifiers.rs`   | **Trainer** — produces the `.bin` files                                   |
+| `examples/audit_classifiers.rs`        | Diagnostics: weight cosines, top activators, paraphrase Δ                 |
+| `examples/test_intent.rs`              | Held-out accuracy check (40 inputs across 8 groups)                       |
+| `examples/shared/mod.rs`               | Serde types for the seed pack (dev-only deps)                             |
 
 ## Training objective
 
@@ -54,6 +54,7 @@ For each dim, full-batch gradient descent over two losses:
    the learned direction to be intent-axis-aligned, not topic-aligned.
 
 Combined gradient per epoch:
+
 ```
 w[j] -= lr * (g_log[j] + pair_weight * g_pair[j] + lambda * w[j])
 b    -= lr *  g_log_b
@@ -74,6 +75,7 @@ picks up the new weights at the next `cargo build` because the `.bin`
 files are pulled in via `include_bytes!`.
 
 Per-dim train output looks like:
+
 ```
 wrote src/intent_classifiers/conviction.bin
   (pos=42, neg=293, pairs=14, pos_weight=6.98, log_loss=0.367, pair_loss=0.210)
@@ -126,7 +128,7 @@ After editing, retrain (above) and re-run the validators.
   with another dim. The pair pins the topic and isolates the intent
   axis. Example: PE phrases mention "bug" a lot, so high-conviction
   sentences about bugs misclassify — fix with `(high: "I know for
-  certain the bug is in X", low: "I think maybe the bug is in X")`.
+certain the bug is in X", low: "I think maybe the bug is in X")`.
 
 ## Adding a new lexical feature
 

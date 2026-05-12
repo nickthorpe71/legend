@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use tokenizers::Tokenizer;
 
-use crate::inference::{bert_int8, WeightsInt8};
+use crate::inference::{WeightsInt8, bert_int8};
 
 /// Output dimensionality of the bundled all-MiniLM-L6-v2 model.
 /// Single source of truth — callers allocate buffers and arrays against
@@ -35,9 +35,7 @@ pub fn embed_text(text: &str) -> Vec<f32> {
     if text.trim().is_empty() {
         return vec![0.0f32; EMBEDDING_DIM];
     }
-    let encoding = TOKENIZER
-        .encode(text, true)
-        .expect("tokenization failed");
+    let encoding = TOKENIZER.encode(text, true).expect("tokenization failed");
     let ids: Vec<u32> = encoding.get_ids().to_vec();
     let mask: Vec<u32> = encoding.get_attention_mask().to_vec();
     let weights: &WeightsInt8 = WeightsInt8::load_bundled();

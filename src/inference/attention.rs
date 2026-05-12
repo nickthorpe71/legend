@@ -86,12 +86,9 @@ pub fn self_attention(
         for t in 0..seq_len {
             let src = t * hidden + h * head_dim;
             let dst = t * head_dim;
-            scratch.q_head[dst..dst + head_dim]
-                .copy_from_slice(&scratch.q[src..src + head_dim]);
-            scratch.k_head[dst..dst + head_dim]
-                .copy_from_slice(&scratch.k[src..src + head_dim]);
-            scratch.v_head[dst..dst + head_dim]
-                .copy_from_slice(&scratch.v[src..src + head_dim]);
+            scratch.q_head[dst..dst + head_dim].copy_from_slice(&scratch.q[src..src + head_dim]);
+            scratch.k_head[dst..dst + head_dim].copy_from_slice(&scratch.k[src..src + head_dim]);
+            scratch.v_head[dst..dst + head_dim].copy_from_slice(&scratch.v[src..src + head_dim]);
         }
 
         // scores[i, j] = q_head[i] · k_head[j], shape [seq_len, seq_len].
@@ -137,7 +134,14 @@ pub fn self_attention(
 
     // 4. Output projection: concat · attn_out_w + attn_out_b.
     let mut out = vec![0.0f32; seq_len * hidden];
-    matmul(seq_len, hidden, hidden, &attn_concat, &layer.attn_out_w, &mut out);
+    matmul(
+        seq_len,
+        hidden,
+        hidden,
+        &attn_concat,
+        &layer.attn_out_w,
+        &mut out,
+    );
     add_bias_inplace(&mut out, &layer.attn_out_b, seq_len, hidden);
     out
 }

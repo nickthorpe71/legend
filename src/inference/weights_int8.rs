@@ -189,9 +189,7 @@ impl<'a> Reader<'a> {
         let mut out = vec![0.0f32; n];
         let byte_len = n * 4;
         let src = &self.bytes[self.pos..self.pos + byte_len];
-        let dst = unsafe {
-            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len)
-        };
+        let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
         dst.copy_from_slice(src);
         self.pos += byte_len;
         out

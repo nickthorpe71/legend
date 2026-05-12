@@ -6,11 +6,15 @@
 
 use std::time::Instant;
 
-use legend::inference::{bert, bert_int8, Weights, WeightsInt8};
+use legend::inference::{Weights, WeightsInt8, bert, bert_int8};
 use legend::math::dot;
 use tokenizers::Tokenizer;
 
-fn embed_with(forward: impl Fn(&[u32], &[u32]) -> Vec<f32>, text: &str, tok: &Tokenizer) -> Vec<f32> {
+fn embed_with(
+    forward: impl Fn(&[u32], &[u32]) -> Vec<f32>,
+    text: &str,
+    tok: &Tokenizer,
+) -> Vec<f32> {
     if text.trim().is_empty() {
         return vec![0.0f32; 384];
     }

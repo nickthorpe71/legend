@@ -259,7 +259,9 @@ unsafe fn exp_avx2(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
 
     // n = round(x · log2(e))
     let n = unsafe {
-        _mm256_round_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(_mm256_mul_ps(x, log2e))
+        _mm256_round_ps::<{ _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC }>(_mm256_mul_ps(
+            x, log2e,
+        ))
     };
     // r = x − n·ln(2)
     let r = unsafe { _mm256_fnmadd_ps(n, ln2, x) };
@@ -279,7 +281,8 @@ unsafe fn exp_avx2(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
 
     // 2^n via `(n + 127) << 23` bit pattern.
     let n_i = unsafe { _mm256_cvtps_epi32(n) };
-    let exp_bits = unsafe { _mm256_slli_epi32::<23>(_mm256_add_epi32(n_i, _mm256_set1_epi32(127))) };
+    let exp_bits =
+        unsafe { _mm256_slli_epi32::<23>(_mm256_add_epi32(n_i, _mm256_set1_epi32(127))) };
     let two_n = unsafe { _mm256_castsi256_ps(exp_bits) };
     unsafe { _mm256_mul_ps(p, two_n) }
 }
@@ -510,9 +513,7 @@ mod tests {
     fn gelu_avx2_matches_scalar() {
         // Mixed magnitudes spanning the GELU response curve, plus a
         // misaligned tail to exercise the scalar fall-through.
-        let inputs: Vec<f32> = (0..37)
-            .map(|i| (i as f32 - 18.0) * 0.21)
-            .collect();
+        let inputs: Vec<f32> = (0..37).map(|i| (i as f32 - 18.0) * 0.21).collect();
         let mut x_simd = inputs.clone();
         let mut x_scalar = inputs.clone();
         gelu_inplace(&mut x_simd);

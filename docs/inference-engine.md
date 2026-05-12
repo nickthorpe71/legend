@@ -144,11 +144,11 @@ weights were row-major, every load would be strided by `out_dim`.
 `matmul_i8_dispatch` (quantized_ops.rs:281) picks the fastest path
 at runtime via CPUID:
 
-| Path | Trigger | Speed | Code |
-|---|---|---|---|
-| `matmul_i8_vnni` | AVX-VNNI (Alder Lake+ / Zen 4+) | ~3× faster than AVX2 | quantized_ops.rs:413 |
-| `matmul_i8_avx2` | AVX2 only | ~3× faster than scalar | quantized_ops.rs:362 |
-| `matmul_i8_scalar` | fallback | reference, obviously correct | quantized_ops.rs:309 |
+| Path               | Trigger                         | Speed                        | Code                 |
+| ------------------ | ------------------------------- | ---------------------------- | -------------------- |
+| `matmul_i8_vnni`   | AVX-VNNI (Alder Lake+ / Zen 4+) | ~3× faster than AVX2         | quantized_ops.rs:413 |
+| `matmul_i8_avx2`   | AVX2 only                       | ~3× faster than scalar       | quantized_ops.rs:362 |
+| `matmul_i8_scalar` | fallback                        | reference, obviously correct | quantized_ops.rs:309 |
 
 The three kernels all produce the **same** `Σ a_i8 · w_i8` in
 `c[i, j]`, so the dequant formula upstream is uniform — only the
@@ -204,7 +204,7 @@ see quantized_ops.rs:543.
 
 `matmul_i8_avx2` (quantized_ops.rs:362) widens i8 → i16 and uses
 `pmaddwd` to do 16-element multiply-add per instruction. It's a
-universal AVX2 path. But VNNI's `vpdpbusd` is a *single* instruction
+universal AVX2 path. But VNNI's `vpdpbusd` is a _single_ instruction
 for a 32-element INT8 dot product — 3× the work per cycle. When the
 CPU has it, we use it; we keep the AVX2 path for older silicon.
 
@@ -234,14 +234,14 @@ attn_out, FFN-int, FFN-out (different x).
 
 All of these dispatch to AVX2+FMA when available, scalar otherwise:
 
-| Kernel | Scalar | AVX2 | Notes |
-|---|---|---|---|
-| LayerNorm | layernorm_inplace_scalar (ops.rs:121) | layernorm_row_avx2 (ops.rs:154) | 3-pass: sum, var-sum, write-back |
-| GELU (exact erf form) | gelu_inplace_scalar (ops.rs:223) | gelu_inplace_avx2 (ops.rs:293) | Uses vectorized exp + A&S 7.1.26 erf |
-| Activation quantize | scalar loop in quantize_activation (qops.rs:64) | quantize_row_avx2 (qops.rs:112) | Two-pass: max-abs, then mul+round+pack |
-| Embedding dequant+sum | scalar fallback (qops.rs:641) | dequant_and_sum_token_embedding_avx2 (qops.rs:687) | Fused: word + pos + type → out, one SIMD pass |
-| Attention dot product | scalar in dot_fp32 (bert_int8.rs:93) | dot_fp32_avx2 (bert_int8.rs:110) | head_dim=64 → 8 fmadd chunks |
-| Attention output mix | scalar in axpy_fp32 (bert_int8.rs:133) | axpy_fp32_avx2 (bert_int8.rs:149) | `out += scale · v` |
+| Kernel                | Scalar                                          | AVX2                                               | Notes                                         |
+| --------------------- | ----------------------------------------------- | -------------------------------------------------- | --------------------------------------------- |
+| LayerNorm             | layernorm_inplace_scalar (ops.rs:121)           | layernorm_row_avx2 (ops.rs:154)                    | 3-pass: sum, var-sum, write-back              |
+| GELU (exact erf form) | gelu_inplace_scalar (ops.rs:223)                | gelu_inplace_avx2 (ops.rs:293)                     | Uses vectorized exp + A&S 7.1.26 erf          |
+| Activation quantize   | scalar loop in quantize_activation (qops.rs:64) | quantize_row_avx2 (qops.rs:112)                    | Two-pass: max-abs, then mul+round+pack        |
+| Embedding dequant+sum | scalar fallback (qops.rs:641)                   | dequant_and_sum_token_embedding_avx2 (qops.rs:687) | Fused: word + pos + type → out, one SIMD pass |
+| Attention dot product | scalar in dot_fp32 (bert_int8.rs:93)            | dot_fp32_avx2 (bert_int8.rs:110)                   | head_dim=64 → 8 fmadd chunks                  |
+| Attention output mix  | scalar in axpy_fp32 (bert_int8.rs:133)          | axpy_fp32_avx2 (bert_int8.rs:149)                  | `out += scale · v`                            |
 
 ### AVX2 exp (the trick inside GELU)
 
@@ -256,7 +256,7 @@ exp(x) = 2^n · exp(r)
 - `r ∈ [-ln(2)/2, ln(2)/2]` is small enough that a 5th-order
   minimax polynomial gives ~2 ULP accuracy.
 - `2^n` is computed by bit-manipulation: the IEEE-754 float
-  `(n + 127) << 23` reinterpreted as f32 *is* `2^n`. No actual
+  `(n + 127) << 23` reinterpreted as f32 _is_ `2^n`. No actual
   exponentiation — just an integer add and a left shift.
 
 GELU itself uses the **exact** erf formulation (not the tanh
@@ -327,16 +327,16 @@ After all the SIMD work, the matmul kernels run at ~95% of AVX-VNNI
 peak throughput (verified by counting `vpdpbusd` × clock and
 comparing). Per `embed_text` at 13 tokens:
 
-| Phase | μs | % |
-|---|---:|---:|
-| Matmul (weights) | ~1100 | 62% |
-| Unaccounted (memory-bound) | ~250 | 14% |
-| Attention math (dot/axpy/softmax) | ~150 | 8% |
-| GELU | ~60 | 3% |
-| Activation quant | ~45 | 3% |
-| LayerNorm | ~20 | 1% |
-| Tokenize | ~12 | 1% |
-| **Total** | **~1750** | **100%** |
+| Phase                             |        μs |        % |
+| --------------------------------- | --------: | -------: |
+| Matmul (weights)                  |     ~1100 |      62% |
+| Unaccounted (memory-bound)        |      ~250 |      14% |
+| Attention math (dot/axpy/softmax) |      ~150 |       8% |
+| GELU                              |       ~60 |       3% |
+| Activation quant                  |       ~45 |       3% |
+| LayerNorm                         |       ~20 |       1% |
+| Tokenize                          |       ~12 |       1% |
+| **Total**                         | **~1750** | **100%** |
 
 The "unaccounted" ~250 μs is the memory-bandwidth floor. Each
 layer's weights total 1.77 MB (4 h→h projections + 2 FFN matrices),
@@ -358,12 +358,12 @@ levers from here would be:
 
 Runtime dispatch means one binary covers everything:
 
-| CPU | Path | Speed |
-|---|---|---|
-| Alder Lake+ Intel (2021+) / Zen 4+ AMD | VNNI | full speed (~1.8 ms) |
-| Haswell+ Intel (2013+) / Excavator+ AMD | AVX2 widen-pmaddwd | ~3× slower matmul (~4 ms) |
-| Pre-AVX2 x86_64 | scalar | ~10× slower, but works |
-| ARM (Apple Silicon, etc.) | scalar via the `target_arch != x86_64` branch | works, no SIMD wins |
+| CPU                                     | Path                                          | Speed                     |
+| --------------------------------------- | --------------------------------------------- | ------------------------- |
+| Alder Lake+ Intel (2021+) / Zen 4+ AMD  | VNNI                                          | full speed (~1.8 ms)      |
+| Haswell+ Intel (2013+) / Excavator+ AMD | AVX2 widen-pmaddwd                            | ~3× slower matmul (~4 ms) |
+| Pre-AVX2 x86_64                         | scalar                                        | ~10× slower, but works    |
+| ARM (Apple Silicon, etc.)               | scalar via the `target_arch != x86_64` branch | works, no SIMD wins       |
 
 ARM SIMD (NEON / SVE2) is not implemented — would be a separate
 PR. The scalar fallback is correct everywhere.
@@ -391,7 +391,7 @@ edge-case alignments.
 ```
 models/all-MiniLM-L6-v2-q/model.onnx   (one-time download, ~23 MB)
  │
- │  cargo run --release --example extract_weights --features fp32_reference
+ │  cargo run --release --example extract_weights
  │     ├── tract-onnx loads the model
  │     ├── walks the topology by hardcoded MatMul IDs
  │     └── writes fp32 weights → models/minilm-fp32.bin (86 MB)
@@ -429,5 +429,5 @@ If you want to actually internalize the code, read in this order:
    versions are minor variations. (~15 min)
 4. **`quantized_ops.rs`** — the dense one. Start at
    `matmul_i8_scalar` (the reference). Then `matmul_i8_avx2` (widen
-   + pmaddwd). Then `matmul_i8_vnni` (2×4 tile + shift trick). The
-   rest is dispatch glue and activation quantize. (~30 min)
+    - pmaddwd). Then `matmul_i8_vnni` (2×4 tile + shift trick). The
+      rest is dispatch glue and activation quantize. (~30 min)

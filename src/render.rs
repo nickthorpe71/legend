@@ -108,10 +108,7 @@ fn categorize(hg: &Hypergraph) -> Categorized {
         }
     }
     for e in &hg.elements {
-        if e.names
-            .iter()
-            .any(|n| attribute_group(n) != "Other")
-        {
+        if e.names.iter().any(|n| attribute_group(n) != "Other") {
             attr_name_ids.insert(e.id);
         }
     }
@@ -249,10 +246,7 @@ fn write_dag_diagram(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
                     .and_then(|parents| parents.iter().find(|(p, _)| *p == node))
                     .map(|(_, w)| *w)
                     .unwrap_or(1.0);
-                let _ = writeln!(
-                    s,
-                    "  {parent_label} -->|{weight:.2}| {child_label}",
-                );
+                let _ = writeln!(s, "  {parent_label} -->|{weight:.2}| {child_label}",);
                 stack.push(child);
             }
         }
@@ -262,17 +256,20 @@ fn write_dag_diagram(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
             for proto in sorted_protos {
                 let parent_label = mermaid_id(hg, node);
                 let proto_label = mermaid_id(hg, proto);
-                let _ = writeln!(
-                    s,
-                    "  {parent_label} -.proto.-> {proto_label}",
-                );
+                let _ = writeln!(s, "  {parent_label} -.proto.-> {proto_label}",);
             }
         }
     }
 
-    let _ = writeln!(s, "  classDef region fill:#1a3050,stroke:#4080c0,color:#fff");
+    let _ = writeln!(
+        s,
+        "  classDef region fill:#1a3050,stroke:#4080c0,color:#fff"
+    );
     let _ = writeln!(s, "  classDef proto fill:#103020,stroke:#30c060,color:#cfc");
-    let _ = writeln!(s, "  classDef anchor fill:#403010,stroke:#f0a030,color:#fc8");
+    let _ = writeln!(
+        s,
+        "  classDef anchor fill:#403010,stroke:#f0a030,color:#fc8"
+    );
 
     let mut region_ids: Vec<_> = cat
         .by_element
@@ -400,7 +397,10 @@ fn write_frames(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
 fn write_prototypes(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
     let _ = writeln!(s, "## Prototypes");
     let _ = writeln!(s);
-    let _ = writeln!(s, "| Prototype | ID | Owning region | Embedding magnitude |");
+    let _ = writeln!(
+        s,
+        "| Prototype | ID | Owning region | Embedding magnitude |"
+    );
     let _ = writeln!(s, "|---|---|---|---|");
 
     let mut proto_to_region: HashMap<ElementId, ElementId> = HashMap::new();
@@ -528,7 +528,13 @@ fn mermaid_id(hg: &Hypergraph, id: ElementId) -> String {
     let raw = canonical_name(hg, id);
     let safe: String = raw
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("e{}_{safe}", id.0)
 }

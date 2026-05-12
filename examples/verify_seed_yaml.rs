@@ -80,22 +80,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 2. REGION_STATES absent
-    if pack
-        .regions
-        .iter()
-        .any(|r| r.element_id == "REGION_STATES")
-    {
+    if pack.regions.iter().any(|r| r.element_id == "REGION_STATES") {
         errors.push("REGION_STATES still present in regions list".into());
     } else {
         info.push("✓ REGION_STATES absent from regions list".into());
     }
 
     // 3. All 14 expected region IDs present
-    let actual_ids: HashSet<&str> = pack
-        .regions
-        .iter()
-        .map(|r| r.element_id.as_str())
-        .collect();
+    let actual_ids: HashSet<&str> = pack.regions.iter().map(|r| r.element_id.as_str()).collect();
     let mut all_present = true;
     for &expected in EXPECTED_REGIONS {
         if !actual_ids.contains(expected) {
@@ -227,8 +219,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 9. Seeded relations don't reference REGION_STATES
     let mut orphan_states = Vec::new();
-    scan_group_for_states("region_class_pins", &pack.seeded_relations.region_class_pins, &mut orphan_states);
-    scan_group_for_states("region_parent_pins", &pack.seeded_relations.region_parent_pins, &mut orphan_states);
+    scan_group_for_states(
+        "region_class_pins",
+        &pack.seeded_relations.region_class_pins,
+        &mut orphan_states,
+    );
+    scan_group_for_states(
+        "region_parent_pins",
+        &pack.seeded_relations.region_parent_pins,
+        &mut orphan_states,
+    );
     scan_group_for_states(
         "reference_frame_class_pins",
         &pack.seeded_relations.reference_frame_class_pins,
@@ -278,10 +278,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
     if errors.is_empty() {
-        println!("=== Step 1 verification: PASS ({} checks) ===", info.iter().filter(|l| l.starts_with("✓")).count());
+        println!(
+            "=== Step 1 verification: PASS ({} checks) ===",
+            info.iter().filter(|l| l.starts_with("✓")).count()
+        );
         Ok(())
     } else {
-        println!("=== Step 1 verification: FAIL ({} error(s)) ===", errors.len());
+        println!(
+            "=== Step 1 verification: FAIL ({} error(s)) ===",
+            errors.len()
+        );
         for err in &errors {
             println!("  ✗ {err}");
         }

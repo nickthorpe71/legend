@@ -11,7 +11,7 @@
 //! x        = layernorm(x + ffn_out, ffn_ln_gamma, ffn_ln_beta)
 //! ```
 
-use crate::inference::attention::{self_attention, Scratch};
+use crate::inference::attention::{Scratch, self_attention};
 use crate::inference::ops::{
     add_bias_inplace, add_inplace, gelu_inplace, layernorm_inplace, matmul,
 };
@@ -32,7 +32,9 @@ pub fn run_layer(
     debug_assert_eq!(x.len(), seq_len * hidden);
 
     // ── Self-attention + residual + LN ────────────────────────────
-    let attn_out = self_attention(x, seq_len, hidden, num_heads, head_dim, mask, layer, scratch);
+    let attn_out = self_attention(
+        x, seq_len, hidden, num_heads, head_dim, mask, layer, scratch,
+    );
     add_inplace(x, &attn_out);
     layernorm_inplace(
         x,
@@ -45,12 +47,26 @@ pub fn run_layer(
 
     // ── FFN: intermediate (with GELU) → output ────────────────────
     let mut ffn_int = vec![0.0f32; seq_len * intermediate];
-    matmul(seq_len, hidden, intermediate, x, &layer.ffn_int_w, &mut ffn_int);
+    matmul(
+        seq_len,
+        hidden,
+        intermediate,
+        x,
+        &layer.ffn_int_w,
+        &mut ffn_int,
+    );
     add_bias_inplace(&mut ffn_int, &layer.ffn_int_b, seq_len, intermediate);
     gelu_inplace(&mut ffn_int);
 
     let mut ffn_out = vec![0.0f32; seq_len * hidden];
-    matmul(seq_len, intermediate, hidden, &ffn_int, &layer.ffn_out_w, &mut ffn_out);
+    matmul(
+        seq_len,
+        intermediate,
+        hidden,
+        &ffn_int,
+        &layer.ffn_out_w,
+        &mut ffn_out,
+    );
     add_bias_inplace(&mut ffn_out, &layer.ffn_out_b, seq_len, hidden);
 
     add_inplace(x, &ffn_out);

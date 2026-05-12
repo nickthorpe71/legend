@@ -83,8 +83,7 @@ const MATMUL_IDS: [[u32; 6]; 6] = [
 
 fn main() -> TractResult<()> {
     let onnx_bytes: &[u8] = include_bytes!("../models/all-MiniLM-L6-v2-q/model.onnx");
-    let model = tract_onnx::onnx()
-        .model_for_read(&mut std::io::Cursor::new(onnx_bytes))?;
+    let model = tract_onnx::onnx().model_for_read(&mut std::io::Cursor::new(onnx_bytes))?;
 
     // Index constants by name → owned tensor.
     let mut consts: HashMap<String, Tensor> = HashMap::new();
@@ -202,10 +201,7 @@ fn main() -> TractResult<()> {
             &format!("encoder.layer.{layer}.intermediate.dense.bias"),
         );
         let ffn_out_w = dequant_per_channel_i8(&consts, ffn_out);
-        let ffn_out_b = read_f32(
-            &consts,
-            &format!("encoder.layer.{layer}.output.dense.bias"),
-        );
+        let ffn_out_b = read_f32(&consts, &format!("encoder.layer.{layer}.output.dense.bias"));
         let ffn_ln_g = read_f32(
             &consts,
             &format!("encoder.layer.{layer}.output.LayerNorm.weight"),
@@ -219,19 +215,27 @@ fn main() -> TractResult<()> {
         assert_eq!(q_w.len(), (HIDDEN_SIZE * HIDDEN_SIZE) as usize);
         assert_eq!(q_b.len(), HIDDEN_SIZE as usize);
         assert_eq!(attn_out_w.len(), (HIDDEN_SIZE * HIDDEN_SIZE) as usize);
-        assert_eq!(
-            ffn_int_w.len(),
-            (HIDDEN_SIZE * INTERMEDIATE_SIZE) as usize
-        );
-        assert_eq!(
-            ffn_out_w.len(),
-            (INTERMEDIATE_SIZE * HIDDEN_SIZE) as usize
-        );
+        assert_eq!(ffn_int_w.len(), (HIDDEN_SIZE * INTERMEDIATE_SIZE) as usize);
+        assert_eq!(ffn_out_w.len(), (INTERMEDIATE_SIZE * HIDDEN_SIZE) as usize);
         assert_eq!(ffn_int_b.len(), INTERMEDIATE_SIZE as usize);
 
         for slab in [
-            &q_w, &q_b, &k_w, &k_b, &v_w, &v_b, &attn_out_w, &attn_out_b, &attn_ln_g,
-            &attn_ln_b, &ffn_int_w, &ffn_int_b, &ffn_out_w, &ffn_out_b, &ffn_ln_g, &ffn_ln_b,
+            &q_w,
+            &q_b,
+            &k_w,
+            &k_b,
+            &v_w,
+            &v_b,
+            &attn_out_w,
+            &attn_out_b,
+            &attn_ln_g,
+            &attn_ln_b,
+            &ffn_int_w,
+            &ffn_int_b,
+            &ffn_out_w,
+            &ffn_out_b,
+            &ffn_ln_g,
+            &ffn_ln_b,
         ] {
             write_f32_slice(&mut out, slab)?;
         }
@@ -263,9 +267,8 @@ fn write_f32_slice<W: Write>(w: &mut W, slice: &[f32]) -> std::io::Result<()> {
     // SAFETY: f32 has a stable little-endian representation on x86_64.
     // We rely on the platform being LE (asserted at runtime in
     // src/embed/weights.rs).
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * 4)
-    };
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * 4) };
     w.write_all(bytes)
 }
 
@@ -320,9 +323,7 @@ fn dequant_per_tensor_u8(
             v[0] as i32
         })
         .unwrap_or(0);
-    q.iter()
-        .map(|&u| (u as i32 - zp) as f32 * scale)
-        .collect()
+    q.iter().map(|&u| (u as i32 - zp) as f32 * scale).collect()
 }
 
 /// Dequantize a per-output-channel I8 quantized MatMul weight.

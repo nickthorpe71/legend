@@ -15,7 +15,7 @@ pub mod ops;
 pub mod quantized_ops;
 pub mod weights_int8;
 
-pub use weights_int8::{WeightsInt8, BUNDLED_WEIGHTS_INT8};
+pub use weights_int8::{BUNDLED_WEIGHTS_INT8, WeightsInt8};
 
 // fp32 reference path — feature-gated so production builds don't
 // carry the ~86 MB fp32 weight bundle. Enabled by `--features
@@ -32,4 +32,4 @@ pub mod weights;
 #[cfg(feature = "fp32_reference")]
 pub use bert::forward;
 #[cfg(feature = "fp32_reference")]
-pub use weights::{Weights, BUNDLED_WEIGHTS};
+pub use weights::{BUNDLED_WEIGHTS, Weights};

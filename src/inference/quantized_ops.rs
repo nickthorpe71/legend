@@ -118,9 +118,7 @@ unsafe fn quantize_row_avx2(row: &[f32], a_i8: &mut [i8], a_u8: &mut [u8]) -> f3
     let tail_start = chunks * 8;
 
     // ── Pass 1: row max-abs ────────────────────────────────────────
-    let sign_mask = unsafe {
-        _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFFu32 as i32))
-    };
+    let sign_mask = unsafe { _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFFu32 as i32)) };
     let mut max_v = unsafe { _mm256_setzero_ps() };
     for c in 0..chunks {
         let v = unsafe { _mm256_loadu_ps(row.as_ptr().add(c * 8)) };
@@ -240,9 +238,7 @@ fn input_token(x: &[f32], m: usize, k: usize) -> u64 {
     let first = x[0].to_bits() as u64;
     let last = x[len - 1].to_bits() as u64;
     let mid = x[len / 2].to_bits() as u64;
-    first
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .rotate_left(13)
+    first.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(13)
         ^ last.wrapping_mul(0xBF58_476D_1CE4_E5B9).rotate_left(31)
         ^ mid.wrapping_mul(0x94D0_49BB_1331_11EB).rotate_left(7)
         ^ (len as u64)
@@ -384,9 +380,7 @@ unsafe fn matmul_i8_avx2(m: usize, k: usize, n: usize, a: &[i8], b: &[i8], c: &m
                 let b_hi = unsafe { _mm256_cvtepi8_epi16(_mm256_extracti128_si256(bv, 1)) };
                 let prod_lo = unsafe { _mm256_madd_epi16(a_lo, b_lo) };
                 let prod_hi = unsafe { _mm256_madd_epi16(a_hi, b_hi) };
-                acc_vec = unsafe {
-                    _mm256_add_epi32(acc_vec, _mm256_add_epi32(prod_lo, prod_hi))
-                };
+                acc_vec = unsafe { _mm256_add_epi32(acc_vec, _mm256_add_epi32(prod_lo, prod_hi)) };
             }
             let mut acc = unsafe { hsum_i32_avx2(acc_vec) };
             for kk in 0..tail {
@@ -620,13 +614,7 @@ unsafe fn hsum_i32_avx2(v: std::arch::x86_64::__m256i) -> i32 {
 
 /// Dequantize one row (one embedding lookup) of a per-tensor quantized
 /// embedding table.
-pub fn dequant_embedding_row(
-    q_data: &[i8],
-    scale: f32,
-    cols: usize,
-    row: usize,
-    out: &mut [f32],
-) {
+pub fn dequant_embedding_row(q_data: &[i8], scale: f32, cols: usize, row: usize, out: &mut [f32]) {
     debug_assert_eq!(out.len(), cols);
     let src = &q_data[row * cols..(row + 1) * cols];
     for (o, &q) in out.iter_mut().zip(src.iter()) {
@@ -660,13 +648,7 @@ pub fn dequant_and_sum_token_embedding(
         if is_avx2_available() {
             unsafe {
                 dequant_and_sum_token_embedding_avx2(
-                    word_src,
-                    word_scale,
-                    pos_src,
-                    pos_scale,
-                    type_src,
-                    type_scale,
-                    out,
+                    word_src, word_scale, pos_src, pos_scale, type_src, type_scale, out,
                 );
             }
             return;
@@ -824,8 +806,18 @@ mod tests {
             for i in 0..k {
                 let d_i = (a_i8_s[i] as i32 - a_i8_v[i] as i32).abs();
                 let d_u = (a_u8_s[i] as i32 - a_u8_v[i] as i32).abs();
-                assert!(d_i <= 1, "i8 mismatch at k={k}, i={i}: scalar={} avx2={}", a_i8_s[i], a_i8_v[i]);
-                assert!(d_u <= 1, "u8 mismatch at k={k}, i={i}: scalar={} avx2={}", a_u8_s[i], a_u8_v[i]);
+                assert!(
+                    d_i <= 1,
+                    "i8 mismatch at k={k}, i={i}: scalar={} avx2={}",
+                    a_i8_s[i],
+                    a_i8_v[i]
+                );
+                assert!(
+                    d_u <= 1,
+                    "u8 mismatch at k={k}, i={i}: scalar={} avx2={}",
+                    a_u8_s[i],
+                    a_u8_v[i]
+                );
             }
         }
     }

@@ -27,11 +27,11 @@ pub struct Weights {
     pub layer_norm_eps: f32,
 
     // Embeddings.
-    pub word_emb: Vec<f32>,          // [vocab, hidden]
-    pub pos_emb: Vec<f32>,           // [max_pos, hidden]
-    pub type_emb: Vec<f32>,          // [type_vocab, hidden]
-    pub emb_ln_gamma: Vec<f32>,      // [hidden]
-    pub emb_ln_beta: Vec<f32>,       // [hidden]
+    pub word_emb: Vec<f32>,     // [vocab, hidden]
+    pub pos_emb: Vec<f32>,      // [max_pos, hidden]
+    pub type_emb: Vec<f32>,     // [type_vocab, hidden]
+    pub emb_ln_gamma: Vec<f32>, // [hidden]
+    pub emb_ln_beta: Vec<f32>,  // [hidden]
 
     // Per layer; outer index is layer 0..num_layers.
     pub layers: Vec<LayerWeights>,
@@ -39,22 +39,22 @@ pub struct Weights {
 
 #[derive(Debug)]
 pub struct LayerWeights {
-    pub q_w: Vec<f32>,            // [hidden, hidden]
-    pub q_b: Vec<f32>,            // [hidden]
+    pub q_w: Vec<f32>, // [hidden, hidden]
+    pub q_b: Vec<f32>, // [hidden]
     pub k_w: Vec<f32>,
     pub k_b: Vec<f32>,
     pub v_w: Vec<f32>,
     pub v_b: Vec<f32>,
-    pub attn_out_w: Vec<f32>,     // [hidden, hidden]
-    pub attn_out_b: Vec<f32>,     // [hidden]
-    pub attn_ln_gamma: Vec<f32>,  // [hidden]
-    pub attn_ln_beta: Vec<f32>,   // [hidden]
-    pub ffn_int_w: Vec<f32>,      // [hidden, intermediate]
-    pub ffn_int_b: Vec<f32>,      // [intermediate]
-    pub ffn_out_w: Vec<f32>,      // [intermediate, hidden]
-    pub ffn_out_b: Vec<f32>,      // [hidden]
-    pub ffn_ln_gamma: Vec<f32>,   // [hidden]
-    pub ffn_ln_beta: Vec<f32>,    // [hidden]
+    pub attn_out_w: Vec<f32>,    // [hidden, hidden]
+    pub attn_out_b: Vec<f32>,    // [hidden]
+    pub attn_ln_gamma: Vec<f32>, // [hidden]
+    pub attn_ln_beta: Vec<f32>,  // [hidden]
+    pub ffn_int_w: Vec<f32>,     // [hidden, intermediate]
+    pub ffn_int_b: Vec<f32>,     // [intermediate]
+    pub ffn_out_w: Vec<f32>,     // [intermediate, hidden]
+    pub ffn_out_b: Vec<f32>,     // [hidden]
+    pub ffn_ln_gamma: Vec<f32>,  // [hidden]
+    pub ffn_ln_beta: Vec<f32>,   // [hidden]
 }
 
 /// Lazy global singleton — first access parses the bundled bytes
@@ -188,9 +188,7 @@ impl<'a> Reader<'a> {
         // SAFETY: f32 is 4 bytes; we copy the exact byte count and
         // assume host is little-endian (asserted below). LE is the
         // standard on every platform we ship to (x86_64 + aarch64).
-        let dst = unsafe {
-            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len)
-        };
+        let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
         dst.copy_from_slice(src);
         self.pos += byte_len;
         out

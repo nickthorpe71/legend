@@ -58,14 +58,14 @@ the `Hypergraph` contract — the generator asserts this invariant.
 
 ## Files
 
-| Path | What |
-|---|---|
-| `seed_pack.yaml` | Seed elements + relations + intent prototypes |
-| `examples/gen_seed_graph.rs` | **Generator** — produces `graph.bin` |
-| `examples/shared/mod.rs` | Serde DTOs (dev-only) |
-| `src/seed.rs` | Runtime loader + `rebuild_indices` |
-| `src/seed/graph.bin` | Tightly-packed little-endian dump (committed) |
-| `src/types.rs` | `Hypergraph` definition + anchor ID fields |
+| Path                         | What                                          |
+| ---------------------------- | --------------------------------------------- |
+| `seed_pack.yaml`             | Seed elements + relations + intent prototypes |
+| `examples/gen_seed_graph.rs` | **Generator** — produces `graph.bin`          |
+| `examples/shared/mod.rs`     | Serde DTOs (dev-only)                         |
+| `src/seed.rs`                | Runtime loader + `rebuild_indices`            |
+| `src/seed/graph.bin`         | Tightly-packed little-endian dump (committed) |
+| `src/types.rs`               | `Hypergraph` definition + anchor ID fields    |
 
 ## Binary format
 
@@ -103,6 +103,7 @@ cargo run --release --example gen_seed_graph
 ```
 
 Output:
+
 ```
 wrote 72 elements, 53 relations to src/seed/graph.bin (121442 bytes)
   void=0 genesis=1 region_class=55 reference_frame_class=56

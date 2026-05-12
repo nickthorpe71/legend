@@ -508,7 +508,10 @@ mod tests {
     /// known embeddings → verify mean and variance arithmetic.
     #[test]
     fn region_stats_multi_prototype_arithmetic() {
-        use crate::types::{Element, ElementId, MemoryStats, Tick, Term, Relation, RelationId, RelationStatus, Attribute};
+        use crate::types::{
+            Attribute, Element, ElementId, MemoryStats, Relation, RelationId, RelationStatus, Term,
+            Tick,
+        };
 
         // Element ids: 0=subject_attr, 1=prototype_attr, 2=region, 3..6 = protos
         let mk_elem = |id: u32, embedding: Vec<f32>| Element {

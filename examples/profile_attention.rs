@@ -6,14 +6,14 @@
 use std::time::Instant;
 
 use legend::embed::embed_text;
-use legend::inference::{bert_int8, WeightsInt8};
 use legend::inference::ops::{
     add_inplace, gelu_inplace, l2_normalize_inplace, layernorm_inplace, masked_mean_pool,
     softmax_inplace,
 };
 use legend::inference::quantized_ops::{
-    dequant_and_sum_token_embedding, quantize_activation, quantized_matmul_prequant, QMatmulScratch,
+    QMatmulScratch, dequant_and_sum_token_embedding, quantize_activation, quantized_matmul_prequant,
 };
+use legend::inference::{WeightsInt8, bert_int8};
 use tokenizers::Tokenizer;
 
 fn time<F: FnMut()>(label: &str, iters: usize, mut f: F) -> f64 {
@@ -109,9 +109,33 @@ fn main() {
 
     let qkv_time = time("3× QKV matmul (post-activation-quant)", 1000, || {
         quantize_activation(&activation, seq_len, h, &mut scratch);
-        quantized_matmul_prequant(seq_len, h, h, &layer.q_w, &layer.q_b, &mut q_buf, &mut scratch);
-        quantized_matmul_prequant(seq_len, h, h, &layer.k_w, &layer.k_b, &mut k_buf, &mut scratch);
-        quantized_matmul_prequant(seq_len, h, h, &layer.v_w, &layer.v_b, &mut v_buf, &mut scratch);
+        quantized_matmul_prequant(
+            seq_len,
+            h,
+            h,
+            &layer.q_w,
+            &layer.q_b,
+            &mut q_buf,
+            &mut scratch,
+        );
+        quantized_matmul_prequant(
+            seq_len,
+            h,
+            h,
+            &layer.k_w,
+            &layer.k_b,
+            &mut k_buf,
+            &mut scratch,
+        );
+        quantized_matmul_prequant(
+            seq_len,
+            h,
+            h,
+            &layer.v_w,
+            &layer.v_b,
+            &mut v_buf,
+            &mut scratch,
+        );
     });
 
     // ── Attention (new strided form)
@@ -139,8 +163,7 @@ fn main() {
             softmax_inplace(&mut scores, seq_len, seq_len);
             for i in 0..seq_len {
                 let scores_row = &scores[i * seq_len..(i + 1) * seq_len];
-                let out_row =
-                    &mut attn_concat[i * h + head_off..i * h + head_off + head_dim];
+                let out_row = &mut attn_concat[i * h + head_off..i * h + head_off + head_dim];
                 for d in 0..head_dim {
                     out_row[d] = 0.0;
                 }
@@ -234,7 +257,10 @@ fn main() {
     let total = emb_time + ln_emb_time + 6.0 * per_layer + pool_time;
     println!("  emb              {emb_time:>8.0} μs");
     println!("  emb LN           {ln_emb_time:>8.0} μs");
-    println!("  per_layer × 6    {per_layer:>8.0} μs × 6 = {:.0} μs", per_layer * 6.0);
+    println!(
+        "  per_layer × 6    {per_layer:>8.0} μs × 6 = {:.0} μs",
+        per_layer * 6.0
+    );
     println!("    QKV          {qkv_time:>8.0} μs/layer");
     println!("    attn block   {attn_time:>8.0} μs/layer");
     println!("    attn proj    {attn_proj_time:>8.0} μs/layer");
@@ -251,5 +277,8 @@ fn main() {
     }
     let measured = t.elapsed().as_micros() as f64 / iters as f64;
     println!("  -- measured forward: {measured:>8.0} μs");
-    println!("  -- gap (alloc/return/copies): {:>4.0} μs", measured - total);
+    println!(
+        "  -- gap (alloc/return/copies): {:>4.0} μs",
+        measured - total
+    );
 }

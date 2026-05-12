@@ -15,23 +15,23 @@ Open in any previewer; renders inline on GitHub via Mermaid.
 
 ### What the report contains
 
-| Section | What it shows |
-|---|---|
-| Summary | Element category counts (anchor / attribute-name / region / frame / class / prototype / minted) + per-attribute relation counts |
-| Anchors | The four boot-time IDs (VOID, GENESIS, REGION_CLASS, REFERENCE_FRAME_CLASS) |
-| Region DAG | Mermaid diagram — GENESIS at root, region children, prototype attachments. Color-coded: regions blue, prototypes green, anchors gold |
-| Regions | Table: name, ID, parent(s) with weight, prototype(s) |
-| Attribute Names | Grouped by category (Ontology / Meta-relation / Region structural / Generic participant / Behavioral modal / Causal-relation) |
-| Reference Frames | Table: name, ID, all surface forms |
-| Prototypes | Table: name, ID, owning region, embedding magnitude (sanity check: should be ≈ 1.0 since MiniLM normalizes) |
-| Relations | Grouped by non-subject attribute name; each entry `subject → object (status, conf)` |
+| Section          | What it shows                                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Summary          | Element category counts (anchor / attribute-name / region / frame / class / prototype / minted) + per-attribute relation counts      |
+| Anchors          | The four boot-time IDs (VOID, GENESIS, REGION_CLASS, REFERENCE_FRAME_CLASS)                                                          |
+| Region DAG       | Mermaid diagram — GENESIS at root, region children, prototype attachments. Color-coded: regions blue, prototypes green, anchors gold |
+| Regions          | Table: name, ID, parent(s) with weight, prototype(s)                                                                                 |
+| Attribute Names  | Grouped by category (Ontology / Meta-relation / Region structural / Generic participant / Behavioral modal / Causal-relation)        |
+| Reference Frames | Table: name, ID, all surface forms                                                                                                   |
+| Prototypes       | Table: name, ID, owning region, embedding magnitude (sanity check: should be ≈ 1.0 since MiniLM normalizes)                          |
+| Relations        | Grouped by non-subject attribute name; each entry `subject → object (status, conf)`                                                  |
 
 ### When to use
 
 - **After regenerating `graph.bin`** — eyeball the new state to catch
   schema drift before it lands.
 - **As a diff target** — commit a snapshot, regenerate, `git diff
-  inspect/seed.md` to see exactly what changed.
+inspect/seed.md` to see exactly what changed.
 - **As a debugging aid** — when investigating why routing missed a
   region or why a prototype attached to the wrong parent.
 - **Once tick mutations land** — pass a deserialized snapshot to
@@ -47,11 +47,11 @@ Open in any previewer; renders inline on GitHub via Mermaid.
 
 ## Files
 
-| Path | What |
-|---|---|
-| `examples/dump_hypergraph_md.rs` | Generator. `render(&Hypergraph) -> String` is reusable from anywhere |
-| `inspect/` | Output dir, gitignored. Add to it via `--name` flag if added later |
-| `src/types.rs` | `ElementId` / `RelationId` derive `Ord` + `PartialOrd` so the generator can produce deterministic output |
+| Path                             | What                                                                                                     |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `examples/dump_hypergraph_md.rs` | Generator. `render(&Hypergraph) -> String` is reusable from anywhere                                     |
+| `inspect/`                       | Output dir, gitignored. Add to it via `--name` flag if added later                                       |
+| `src/types.rs`                   | `ElementId` / `RelationId` derive `Ord` + `PartialOrd` so the generator can produce deterministic output |
 
 ## Categorization
 
@@ -68,7 +68,7 @@ introduce new mints into the same ID space:
 - **Attribute name** — either appears as the `name` slot of any
   attribute, or its canonical name matches one of the 30 hardcoded seed
   attribute surface forms (catches seeded names that haven't been
-  *used* in a relation yet, like `valid_from`)
+  _used_ in a relation yet, like `valid_from`)
 - **Minted** — anything left over (post-tick extractor output)
 
 Attribute-name → group mapping (Ontology / Meta-relation / etc.) is
