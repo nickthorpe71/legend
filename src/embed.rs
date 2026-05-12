@@ -1,20 +1,25 @@
+//! Sentence embedding via the bundled all-MiniLM-L6-v2 model.
+//!
+//! Inference runs through our own pure-Rust BERT engine in
+//! `crate::inference` — no `tract-onnx`, no `ort`, no C deps. The
+//! tokenizer is HuggingFace's `tokenizers` crate (also pure Rust).
+//! All model weights are baked into the binary at compile time.
+
 use std::sync::LazyLock;
 
 use tokenizers::Tokenizer;
-use tract_onnx::prelude::*;
 
-/// Output dimensionality of the bundled all-MiniLM-L6-v2 quantized model.
-/// Single source of truth — callers allocate buffers and arrays against this
-/// constant. If the bundled model is ever swapped for one with a different
-/// hidden size, this changes in lockstep.
+use crate::inference::{bert_int8, WeightsInt8};
+
+/// Output dimensionality of the bundled all-MiniLM-L6-v2 model.
+/// Single source of truth — callers allocate buffers and arrays against
+/// this constant.
 pub const EMBEDDING_DIM: usize = 384;
 
 /// True token count of `text` under the bundled MiniLM tokenizer.
-/// Used by `lib::run` to gate inputs against `MAX_INPUT_TOKENS` before
-/// any pipeline step runs. Uses an *untruncated* tokenizer instance so
-/// the count is accurate even when the input exceeds MiniLM's 512-token
-/// max-position limit (the embedder's own tokenizer truncates at 512;
-/// this one does not).
+/// Used by `lib::run` to gate inputs against `MAX_INPUT_TOKENS`.
+/// Uses an *untruncated* tokenizer so the count is accurate for
+/// inputs above the model's 512-token max-position limit.
 pub fn token_count(text: &str) -> usize {
     UNTRUNCATED_TOKENIZER
         .encode(text, true)
@@ -23,45 +28,27 @@ pub fn token_count(text: &str) -> usize {
         .len()
 }
 
-/// Compute a semantic embedding vector using all-MiniLM-L6-v2 quantized (384-dim).
-///
-/// The model is embedded in the binary — no download or network access needed.
-/// Inference runs via tract-onnx (pure Rust). Panics on model init failure.
+/// Compute a semantic embedding via the bundled BERT forward pass.
+/// Returns a 384-dim L2-normalized vector — cosine similarity reduces
+/// to a dot product.
 pub fn embed_text(text: &str) -> Vec<f32> {
     if text.trim().is_empty() {
         return vec![0.0f32; EMBEDDING_DIM];
     }
-    let m = &*SENTENCE_MODEL;
-    let encoding = m.tokenizer.encode(text, true).expect("tokenization failed");
-    infer_embedding(&m.model, &encoding)
+    let encoding = TOKENIZER
+        .encode(text, true)
+        .expect("tokenization failed");
+    let ids: Vec<u32> = encoding.get_ids().to_vec();
+    let mask: Vec<u32> = encoding.get_attention_mask().to_vec();
+    let weights: &WeightsInt8 = WeightsInt8::load_bundled();
+    bert_int8::forward(weights, &ids, &mask)
 }
 
-// Tract's runnable inference plan. Verbose generic — alias for readability.
-type RunnableModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
-
-// MiniLM model bundle — tokenizer plus the runnable plan. tract's `SimplePlan::run`
-// takes `&self`, so unlike ORT we don't need a Mutex; multiple threads can run
-// inference concurrently against the shared plan.
-struct SentenceModel {
-    tokenizer: Tokenizer,
-    model: RunnableModel,
-}
-
-// Lazy-initialized sentence embedding model (all-MiniLM-L6-v2 quantized, 384-dim).
-// The model is embedded directly in the binary — no network download required.
-// Inference runs via the pure-Rust tract-onnx crate; no C++ deps, portable to
-// any OS Rust supports.
-//
-// # Model choice
-// We use all-MiniLM-L6-v2 quantized (~23MB) over BAAI/bge-small-en-v1.5 (~45MB)
-// for faster inference (6 layers vs 12) and smaller binary size. Both produce
-// 384-dim embeddings.
-// Same tokenizer.json as the embedder, but with truncation and padding
-// both cleared so `token_count` reports the *true* length even for
-// inputs above MiniLM's 512-token cap. Used only by `token_count`. The
-// bundled `tokenizer.json` ships with `padding: Fixed(128)` baked in,
-// so without `with_padding(None)` every short input would report as
-// 128 tokens.
+// Same tokenizer.json as the embedder, but with truncation and
+// padding both cleared so `token_count` reports the true length.
+// The bundled tokenizer.json ships with `padding: Fixed(128)` baked
+// in — without `with_padding(None)` every short input would report
+// as 128 tokens.
 static UNTRUNCATED_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
     let bytes: &[u8] = include_bytes!("../models/all-MiniLM-L6-v2-q/tokenizer.json");
     let mut t = Tokenizer::from_bytes(bytes).expect("Failed to load embedded tokenizer");
@@ -70,104 +57,56 @@ static UNTRUNCATED_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
     t
 });
 
-static SENTENCE_MODEL: LazyLock<SentenceModel> = LazyLock::new(|| {
-    let tokenizer_bytes: &[u8] = include_bytes!("../models/all-MiniLM-L6-v2-q/tokenizer.json");
-    let mut tokenizer =
-        Tokenizer::from_bytes(tokenizer_bytes).expect("Failed to load embedded tokenizer");
-    // Cap inputs at the model's 512-token max-position-embedding so a long
-    // input doesn't produce a tensor the model can't handle.
-    let _ = tokenizer.with_truncation(Some(tokenizers::TruncationParams {
+// Embedding-path tokenizer: cap at the model's 512-token max-position
+// so a long input doesn't index past the position-embedding table.
+// Padding is explicitly disabled — we process one sequence per call
+// (no batching) so padding adds purely wasted matmul work. The
+// bundled tokenizer.json ships with `padding: Fixed(128)` which would
+// silently process a 12-token input as 128 tokens, wasting ~10× of
+// the forward-pass cost. `with_padding(None)` strips that.
+static TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
+    let bytes: &[u8] = include_bytes!("../models/all-MiniLM-L6-v2-q/tokenizer.json");
+    let mut t = Tokenizer::from_bytes(bytes).expect("Failed to load embedded tokenizer");
+    let _ = t.with_truncation(Some(tokenizers::TruncationParams {
         max_length: 512,
         ..Default::default()
     }));
-
-    let onnx_bytes: &[u8] = include_bytes!("../models/all-MiniLM-L6-v2-q/model.onnx");
-    let model = tract_onnx::onnx()
-        .model_for_read(&mut std::io::Cursor::new(onnx_bytes))
-        .expect("read onnx model")
-        .into_optimized()
-        .expect("optimize onnx model")
-        .into_runnable()
-        .expect("make model runnable");
-
-    SentenceModel { tokenizer, model }
+    t.with_padding(None);
+    t
 });
 
-// Run inference on a single tokenizer encoding and return the L2-normalized
-// attention-masked mean-pooled embedding. Mean pooling matches how
-// all-MiniLM-L6-v2 was trained and used by sentence-transformers — CLS
-// pooling underperforms on sentence-similarity benchmarks for this model.
-fn infer_embedding(model: &RunnableModel, encoding: &tokenizers::Encoding) -> Vec<f32> {
-    let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
-    let attention_mask: Vec<i64> = encoding
-        .get_attention_mask()
-        .iter()
-        .map(|&m| m as i64)
-        .collect();
-    let token_type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&t| t as i64).collect();
-    let seq_len = input_ids.len();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Build [1, seq_len] tensors of i64 — BERT-family ONNX models expect this shape.
-    let ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec((1, seq_len), input_ids)
-        .expect("ids array shape")
-        .into();
-    let mask_tensor: Tensor = tract_ndarray::Array2::from_shape_vec((1, seq_len), attention_mask)
-        .expect("mask array shape")
-        .into();
-    let types_tensor: Tensor = tract_ndarray::Array2::from_shape_vec((1, seq_len), token_type_ids)
-        .expect("types array shape")
-        .into();
-
-    let outputs = model
-        .run(tvec!(
-            ids_tensor.into(),
-            mask_tensor.into(),
-            types_tensor.into()
-        ))
-        .expect("tract inference failed");
-
-    // MiniLM-style models emit "last_hidden_state" as output 0. tract returns
-    // outputs in declared order, so index 0 is correct regardless of name.
-    let output = outputs[0].to_array_view::<f32>().expect("output is f32");
-    let shape = output.shape();
-    let hidden_size = shape[shape.len() - 1];
-    debug_assert_eq!(
-        hidden_size, EMBEDDING_DIM,
-        "model output dim != EMBEDDING_DIM"
-    );
-
-    // Shape: [1, seq_len, hidden_size]. Mean-pool over non-padding tokens,
-    // weighted by the attention mask, matching the reference sentence-
-    // transformers implementation.
-    let view = output.as_slice().expect("output is contiguous");
-    let raw_mask = encoding.get_attention_mask();
-
-    let mut pooled = vec![0.0f32; hidden_size];
-    let mut total_mask = 0.0f32;
-    for (mask, row) in raw_mask.iter().zip(view.chunks(hidden_size)) {
-        let m = *mask as f32;
-        if m == 0.0 {
-            continue;
-        }
-        total_mask += m;
-        for (p, &v) in pooled.iter_mut().zip(row.iter()) {
-            *p += v * m;
-        }
+    #[test]
+    fn embed_empty_returns_zeros() {
+        let v = embed_text("");
+        assert_eq!(v.len(), EMBEDDING_DIM);
+        assert!(v.iter().all(|&x| x == 0.0));
     }
 
-    // Fused divide-by-mask-total + L2-normalize: two passes over `pooled`
-    // instead of three. First pass divides by the mask total and accumulates
-    // sum-of-squares; second pass divides by the resulting L2 norm.
-    let denom = total_mask.max(1e-9);
-    let mut sum_sq = 0.0f32;
-    for x in pooled.iter_mut() {
-        *x /= denom;
-        sum_sq += *x * *x;
-    }
-    let norm = sum_sq.sqrt() + 1e-12;
-    for x in pooled.iter_mut() {
-        *x /= norm;
+    #[test]
+    fn embed_yields_unit_vector() {
+        let v = embed_text("hello world");
+        assert_eq!(v.len(), EMBEDDING_DIM);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-4,
+            "expected unit vector, got norm = {norm}"
+        );
     }
 
-    pooled
+    #[test]
+    fn embed_is_deterministic() {
+        let v1 = embed_text("the meeting is at 3pm");
+        let v2 = embed_text("the meeting is at 3pm");
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn token_count_matches_expected() {
+        // "hello world" → [CLS] hello world [SEP] = 4 tokens.
+        assert_eq!(token_count("hello world"), 4);
+    }
 }

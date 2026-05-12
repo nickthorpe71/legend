@@ -695,6 +695,7 @@ name = "legend"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "matrixmultiply",
  "serde",
  "serde_yaml",
  "tokenizers",

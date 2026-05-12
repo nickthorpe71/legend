@@ -13,18 +13,36 @@ rust-version = "1.85"
 name = "legend"
 path = "src/lib.rs"
 
+[features]
+default = []
+# Bundles the fp32 model weights (~86 MB) alongside the INT8 weights
+# and enables the `inference::bert::forward` fp32 reference path.
+# Used by `examples/validate_int8.rs` to compare INT8 output to fp32
+# reference. Production builds leave this off — INT8 is the runtime
+# path and the binary stays small.
+fp32_reference = []
+
 [[bin]]
 name = "legend"
 path = "src/main.rs"
 
 [dependencies]
-tract-onnx = "0.21"
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+# Pure-Rust SIMD-accelerated matrix multiply. No C deps, no BLAS.
+# Within 2× of OpenBLAS on small matrices, which is our regime
+# (384×384 attention + 384×1536 FFN).
+matrixmultiply = "0.3"
 
 [dev-dependencies]
 criterion = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+# tract-onnx is build-time-only: it's used by
+# `examples/extract_weights.rs` to read the ONNX file once and dump
+# fp32 weights into `models/minilm-fp32.bin`. The runtime library
+# does its own pure-Rust BERT forward pass (see `src/inference/`)
+# and carries no tract dependency.
+tract-onnx = "0.21"
 
 [[bench]]
 name = "embed"

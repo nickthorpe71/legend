@@ -14,6 +14,13 @@ Build/operate notes for v2. Source-of-truth design lives in
   snapshot tool for substrate state. Current capability + planned
   HTML viewer / tick scrubber.
 
+### Inference
+
+- [inference-engine.md](inference-engine.md) — INT8 BERT forward pass
+  in pure Rust. Pipeline, file map, quantization scheme, the three
+  matmul kernels (scalar / AVX2 / AVX-VNNI), 2×4 register tile, the
+  +128 shift trick, performance ceiling, portability matrix.
+
 ### Tick steps
 
 - [intent-detection.md](intent-detection.md) — Step 1: per-dimension intent
