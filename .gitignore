@@ -10,6 +10,11 @@
 # Generated hypergraph snapshots — regenerate via dump_hypergraph_md
 /inspect/
 
+# Regeneratable fp32 weights (~86 MB). Used only by the fp32-vs-INT8
+# validator behind `--features fp32_reference`. Regenerate via:
+#   cargo run --release --example extract_weights --features fp32_reference
+models/minilm-fp32.bin
+
 
 # Added by cargo
 #
