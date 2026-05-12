@@ -95,10 +95,14 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
             // Score each child by both fusion inputs. `cosine` is the
             // mean of the top-K prototype cosines (requires agreement,
             // not just one outlier); `mahalanobis` is against
-            // region_stats. Tracks (child_id, cosine, mahalanobis,
-            // best_proto_id).
-            let mut scored: Vec<(ElementId, f32, f32, ElementId)> =
-                Vec::with_capacity(children.len());
+            // region_stats.
+            struct ScoredChild {
+                child: ElementId,
+                cosine: f32,
+                mahalanobis: f32,
+                best_proto: ElementId,
+            }
+            let mut scored: Vec<ScoredChild> = Vec::with_capacity(children.len());
             for &child in children {
                 let Some(protos) = hg.region_prototypes.get(&child) else {
                     continue;
@@ -131,7 +135,12 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
                     Some(stats) => mahalanobis_similarity(embedding, stats, policy.variance_prior),
                     None => cosine_score,
                 };
-                scored.push((child, cosine_score, mahalanobis_score, best_proto));
+                scored.push(ScoredChild {
+                    child,
+                    cosine: cosine_score,
+                    mahalanobis: mahalanobis_score,
+                    best_proto,
+                });
                 all_scores.push(RegionScore {
                     region: child,
                     cosine: cosine_score,
@@ -151,7 +160,7 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
             // routes to VOID.
             let best_cosine = scored
                 .iter()
-                .map(|(_, c, _, _)| *c)
+                .map(|s| s.cosine)
                 .fold(f32::NEG_INFINITY, f32::max);
             if best_cosine < policy.leaf_vigilance {
                 delta.void_count += 1;
@@ -161,7 +170,7 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
             // Descent gate — cosine ≥ descend_threshold (sharp).
             // Activation gate — mahalanobis ≥ region_activation_threshold
             // (distribution-aware, applied only to descended children).
-            for (child, cosine, mahalanobis, best_proto) in scored {
+            for ScoredChild { child, cosine, mahalanobis, best_proto } in scored {
                 if cosine < policy.descend_threshold {
                     continue;
                 }
