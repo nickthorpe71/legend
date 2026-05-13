@@ -13,7 +13,20 @@ use std::sync::LazyLock;
 const MAGIC: u32 = 0x4D4C4D38;
 const FORMAT_VERSION: u32 = 1;
 
-const WEIGHT_BYTES: &[u8] = include_bytes!("../../models/minilm-int8.bin");
+// `include_bytes!` only guarantees byte alignment for the embedded
+// data, but the parser hands out `&'static [f32]` / `&[i32]` slices
+// into it. Wrap the bytes in a `#[repr(align(4))]` newtype so every
+// `f32`-sized read lands on a 4-byte boundary regardless of where the
+// linker places the static. Without this the debug_assert in
+// `f32_slice` can fire (and on strict-alignment targets like ARM the
+// release build would segfault on the same read).
+#[repr(align(4))]
+struct AlignedBytes<const N: usize>([u8; N]);
+
+const MINILM_INT8_LEN: usize = include_bytes!("../../models/minilm-int8.bin").len();
+static MINILM_INT8: AlignedBytes<MINILM_INT8_LEN> =
+    AlignedBytes(*include_bytes!("../../models/minilm-int8.bin"));
+const WEIGHT_BYTES: &[u8] = &MINILM_INT8.0;
 
 /// One quantized 2D weight tensor + its per-output-channel scales.
 /// Data is **column-major**: column j occupies `q_data[j*in_dim ..
