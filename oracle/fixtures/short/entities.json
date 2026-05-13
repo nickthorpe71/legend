@@ -1,0 +1,16 @@
+[
+  {
+    "start": 0,
+    "end": 5,
+    "text": "Alice",
+    "label": "person",
+    "score": 0.9852569699287415
+  },
+  {
+    "start": 15,
+    "end": 19,
+    "text": "Acme",
+    "label": "organization",
+    "score": 0.9407368898391724
+  }
+]

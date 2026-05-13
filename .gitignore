@@ -15,6 +15,20 @@
 #   cargo run --release --example extract_weights --features fp32_reference
 models/minilm-fp32.bin
 
+# GLiNER2 fp32 weights (~600 MB). Regenerated via the Python exporter
+# in oracle/. Same rationale as MiniLM: feature-gated reference, not
+# shipped in production builds.
+models/gliner2-fp32.bin
+
+# Python venv + HF model cache used by the GLiNER2 oracle / weight
+# exporter. The oracle scripts themselves are tracked.
+/oracle/venv/
+/oracle/hf_cache/
+/oracle/params.json
+# Staging location for the fast tokenizer extraction in the exporter.
+# The committed copy lives at `models/gliner2-tokenizer/`.
+/oracle/tokenizer_pkg/
+
 
 # Added by cargo
 #

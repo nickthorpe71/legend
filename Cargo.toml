@@ -21,6 +21,12 @@ default = []
 # reference. Production builds leave this off — INT8 is the runtime
 # path and the binary stays small.
 fp32_reference = []
+# Bundles GLiNER2 (DeBERTa-v3-small + GLiNER head) fp32 weights
+# (~582 MB) and enables `inference::deberta`. Used during Phase 3+
+# of the GLiNER2 build-out for layer-by-layer validation against the
+# PyTorch oracle. Disabled by default; production path lands as INT8
+# in Phase 6.
+gliner2_fp32 = []
 
 [[bin]]
 name = "legend"
@@ -47,6 +53,16 @@ tract-onnx = "0.21"
 [[bench]]
 name = "embed"
 harness = false
+
+# Examples that require feature flags. Declared here so `cargo build`
+# / `cargo test` skip them automatically when the feature is off.
+[[example]]
+name = "validate_int8"
+required-features = ["fp32_reference"]
+
+[[example]]
+name = "bench_gliner2"
+required-features = ["gliner2_fp32"]
 
 [profile.release]
 opt-level = 3
