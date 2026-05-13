@@ -44,6 +44,10 @@ matrixmultiply = "0.3"
 # `chrono`/`chrono-english` upgrade would turn the matched spans into
 # concrete datetimes, but Step 5 only needs the span discovery for v0.
 regex = "1"
+# Memory-mapped INT8 weight loading. Skips the explicit 150 MB
+# Vec<u8> + memcpy that `fs::read` would do; the OS demand-faults
+# pages as the parser walks them.
+memmap2 = "0.9"
 
 [dev-dependencies]
 criterion = "0.5"

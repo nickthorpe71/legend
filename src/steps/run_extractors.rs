@@ -90,6 +90,16 @@ pub fn run_extractors(
         return ExtractionOutput::default();
     }
 
+    let timing = std::env::var("LEGEND_TIME").is_ok();
+    let mut mark = std::time::SystemTime::now();
+    let mut stage = |label: &str| {
+        if timing {
+            let dt = mark.elapsed().unwrap_or_default();
+            eprintln!("[time]   step5/{label:<24} {:>6.1} ms", dt.as_secs_f64() * 1000.0);
+            mark = std::time::SystemTime::now();
+        }
+    };
+
     // 1. Build the NER label set. Caller-supplied labels override
     //    everything; otherwise SEED_KINDS plus a warm-bias set drawn
     //    from the names of the active regions.
@@ -100,13 +110,16 @@ pub fn run_extractors(
     } else {
         labels.to_vec()
     };
+    stage("build_label_set");
 
     // 2. GLiNER2 NER pass.
     const RAW_THRESHOLD: f32 = 0.3;
     let ner_spans: Vec<LabeledSpan> = predict_entities(input_text, &label_set, RAW_THRESHOLD);
+    stage("ner predict_entities");
 
     // 3. Temporal pass — pure regex, complements NER.
     let temporal_spans: Vec<TemporalSpan> = extract_temporal(input_text);
+    stage("temporal");
 
     // 4. Build instance_of proposals. NER goes first; temporal spans
     //    that overlap an existing NER span are dropped to avoid duplicate
@@ -158,9 +171,11 @@ pub fn run_extractors(
     // 5. Relation extraction over the NER spans (patterns only — see
     //    module header for what's deferred).
     let relations: Vec<RelationProposal> = extract_relations(input_text, &ner_spans);
+    stage("relations");
 
     // 6. Coref. Currently a stub; included for API stability.
     let coref: Vec<CorefDecision> = resolve_coref(input_text, hg);
+    stage("coref");
 
     ExtractionOutput {
         instance_of,

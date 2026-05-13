@@ -35,9 +35,29 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let input_text = args[1].clone();
-    let _wall_clock = SystemTime::now();
+    let wall_clock = SystemTime::now();
+    let timing = std::env::var("LEGEND_TIME").is_ok();
+    let stage_at = |label: &str, mark: &mut SystemTime| {
+        if timing {
+            let dt = mark.elapsed().unwrap_or_default();
+            eprintln!("[time] {label:<32} {:>6.1} ms", dt.as_secs_f64() * 1000.0);
+            *mark = SystemTime::now();
+        }
+    };
+    let mut mark = wall_clock;
+
+    // Eagerly warm the heaviest singletons (tokenizer + INT8 weight
+    // bundle) so the timing breakdown attributes their first-call cost
+    // to "init" rather than burying it inside `run_extractors`.
+    if timing {
+        let _ = inference::deberta::tokenizer::BUNDLED_TOKENIZER.get_vocab_size(true);
+        stage_at("init tokenizer (GLiNER)", &mut mark);
+        let _ = inference::deberta::weights_int8::WeightsDebertaInt8::load_bundled();
+        stage_at("init weights (GLiNER INT8)", &mut mark);
+    }
 
     let token_count = embed::token_count(&input_text);
+    stage_at("token_count", &mut mark);
     if token_count > MAX_INPUT_TOKENS {
         eprintln!(
             "input too long: got {token_count} tokens, max is {MAX_INPUT_TOKENS}.\n\
@@ -48,11 +68,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let hg = load_seed_graph();
+    stage_at("load_seed_graph", &mut mark);
 
     let embedding = embed::embed_text(&input_text);
+    stage_at("embed_text (MiniLM)", &mut mark);
     let intent = detect_intent(&input_text, &embedding);
+    stage_at("detect_intent", &mut mark);
     let policy = adjust_policy(&intent, &hg.policy);
+    stage_at("adjust_policy", &mut mark);
     let route = route_regions(&embedding, &hg, &policy);
+    stage_at("route_regions", &mut mark);
 
     println!("intent");
     println!("  conviction       {:.3}", intent.conviction);
@@ -163,6 +188,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("run_extractors (Step 5)");
     let out = run_extractors(&input_text, &[], &policy, &hg, &route.active_regions);
+    stage_at("run_extractors (Step 5)", &mut mark);
     if out.instance_of.is_empty() {
         println!("  instance_of:  (none)");
     } else {

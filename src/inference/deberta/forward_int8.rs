@@ -317,27 +317,48 @@ pub fn run_encoder_stack_int8(
     let num_heads = w.num_heads;
     let head_dim = w.head_dim;
     let intermediate = w.intermediate_size;
-    let rel_table_len = 2 * w.position_buckets;
+    let full_rel_table_len = 2 * w.position_buckets;
 
-    let rel_pos_index =
+    let mut rel_pos_index =
         build_relative_position_matrix(seq_len, w.position_buckets, w.max_position);
 
     // Dequantize rel_emb once, then layer-norm in fp32. Used by every layer.
     let mut rel_emb_lnd = dequant_embedding_full(&w.rel_emb);
     layernorm_inplace(
         &mut rel_emb_lnd,
-        rel_table_len,
+        full_rel_table_len,
         hidden,
         &w.rel_emb_ln_gamma,
         &w.rel_emb_ln_beta,
         w.layer_norm_eps,
     );
 
+    // ── Position-projection trim ──────────────────────────────────
+    // Compute the inclusive `[lo, hi]` range of bucket indices that
+    // the input actually touches. For short inputs (seq_len < 128
+    // and inside the linear bucket band) this is a tiny slice of the
+    // 512-row table — projecting only those rows skips ~90% of the
+    // position-matmul work. For long inputs, log-bucketing can stretch
+    // the range up to the full table; the trim becomes a no-op.
+    let (rel_lo, rel_hi) = rel_pos_index
+        .iter()
+        .copied()
+        .fold((i32::MAX, i32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+    debug_assert!(rel_lo <= rel_hi);
+    let rel_table_len = (rel_hi - rel_lo + 1) as usize;
+    if rel_lo > 0 {
+        for v in rel_pos_index.iter_mut() {
+            *v -= rel_lo;
+        }
+    }
+    let compact_rel_emb_lnd =
+        &rel_emb_lnd[(rel_lo as usize) * hidden..((rel_hi as usize) + 1) * hidden];
+
     for layer in &w.layers {
         x = run_layer_int8(
             x,
             layer,
-            &rel_emb_lnd,
+            compact_rel_emb_lnd,
             &rel_pos_index,
             attention_mask,
             seq_len,

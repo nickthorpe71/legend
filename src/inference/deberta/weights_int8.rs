@@ -12,7 +12,10 @@ use std::sync::LazyLock;
 use crate::inference::weights_int8::{QuantEmbedding, QuantWeight};
 
 const MAGIC: u32 = 0x4749_4C38;
-const FORMAT_VERSION: u32 = 1;
+/// v2 bakes per-column sums into the file (see the comment in
+/// `examples/quantize_gliner2_to_int8.rs`). v1 files need to be
+/// regenerated with the new quantizer.
+const FORMAT_VERSION: u32 = 2;
 
 /// Same path-as-string approach used for the fp32 bundle (so the lib
 /// doesn't carry 150 MB of bytes into every consumer's binary). The
@@ -99,9 +102,20 @@ pub struct ProjMlpInt8 {
 }
 
 pub static BUNDLED_DEBERTA_INT8: LazyLock<WeightsDebertaInt8> = LazyLock::new(|| {
-    let bytes = std::fs::read(WEIGHTS_PATH)
-        .unwrap_or_else(|e| panic!("read {WEIGHTS_PATH}: {e} — regenerate via `cargo run --release --example quantize_gliner2_to_int8`"));
-    WeightsDebertaInt8::load_from_bytes(&bytes).expect("failed to parse GLiNER2 INT8 weights")
+    // mmap the bundle rather than `fs::read`. Saves the explicit
+    // 150 MB Vec<u8> allocation; the kernel demand-faults pages as
+    // the parser walks them. We Box::leak the Mmap so its backing
+    // storage outlives the LazyLock — the parser later copies bytes
+    // out into `Vec<i8>` etc., so the mmap isn't actually borrowed
+    // after this function returns, but keeping it leaked is the
+    // cleanest way to guarantee live-for-process semantics.
+    let file = std::fs::File::open(WEIGHTS_PATH).unwrap_or_else(|e| {
+        panic!("open {WEIGHTS_PATH}: {e} — regenerate via `cargo run --release --example quantize_gliner2_to_int8`")
+    });
+    let mmap = unsafe { memmap2::Mmap::map(&file) }
+        .unwrap_or_else(|e| panic!("mmap {WEIGHTS_PATH}: {e}"));
+    let leaked: &'static [u8] = Box::leak(Box::new(mmap));
+    WeightsDebertaInt8::load_from_bytes(leaked).expect("failed to parse GLiNER2 INT8 weights")
 });
 
 impl WeightsDebertaInt8 {
@@ -280,12 +294,18 @@ impl<'a> Reader<'a> {
     fn quant_weight(&mut self, in_dim: usize, out_dim: usize) -> QuantWeight {
         let q_data = self.i8_vec(in_dim * out_dim);
         let scales = self.f32_vec(out_dim);
-        let mut col_sums = vec![0i32; out_dim];
-        for j in 0..out_dim {
-            let col = &q_data[j * in_dim..(j + 1) * in_dim];
-            col_sums[j] = col.iter().map(|&v| v as i32).sum();
-        }
+        let col_sums = self.i32_vec(out_dim);
         QuantWeight { q_data, scales, col_sums, in_dim, out_dim }
+    }
+    fn i32_vec(&mut self, n: usize) -> Vec<i32> {
+        let mut out = vec![0i32; n];
+        let byte_len = n * 4;
+        let src = &self.bytes[self.pos..self.pos + byte_len];
+        let dst =
+            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
+        dst.copy_from_slice(src);
+        self.pos += byte_len;
+        out
     }
 }
 

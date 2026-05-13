@@ -23,7 +23,13 @@ use std::path::Path;
 
 const FP32_MAGIC: u32 = 0x4749_4C32;
 const INT8_MAGIC: u32 = 0x4749_4C38;
-const FORMAT_VERSION: u32 = 1;
+// fp32 file still v1 — no schema change there.
+const FP32_VERSION: u32 = 1;
+// v1 INT8 stored only `(i8 bytes, per-col scales)` per matmul weight
+// and asked the loader to compute col_sums at startup. v2 appends a
+// `[i32; out_dim]` col_sums table after the scales so loading is a
+// pure sequential read.
+const INT8_VERSION: u32 = 2;
 
 fn main() -> std::io::Result<()> {
     let fp32_path = Path::new("models/gliner2-fp32.bin");
@@ -36,7 +42,7 @@ fn main() -> std::io::Result<()> {
     let magic = r.u32();
     assert_eq!(magic, FP32_MAGIC, "expected fp32 magic at start");
     let format_version = r.u32();
-    assert_eq!(format_version, FORMAT_VERSION);
+    assert_eq!(format_version, FP32_VERSION);
     let num_layers = r.u32();
     let hidden = r.u32();
     let num_heads = r.u32();
@@ -61,7 +67,7 @@ fn main() -> std::io::Result<()> {
 
     let mut out = BufWriter::new(File::create(int8_path)?);
     write_u32(&mut out, INT8_MAGIC)?;
-    write_u32(&mut out, FORMAT_VERSION)?;
+    write_u32(&mut out, INT8_VERSION)?;
     write_u32(&mut out, num_layers)?;
     write_u32(&mut out, hidden)?;
     write_u32(&mut out, num_heads)?;
@@ -229,13 +235,19 @@ fn write_quantized_per_channel<W: Write>(
         *s = (*s / 127.0).max(1e-12);
     }
     let mut q = vec![0i8; t.len()];
+    let mut col_sums = vec![0i32; out_dim];
     for j in 0..out_dim {
+        let mut sum: i32 = 0;
         for i in 0..in_dim {
-            q[j * in_dim + i] = quantize_one(t[i * out_dim + j], scales[j]);
+            let qv = quantize_one(t[i * out_dim + j], scales[j]);
+            q[j * in_dim + i] = qv;
+            sum += qv as i32;
         }
+        col_sums[j] = sum;
     }
     write_i8_slice(w, &q)?;
-    write_f32_slice(w, &scales)
+    write_f32_slice(w, &scales)?;
+    write_i32_slice(w, &col_sums)
 }
 
 fn quantize_one(v: f32, scale: f32) -> i8 {
@@ -259,6 +271,11 @@ fn write_f32_slice<W: Write>(w: &mut W, slice: &[f32]) -> std::io::Result<()> {
 fn write_i8_slice<W: Write>(w: &mut W, slice: &[i8]) -> std::io::Result<()> {
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len()) };
+    w.write_all(bytes)
+}
+fn write_i32_slice<W: Write>(w: &mut W, slice: &[i32]) -> std::io::Result<()> {
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * 4) };
     w.write_all(bytes)
 }
 
