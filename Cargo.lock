@@ -696,6 +696,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "matrixmultiply",
+ "regex",
  "serde",
  "serde_yaml",
  "tokenizers",

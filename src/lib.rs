@@ -18,6 +18,8 @@ use seed::load_seed_graph;
 use steps::adjust_policy::adjust_policy;
 use steps::detect_intent::detect_intent;
 use steps::route_regions::route_regions;
+#[cfg(feature = "gliner2_fp32")]
+use steps::run_extractors::run_extractors;
 use types::ElementId;
 
 /// Maximum tokens accepted in a single tick. Matches GLiNER2's 512-token
@@ -157,6 +159,37 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("  void_count          {}", route.delta.void_count);
     if !route.uncertainty.is_empty() {
         println!("  uncertainty         {:?}", route.uncertainty);
+    }
+
+    #[cfg(feature = "gliner2_fp32")]
+    {
+        println!();
+        println!("run_extractors (Step 5, NER-only)");
+        let proposals = run_extractors(&input_text, &[], &policy);
+        if proposals.is_empty() {
+            println!("  no entities found");
+        } else {
+            println!(
+                "  {:<24} {:<14} {:>6}  {:<10}",
+                "span", "label", "conf", "status"
+            );
+            println!(
+                "  {:-<24} {:-<14} {:->6}  {:-<10}",
+                "", "", "", ""
+            );
+            for p in &proposals {
+                let truncated: String = if p.subject_text.chars().count() > 24 {
+                    let cut: String = p.subject_text.chars().take(21).collect();
+                    format!("{cut}…")
+                } else {
+                    p.subject_text.clone()
+                };
+                println!(
+                    "  {:<24} {:<14} {:>6.3}  {:?}",
+                    truncated, p.object_label, p.confidence, p.status
+                );
+            }
+        }
     }
 
     let dump_path = Path::new("inspect/last_run.md");

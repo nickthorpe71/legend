@@ -38,6 +38,9 @@ tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 # Within 2× of OpenBLAS on small matrices, which is our regime
 # (384×384 attention + 384×1536 FFN).
 matrixmultiply = "0.3"
+# Word-level splitter for GLiNER preprocessing — matches Python `re`'s
+# `\w+(?:[-_]\w+)*|\S` semantics for Unicode word chars.
+regex = "1"
 
 [dev-dependencies]
 criterion = "0.5"

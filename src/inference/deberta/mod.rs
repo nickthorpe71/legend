@@ -13,6 +13,8 @@ pub mod embedding;
 pub mod encoder;
 pub mod forward_int8;
 pub mod head;
+pub mod predict;
+pub mod preprocess;
 pub mod rel_pos;
 pub mod tokenizer;
 pub mod weights;

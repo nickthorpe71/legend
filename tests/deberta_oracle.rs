@@ -20,6 +20,7 @@ use legend::inference::deberta::head::{
     build_span_rep, decode, generate_span_indices, project_prompts, project_tokens,
     run_bilstm, score, split_tokens,
 };
+use legend::inference::deberta::predict::{predict_entities, LabeledSpan};
 use legend::inference::deberta::rel_pos::build_relative_position_matrix;
 use legend::inference::deberta::weights::WeightsDebertaV3;
 use legend::inference::deberta::weights_int8::WeightsDebertaInt8;
@@ -299,6 +300,41 @@ fn decode_matches_oracle_entities() {
     assert_eq!(by_pos[1], (4, 6, "person"));
     assert_eq!(by_pos[2], (9, 9, "weekday"));
     assert_eq!(by_pos[3], (11, 11, "weekday"));
+}
+
+#[test]
+fn text_to_entities_matches_oracle() {
+    // Full end-to-end via the public `predict_entities` API — same
+    // input the Python `model.predict_entities(...)` is fed, expecting
+    // the same four labeled char-offset spans.
+    let entities = predict_entities(
+        "My dentist appointment with Dr. Rao changed from Tuesday to Friday.",
+        DENTIST_LABELS,
+        DENTIST_THRESHOLD,
+    );
+
+    println!("text→entities decoded {} entities:", entities.len());
+    for e in &entities {
+        println!(
+            "  [{:>3}:{:<3}] {:<12} {:>6.3}  '{}'",
+            e.char_start, e.char_end, e.label, e.score, e.text
+        );
+    }
+
+    assert_eq!(entities.len(), 4);
+    let oracle_spans: &[(usize, usize, &str, &str)] = &[
+        (0, 22, "event", "My dentist appointment"),
+        (28, 35, "person", "Dr. Rao"),
+        (49, 56, "weekday", "Tuesday"),
+        (60, 66, "weekday", "Friday"),
+    ];
+    for (i, &(cs, ce, label, text)) in oracle_spans.iter().enumerate() {
+        let got: &LabeledSpan = &entities[i];
+        assert_eq!(got.char_start, cs, "entity {i}: char_start");
+        assert_eq!(got.char_end, ce, "entity {i}: char_end");
+        assert_eq!(got.label.as_str(), label, "entity {i}: label");
+        assert_eq!(got.text.as_str(), text, "entity {i}: text");
+    }
 }
 
 // --- INT8 path ------------------------------------------------------
