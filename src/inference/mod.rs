@@ -15,9 +15,10 @@ pub mod ops;
 pub mod quantized_ops;
 pub mod weights_int8;
 
-// GLiNER2 / DeBERTa-v3 path. Currently fp32 only and feature-gated:
-// the 582 MB bundle would balloon every binary that doesn't need
-// extraction. Production wiring lands once Phase 6 quantizes it.
+// GLiNER2 / DeBERTa-v3 path. fp32 (~582 MB) is dev/validation only;
+// INT8 (~150 MB) is the runtime path. The feature flag here gates
+// *both* — flip it on to compile the deberta module. INT8 will go
+// default-on once the path is wired into Step 5 and stable.
 #[cfg(feature = "gliner2_fp32")]
 pub mod deberta;
 

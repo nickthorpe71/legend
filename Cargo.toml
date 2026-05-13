@@ -64,6 +64,14 @@ required-features = ["fp32_reference"]
 name = "bench_gliner2"
 required-features = ["gliner2_fp32"]
 
+[[example]]
+name = "bench_gliner2_int8"
+required-features = ["gliner2_fp32"]
+
+[[example]]
+name = "quantize_gliner2_to_int8"
+required-features = ["gliner2_fp32"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"

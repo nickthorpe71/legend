@@ -11,9 +11,11 @@
 pub mod attention;
 pub mod embedding;
 pub mod encoder;
+pub mod forward_int8;
 pub mod head;
 pub mod rel_pos;
 pub mod tokenizer;
 pub mod weights;
+pub mod weights_int8;
 
 pub use weights::{BUNDLED_DEBERTA_WEIGHTS, DebertaLayer, LstmDirection, ProjMlp, WeightsDebertaV3};

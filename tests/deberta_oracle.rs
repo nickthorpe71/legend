@@ -15,12 +15,14 @@ use std::path::{Path, PathBuf};
 
 use legend::inference::deberta::embedding::embed_and_layernorm;
 use legend::inference::deberta::encoder::{run_encoder_stack, run_layer};
+use legend::inference::deberta::forward_int8::predict_entities_int8;
 use legend::inference::deberta::head::{
     build_span_rep, decode, generate_span_indices, project_prompts, project_tokens,
     run_bilstm, score, split_tokens,
 };
 use legend::inference::deberta::rel_pos::build_relative_position_matrix;
 use legend::inference::deberta::weights::WeightsDebertaV3;
+use legend::inference::deberta::weights_int8::WeightsDebertaInt8;
 use legend::inference::ops::layernorm_inplace;
 
 // Fixture: oracle/fixtures/dentist/.
@@ -290,6 +292,43 @@ fn decode_matches_oracle_entities() {
     // Hard expectations.
     assert_eq!(entities.len(), 4, "expected 4 entities, got {}", entities.len());
     let by_pos: Vec<(usize, usize, &str)> = entities
+        .iter()
+        .map(|e| (e.word_start, e.word_end, DENTIST_LABELS[e.label_idx]))
+        .collect();
+    assert_eq!(by_pos[0], (0, 2, "event"));
+    assert_eq!(by_pos[1], (4, 6, "person"));
+    assert_eq!(by_pos[2], (9, 9, "weekday"));
+    assert_eq!(by_pos[3], (11, 11, "weekday"));
+}
+
+// --- INT8 path ------------------------------------------------------
+
+#[test]
+fn int8_decode_matches_oracle_entities() {
+    // INT8 path must produce the same entities as the oracle. Per-span
+    // scores will drift slightly from fp32 but the argmax + threshold
+    // decision is robust enough that decoded entities stay identical.
+    let w = WeightsDebertaInt8::load_bundled();
+    let out = predict_entities_int8(
+        w,
+        DENTIST_IDS,
+        DENTIST_MASK,
+        DENTIST_WORDS_MASK,
+        DENTIST_MAX_WIDTH,
+        DENTIST_THRESHOLD,
+    );
+
+    println!("INT8 decoded {} entities:", out.entities.len());
+    for e in &out.entities {
+        println!(
+            "  word [{}:{}]  {:<10}  ({:.3})",
+            e.word_start, e.word_end, DENTIST_LABELS[e.label_idx], e.score
+        );
+    }
+
+    assert_eq!(out.entities.len(), 4, "expected 4 entities, got {}", out.entities.len());
+    let by_pos: Vec<(usize, usize, &str)> = out
+        .entities
         .iter()
         .map(|e| (e.word_start, e.word_end, DENTIST_LABELS[e.label_idx]))
         .collect();
