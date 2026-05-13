@@ -15,11 +15,11 @@ pub mod ops;
 pub mod quantized_ops;
 pub mod weights_int8;
 
-// GLiNER2 / DeBERTa-v3 path. fp32 (~582 MB) is dev/validation only;
-// INT8 (~150 MB) is the runtime path. The feature flag here gates
-// *both* — flip it on to compile the deberta module. INT8 will go
-// default-on once the path is wired into Step 5 and stable.
-#[cfg(feature = "gliner2_fp32")]
+// GLiNER2 / DeBERTa-v3 path. INT8 (~150 MB) is the production
+// runtime and always available; the fp32 reference path (~582 MB,
+// validation only) sits inside `deberta` behind the `gliner2_fp32`
+// feature. Both weight files are runtime-loaded so the compiled
+// binary is unaffected by their size.
 pub mod deberta;
 
 pub use weights_int8::{BUNDLED_WEIGHTS_INT8, WeightsInt8};

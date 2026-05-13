@@ -18,7 +18,6 @@ use seed::load_seed_graph;
 use steps::adjust_policy::adjust_policy;
 use steps::detect_intent::detect_intent;
 use steps::route_regions::route_regions;
-#[cfg(feature = "gliner2_fp32")]
 use steps::run_extractors::run_extractors;
 use types::ElementId;
 
@@ -161,57 +160,54 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("  uncertainty         {:?}", route.uncertainty);
     }
 
-    #[cfg(feature = "gliner2_fp32")]
-    {
-        println!();
-        println!("run_extractors (Step 5)");
-        let out = run_extractors(&input_text, &[], &policy, &hg, &route.active_regions);
-        if out.instance_of.is_empty() {
-            println!("  instance_of:  (none)");
-        } else {
-            #[allow(clippy::print_literal)]
-            {
-                println!("  {:<24} {:<14} {:>6}  {:<10} src", "span", "label", "conf", "status");
-            }
+    println!();
+    println!("run_extractors (Step 5)");
+    let out = run_extractors(&input_text, &[], &policy, &hg, &route.active_regions);
+    if out.instance_of.is_empty() {
+        println!("  instance_of:  (none)");
+    } else {
+        #[allow(clippy::print_literal)]
+        {
+            println!("  {:<24} {:<14} {:>6}  {:<10} src", "span", "label", "conf", "status");
+        }
+        println!(
+            "  {:-<24} {:-<14} {:->6}  {:-<10} {:-<8}",
+            "", "", "", "", ""
+        );
+        for p in &out.instance_of {
+            let truncated: String = if p.subject_text.chars().count() > 24 {
+                let cut: String = p.subject_text.chars().take(21).collect();
+                format!("{cut}…")
+            } else {
+                p.subject_text.clone()
+            };
             println!(
-                "  {:-<24} {:-<14} {:->6}  {:-<10} {:-<8}",
-                "", "", "", "", ""
+                "  {:<24} {:<14} {:>6.3}  {:<10} {:?}",
+                truncated,
+                p.object_label,
+                p.confidence,
+                format!("{:?}", p.status),
+                p.provenance,
             );
-            for p in &out.instance_of {
-                let truncated: String = if p.subject_text.chars().count() > 24 {
-                    let cut: String = p.subject_text.chars().take(21).collect();
-                    format!("{cut}…")
-                } else {
-                    p.subject_text.clone()
-                };
-                println!(
-                    "  {:<24} {:<14} {:>6.3}  {:<10} {:?}",
-                    truncated,
-                    p.object_label,
-                    p.confidence,
-                    format!("{:?}", p.status),
-                    p.provenance,
-                );
-            }
         }
-        if !out.relations.is_empty() {
-            println!();
-            println!("  relations");
-            for r in &out.relations {
-                let subj = &input_text[r.subject_char_start..r.subject_char_end];
-                let obj = &input_text[r.object_char_start..r.object_char_end];
-                println!(
-                    "    ({subj}) {attr} ({obj})  conf={conf:.3}  {status:?}",
-                    attr = r.attribute_name,
-                    conf = r.confidence,
-                    status = r.status
-                );
-            }
+    }
+    if !out.relations.is_empty() {
+        println!();
+        println!("  relations");
+        for r in &out.relations {
+            let subj = &input_text[r.subject_char_start..r.subject_char_end];
+            let obj = &input_text[r.object_char_start..r.object_char_end];
+            println!(
+                "    ({subj}) {attr} ({obj})  conf={conf:.3}  {status:?}",
+                attr = r.attribute_name,
+                conf = r.confidence,
+                status = r.status
+            );
         }
-        if !out.coref.is_empty() {
-            println!();
-            println!("  coref decisions: {}", out.coref.len());
-        }
+    }
+    if !out.coref.is_empty() {
+        println!();
+        println!("  coref decisions: {}", out.coref.len());
     }
 
     let dump_path = Path::new("inspect/last_run.md");

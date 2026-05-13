@@ -201,7 +201,7 @@ fn overlaps_any(start: usize, end: usize, spans: &[LabeledSpan]) -> bool {
         .any(|s| !(end <= s.char_start || start >= s.char_end))
 }
 
-#[cfg(all(test, feature = "gliner2_fp32"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

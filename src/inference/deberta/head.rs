@@ -208,32 +208,6 @@ pub fn run_proj_mlp(mlp: &ProjMlp, x: &[f32], m: usize) -> Vec<f32> {
     linear(&h, &mlp.lin2_w, &mlp.lin2_b, m, mlp.inner_dim, mlp.out_dim)
 }
 
-/// All valid `(start_word, end_word)` pairs for a sequence of `num_words`
-/// words. Word indices are inclusive. Spans wider than `max_width` are
-/// excluded. Spans that would extend past the last word are emitted
-/// with `end < start` so the GLiNER layout (`num_words * max_width`
-/// rows) is preserved — the caller masks them.
-pub fn generate_span_indices(num_words: usize, max_width: usize) -> (Vec<(usize, usize)>, Vec<bool>) {
-    let mut spans = Vec::with_capacity(num_words * max_width);
-    let mut valid = Vec::with_capacity(num_words * max_width);
-    for s in 0..num_words {
-        for w in 0..max_width {
-            let e = s + w;
-            if e < num_words {
-                spans.push((s, e));
-                valid.push(true);
-            } else {
-                // Placeholder for masked slots — matches the GLiNER
-                // reference, which multiplies span_idx by span_mask
-                // (zeroing both start and end to 0).
-                spans.push((0, 0));
-                valid.push(false);
-            }
-        }
-    }
-    (spans, valid)
-}
-
 /// Build span representations `(num_words * max_width, projection_out)`
 /// using markerV0: concat(start_proj, end_proj) → ReLU → out_project.
 /// `words` is the BiLSTM output, shape `(num_words, projection_out)`.
@@ -286,66 +260,7 @@ pub fn score(span_rep: &[f32], prompts: &[f32], num_spans: usize, num_prompts: u
     out
 }
 
-/// One decoded entity. Indices are *word* indices (inclusive); the
-/// caller maps them to character positions via the start/end-char
-/// arrays produced during tokenization.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PredictedEntity {
-    pub word_start: usize,
-    pub word_end: usize,
-    pub label_idx: usize,
-    pub score: f32,
-}
-
-/// Greedy flat-NER decoding. For each span, take the argmax over
-/// labels; keep it if `sigmoid(score) > threshold`. Then sort by score
-/// descending and accept spans that don't overlap any already-accepted
-/// span. Mirrors `gliner.decoding.decoder` flat-mode.
-pub fn decode(
-    scores: &[f32],
-    spans: &[(usize, usize)],
-    span_valid: &[bool],
-    num_prompts: usize,
-    threshold: f32,
-) -> Vec<PredictedEntity> {
-    let mut candidates: Vec<PredictedEntity> = Vec::new();
-    for (s, &(ws, we)) in spans.iter().enumerate() {
-        if !span_valid[s] {
-            continue;
-        }
-        // Pick the best label for this span.
-        let row = &scores[s * num_prompts..(s + 1) * num_prompts];
-        let (best_c, &best_logit) = row
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .expect("non-empty row");
-        let prob = sigmoid(best_logit);
-        if prob > threshold {
-            candidates.push(PredictedEntity {
-                word_start: ws,
-                word_end: we,
-                label_idx: best_c,
-                score: prob,
-            });
-        }
-    }
-
-    // Sort by score descending; greedy non-overlap acceptance.
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut accepted: Vec<PredictedEntity> = Vec::new();
-    for c in candidates {
-        let overlaps = accepted.iter().any(|a| {
-            // Overlap: not (a.end < c.start || c.end < a.start)
-            !(a.word_end < c.word_start || c.word_end < a.word_start)
-        });
-        if !overlaps {
-            accepted.push(c);
-        }
-    }
-
-    // Sort accepted by start position for stable output.
-    accepted.sort_by_key(|e| (e.word_start, e.word_end));
-    accepted
-}
+// `PredictedEntity`, `decode`, `generate_span_indices` moved to
+// `crate::inference::deberta::decoding` (shared with the INT8 path).
+// Re-exported here so existing consumers compile unchanged.
+pub use crate::inference::deberta::decoding::{decode, generate_span_indices, PredictedEntity};

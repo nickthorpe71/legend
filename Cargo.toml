@@ -70,17 +70,18 @@ required-features = ["fp32_reference"]
 name = "bench_gliner2"
 required-features = ["gliner2_fp32"]
 
+# These only need the always-on INT8 path — no feature gate required.
+# `quantize_gliner2_to_int8` reads the fp32 file on disk but doesn't
+# touch the fp32 Rust modules, so it stays feature-free too.
+
 [[example]]
 name = "bench_gliner2_int8"
-required-features = ["gliner2_fp32"]
 
 [[example]]
 name = "quantize_gliner2_to_int8"
-required-features = ["gliner2_fp32"]
 
 [[example]]
 name = "bench_step5_sweep"
-required-features = ["gliner2_fp32"]
 
 [profile.release]
 opt-level = 3

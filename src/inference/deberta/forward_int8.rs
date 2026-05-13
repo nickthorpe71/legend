@@ -7,9 +7,7 @@
 //! so the validation tests can run the same input through both paths
 //! and diff at every checkpoint.
 
-use crate::inference::deberta::head::{
-    decode, generate_span_indices, PredictedEntity,
-};
+use crate::inference::deberta::decoding::{decode, generate_span_indices, PredictedEntity};
 use crate::inference::deberta::weights_int8::{
     DebertaLayerInt8, ProjMlpInt8, WeightsDebertaInt8,
 };

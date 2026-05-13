@@ -1,9 +1,7 @@
 pub mod adjust_policy;
 pub mod coref;
 pub mod detect_intent;
-#[cfg(feature = "gliner2_fp32")]
 pub mod relation_patterns;
 pub mod route_regions;
-#[cfg(feature = "gliner2_fp32")]
 pub mod run_extractors;
 pub mod temporal;
