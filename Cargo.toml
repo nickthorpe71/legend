@@ -95,3 +95,14 @@ debug = true
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The inference engine (INT8 matmuls, attention kernels, BiLSTM
+# gates) is in this crate, so `[profile.dev.package."*"]` doesn't
+# reach it. Without opt-3 the dev-build forward pass is ~30× slower
+# than release (~9 s vs ~350 ms on the dentist fixture, and opt-2
+# isn't enough — the matmul kernels need full inlining/auto-vec
+# to vectorize). Cold rebuilds get a bit longer but incremental
+# edits to a single module stay fast, so `cargo run` / `cargo test`
+# match release runtime once the crate is compiled.
+[profile.dev.package.legend]
+opt-level = 3
