@@ -48,6 +48,11 @@ regex = "1"
 # Vec<u8> + memcpy that `fs::read` would do; the OS demand-faults
 # pages as the parser walks them.
 memmap2 = "0.9"
+# Binary serde for the pre-parsed GLiNER tokenizer. MessagePack
+# instead of bincode 1.x because Tokenizer's internal serializer
+# emits unbounded sequences that bincode rejects. Skipping the
+# 8MB tokenizer.json JSON parse on every cold start.
+rmp-serde = "1"
 
 [dev-dependencies]
 criterion = "0.5"

@@ -13,10 +13,15 @@
 use std::sync::LazyLock;
 use tokenizers::Tokenizer;
 
-const TOKENIZER_BYTES: &[u8] = include_bytes!("../../../models/gliner2-tokenizer/tokenizer.json");
+// Pre-serialized MessagePack of the parsed Tokenizer. Produced by
+// `cargo run --release --example serialize_gliner_tokenizer`; ~2.4 MB
+// vs the 8 MB tokenizer.json. Loading the binary form skips the JSON
+// parse (~130 ms cold start on a 24-token input).
+const TOKENIZER_BYTES: &[u8] = include_bytes!("../../../models/gliner2-tokenizer/tokenizer.bin");
 
 pub static BUNDLED_TOKENIZER: LazyLock<Tokenizer> = LazyLock::new(|| {
-    Tokenizer::from_bytes(TOKENIZER_BYTES).expect("failed to parse bundled GLiNER2 tokenizer")
+    rmp_serde::from_slice(TOKENIZER_BYTES)
+        .expect("failed to deserialize bundled GLiNER2 tokenizer (regenerate via `cargo run --release --example serialize_gliner_tokenizer`)")
 });
 
 /// Special-token IDs we rely on by value at the moment. Anchored to

@@ -5,7 +5,8 @@
 //! contiguous columns).
 //!
 //! Weights live in `models/minilm-int8.bin` (~22 MB) and are bundled
-//! into the binary via `include_bytes!`.
+//! into the binary via `include_bytes!`. Slices below are `&'static`
+//! into that buffer — zero-copy after the LazyLock initialization.
 
 use std::sync::LazyLock;
 
@@ -22,10 +23,14 @@ const WEIGHT_BYTES: &[u8] = include_bytes!("../../models/minilm-int8.bin");
 /// i8 weights, precomputed at load. Used by the VNNI matmul to
 /// correct the `+128` activation shift via `Σ a_u8 * w_i8 = (i8-acc)
 /// + 128 * col_sum`.
+///
+/// Slices reference the bundled byte buffer directly. `'static`
+/// because the buffer is `include_bytes!`-derived (MiniLM) or a
+/// `Box::leak`-ed `Mmap` (GLiNER2 INT8).
 #[derive(Debug)]
 pub struct QuantWeight {
-    pub q_data: Vec<i8>,
-    pub scales: Vec<f32>,
+    pub q_data: &'static [i8],
+    pub scales: &'static [f32],
     pub col_sums: Vec<i32>,
     pub in_dim: usize,
     pub out_dim: usize,
@@ -36,7 +41,7 @@ pub struct QuantWeight {
 /// zero-point).
 #[derive(Debug)]
 pub struct QuantEmbedding {
-    pub q_data: Vec<i8>,
+    pub q_data: &'static [i8],
     pub scale: f32,
     pub rows: usize,
     pub cols: usize,
@@ -57,8 +62,8 @@ pub struct WeightsInt8 {
     pub word_emb: QuantEmbedding,
     pub pos_emb: QuantEmbedding,
     pub type_emb: QuantEmbedding,
-    pub emb_ln_gamma: Vec<f32>,
-    pub emb_ln_beta: Vec<f32>,
+    pub emb_ln_gamma: &'static [f32],
+    pub emb_ln_beta: &'static [f32],
 
     pub layers: Vec<LayerWeightsInt8>,
 }
@@ -66,21 +71,21 @@ pub struct WeightsInt8 {
 #[derive(Debug)]
 pub struct LayerWeightsInt8 {
     pub q_w: QuantWeight,
-    pub q_b: Vec<f32>,
+    pub q_b: &'static [f32],
     pub k_w: QuantWeight,
-    pub k_b: Vec<f32>,
+    pub k_b: &'static [f32],
     pub v_w: QuantWeight,
-    pub v_b: Vec<f32>,
+    pub v_b: &'static [f32],
     pub attn_out_w: QuantWeight,
-    pub attn_out_b: Vec<f32>,
-    pub attn_ln_gamma: Vec<f32>,
-    pub attn_ln_beta: Vec<f32>,
+    pub attn_out_b: &'static [f32],
+    pub attn_ln_gamma: &'static [f32],
+    pub attn_ln_beta: &'static [f32],
     pub ffn_int_w: QuantWeight,
-    pub ffn_int_b: Vec<f32>,
+    pub ffn_int_b: &'static [f32],
     pub ffn_out_w: QuantWeight,
-    pub ffn_out_b: Vec<f32>,
-    pub ffn_ln_gamma: Vec<f32>,
-    pub ffn_ln_beta: Vec<f32>,
+    pub ffn_out_b: &'static [f32],
+    pub ffn_ln_gamma: &'static [f32],
+    pub ffn_ln_beta: &'static [f32],
 }
 
 pub static BUNDLED_WEIGHTS_INT8: LazyLock<WeightsInt8> = LazyLock::new(|| {
@@ -92,7 +97,7 @@ impl WeightsInt8 {
         &BUNDLED_WEIGHTS_INT8
     }
 
-    fn load_from_bytes(bytes: &[u8]) -> Result<Self, String> {
+    fn load_from_bytes(bytes: &'static [u8]) -> Result<Self, String> {
         let mut r = Reader::new(bytes);
         let magic = r.u32();
         if magic != MAGIC {
@@ -117,28 +122,28 @@ impl WeightsInt8 {
         let word_emb = r.quant_embedding(vocab, hidden);
         let pos_emb = r.quant_embedding(max_pos, hidden);
         let type_emb = r.quant_embedding(type_vocab, hidden);
-        let emb_ln_gamma = r.f32_vec(hidden);
-        let emb_ln_beta = r.f32_vec(hidden);
+        let emb_ln_gamma = r.f32_slice(hidden);
+        let emb_ln_beta = r.f32_slice(hidden);
 
         let mut layers = Vec::with_capacity(num_layers);
         for _ in 0..num_layers {
             layers.push(LayerWeightsInt8 {
                 q_w: r.quant_weight(hidden, hidden),
-                q_b: r.f32_vec(hidden),
+                q_b: r.f32_slice(hidden),
                 k_w: r.quant_weight(hidden, hidden),
-                k_b: r.f32_vec(hidden),
+                k_b: r.f32_slice(hidden),
                 v_w: r.quant_weight(hidden, hidden),
-                v_b: r.f32_vec(hidden),
+                v_b: r.f32_slice(hidden),
                 attn_out_w: r.quant_weight(hidden, hidden),
-                attn_out_b: r.f32_vec(hidden),
-                attn_ln_gamma: r.f32_vec(hidden),
-                attn_ln_beta: r.f32_vec(hidden),
+                attn_out_b: r.f32_slice(hidden),
+                attn_ln_gamma: r.f32_slice(hidden),
+                attn_ln_beta: r.f32_slice(hidden),
                 ffn_int_w: r.quant_weight(hidden, intermediate),
-                ffn_int_b: r.f32_vec(intermediate),
+                ffn_int_b: r.f32_slice(intermediate),
                 ffn_out_w: r.quant_weight(intermediate, hidden),
-                ffn_out_b: r.f32_vec(hidden),
-                ffn_ln_gamma: r.f32_vec(hidden),
-                ffn_ln_beta: r.f32_vec(hidden),
+                ffn_out_b: r.f32_slice(hidden),
+                ffn_ln_gamma: r.f32_slice(hidden),
+                ffn_ln_beta: r.f32_slice(hidden),
             });
         }
 
@@ -166,44 +171,72 @@ impl WeightsInt8 {
     }
 }
 
-struct Reader<'a> {
+/// Shared slice reader. Returns `&'static` views into the underlying
+/// byte buffer — both `include_bytes!` (MiniLM) and the leaked mmap
+/// (GLiNER2) produce `'static` storage so this is sound.
+///
+/// f32 / i32 readers `debug_assert` on 4-byte alignment of the
+/// underlying pointer; the on-disk format keeps every weight field at
+/// a 4-byte offset by construction so the assert never fires in
+/// practice.
+pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
-    pos: usize,
+    pub pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, pos: 0 }
     }
-    fn u32(&mut self) -> u32 {
+    pub fn u32(&mut self) -> u32 {
         let v = u32::from_le_bytes(self.bytes[self.pos..self.pos + 4].try_into().unwrap());
         self.pos += 4;
         v
     }
-    fn f32(&mut self) -> f32 {
+    pub fn f32(&mut self) -> f32 {
         let v = f32::from_le_bytes(self.bytes[self.pos..self.pos + 4].try_into().unwrap());
         self.pos += 4;
         v
     }
-    fn f32_vec(&mut self, n: usize) -> Vec<f32> {
-        let mut out = vec![0.0f32; n];
+}
+
+impl Reader<'static> {
+    pub fn f32_slice(&mut self, n: usize) -> &'static [f32] {
         let byte_len = n * 4;
         let src = &self.bytes[self.pos..self.pos + byte_len];
-        let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
-        dst.copy_from_slice(src);
+        debug_assert_eq!(
+            src.as_ptr() as usize % std::mem::align_of::<f32>(),
+            0,
+            "f32 slice misaligned at offset {}",
+            self.pos
+        );
         self.pos += byte_len;
-        out
+        // SAFETY: src is in the 'static byte buffer; alignment is
+        // checked above; f32 is plain-old-data (no invalid bit
+        // patterns).
+        unsafe { std::slice::from_raw_parts(src.as_ptr() as *const f32, n) }
     }
-    fn i8_vec(&mut self, n: usize) -> Vec<i8> {
-        let mut out = vec![0i8; n];
+    pub fn i32_slice(&mut self, n: usize) -> &'static [i32] {
+        let byte_len = n * 4;
+        let src = &self.bytes[self.pos..self.pos + byte_len];
+        debug_assert_eq!(
+            src.as_ptr() as usize % std::mem::align_of::<i32>(),
+            0,
+            "i32 slice misaligned at offset {}",
+            self.pos
+        );
+        self.pos += byte_len;
+        // SAFETY: same justification as `f32_slice`.
+        unsafe { std::slice::from_raw_parts(src.as_ptr() as *const i32, n) }
+    }
+    pub fn i8_slice(&mut self, n: usize) -> &'static [i8] {
         let src = &self.bytes[self.pos..self.pos + n];
-        let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, n) };
-        dst.copy_from_slice(src);
         self.pos += n;
-        out
+        // SAFETY: i8 has the same layout as u8; no alignment required.
+        unsafe { std::slice::from_raw_parts(src.as_ptr() as *const i8, n) }
     }
-    fn quant_embedding(&mut self, rows: usize, cols: usize) -> QuantEmbedding {
-        let q_data = self.i8_vec(rows * cols);
+    pub fn quant_embedding(&mut self, rows: usize, cols: usize) -> QuantEmbedding {
+        let q_data = self.i8_slice(rows * cols);
         let scale = self.f32();
         QuantEmbedding {
             q_data,
@@ -212,16 +245,29 @@ impl<'a> Reader<'a> {
             cols,
         }
     }
-    fn quant_weight(&mut self, in_dim: usize, out_dim: usize) -> QuantWeight {
-        // Stored column-major: out_dim columns of in_dim contiguous i8s.
-        let q_data = self.i8_vec(in_dim * out_dim);
-        let scales = self.f32_vec(out_dim);
-        // Precompute per-column sums for VNNI shift correction.
+    pub fn quant_weight(&mut self, in_dim: usize, out_dim: usize) -> QuantWeight {
+        // MiniLM's format pre-dates baked col_sums; compute on load.
+        // (GLiNER2's v2 format bakes them; its loader uses
+        // `quant_weight_with_col_sums` below.)
+        let q_data = self.i8_slice(in_dim * out_dim);
+        let scales = self.f32_slice(out_dim);
         let mut col_sums = vec![0i32; out_dim];
         for j in 0..out_dim {
             let col = &q_data[j * in_dim..(j + 1) * in_dim];
             col_sums[j] = col.iter().map(|&v| v as i32).sum();
         }
+        QuantWeight {
+            q_data,
+            scales,
+            col_sums,
+            in_dim,
+            out_dim,
+        }
+    }
+    pub fn quant_weight_with_col_sums(&mut self, in_dim: usize, out_dim: usize) -> QuantWeight {
+        let q_data = self.i8_slice(in_dim * out_dim);
+        let scales = self.f32_slice(out_dim);
+        let col_sums = self.i32_slice(out_dim).to_vec();
         QuantWeight {
             q_data,
             scales,

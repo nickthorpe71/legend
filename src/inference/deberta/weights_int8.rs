@@ -9,7 +9,7 @@
 
 use std::sync::LazyLock;
 
-use crate::inference::weights_int8::{QuantEmbedding, QuantWeight};
+use crate::inference::weights_int8::{QuantEmbedding, QuantWeight, Reader};
 
 const MAGIC: u32 = 0x4749_4C38;
 /// v2 bakes per-column sums into the file (see the comment in
@@ -39,19 +39,19 @@ pub struct WeightsDebertaInt8 {
     pub layer_norm_eps: f32,
 
     pub word_emb: QuantEmbedding,
-    pub emb_ln_gamma: Vec<f32>,
-    pub emb_ln_beta: Vec<f32>,
+    pub emb_ln_gamma: &'static [f32],
+    pub emb_ln_beta: &'static [f32],
 
     pub layers: Vec<DebertaLayerInt8>,
 
     pub rel_emb: QuantEmbedding,
-    pub rel_emb_ln_gamma: Vec<f32>,
-    pub rel_emb_ln_beta: Vec<f32>,
-    pub final_ln_gamma: Vec<f32>,
-    pub final_ln_beta: Vec<f32>,
+    pub rel_emb_ln_gamma: &'static [f32],
+    pub rel_emb_ln_beta: &'static [f32],
+    pub final_ln_gamma: &'static [f32],
+    pub final_ln_beta: &'static [f32],
 
     pub proj_w: QuantWeight,
-    pub proj_b: Vec<f32>,
+    pub proj_b: &'static [f32],
 
     pub lstm_fwd: LstmDirectionFp32,
     pub lstm_rev: LstmDirectionFp32,
@@ -65,37 +65,37 @@ pub struct WeightsDebertaInt8 {
 #[derive(Debug)]
 pub struct DebertaLayerInt8 {
     pub q_w: QuantWeight,
-    pub q_b: Vec<f32>,
+    pub q_b: &'static [f32],
     pub k_w: QuantWeight,
-    pub k_b: Vec<f32>,
+    pub k_b: &'static [f32],
     pub v_w: QuantWeight,
-    pub v_b: Vec<f32>,
+    pub v_b: &'static [f32],
     pub attn_out_w: QuantWeight,
-    pub attn_out_b: Vec<f32>,
-    pub attn_ln_gamma: Vec<f32>,
-    pub attn_ln_beta: Vec<f32>,
+    pub attn_out_b: &'static [f32],
+    pub attn_ln_gamma: &'static [f32],
+    pub attn_ln_beta: &'static [f32],
     pub ffn_int_w: QuantWeight,
-    pub ffn_int_b: Vec<f32>,
+    pub ffn_int_b: &'static [f32],
     pub ffn_out_w: QuantWeight,
-    pub ffn_out_b: Vec<f32>,
-    pub ffn_ln_gamma: Vec<f32>,
-    pub ffn_ln_beta: Vec<f32>,
+    pub ffn_out_b: &'static [f32],
+    pub ffn_ln_gamma: &'static [f32],
+    pub ffn_ln_beta: &'static [f32],
 }
 
 #[derive(Debug)]
 pub struct LstmDirectionFp32 {
-    pub ih_w: Vec<f32>,
-    pub hh_w: Vec<f32>,
-    pub ih_b: Vec<f32>,
-    pub hh_b: Vec<f32>,
+    pub ih_w: &'static [f32],
+    pub hh_w: &'static [f32],
+    pub ih_b: &'static [f32],
+    pub hh_b: &'static [f32],
 }
 
 #[derive(Debug)]
 pub struct ProjMlpInt8 {
     pub lin1_w: QuantWeight,
-    pub lin1_b: Vec<f32>,
+    pub lin1_b: &'static [f32],
     pub lin2_w: QuantWeight,
-    pub lin2_b: Vec<f32>,
+    pub lin2_b: &'static [f32],
     pub in_dim: usize,
     pub inner_dim: usize,
     pub out_dim: usize,
@@ -123,7 +123,7 @@ impl WeightsDebertaInt8 {
         &BUNDLED_DEBERTA_INT8
     }
 
-    fn load_from_bytes(bytes: &[u8]) -> Result<Self, String> {
+    fn load_from_bytes(bytes: &'static [u8]) -> Result<Self, String> {
         let mut r = Reader::new(bytes);
         let magic = r.u32();
         if magic != MAGIC {
@@ -148,47 +148,47 @@ impl WeightsDebertaInt8 {
         let head_dim = hidden_size / num_heads;
 
         let word_emb = r.quant_embedding(vocab_size, hidden_size);
-        let emb_ln_gamma = r.f32_vec(hidden_size);
-        let emb_ln_beta = r.f32_vec(hidden_size);
+        let emb_ln_gamma = r.f32_slice(hidden_size);
+        let emb_ln_beta = r.f32_slice(hidden_size);
 
         let mut layers = Vec::with_capacity(num_layers);
         for _ in 0..num_layers {
             layers.push(DebertaLayerInt8 {
-                q_w: r.quant_weight(hidden_size, hidden_size),
-                q_b: r.f32_vec(hidden_size),
-                k_w: r.quant_weight(hidden_size, hidden_size),
-                k_b: r.f32_vec(hidden_size),
-                v_w: r.quant_weight(hidden_size, hidden_size),
-                v_b: r.f32_vec(hidden_size),
-                attn_out_w: r.quant_weight(hidden_size, hidden_size),
-                attn_out_b: r.f32_vec(hidden_size),
-                attn_ln_gamma: r.f32_vec(hidden_size),
-                attn_ln_beta: r.f32_vec(hidden_size),
-                ffn_int_w: r.quant_weight(hidden_size, intermediate_size),
-                ffn_int_b: r.f32_vec(intermediate_size),
-                ffn_out_w: r.quant_weight(intermediate_size, hidden_size),
-                ffn_out_b: r.f32_vec(hidden_size),
-                ffn_ln_gamma: r.f32_vec(hidden_size),
-                ffn_ln_beta: r.f32_vec(hidden_size),
+                q_w: r.quant_weight_with_col_sums(hidden_size, hidden_size),
+                q_b: r.f32_slice(hidden_size),
+                k_w: r.quant_weight_with_col_sums(hidden_size, hidden_size),
+                k_b: r.f32_slice(hidden_size),
+                v_w: r.quant_weight_with_col_sums(hidden_size, hidden_size),
+                v_b: r.f32_slice(hidden_size),
+                attn_out_w: r.quant_weight_with_col_sums(hidden_size, hidden_size),
+                attn_out_b: r.f32_slice(hidden_size),
+                attn_ln_gamma: r.f32_slice(hidden_size),
+                attn_ln_beta: r.f32_slice(hidden_size),
+                ffn_int_w: r.quant_weight_with_col_sums(hidden_size, intermediate_size),
+                ffn_int_b: r.f32_slice(intermediate_size),
+                ffn_out_w: r.quant_weight_with_col_sums(intermediate_size, hidden_size),
+                ffn_out_b: r.f32_slice(hidden_size),
+                ffn_ln_gamma: r.f32_slice(hidden_size),
+                ffn_ln_beta: r.f32_slice(hidden_size),
             });
         }
 
         let rel_emb = r.quant_embedding(2 * position_buckets, hidden_size);
-        let rel_emb_ln_gamma = r.f32_vec(hidden_size);
-        let rel_emb_ln_beta = r.f32_vec(hidden_size);
-        let final_ln_gamma = r.f32_vec(hidden_size);
-        let final_ln_beta = r.f32_vec(hidden_size);
+        let rel_emb_ln_gamma = r.f32_slice(hidden_size);
+        let rel_emb_ln_beta = r.f32_slice(hidden_size);
+        let final_ln_gamma = r.f32_slice(hidden_size);
+        let final_ln_beta = r.f32_slice(hidden_size);
 
-        let proj_w = r.quant_weight(hidden_size, projection_out);
-        let proj_b = r.f32_vec(projection_out);
+        let proj_w = r.quant_weight_with_col_sums(hidden_size, projection_out);
+        let proj_b = r.f32_slice(projection_out);
 
         let lstm_half = projection_out / 2;
         let four_h = 4 * lstm_half;
         let mut read_dir = || LstmDirectionFp32 {
-            ih_w: r.f32_vec(projection_out * four_h),
-            hh_w: r.f32_vec(lstm_half * four_h),
-            ih_b: r.f32_vec(four_h),
-            hh_b: r.f32_vec(four_h),
+            ih_w: r.f32_slice(projection_out * four_h),
+            hh_w: r.f32_slice(lstm_half * four_h),
+            ih_b: r.f32_slice(four_h),
+            hh_b: r.f32_slice(four_h),
         };
         let lstm_fwd = read_dir();
         let lstm_rev = read_dir();
@@ -196,10 +196,10 @@ impl WeightsDebertaInt8 {
         let mut read_mlp = |in_dim: usize, out_dim: usize| {
             let inner_dim = 4 * out_dim;
             ProjMlpInt8 {
-                lin1_w: r.quant_weight(in_dim, inner_dim),
-                lin1_b: r.f32_vec(inner_dim),
-                lin2_w: r.quant_weight(inner_dim, out_dim),
-                lin2_b: r.f32_vec(out_dim),
+                lin1_w: r.quant_weight_with_col_sums(in_dim, inner_dim),
+                lin1_b: r.f32_slice(inner_dim),
+                lin2_w: r.quant_weight_with_col_sums(inner_dim, out_dim),
+                lin2_b: r.f32_slice(out_dim),
                 in_dim,
                 inner_dim,
                 out_dim,
@@ -249,65 +249,8 @@ impl WeightsDebertaInt8 {
     }
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-    fn u32(&mut self) -> u32 {
-        let v = u32::from_le_bytes(self.bytes[self.pos..self.pos + 4].try_into().unwrap());
-        self.pos += 4;
-        v
-    }
-    fn f32(&mut self) -> f32 {
-        let v = f32::from_le_bytes(self.bytes[self.pos..self.pos + 4].try_into().unwrap());
-        self.pos += 4;
-        v
-    }
-    fn f32_vec(&mut self, n: usize) -> Vec<f32> {
-        let mut out = vec![0.0f32; n];
-        let byte_len = n * 4;
-        let src = &self.bytes[self.pos..self.pos + byte_len];
-        let dst =
-            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
-        dst.copy_from_slice(src);
-        self.pos += byte_len;
-        out
-    }
-    fn i8_vec(&mut self, n: usize) -> Vec<i8> {
-        let mut out = vec![0i8; n];
-        let src = &self.bytes[self.pos..self.pos + n];
-        let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, n) };
-        dst.copy_from_slice(src);
-        self.pos += n;
-        out
-    }
-    fn quant_embedding(&mut self, rows: usize, cols: usize) -> QuantEmbedding {
-        let q_data = self.i8_vec(rows * cols);
-        let scale = self.f32();
-        QuantEmbedding { q_data, scale, rows, cols }
-    }
-    fn quant_weight(&mut self, in_dim: usize, out_dim: usize) -> QuantWeight {
-        let q_data = self.i8_vec(in_dim * out_dim);
-        let scales = self.f32_vec(out_dim);
-        let col_sums = self.i32_vec(out_dim);
-        QuantWeight { q_data, scales, col_sums, in_dim, out_dim }
-    }
-    fn i32_vec(&mut self, n: usize) -> Vec<i32> {
-        let mut out = vec![0i32; n];
-        let byte_len = n * 4;
-        let src = &self.bytes[self.pos..self.pos + byte_len];
-        let dst =
-            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
-        dst.copy_from_slice(src);
-        self.pos += byte_len;
-        out
-    }
-}
+// Reader pulled from `crate::inference::weights_int8` — same code,
+// same zero-copy semantics, just one less copy.
 
 #[cfg(test)]
 mod tests {
