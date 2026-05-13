@@ -105,9 +105,10 @@ mod tests {
     use crate::types::Policy;
 
     fn default_policy() -> Policy {
-        let mut p = Policy::default();
-        p.ner_assertion_threshold = 0.7;
-        p
+        Policy {
+            ner_assertion_threshold: 0.7,
+            ..Default::default()
+        }
     }
 
     #[test]

@@ -239,6 +239,7 @@ fn disentangled_attention_int8(
 
 // ── one layer + full encoder ──────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn run_layer_int8(
     x: Vec<f32>,
     layer: &DebertaLayerInt8,

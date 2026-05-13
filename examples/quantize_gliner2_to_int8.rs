@@ -159,9 +159,9 @@ fn main() -> std::io::Result<()> {
     // project_end:   same shape
     // out_project:   in=2*po, inner=4*po, out=po
     // prompt:        in=po, inner=4*po, out=po
-    let mut quantize_mlp = |out: &mut BufWriter<File>,
-                            r: &mut Reader,
-                            in_dim: usize|
+    let quantize_mlp = |out: &mut BufWriter<File>,
+                        r: &mut Reader,
+                        in_dim: usize|
      -> std::io::Result<()> {
         let inner = 4 * po;
         let lin1_w = r.f32_vec(in_dim * inner);
