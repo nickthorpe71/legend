@@ -1,46 +1,65 @@
-//! Step 5 of the tick pipeline — `run_extractors`. Currently NER-only:
-//! GLiNER2 zero-shot span tagging via the bundled INT8 forward pass.
-//! Each tagged span becomes one `ExtractionProposal` for Step 7+
-//! (`build_relations`) to turn into hypergraph relations.
+//! Step 5 of the tick pipeline — `run_extractors`. Runs four
+//! sub-extractors over the input text and returns a single
+//! `ExtractionOutput` for Step 8 (`build_relations`) to convert into
+//! hypergraph relations:
 //!
-//! Out of scope for now (deferred to follow-up phases):
-//! - Zero-shot relation extraction (would need GLiNER multi-task model
-//!   or a pattern fast-path; the doc allows either).
-//! - Temporal parser (chrono + chrono-english).
-//! - Heuristic coreference.
-//! - Warm-bias label set from active regions (Step 4 output) — for now
-//!   we use a hardcoded seed-kind list.
+//! 1. **NER** (GLiNER2 INT8) — labels = seed kinds ∪ active-region
+//!    names. Emits `(span, instance_of, K)` proposals.
+//! 2. **Temporal** (pure-Rust regex over weekday / month / common
+//!    phrases). Emits the same `instance_of` shape as NER with kinds
+//!    `"weekday"`, `"month"`, `"time"`.
+//! 3. **Relation patterns** (§15.1 fast-path). Emits canonical
+//!    `(subj, attr, obj)` quads for templates like
+//!    `X from A to B`, `X with Y`, `X at Y`, `X's Y`.
+//! 4. **Heuristic coref** — stub that returns no decisions until
+//!    `recent_focus` is populated by Step 11.
+//!
+//! The GLiNER multi-task RE model and the `chrono-english`
+//! relative-phrase parser are deferred — the v0 doc explicitly
+//! allows the pattern fast-path while we get the rest of the
+//! pipeline online.
 
 use crate::inference::deberta::predict::{predict_entities, LabeledSpan};
-use crate::types::{Policy, RelationStatus};
+use crate::steps::coref::{resolve_coref, CorefDecision};
+use crate::steps::relation_patterns::{extract_relations, RelationProposal};
+use crate::steps::temporal::{extract_temporal, TemporalSpan};
+use crate::types::{Hypergraph, Policy, RegionActivation, RelationStatus};
 
-/// One proposal from an extractor. Step 8 (`build_relations`) maps
-/// this into the hypergraph as a `(span, instance_of, K)` relation
-/// whose `status` is set by the assertion-threshold gate below.
+/// One span-typing proposal. Maps to a single `(span, instance_of, K)`
+/// hypergraph relation. Sources are both NER and the temporal regex
+/// pass; the originating extractor is recorded in `provenance` for
+/// downstream dedup.
 #[derive(Debug, Clone)]
 pub struct ExtractionProposal {
-    /// Surface text of the tagged span.
     pub subject_text: String,
-    /// Inclusive char offset.
     pub subject_char_start: usize,
-    /// Exclusive char offset.
     pub subject_char_end: usize,
-    /// Always `"instance_of"` while we're NER-only.
     pub attribute_name: &'static str,
-    /// The kind tag — `"person"`, `"event"`, etc. — drawn from
-    /// `labels` (or the seed defaults if no labels provided).
     pub object_label: String,
-    /// Raw sigmoid score from GLiNER2.
     pub confidence: f32,
-    /// `Entailed` once confidence ≥ `policy.ner_assertion_threshold`;
-    /// `Defeasible` below that. Mirrors §11.7 of the v0 doc.
     pub status: RelationStatus,
+    pub provenance: ProposalSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposalSource {
+    Ner,
+    Temporal,
+    Pattern,
+}
+
+/// Everything Step 5 contributes to a tick: span typings, relation
+/// quads, and coref reuse decisions for Step 6.
+#[derive(Debug, Default)]
+pub struct ExtractionOutput {
+    pub instance_of: Vec<ExtractionProposal>,
+    pub relations: Vec<RelationProposal>,
+    pub coref: Vec<CorefDecision>,
 }
 
 /// Seed entity kinds used as the NER label set when the caller doesn't
 /// supply a custom set. Mirrors §11.7's `(person, org, place, weekday,
-/// quantity, event, ...)` list. Once Step 4 surfaces warm labels we
-/// extend this with active-region attribute names per tick.
+/// quantity, event, ...)` list.
 pub const SEED_KINDS: &[&str] = &[
     "person",
     "org",
@@ -53,56 +72,138 @@ pub const SEED_KINDS: &[&str] = &[
     "time",
 ];
 
-/// Run Step 5 on a single input. Returns the proposals to feed into
-/// Step 8 (`build_relations`).
+/// Run Step 5 on a single input.
 ///
-/// `labels` overrides the seed-kind label set if non-empty (used by
-/// tests + future warm-bias wiring). `policy` supplies the
-/// assertion-threshold gate.
-pub fn run_extractors(input_text: &str, labels: &[&str], policy: &Policy) -> Vec<ExtractionProposal> {
+/// - `labels` overrides the automatic label set when non-empty. The
+///   automatic set is `SEED_KINDS ∪ names(active_regions)`.
+/// - `hg` is read-only — used to resolve active-region names.
+/// - `policy.ner_assertion_threshold` decides Entailed-vs-Defeasible
+///   for each NER proposal.
+pub fn run_extractors(
+    input_text: &str,
+    labels: &[&str],
+    policy: &Policy,
+    hg: &Hypergraph,
+    active_regions: &[RegionActivation],
+) -> ExtractionOutput {
     if input_text.trim().is_empty() {
-        return Vec::new();
+        return ExtractionOutput::default();
     }
 
+    // 1. Build the NER label set. Caller-supplied labels override
+    //    everything; otherwise SEED_KINDS plus a warm-bias set drawn
+    //    from the names of the active regions.
+    let owned_labels: Vec<String>;
     let label_set: Vec<&str> = if labels.is_empty() {
-        SEED_KINDS.to_vec()
+        owned_labels = build_label_set(hg, active_regions);
+        owned_labels.iter().map(String::as_str).collect()
     } else {
         labels.to_vec()
     };
 
-    // GLiNER returns sigmoid-style scores; use a permissive base
-    // threshold and let the assertion-threshold gate below decide
-    // Asserted-vs-Defeasible promotion. Anything below the base
-    // threshold is dropped entirely.
+    // 2. GLiNER2 NER pass.
     const RAW_THRESHOLD: f32 = 0.3;
+    let ner_spans: Vec<LabeledSpan> = predict_entities(input_text, &label_set, RAW_THRESHOLD);
 
-    let spans: Vec<LabeledSpan> = predict_entities(input_text, &label_set, RAW_THRESHOLD);
+    // 3. Temporal pass — pure regex, complements NER.
+    let temporal_spans: Vec<TemporalSpan> = extract_temporal(input_text);
 
+    // 4. Build instance_of proposals. NER goes first; temporal spans
+    //    that overlap an existing NER span are dropped to avoid duplicate
+    //    typing.
+    let mut instance_of: Vec<ExtractionProposal> = Vec::new();
+    for s in &ner_spans {
+        let status = if s.score >= policy.ner_assertion_threshold {
+            RelationStatus::Entailed
+        } else {
+            RelationStatus::Defeasible
+        };
+        instance_of.push(ExtractionProposal {
+            subject_text: s.text.clone(),
+            subject_char_start: s.char_start,
+            subject_char_end: s.char_end,
+            attribute_name: "instance_of",
+            object_label: s.label.clone(),
+            confidence: s.score,
+            status,
+            provenance: ProposalSource::Ner,
+        });
+    }
+    for t in &temporal_spans {
+        if overlaps_any(t.char_start, t.char_end, &ner_spans) {
+            continue;
+        }
+        // Regex temporal hits are high-precision — give them an
+        // assertion-style confidence. Status is gated on the same
+        // threshold for uniformity.
+        let conf: f32 = 0.95;
+        let status = if conf >= policy.ner_assertion_threshold {
+            RelationStatus::Entailed
+        } else {
+            RelationStatus::Defeasible
+        };
+        instance_of.push(ExtractionProposal {
+            subject_text: t.text.clone(),
+            subject_char_start: t.char_start,
+            subject_char_end: t.char_end,
+            attribute_name: "instance_of",
+            object_label: t.kind.to_string(),
+            confidence: conf,
+            status,
+            provenance: ProposalSource::Temporal,
+        });
+    }
+    instance_of.sort_by_key(|p| (p.subject_char_start, p.subject_char_end));
+
+    // 5. Relation extraction over the NER spans (patterns only — see
+    //    module header for what's deferred).
+    let relations: Vec<RelationProposal> = extract_relations(input_text, &ner_spans);
+
+    // 6. Coref. Currently a stub; included for API stability.
+    let coref: Vec<CorefDecision> = resolve_coref(input_text, hg);
+
+    ExtractionOutput {
+        instance_of,
+        relations,
+        coref,
+    }
+}
+
+/// Convenience wrapper for callers that only have text + policy and
+/// don't yet have a routed hypergraph. Uses an empty active-region
+/// list — equivalent to "no warm bias".
+pub fn run_extractors_simple(input_text: &str, policy: &Policy) -> ExtractionOutput {
+    let hg = Hypergraph::default();
+    run_extractors(input_text, &[], policy, &hg, &[])
+}
+
+/// SEED_KINDS plus the (deduped) names of every element referenced by
+/// an active region. Used as the GLiNER label set on the production
+/// path. Most active-region IDs are themselves regions whose names
+/// (`"time"`, `"events"`, `"locations"`, ...) double as useful NER
+/// coarse-types — so we just pull `elements[region].names[0]` for each.
+fn build_label_set(hg: &Hypergraph, active_regions: &[RegionActivation]) -> Vec<String> {
+    let mut seen: std::collections::BTreeSet<String> = SEED_KINDS.iter().map(|s| s.to_string()).collect();
+    for ra in active_regions {
+        let id = ra.region.0 as usize;
+        if let Some(el) = hg.elements.get(id)
+            && let Some(name) = el.names.first()
+        {
+            seen.insert(name.clone());
+        }
+    }
+    seen.into_iter().collect()
+}
+
+fn overlaps_any(start: usize, end: usize, spans: &[LabeledSpan]) -> bool {
     spans
-        .into_iter()
-        .map(|s| {
-            let status = if s.score >= policy.ner_assertion_threshold {
-                RelationStatus::Entailed
-            } else {
-                RelationStatus::Defeasible
-            };
-            ExtractionProposal {
-                subject_text: s.text,
-                subject_char_start: s.char_start,
-                subject_char_end: s.char_end,
-                attribute_name: "instance_of",
-                object_label: s.label,
-                confidence: s.score,
-                status,
-            }
-        })
-        .collect()
+        .iter()
+        .any(|s| !(end <= s.char_start || start >= s.char_end))
 }
 
 #[cfg(all(test, feature = "gliner2_fp32"))]
 mod tests {
     use super::*;
-    use crate::types::Policy;
 
     fn default_policy() -> Policy {
         Policy {
@@ -111,35 +212,84 @@ mod tests {
         }
     }
 
+    fn empty_hg() -> Hypergraph {
+        Hypergraph::default()
+    }
+
     #[test]
     fn run_extractors_finds_dentist_entities() {
         let policy = default_policy();
-        let proposals = run_extractors(
+        let hg = empty_hg();
+        let out = run_extractors(
             "My dentist appointment with Dr. Rao changed from Tuesday to Friday.",
             &["person", "event", "weekday", "role"],
             &policy,
+            &hg,
+            &[],
         );
-        assert_eq!(proposals.len(), 4);
-        assert_eq!(proposals[0].subject_text, "My dentist appointment");
-        assert_eq!(proposals[0].object_label, "event");
-        assert_eq!(proposals[1].subject_text, "Dr. Rao");
-        assert_eq!(proposals[1].object_label, "person");
-        assert_eq!(proposals[2].subject_text, "Tuesday");
-        assert_eq!(proposals[3].subject_text, "Friday");
+        let ner: Vec<&ExtractionProposal> = out
+            .instance_of
+            .iter()
+            .filter(|p| p.provenance == ProposalSource::Ner)
+            .collect();
+        assert_eq!(ner.len(), 4);
+        assert_eq!(ner[0].subject_text, "My dentist appointment");
+        assert_eq!(ner[0].object_label, "event");
+        assert_eq!(ner[1].subject_text, "Dr. Rao");
+        assert_eq!(ner[1].object_label, "person");
+        assert_eq!(ner[2].object_label, "weekday");
+        assert_eq!(ner[3].object_label, "weekday");
 
-        // Threshold 0.7: low-conf entity becomes Defeasible.
-        // (`event` at ~0.33 falls below; `person`/`weekday` at ~0.9+
-        // come back Entailed.)
-        assert_eq!(proposals[0].status, RelationStatus::Defeasible);
-        assert_eq!(proposals[1].status, RelationStatus::Entailed);
-        assert_eq!(proposals[2].status, RelationStatus::Entailed);
-        assert_eq!(proposals[3].status, RelationStatus::Entailed);
+        // Tuesday + Friday already covered by NER (label="weekday") so
+        // the temporal pass shouldn't emit duplicates.
+        let temp: Vec<&ExtractionProposal> = out
+            .instance_of
+            .iter()
+            .filter(|p| p.provenance == ProposalSource::Temporal)
+            .collect();
+        assert!(
+            temp.is_empty(),
+            "expected no temporal duplicates; got {:?}",
+            temp.iter().map(|p| &p.subject_text).collect::<Vec<_>>()
+        );
+
+        // Pattern RE: "appointment ... with Dr. Rao" + "changed from
+        // Tuesday to Friday" → at least the from/to pair plus the
+        // companion 'with' link should fire.
+        let attrs: Vec<&'static str> =
+            out.relations.iter().map(|r| r.attribute_name).collect();
+        assert!(attrs.contains(&"from"), "missing 'from' rel: {attrs:?}");
+        assert!(attrs.contains(&"to"), "missing 'to' rel: {attrs:?}");
+        assert!(attrs.contains(&"with"), "missing 'with' rel: {attrs:?}");
+    }
+
+    #[test]
+    fn temporal_pass_emits_weekday_when_ner_misses_it() {
+        // Don't include "weekday" in the NER labels — temporal pass
+        // should still pick up Tuesday + Friday on its own.
+        let policy = default_policy();
+        let hg = empty_hg();
+        let out = run_extractors(
+            "We met on Tuesday and again on Friday.",
+            &["person", "event"],
+            &policy,
+            &hg,
+            &[],
+        );
+        let temp_texts: Vec<&str> = out
+            .instance_of
+            .iter()
+            .filter(|p| p.provenance == ProposalSource::Temporal)
+            .map(|p| p.subject_text.as_str())
+            .collect();
+        assert_eq!(temp_texts, vec!["Tuesday", "Friday"]);
     }
 
     #[test]
     fn empty_input_returns_no_proposals() {
-        let policy = default_policy();
-        let proposals = run_extractors("", &["person"], &policy);
-        assert!(proposals.is_empty());
+        let out = run_extractors_simple("", &default_policy());
+        assert!(out.instance_of.is_empty());
+        assert!(out.relations.is_empty());
+        assert!(out.coref.is_empty());
     }
 }

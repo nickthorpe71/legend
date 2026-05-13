@@ -164,20 +164,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "gliner2_fp32")]
     {
         println!();
-        println!("run_extractors (Step 5, NER-only)");
-        let proposals = run_extractors(&input_text, &[], &policy);
-        if proposals.is_empty() {
-            println!("  no entities found");
+        println!("run_extractors (Step 5)");
+        let out = run_extractors(&input_text, &[], &policy, &hg, &route.active_regions);
+        if out.instance_of.is_empty() {
+            println!("  instance_of:  (none)");
         } else {
+            #[allow(clippy::print_literal)]
+            {
+                println!("  {:<24} {:<14} {:>6}  {:<10} src", "span", "label", "conf", "status");
+            }
             println!(
-                "  {:<24} {:<14} {:>6}  {:<10}",
-                "span", "label", "conf", "status"
+                "  {:-<24} {:-<14} {:->6}  {:-<10} {:-<8}",
+                "", "", "", "", ""
             );
-            println!(
-                "  {:-<24} {:-<14} {:->6}  {:-<10}",
-                "", "", "", ""
-            );
-            for p in &proposals {
+            for p in &out.instance_of {
                 let truncated: String = if p.subject_text.chars().count() > 24 {
                     let cut: String = p.subject_text.chars().take(21).collect();
                     format!("{cut}…")
@@ -185,10 +185,32 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     p.subject_text.clone()
                 };
                 println!(
-                    "  {:<24} {:<14} {:>6.3}  {:?}",
-                    truncated, p.object_label, p.confidence, p.status
+                    "  {:<24} {:<14} {:>6.3}  {:<10} {:?}",
+                    truncated,
+                    p.object_label,
+                    p.confidence,
+                    format!("{:?}", p.status),
+                    p.provenance,
                 );
             }
+        }
+        if !out.relations.is_empty() {
+            println!();
+            println!("  relations");
+            for r in &out.relations {
+                let subj = &input_text[r.subject_char_start..r.subject_char_end];
+                let obj = &input_text[r.object_char_start..r.object_char_end];
+                println!(
+                    "    ({subj}) {attr} ({obj})  conf={conf:.3}  {status:?}",
+                    attr = r.attribute_name,
+                    conf = r.confidence,
+                    status = r.status
+                );
+            }
+        }
+        if !out.coref.is_empty() {
+            println!();
+            println!("  coref decisions: {}", out.coref.len());
         }
     }
 

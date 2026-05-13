@@ -39,7 +39,10 @@ tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 # (384×384 attention + 384×1536 FFN).
 matrixmultiply = "0.3"
 # Word-level splitter for GLiNER preprocessing — matches Python `re`'s
-# `\w+(?:[-_]\w+)*|\S` semantics for Unicode word chars.
+# `\w+(?:[-_]\w+)*|\S` semantics for Unicode word chars. Also drives
+# the temporal-span regex in `steps::temporal`. A future
+# `chrono`/`chrono-english` upgrade would turn the matched spans into
+# concrete datetimes, but Step 5 only needs the span discovery for v0.
 regex = "1"
 
 [dev-dependencies]
