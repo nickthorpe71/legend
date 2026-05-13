@@ -95,7 +95,12 @@ pub fn split_tokens(
         }
     }
 
-    SplitOutput { words, prompts, num_words, num_prompts }
+    SplitOutput {
+        words,
+        prompts,
+        num_words,
+        num_prompts,
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -238,13 +243,23 @@ pub fn build_span_rep(
 
 /// Apply the prompt MLP to label embeddings. Same MLP shape as the
 /// span projections.
-pub fn project_prompts(weights: &WeightsDebertaV3, prompts: &[f32], num_prompts: usize) -> Vec<f32> {
+pub fn project_prompts(
+    weights: &WeightsDebertaV3,
+    prompts: &[f32],
+    num_prompts: usize,
+) -> Vec<f32> {
     run_proj_mlp(&weights.prompt, prompts, num_prompts)
 }
 
 /// scores[s * C + c] = span_rep[s] · prompts[c]. `span_rep` is
 /// `(num_spans, D)`, `prompts` is `(num_prompts, D)`.
-pub fn score(span_rep: &[f32], prompts: &[f32], num_spans: usize, num_prompts: usize, d: usize) -> Vec<f32> {
+pub fn score(
+    span_rep: &[f32],
+    prompts: &[f32],
+    num_spans: usize,
+    num_prompts: usize,
+    d: usize,
+) -> Vec<f32> {
     let mut out = vec![0.0f32; num_spans * num_prompts];
     for s in 0..num_spans {
         let span_vec = &span_rep[s * d..(s + 1) * d];
@@ -263,4 +278,4 @@ pub fn score(span_rep: &[f32], prompts: &[f32], num_spans: usize, num_prompts: u
 // `PredictedEntity`, `decode`, `generate_span_indices` moved to
 // `crate::inference::deberta::decoding` (shared with the INT8 path).
 // Re-exported here so existing consumers compile unchanged.
-pub use crate::inference::deberta::decoding::{decode, generate_span_indices, PredictedEntity};
+pub use crate::inference::deberta::decoding::{PredictedEntity, decode, generate_span_indices};

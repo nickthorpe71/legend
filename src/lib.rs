@@ -194,7 +194,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         #[allow(clippy::print_literal)]
         {
-            println!("  {:<24} {:<14} {:>6}  {:<10} src", "span", "label", "conf", "status");
+            println!(
+                "  {:<24} {:<14} {:>6}  {:<10} src",
+                "span", "label", "conf", "status"
+            );
         }
         println!(
             "  {:-<24} {:-<14} {:->6}  {:-<10} {:-<8}",

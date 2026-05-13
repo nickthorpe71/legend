@@ -25,7 +25,10 @@ pub struct PredictedEntity {
 /// `(0, 0)` placeholders — matches GLiNER's `span_idx * span_mask`
 /// behaviour — and accompanied by a `false` in the parallel `valid`
 /// vector so callers can skip them during decode.
-pub fn generate_span_indices(num_words: usize, max_width: usize) -> (Vec<(usize, usize)>, Vec<bool>) {
+pub fn generate_span_indices(
+    num_words: usize,
+    max_width: usize,
+) -> (Vec<(usize, usize)>, Vec<bool>) {
     let mut spans = Vec::with_capacity(num_words * max_width);
     let mut valid = Vec::with_capacity(num_words * max_width);
     for s in 0..num_words {
@@ -76,7 +79,11 @@ pub fn decode(
         }
     }
 
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut accepted: Vec<PredictedEntity> = Vec::new();
     for c in candidates {

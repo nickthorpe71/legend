@@ -5,7 +5,7 @@
 //! Public entry point for Step 5 (`run_extractors`).
 
 use crate::inference::deberta::forward_int8::predict_entities_int8;
-use crate::inference::deberta::preprocess::{build_inputs, Word};
+use crate::inference::deberta::preprocess::{Word, build_inputs};
 use crate::inference::deberta::weights_int8::WeightsDebertaInt8;
 
 /// One labeled entity, with character offsets ready to feed into the

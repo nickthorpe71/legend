@@ -19,10 +19,10 @@
 //! allows the pattern fast-path while we get the rest of the
 //! pipeline online.
 
-use crate::inference::deberta::predict::{predict_entities, LabeledSpan};
-use crate::steps::coref::{resolve_coref, CorefDecision};
-use crate::steps::relation_patterns::{extract_relations, RelationProposal};
-use crate::steps::temporal::{extract_temporal, TemporalSpan};
+use crate::inference::deberta::predict::{LabeledSpan, predict_entities};
+use crate::steps::coref::{CorefDecision, resolve_coref};
+use crate::steps::relation_patterns::{RelationProposal, extract_relations};
+use crate::steps::temporal::{TemporalSpan, extract_temporal};
 use crate::types::{Hypergraph, Policy, RegionActivation, RelationStatus};
 
 /// One span-typing proposal. Maps to a single `(span, instance_of, K)`
@@ -61,15 +61,7 @@ pub struct ExtractionOutput {
 /// supply a custom set. Mirrors §11.7's `(person, org, place, weekday,
 /// quantity, event, ...)` list.
 pub const SEED_KINDS: &[&str] = &[
-    "person",
-    "org",
-    "place",
-    "weekday",
-    "quantity",
-    "event",
-    "role",
-    "state",
-    "time",
+    "person", "org", "place", "weekday", "quantity", "event", "role", "state", "time",
 ];
 
 /// Run Step 5 on a single input.
@@ -95,7 +87,10 @@ pub fn run_extractors(
     let mut stage = |label: &str| {
         if timing {
             let dt = mark.elapsed().unwrap_or_default();
-            eprintln!("[time]   step5/{label:<24} {:>6.1} ms", dt.as_secs_f64() * 1000.0);
+            eprintln!(
+                "[time]   step5/{label:<24} {:>6.1} ms",
+                dt.as_secs_f64() * 1000.0
+            );
             mark = std::time::SystemTime::now();
         }
     };
@@ -198,7 +193,8 @@ pub fn run_extractors_simple(input_text: &str, policy: &Policy) -> ExtractionOut
 /// (`"time"`, `"events"`, `"locations"`, ...) double as useful NER
 /// coarse-types — so we just pull `elements[region].names[0]` for each.
 fn build_label_set(hg: &Hypergraph, active_regions: &[RegionActivation]) -> Vec<String> {
-    let mut seen: std::collections::BTreeSet<String> = SEED_KINDS.iter().map(|s| s.to_string()).collect();
+    let mut seen: std::collections::BTreeSet<String> =
+        SEED_KINDS.iter().map(|s| s.to_string()).collect();
     for ra in active_regions {
         let id = ra.region.0 as usize;
         if let Some(el) = hg.elements.get(id)
@@ -271,8 +267,7 @@ mod tests {
         // Pattern RE: "appointment ... with Dr. Rao" + "changed from
         // Tuesday to Friday" → at least the from/to pair plus the
         // companion 'with' link should fire.
-        let attrs: Vec<&'static str> =
-            out.relations.iter().map(|r| r.attribute_name).collect();
+        let attrs: Vec<&'static str> = out.relations.iter().map(|r| r.attribute_name).collect();
         assert!(attrs.contains(&"from"), "missing 'from' rel: {attrs:?}");
         assert!(attrs.contains(&"to"), "missing 'to' rel: {attrs:?}");
         assert!(attrs.contains(&"with"), "missing 'with' rel: {attrs:?}");

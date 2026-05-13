@@ -122,8 +122,9 @@ pub struct ProjMlp {
 }
 
 pub static BUNDLED_DEBERTA_WEIGHTS: LazyLock<WeightsDebertaV3> = LazyLock::new(|| {
-    let bytes = std::fs::read(WEIGHTS_PATH)
-        .unwrap_or_else(|e| panic!("read {WEIGHTS_PATH}: {e} — regenerate via `oracle/03_extract_weights.py`"));
+    let bytes = std::fs::read(WEIGHTS_PATH).unwrap_or_else(|e| {
+        panic!("read {WEIGHTS_PATH}: {e} — regenerate via `oracle/03_extract_weights.py`")
+    });
     WeightsDebertaV3::load_from_bytes(&bytes).expect("failed to parse GLiNER2 fp32 weights")
 });
 

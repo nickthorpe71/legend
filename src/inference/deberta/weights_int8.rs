@@ -112,8 +112,8 @@ pub static BUNDLED_DEBERTA_INT8: LazyLock<WeightsDebertaInt8> = LazyLock::new(||
     let file = std::fs::File::open(WEIGHTS_PATH).unwrap_or_else(|e| {
         panic!("open {WEIGHTS_PATH}: {e} — regenerate via `cargo run --release --example quantize_gliner2_to_int8`")
     });
-    let mmap = unsafe { memmap2::Mmap::map(&file) }
-        .unwrap_or_else(|e| panic!("mmap {WEIGHTS_PATH}: {e}"));
+    let mmap =
+        unsafe { memmap2::Mmap::map(&file) }.unwrap_or_else(|e| panic!("mmap {WEIGHTS_PATH}: {e}"));
     let leaked: &'static [u8] = Box::leak(Box::new(mmap));
     WeightsDebertaInt8::load_from_bytes(leaked).expect("failed to parse GLiNER2 INT8 weights")
 });

@@ -117,8 +117,7 @@ pub fn disentangled_self_attention(
             let q_row = &q[q_i * hidden + head_off..q_i * hidden + head_off + head_dim];
             for k_i in 0..seq_len {
                 let idx = rel_pos_index[q_i * seq_len + k_i] as usize;
-                let k_pos_row =
-                    &k_pos[idx * hidden + head_off..idx * hidden + head_off + head_dim];
+                let k_pos_row = &k_pos[idx * hidden + head_off..idx * hidden + head_off + head_dim];
                 let mut dot = 0.0f32;
                 for d in 0..head_dim {
                     dot += q_row[d] * k_pos_row[d];
@@ -138,8 +137,7 @@ pub fn disentangled_self_attention(
             for k_i in 0..seq_len {
                 let k_row = &k[k_i * hidden + head_off..k_i * hidden + head_off + head_dim];
                 let idx = rel_pos_index[q_i * seq_len + k_i] as usize;
-                let q_pos_row =
-                    &q_pos[idx * hidden + head_off..idx * hidden + head_off + head_dim];
+                let q_pos_row = &q_pos[idx * hidden + head_off..idx * hidden + head_off + head_dim];
                 let mut dot = 0.0f32;
                 for d in 0..head_dim {
                     dot += q_pos_row[d] * k_row[d];
@@ -161,8 +159,7 @@ pub fn disentangled_self_attention(
         // === step 5: out[q] += probs[q,:] · V[:, head_off..head_off+head_dim]
         for q_i in 0..seq_len {
             let probs_row = &scratch_scores[q_i * seq_len..(q_i + 1) * seq_len];
-            let out_row =
-                &mut concat[q_i * hidden + head_off..q_i * hidden + head_off + head_dim];
+            let out_row = &mut concat[q_i * hidden + head_off..q_i * hidden + head_off + head_dim];
             for k_i in 0..seq_len {
                 let prob = probs_row[k_i];
                 if prob == 0.0 {

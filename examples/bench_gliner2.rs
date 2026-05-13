@@ -10,8 +10,8 @@ use std::time::Instant;
 use legend::inference::deberta::embedding::embed_and_layernorm;
 use legend::inference::deberta::encoder::run_encoder_stack;
 use legend::inference::deberta::head::{
-    build_span_rep, decode, generate_span_indices, project_prompts, project_tokens,
-    run_bilstm, score, split_tokens,
+    build_span_rep, decode, generate_span_indices, project_prompts, project_tokens, run_bilstm,
+    score, split_tokens,
 };
 use legend::inference::deberta::weights::WeightsDebertaV3;
 
@@ -36,7 +36,13 @@ fn run_once(w: &WeightsDebertaV3) -> Vec<f32> {
     let (spans, valid) = generate_span_indices(split.num_words, MAX_WIDTH);
     let span_rep = build_span_rep(w, &lstm, split.num_words, &spans);
     let prompts = project_prompts(w, &split.prompts, split.num_prompts);
-    let scores = score(&span_rep, &prompts, spans.len(), split.num_prompts, w.projection_out);
+    let scores = score(
+        &span_rep,
+        &prompts,
+        spans.len(),
+        split.num_prompts,
+        w.projection_out,
+    );
     let _entities = decode(&scores, &spans, &valid, split.num_prompts, THRESHOLD);
     scores
 }

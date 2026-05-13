@@ -61,13 +61,13 @@ fn main() {
         for t in 0..seq_len {
             let dst = &mut x_buf[t * h..(t + 1) * h];
             dequant_and_sum_token_embedding(
-                &w.word_emb.q_data,
+                w.word_emb.q_data,
                 w.word_emb.scale,
                 ids[t] as usize,
-                &w.pos_emb.q_data,
+                w.pos_emb.q_data,
                 w.pos_emb.scale,
                 t,
-                &w.type_emb.q_data,
+                w.type_emb.q_data,
                 w.type_emb.scale,
                 h,
                 dst,
@@ -83,8 +83,8 @@ fn main() {
             &mut x_ln,
             seq_len,
             h,
-            &w.emb_ln_gamma,
-            &w.emb_ln_beta,
+            w.emb_ln_gamma,
+            w.emb_ln_beta,
             w.layer_norm_eps,
         );
     });
@@ -115,7 +115,7 @@ fn main() {
             h,
             h,
             &layer.q_w,
-            &layer.q_b,
+            layer.q_b,
             &mut q_buf,
             &mut scratch,
         );
@@ -124,7 +124,7 @@ fn main() {
             h,
             h,
             &layer.k_w,
-            &layer.k_b,
+            layer.k_b,
             &mut k_buf,
             &mut scratch,
         );
@@ -133,7 +133,7 @@ fn main() {
             h,
             h,
             &layer.v_w,
-            &layer.v_b,
+            layer.v_b,
             &mut v_buf,
             &mut scratch,
         );
@@ -185,7 +185,7 @@ fn main() {
             h,
             h,
             &layer.attn_out_w,
-            &layer.attn_out_b,
+            layer.attn_out_b,
             &mut attn_out,
             &mut scratch,
         );
@@ -200,8 +200,8 @@ fn main() {
             &mut x_block,
             seq_len,
             h,
-            &layer.attn_ln_gamma,
-            &layer.attn_ln_beta,
+            layer.attn_ln_gamma,
+            layer.attn_ln_beta,
             w.layer_norm_eps,
         );
     });
@@ -215,7 +215,7 @@ fn main() {
             h,
             inter,
             &layer.ffn_int_w,
-            &layer.ffn_int_b,
+            layer.ffn_int_b,
             &mut ffn_int,
             &mut scratch,
         );
@@ -225,7 +225,7 @@ fn main() {
             inter,
             h,
             &layer.ffn_out_w,
-            &layer.ffn_out_b,
+            layer.ffn_out_b,
             &mut ffn_out,
             &mut scratch,
         );
@@ -234,8 +234,8 @@ fn main() {
             &mut x_block,
             seq_len,
             h,
-            &layer.ffn_ln_gamma,
-            &layer.ffn_ln_beta,
+            layer.ffn_ln_gamma,
+            layer.ffn_ln_beta,
             w.layer_norm_eps,
         );
     });

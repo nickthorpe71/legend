@@ -34,4 +34,6 @@ pub mod head;
 pub mod weights;
 
 #[cfg(feature = "gliner2_fp32")]
-pub use weights::{BUNDLED_DEBERTA_WEIGHTS, DebertaLayer, LstmDirection, ProjMlp, WeightsDebertaV3};
+pub use weights::{
+    BUNDLED_DEBERTA_WEIGHTS, DebertaLayer, LstmDirection, ProjMlp, WeightsDebertaV3,
+};

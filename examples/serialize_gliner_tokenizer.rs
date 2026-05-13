@@ -30,6 +30,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let json_mb = json_bytes.len() as f64 / 1_048_576.0;
     let bin_mb = bin.len() as f64 / 1_048_576.0;
     println!("tokenizer.json  {json_mb:.2} MB");
-    println!("tokenizer.bin   {bin_mb:.2} MB  ({:.0}%)", bin_mb / json_mb * 100.0);
+    println!(
+        "tokenizer.bin   {bin_mb:.2} MB  ({:.0}%)",
+        bin_mb / json_mb * 100.0
+    );
     Ok(())
 }

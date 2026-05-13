@@ -30,7 +30,16 @@ const FIXTURES: &[(&str, &str)] = &[
 
 const SHORT_LABELS: &[&str] = &["person", "event", "weekday", "place"];
 const FULL_LABELS: &[&str] = &[
-    "person", "org", "place", "weekday", "quantity", "event", "role", "state", "time", "project",
+    "person",
+    "org",
+    "place",
+    "weekday",
+    "quantity",
+    "event",
+    "role",
+    "state",
+    "time",
+    "project",
     "technology",
 ];
 
@@ -57,9 +66,7 @@ fn run_sweep() {
 
     let n = 20;
     for &(name, text) in FIXTURES {
-        for &(label_tag, labels) in
-            &[("short", SHORT_LABELS), ("full", FULL_LABELS)]
-        {
+        for &(label_tag, labels) in &[("short", SHORT_LABELS), ("full", FULL_LABELS)] {
             let mut samples = Vec::with_capacity(n);
             for _ in 0..n {
                 let start = Instant::now();

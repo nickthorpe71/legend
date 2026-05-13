@@ -36,13 +36,13 @@ pub fn forward(weights: &WeightsInt8, input_ids: &[u32], attention_mask: &[u32])
         assert!(tok < weights.vocab_size);
         let dst = &mut x[t * hidden..(t + 1) * hidden];
         dequant_and_sum_token_embedding(
-            &weights.word_emb.q_data,
+            weights.word_emb.q_data,
             weights.word_emb.scale,
             tok,
-            &weights.pos_emb.q_data,
+            weights.pos_emb.q_data,
             weights.pos_emb.scale,
             t,
-            &weights.type_emb.q_data,
+            weights.type_emb.q_data,
             weights.type_emb.scale,
             hidden,
             dst,
@@ -52,8 +52,8 @@ pub fn forward(weights: &WeightsInt8, input_ids: &[u32], attention_mask: &[u32])
         &mut x,
         seq_len,
         hidden,
-        &weights.emb_ln_gamma,
-        &weights.emb_ln_beta,
+        weights.emb_ln_gamma,
+        weights.emb_ln_beta,
         weights.layer_norm_eps,
     );
 
@@ -200,7 +200,7 @@ fn run_layer_int8(
         hidden,
         hidden,
         &layer.q_w,
-        &layer.q_b,
+        layer.q_b,
         &mut scratch.q,
         &mut scratch.qmat,
     );
@@ -211,7 +211,7 @@ fn run_layer_int8(
         hidden,
         hidden,
         &layer.k_w,
-        &layer.k_b,
+        layer.k_b,
         &mut scratch.k,
         &mut scratch.qmat,
     );
@@ -222,7 +222,7 @@ fn run_layer_int8(
         hidden,
         hidden,
         &layer.v_w,
-        &layer.v_b,
+        layer.v_b,
         &mut scratch.v,
         &mut scratch.qmat,
     );
@@ -279,7 +279,7 @@ fn run_layer_int8(
         hidden,
         hidden,
         &layer.attn_out_w,
-        &layer.attn_out_b,
+        layer.attn_out_b,
         &mut scratch.attn_out,
         &mut scratch.qmat,
     );
@@ -288,8 +288,8 @@ fn run_layer_int8(
         x,
         seq_len,
         hidden,
-        &layer.attn_ln_gamma,
-        &layer.attn_ln_beta,
+        layer.attn_ln_gamma,
+        layer.attn_ln_beta,
         eps,
     );
 
@@ -301,7 +301,7 @@ fn run_layer_int8(
         hidden,
         intermediate,
         &layer.ffn_int_w,
-        &layer.ffn_int_b,
+        layer.ffn_int_b,
         &mut scratch.ffn_int,
         &mut scratch.qmat,
     );
@@ -314,7 +314,7 @@ fn run_layer_int8(
         intermediate,
         hidden,
         &layer.ffn_out_w,
-        &layer.ffn_out_b,
+        layer.ffn_out_b,
         &mut scratch.ffn_out,
         &mut scratch.qmat,
     );
@@ -323,8 +323,8 @@ fn run_layer_int8(
         x,
         seq_len,
         hidden,
-        &layer.ffn_ln_gamma,
-        &layer.ffn_ln_beta,
+        layer.ffn_ln_gamma,
+        layer.ffn_ln_beta,
         eps,
     );
 }

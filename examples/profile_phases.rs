@@ -92,7 +92,7 @@ fn main() {
             h,
             h,
             &layer.q_w,
-            &layer.q_b,
+            layer.q_b,
             &mut out_h,
             &mut scratch,
         );
@@ -103,7 +103,7 @@ fn main() {
             h,
             inter,
             &layer.ffn_int_w,
-            &layer.ffn_int_b,
+            layer.ffn_int_b,
             &mut out_inter,
             &mut scratch,
         );
@@ -114,7 +114,7 @@ fn main() {
             inter,
             h,
             &layer.ffn_out_w,
-            &layer.ffn_out_b,
+            layer.ffn_out_b,
             &mut out_h,
             &mut scratch,
         );

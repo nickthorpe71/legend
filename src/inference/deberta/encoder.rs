@@ -49,7 +49,14 @@ pub fn run_layer(
     );
 
     // 2. Output projection.
-    let mut attn_out = linear(&attn_concat, &layer.attn_out_w, &layer.attn_out_b, seq_len, hidden, hidden);
+    let mut attn_out = linear(
+        &attn_concat,
+        &layer.attn_out_w,
+        &layer.attn_out_b,
+        seq_len,
+        hidden,
+        hidden,
+    );
 
     // 3. Add residual + LayerNorm.
     add_inplace(&mut attn_out, &x);
@@ -115,11 +122,8 @@ pub fn run_encoder_stack(
     // 1. Pre-compute the shared rel-position bucket matrix and the
     //    layer-normed rel-embedding table. Same eps as the rest of the
     //    encoder.
-    let rel_pos_index = build_relative_position_matrix(
-        seq_len,
-        weights.position_buckets,
-        weights.max_position,
-    );
+    let rel_pos_index =
+        build_relative_position_matrix(seq_len, weights.position_buckets, weights.max_position);
     let mut rel_emb_lnd = weights.rel_emb.clone();
     layernorm_inplace(
         &mut rel_emb_lnd,

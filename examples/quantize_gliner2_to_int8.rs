@@ -165,21 +165,19 @@ fn main() -> std::io::Result<()> {
     // project_end:   same shape
     // out_project:   in=2*po, inner=4*po, out=po
     // prompt:        in=po, inner=4*po, out=po
-    let quantize_mlp = |out: &mut BufWriter<File>,
-                        r: &mut Reader,
-                        in_dim: usize|
-     -> std::io::Result<()> {
-        let inner = 4 * po;
-        let lin1_w = r.f32_vec(in_dim * inner);
-        let lin1_b = r.f32_vec(inner);
-        let lin2_w = r.f32_vec(inner * po);
-        let lin2_b = r.f32_vec(po);
-        write_quantized_per_channel(out, &lin1_w, in_dim, inner)?;
-        write_f32_slice(out, &lin1_b)?;
-        write_quantized_per_channel(out, &lin2_w, inner, po)?;
-        write_f32_slice(out, &lin2_b)?;
-        Ok(())
-    };
+    let quantize_mlp =
+        |out: &mut BufWriter<File>, r: &mut Reader, in_dim: usize| -> std::io::Result<()> {
+            let inner = 4 * po;
+            let lin1_w = r.f32_vec(in_dim * inner);
+            let lin1_b = r.f32_vec(inner);
+            let lin2_w = r.f32_vec(inner * po);
+            let lin2_b = r.f32_vec(po);
+            write_quantized_per_channel(out, &lin1_w, in_dim, inner)?;
+            write_f32_slice(out, &lin1_b)?;
+            write_quantized_per_channel(out, &lin2_w, inner, po)?;
+            write_f32_slice(out, &lin2_b)?;
+            Ok(())
+        };
 
     quantize_mlp(&mut out, &mut r, po)?; // project_start
     quantize_mlp(&mut out, &mut r, po)?; // project_end
@@ -302,8 +300,7 @@ impl<'a> Reader<'a> {
         let mut out = vec![0.0f32; n];
         let byte_len = n * 4;
         let src = &self.bytes[self.pos..self.pos + byte_len];
-        let dst =
-            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
+        let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len) };
         dst.copy_from_slice(src);
         self.pos += byte_len;
         out

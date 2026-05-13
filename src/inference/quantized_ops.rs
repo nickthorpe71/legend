@@ -215,7 +215,7 @@ pub fn quantized_matmul_prequant(
         n,
         &scratch.act_i8,
         &scratch.act_u8,
-        &w.q_data,
+        w.q_data,
         &w.col_sums,
         &mut scratch.acc,
     );

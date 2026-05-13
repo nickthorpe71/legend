@@ -170,7 +170,13 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
             // Descent gate — cosine ≥ descend_threshold (sharp).
             // Activation gate — mahalanobis ≥ region_activation_threshold
             // (distribution-aware, applied only to descended children).
-            for ScoredChild { child, cosine, mahalanobis, best_proto } in scored {
+            for ScoredChild {
+                child,
+                cosine,
+                mahalanobis,
+                best_proto,
+            } in scored
+            {
                 if cosine < policy.descend_threshold {
                     continue;
                 }

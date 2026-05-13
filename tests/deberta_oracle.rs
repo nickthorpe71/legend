@@ -17,10 +17,10 @@ use legend::inference::deberta::embedding::embed_and_layernorm;
 use legend::inference::deberta::encoder::{run_encoder_stack, run_layer};
 use legend::inference::deberta::forward_int8::predict_entities_int8;
 use legend::inference::deberta::head::{
-    build_span_rep, decode, generate_span_indices, project_prompts, project_tokens,
-    run_bilstm, score, split_tokens,
+    build_span_rep, decode, generate_span_indices, project_prompts, project_tokens, run_bilstm,
+    score, split_tokens,
 };
-use legend::inference::deberta::predict::{predict_entities, LabeledSpan};
+use legend::inference::deberta::predict::{LabeledSpan, predict_entities};
 use legend::inference::deberta::rel_pos::build_relative_position_matrix;
 use legend::inference::deberta::weights::WeightsDebertaV3;
 use legend::inference::deberta::weights_int8::WeightsDebertaInt8;
@@ -61,8 +61,7 @@ fn read_f32_bin(name: &str) -> Vec<f32> {
     );
     let n = bytes.len() / 4;
     let mut out = vec![0.0f32; n];
-    let dst =
-        unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, bytes.len()) };
+    let dst = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, bytes.len()) };
     dst.copy_from_slice(&bytes);
     out
 }
@@ -130,8 +129,7 @@ fn layer_0_matches_oracle() {
     let mut x = embed_and_layernorm(w, DENTIST_IDS, DENTIST_MASK);
 
     // Pre-compute rel_pos + LN'd rel_emb the same way run_encoder_stack does.
-    let rel_pos_index =
-        build_relative_position_matrix(seq_len, w.position_buckets, w.max_position);
+    let rel_pos_index = build_relative_position_matrix(seq_len, w.position_buckets, w.max_position);
     let mut rel_emb_lnd = w.rel_emb.clone();
     layernorm_inplace(
         &mut rel_emb_lnd,
@@ -274,13 +272,31 @@ fn decode_matches_oracle_entities() {
     let x = embed_and_layernorm(w, DENTIST_IDS, DENTIST_MASK);
     let enc = run_encoder_stack(w, x, DENTIST_MASK);
     let projected = project_tokens(w, &enc, DENTIST_IDS.len());
-    let split = split_tokens(w, &projected, DENTIST_IDS, DENTIST_WORDS_MASK, DENTIST_IDS.len());
+    let split = split_tokens(
+        w,
+        &projected,
+        DENTIST_IDS,
+        DENTIST_WORDS_MASK,
+        DENTIST_IDS.len(),
+    );
     let lstm = run_bilstm(w, &split.words, split.num_words);
     let (spans, valid) = generate_span_indices(split.num_words, DENTIST_MAX_WIDTH);
     let span_rep = build_span_rep(w, &lstm, split.num_words, &spans);
     let prompts = project_prompts(w, &split.prompts, split.num_prompts);
-    let scores = score(&span_rep, &prompts, spans.len(), split.num_prompts, w.projection_out);
-    let entities = decode(&scores, &spans, &valid, split.num_prompts, DENTIST_THRESHOLD);
+    let scores = score(
+        &span_rep,
+        &prompts,
+        spans.len(),
+        split.num_prompts,
+        w.projection_out,
+    );
+    let entities = decode(
+        &scores,
+        &spans,
+        &valid,
+        split.num_prompts,
+        DENTIST_THRESHOLD,
+    );
 
     println!("decoded {} entities:", entities.len());
     for e in &entities {
@@ -291,7 +307,12 @@ fn decode_matches_oracle_entities() {
     }
 
     // Hard expectations.
-    assert_eq!(entities.len(), 4, "expected 4 entities, got {}", entities.len());
+    assert_eq!(
+        entities.len(),
+        4,
+        "expected 4 entities, got {}",
+        entities.len()
+    );
     let by_pos: Vec<(usize, usize, &str)> = entities
         .iter()
         .map(|e| (e.word_start, e.word_end, DENTIST_LABELS[e.label_idx]))
@@ -362,7 +383,12 @@ fn int8_decode_matches_oracle_entities() {
         );
     }
 
-    assert_eq!(out.entities.len(), 4, "expected 4 entities, got {}", out.entities.len());
+    assert_eq!(
+        out.entities.len(),
+        4,
+        "expected 4 entities, got {}",
+        out.entities.len()
+    );
     let by_pos: Vec<(usize, usize, &str)> = out
         .entities
         .iter()

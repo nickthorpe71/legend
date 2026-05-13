@@ -12,15 +12,16 @@ use std::sync::LazyLock;
 use regex::Regex;
 use tokenizers::{EncodeInput, InputSequence};
 
-use crate::inference::deberta::tokenizer::{BUNDLED_TOKENIZER, CLS_ID, ENT_ID, SEP_ID, SEP_LABEL_ID};
+use crate::inference::deberta::tokenizer::{
+    BUNDLED_TOKENIZER, CLS_ID, ENT_ID, SEP_ID, SEP_LABEL_ID,
+};
 
 /// Matches the Python regex used by `WhitespaceTokenSplitter`:
 /// either a word (alphanumerics + underscore, optionally extended by
 /// `-` or `_` followed by more word chars) or a single non-whitespace
 /// character.
-static WORD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\w+(?:[-_]\w+)*|\S").expect("compile word regex")
-});
+static WORD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\w+(?:[-_]\w+)*|\S").expect("compile word regex"));
 
 /// One word in the source text, with its character offsets.
 #[derive(Debug, Clone)]
@@ -91,10 +92,7 @@ pub fn build_inputs(text: &str, labels: &[&str]) -> GlinerInputs {
     }
 
     let input: EncodeInput = EncodeInput::Single(InputSequence::from(
-        pre_tokens
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<&str>>(),
+        pre_tokens.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
     ));
     // The bundled tokenizer.json has no post-processor template, so we
     // wrap with `[CLS]`/`[SEP]` manually below to match the Python
@@ -172,13 +170,25 @@ mod tests {
     fn split_words_matches_python_regex() {
         // Python `\w+(?:[-_]\w+)*|\S` on this string yields the words
         // shown below (verified manually + against `WhitespaceTokenSplitter`).
-        let words = split_words("My dentist appointment with Dr. Rao changed from Tuesday to Friday.");
+        let words =
+            split_words("My dentist appointment with Dr. Rao changed from Tuesday to Friday.");
         let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
         assert_eq!(
             texts,
             vec![
-                "My", "dentist", "appointment", "with", "Dr", ".", "Rao", "changed", "from",
-                "Tuesday", "to", "Friday", "."
+                "My",
+                "dentist",
+                "appointment",
+                "with",
+                "Dr",
+                ".",
+                "Rao",
+                "changed",
+                "from",
+                "Tuesday",
+                "to",
+                "Friday",
+                "."
             ]
         );
     }

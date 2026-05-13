@@ -81,11 +81,11 @@ mod tests {
             (100, 100),
             (-127, -127),
             (127, 127),
-            (128, 128),  // boundary — stays linear (|128| <= mid)
+            (128, 128), // boundary — stays linear (|128| <= mid)
             (-128, -128),
-            (129, 129),  // first log-band value
-            (200, 169),  // log-bucketed (verified against HF reference)
-            (511, 255),  // max input → max bucket
+            (129, 129), // first log-band value
+            (200, 169), // log-bucketed (verified against HF reference)
+            (511, 255), // max input → max bucket
             (-511, -255),
         ];
         for (rel, expected) in cases {
@@ -105,10 +105,7 @@ mod tests {
         // q=2: [258, 257, 256, 255]
         // q=3: [259, 258, 257, 256]
         let expected = [
-            256, 255, 254, 253,
-            257, 256, 255, 254,
-            258, 257, 256, 255,
-            259, 258, 257, 256,
+            256, 255, 254, 253, 257, 256, 255, 254, 258, 257, 256, 255, 259, 258, 257, 256,
         ];
         assert_eq!(m, expected);
     }

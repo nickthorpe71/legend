@@ -7,14 +7,12 @@
 //! so the validation tests can run the same input through both paths
 //! and diff at every checkpoint.
 
-use crate::inference::deberta::decoding::{decode, generate_span_indices, PredictedEntity};
-use crate::inference::deberta::weights_int8::{
-    DebertaLayerInt8, ProjMlpInt8, WeightsDebertaInt8,
-};
+use crate::inference::deberta::decoding::{PredictedEntity, decode, generate_span_indices};
+use crate::inference::deberta::weights_int8::{DebertaLayerInt8, ProjMlpInt8, WeightsDebertaInt8};
 use crate::inference::ops::{
     add_bias_inplace, add_inplace, gelu_inplace, layernorm_inplace, softmax_inplace,
 };
-use crate::inference::quantized_ops::{quantized_matmul, QMatmulScratch};
+use crate::inference::quantized_ops::{QMatmulScratch, quantized_matmul};
 use crate::inference::weights_int8::{QuantEmbedding, QuantWeight};
 
 use crate::inference::deberta::rel_pos::build_relative_position_matrix;
@@ -44,14 +42,7 @@ fn dequant_embedding_full(emb: &QuantEmbedding) -> Vec<f32> {
 /// INT8 linear: y = x @ W + b, fp32 in / fp32 out. Wraps
 /// `quantized_matmul` so the call site doesn't have to thread the
 /// scratch buffer around per matmul (each call allocates a scratch).
-fn int8_linear(
-    x: &[f32],
-    w: &QuantWeight,
-    b: &[f32],
-    m: usize,
-    k: usize,
-    n: usize,
-) -> Vec<f32> {
+fn int8_linear(x: &[f32], w: &QuantWeight, b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; m * n];
     let mut scratch = QMatmulScratch::default();
     quantized_matmul(x, m, k, n, w, b, &mut out, &mut scratch);
@@ -90,8 +81,8 @@ pub fn embed_and_layernorm_int8(
         &mut x,
         seq_len,
         hidden,
-        &w.emb_ln_gamma,
-        &w.emb_ln_beta,
+        w.emb_ln_gamma,
+        w.emb_ln_beta,
         w.layer_norm_eps,
     );
     for t in 0..seq_len {
@@ -127,9 +118,36 @@ fn disentangled_attention_int8(
     let mut v = vec![0.0f32; seq_len * hidden];
     {
         let mut scratch = QMatmulScratch::default();
-        quantized_matmul(x, seq_len, hidden, hidden, &layer.q_w, &layer.q_b, &mut q, &mut scratch);
-        quantized_matmul(x, seq_len, hidden, hidden, &layer.k_w, &layer.k_b, &mut k, &mut scratch);
-        quantized_matmul(x, seq_len, hidden, hidden, &layer.v_w, &layer.v_b, &mut v, &mut scratch);
+        quantized_matmul(
+            x,
+            seq_len,
+            hidden,
+            hidden,
+            &layer.q_w,
+            layer.q_b,
+            &mut q,
+            &mut scratch,
+        );
+        quantized_matmul(
+            x,
+            seq_len,
+            hidden,
+            hidden,
+            &layer.k_w,
+            layer.k_b,
+            &mut k,
+            &mut scratch,
+        );
+        quantized_matmul(
+            x,
+            seq_len,
+            hidden,
+            hidden,
+            &layer.v_w,
+            layer.v_b,
+            &mut v,
+            &mut scratch,
+        );
     }
 
     // Position projections — same Q/K weights applied to rel_emb_lnd.
@@ -143,7 +161,7 @@ fn disentangled_attention_int8(
             hidden,
             hidden,
             &layer.q_w,
-            &layer.q_b,
+            layer.q_b,
             &mut q_pos,
             &mut scratch,
         );
@@ -153,7 +171,7 @@ fn disentangled_attention_int8(
             hidden,
             hidden,
             &layer.k_w,
-            &layer.k_b,
+            layer.k_b,
             &mut k_pos,
             &mut scratch,
         );
@@ -218,8 +236,7 @@ fn disentangled_attention_int8(
         // V mix.
         for qi in 0..seq_len {
             let probs = &scratch_scores[qi * seq_len..(qi + 1) * seq_len];
-            let out_row =
-                &mut concat[qi * hidden + head_off..qi * hidden + head_off + head_dim];
+            let out_row = &mut concat[qi * hidden + head_off..qi * hidden + head_off + head_dim];
             for (ki, &p) in probs.iter().enumerate() {
                 if p == 0.0 {
                     continue;
@@ -265,14 +282,21 @@ fn run_layer_int8(
         rel_table_len,
     );
 
-    let mut attn_out = int8_linear(&attn_concat, &layer.attn_out_w, &layer.attn_out_b, seq_len, hidden, hidden);
+    let mut attn_out = int8_linear(
+        &attn_concat,
+        &layer.attn_out_w,
+        layer.attn_out_b,
+        seq_len,
+        hidden,
+        hidden,
+    );
     add_inplace(&mut attn_out, &x);
     layernorm_inplace(
         &mut attn_out,
         seq_len,
         hidden,
-        &layer.attn_ln_gamma,
-        &layer.attn_ln_beta,
+        layer.attn_ln_gamma,
+        layer.attn_ln_beta,
         layer_norm_eps,
     );
     let post_attn = attn_out;
@@ -280,7 +304,7 @@ fn run_layer_int8(
     let mut ffn_int = int8_linear(
         &post_attn,
         &layer.ffn_int_w,
-        &layer.ffn_int_b,
+        layer.ffn_int_b,
         seq_len,
         hidden,
         intermediate,
@@ -290,7 +314,7 @@ fn run_layer_int8(
     let mut ffn_out = int8_linear(
         &ffn_int,
         &layer.ffn_out_w,
-        &layer.ffn_out_b,
+        layer.ffn_out_b,
         seq_len,
         intermediate,
         hidden,
@@ -300,8 +324,8 @@ fn run_layer_int8(
         &mut ffn_out,
         seq_len,
         hidden,
-        &layer.ffn_ln_gamma,
-        &layer.ffn_ln_beta,
+        layer.ffn_ln_gamma,
+        layer.ffn_ln_beta,
         layer_norm_eps,
     );
     ffn_out
@@ -328,8 +352,8 @@ pub fn run_encoder_stack_int8(
         &mut rel_emb_lnd,
         full_rel_table_len,
         hidden,
-        &w.rel_emb_ln_gamma,
-        &w.rel_emb_ln_beta,
+        w.rel_emb_ln_gamma,
+        w.rel_emb_ln_beta,
         w.layer_norm_eps,
     );
 
@@ -375,11 +399,15 @@ pub fn run_encoder_stack_int8(
 
 // ── head pieces ───────────────────────────────────────────────────
 
-pub fn project_tokens_int8(w: &WeightsDebertaInt8, encoder_out: &[f32], seq_len: usize) -> Vec<f32> {
+pub fn project_tokens_int8(
+    w: &WeightsDebertaInt8,
+    encoder_out: &[f32],
+    seq_len: usize,
+) -> Vec<f32> {
     int8_linear(
         encoder_out,
         &w.proj_w,
-        &w.proj_b,
+        w.proj_b,
         seq_len,
         w.hidden_size,
         w.projection_out,
@@ -419,7 +447,12 @@ pub fn split_tokens_int8(
             num_prompts += 1;
         }
     }
-    SplitOutputInt8 { words, prompts, num_words, num_prompts }
+    SplitOutputInt8 {
+        words,
+        prompts,
+        num_words,
+        num_prompts,
+    }
 }
 
 /// BiLSTM stays in fp32 — small footprint, sequential, marginal cost
@@ -430,60 +463,68 @@ pub fn run_bilstm_int8(w: &WeightsDebertaInt8, words: &[f32], num_words: usize) 
     let four_h = 4 * half;
     let mut out = vec![0.0f32; num_words * d];
 
-    let run_dir = |ih_w: &[f32],
-                   hh_w: &[f32],
-                   ih_b: &[f32],
-                   hh_b: &[f32],
-                   reverse: bool|
-     -> Vec<f32> {
-        let mut hs = vec![0.0f32; num_words * half];
-        let mut h_prev = vec![0.0f32; half];
-        let mut c_prev = vec![0.0f32; half];
-        let mut bias = vec![0.0f32; four_h];
-        for (i, slot) in bias.iter_mut().enumerate() {
-            *slot = ih_b[i] + hh_b[i];
-        }
-        let step_order: Vec<usize> = if reverse {
-            (0..num_words).rev().collect()
-        } else {
-            (0..num_words).collect()
+    let run_dir =
+        |ih_w: &[f32], hh_w: &[f32], ih_b: &[f32], hh_b: &[f32], reverse: bool| -> Vec<f32> {
+            let mut hs = vec![0.0f32; num_words * half];
+            let mut h_prev = vec![0.0f32; half];
+            let mut c_prev = vec![0.0f32; half];
+            let mut bias = vec![0.0f32; four_h];
+            for (i, slot) in bias.iter_mut().enumerate() {
+                *slot = ih_b[i] + hh_b[i];
+            }
+            let step_order: Vec<usize> = if reverse {
+                (0..num_words).rev().collect()
+            } else {
+                (0..num_words).collect()
+            };
+            let mut gates = vec![0.0f32; four_h];
+            for t in step_order {
+                gates.fill(0.0);
+                let x_row = &words[t * d..(t + 1) * d];
+                for (j, &xv) in x_row.iter().enumerate() {
+                    let w_row = &ih_w[j * four_h..(j + 1) * four_h];
+                    for g in 0..four_h {
+                        gates[g] += xv * w_row[g];
+                    }
+                }
+                for (j, &hv) in h_prev.iter().enumerate() {
+                    let w_row = &hh_w[j * four_h..(j + 1) * four_h];
+                    for g in 0..four_h {
+                        gates[g] += hv * w_row[g];
+                    }
+                }
+                for g in 0..four_h {
+                    gates[g] += bias[g];
+                }
+                for dd in 0..half {
+                    let i = sigmoid(gates[dd]);
+                    let f = sigmoid(gates[half + dd]);
+                    let gg = gates[2 * half + dd].tanh();
+                    let o = sigmoid(gates[3 * half + dd]);
+                    let c = f * c_prev[dd] + i * gg;
+                    let h = o * c.tanh();
+                    c_prev[dd] = c;
+                    h_prev[dd] = h;
+                    hs[t * half + dd] = h;
+                }
+            }
+            hs
         };
-        let mut gates = vec![0.0f32; four_h];
-        for t in step_order {
-            gates.fill(0.0);
-            let x_row = &words[t * d..(t + 1) * d];
-            for (j, &xv) in x_row.iter().enumerate() {
-                let w_row = &ih_w[j * four_h..(j + 1) * four_h];
-                for g in 0..four_h {
-                    gates[g] += xv * w_row[g];
-                }
-            }
-            for (j, &hv) in h_prev.iter().enumerate() {
-                let w_row = &hh_w[j * four_h..(j + 1) * four_h];
-                for g in 0..four_h {
-                    gates[g] += hv * w_row[g];
-                }
-            }
-            for g in 0..four_h {
-                gates[g] += bias[g];
-            }
-            for dd in 0..half {
-                let i = sigmoid(gates[dd]);
-                let f = sigmoid(gates[half + dd]);
-                let gg = gates[2 * half + dd].tanh();
-                let o = sigmoid(gates[3 * half + dd]);
-                let c = f * c_prev[dd] + i * gg;
-                let h = o * c.tanh();
-                c_prev[dd] = c;
-                h_prev[dd] = h;
-                hs[t * half + dd] = h;
-            }
-        }
-        hs
-    };
 
-    let fwd = run_dir(&w.lstm_fwd.ih_w, &w.lstm_fwd.hh_w, &w.lstm_fwd.ih_b, &w.lstm_fwd.hh_b, false);
-    let rev = run_dir(&w.lstm_rev.ih_w, &w.lstm_rev.hh_w, &w.lstm_rev.ih_b, &w.lstm_rev.hh_b, true);
+    let fwd = run_dir(
+        w.lstm_fwd.ih_w,
+        w.lstm_fwd.hh_w,
+        w.lstm_fwd.ih_b,
+        w.lstm_fwd.hh_b,
+        false,
+    );
+    let rev = run_dir(
+        w.lstm_rev.ih_w,
+        w.lstm_rev.hh_w,
+        w.lstm_rev.ih_b,
+        w.lstm_rev.hh_b,
+        true,
+    );
     for t in 0..num_words {
         let dst = &mut out[t * d..(t + 1) * d];
         dst[..half].copy_from_slice(&fwd[t * half..(t + 1) * half]);
@@ -493,9 +534,9 @@ pub fn run_bilstm_int8(w: &WeightsDebertaInt8, words: &[f32], num_words: usize) 
 }
 
 fn run_proj_mlp_int8(mlp: &ProjMlpInt8, x: &[f32], m: usize) -> Vec<f32> {
-    let mut h = int8_linear(x, &mlp.lin1_w, &mlp.lin1_b, m, mlp.in_dim, mlp.inner_dim);
+    let mut h = int8_linear(x, &mlp.lin1_w, mlp.lin1_b, m, mlp.in_dim, mlp.inner_dim);
     relu_inplace(&mut h);
-    int8_linear(&h, &mlp.lin2_w, &mlp.lin2_b, m, mlp.inner_dim, mlp.out_dim)
+    int8_linear(&h, &mlp.lin2_w, mlp.lin2_b, m, mlp.inner_dim, mlp.out_dim)
 }
 
 pub fn build_span_rep_int8(
@@ -519,7 +560,11 @@ pub fn build_span_rep_int8(
     run_proj_mlp_int8(&w.out_project, &cat, n)
 }
 
-pub fn project_prompts_int8(w: &WeightsDebertaInt8, prompts: &[f32], num_prompts: usize) -> Vec<f32> {
+pub fn project_prompts_int8(
+    w: &WeightsDebertaInt8,
+    prompts: &[f32],
+    num_prompts: usize,
+) -> Vec<f32> {
     run_proj_mlp_int8(&w.prompt, prompts, num_prompts)
 }
 
