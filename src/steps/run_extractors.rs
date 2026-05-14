@@ -21,6 +21,7 @@
 
 use crate::inference::deberta::predict::{LabeledSpan, predict_entities};
 use crate::steps::coref::{CorefDecision, resolve_coref};
+use crate::steps::orthographic::{OrthographicChunk, extract_chunks};
 use crate::steps::relation_patterns::{RelationProposal, extract_relations};
 use crate::steps::temporal::{TemporalSpan, extract_temporal};
 use crate::types::{Hypergraph, Policy, RegionActivation, RelationStatus};
@@ -48,10 +49,17 @@ pub enum ProposalSource {
     Pattern,
 }
 
-/// Everything Step 5 contributes to a tick: span typings, relation
-/// quads, and coref reuse decisions for Step 6.
+/// Everything Step 5 contributes to a tick: unconditional chunks from
+/// the model-free pass (5a), span typings, relation quads, and coref
+/// reuse decisions. Step 8 (when built) mints an Element per
+/// `unconditional_chunks` entry regardless of whether labeling
+/// succeeded — labels become meta-relations attached on top.
 #[derive(Debug, Default)]
 pub struct ExtractionOutput {
+    /// Step 5a output. Always populated for non-empty input — these are
+    /// the chunks the brain-inspired pre-semantic segmentation pass
+    /// produced. Categorization is optional and lives in `instance_of`.
+    pub unconditional_chunks: Vec<OrthographicChunk>,
     pub instance_of: Vec<ExtractionProposal>,
     pub relations: Vec<RelationProposal>,
     pub coref: Vec<CorefDecision>,
@@ -94,6 +102,13 @@ pub fn run_extractors(
             mark = std::time::SystemTime::now();
         }
     };
+
+    // 0. Step 5a — orthographic chunker. Pure-Rust, no model, always
+    //    produces something. Mirrors the brain's pre-semantic boundary
+    //    cues (punctuation, whitespace, casing). Output lands as
+    //    `unconditional_chunks`; downstream labeling is purely additive.
+    let unconditional_chunks = extract_chunks(input_text);
+    stage("orthographic chunks");
 
     // 1. Build the NER label set. Caller-supplied labels override
     //    everything; otherwise SEED_KINDS plus a warm-bias set drawn
@@ -173,6 +188,7 @@ pub fn run_extractors(
     stage("coref");
 
     ExtractionOutput {
+        unconditional_chunks,
         instance_of,
         relations,
         coref,

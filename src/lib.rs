@@ -17,9 +17,9 @@ use std::time::SystemTime;
 use seed::load_seed_graph;
 use steps::adjust_policy::adjust_policy;
 use steps::detect_intent::detect_intent;
-use steps::route_regions::route_regions;
-use steps::run_extractors::run_extractors;
-use types::ElementId;
+use steps::route_regions::{RouteResult, route_regions};
+use steps::run_extractors::{ExtractionOutput, run_extractors};
+use types::{ElementId, Hypergraph, Intent, Policy};
 
 /// Maximum tokens accepted in a single tick. Matches GLiNER2's 512-token
 /// max-input minus a safety margin for special tokens, positional buffer,
@@ -69,22 +69,76 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let hg = load_seed_graph();
     stage_at("load_seed_graph", &mut mark);
+    print_seed_graph(&hg);
 
     let embedding = embed::embed_text(&input_text);
     stage_at("embed_text (MiniLM)", &mut mark);
+    print_embedding(&embedding);
+
     let intent = detect_intent(&input_text, &embedding);
     stage_at("detect_intent", &mut mark);
+    print_intent(&intent);
+
     let policy = adjust_policy(&intent, &hg.policy);
     stage_at("adjust_policy", &mut mark);
+    print_policy(&policy);
+
     let route = route_regions(&embedding, &hg, &policy);
     stage_at("route_regions", &mut mark);
+    print_routing(&hg, &policy, &route);
 
+    let out = run_extractors(&input_text, &[], &policy, &hg, &route.active_regions);
+    stage_at("run_extractors (Step 5)", &mut mark);
+    print_extraction(&input_text, &out);
+
+    let dump_path = Path::new("inspect/last_run.md");
+    fs::create_dir_all(dump_path.parent().unwrap())?;
+    let md = render::render(&hg);
+    let mut file = fs::File::create(dump_path)?;
+    file.write_all(md.as_bytes())?;
+    println!(
+        "graph dump          wrote {} ({} bytes)",
+        dump_path.display(),
+        md.len()
+    );
+
+    Ok(())
+}
+
+// ─── dev-time print helpers ───────────────────────────────────────────────
+// These render intermediate pipeline state to stdout while the pipeline is
+// under active development. Once output goes somewhere structured (UI, log
+// pipeline, conformance harness, etc.), delete the entire block below along
+// with the `print_*` calls in `run()`.
+
+fn print_seed_graph(hg: &Hypergraph) {
+    println!("seed graph");
+    println!("  elements         {}", hg.elements.len());
+    println!("  relations        {}", hg.relations.len());
+    println!(
+        "  region children of GENESIS  {}",
+        hg.region_children.get(&hg.genesis).map_or(0, |v| v.len()),
+    );
+}
+
+fn print_embedding(embedding: &[f32]) {
+    println!("embedding ({}-dim, shared with Step 1)", embedding.len());
+    print!(" ");
+    for v in embedding.iter().take(8) {
+        print!(" {v:+.4}");
+    }
+    println!(" …");
+}
+
+fn print_intent(intent: &Intent) {
     println!("intent");
     println!("  conviction       {:.3}", intent.conviction);
     println!("  prediction_error {:.3}", intent.prediction_error);
     println!("  arousal          {:.3}", intent.arousal);
     println!("  curiosity        {:.3}", intent.curiosity);
+}
 
+fn print_policy(policy: &Policy) {
     println!("policy (adjusted)");
     println!("  default_conf           {:.3}", policy.default_conf);
     println!("  salience_multiplier    {:.3}", policy.salience_multiplier);
@@ -94,22 +148,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         "  supersession_threshold {:.3}",
         policy.supersession_threshold
     );
+}
 
-    println!("embedding ({}-dim, shared with Step 1)", embedding.len());
-    print!(" ");
-    for v in embedding.iter().take(8) {
-        print!(" {v:+.4}");
-    }
-    println!(" …");
-
-    println!("seed graph");
-    println!("  elements         {}", hg.elements.len());
-    println!("  relations        {}", hg.relations.len());
-    println!(
-        "  region children of GENESIS  {}",
-        hg.region_children.get(&hg.genesis).map_or(0, |v| v.len()),
-    );
-
+fn print_routing(hg: &Hypergraph, policy: &Policy, route: &RouteResult) {
     println!("region routing");
     println!(
         "  thresholds (adj)    cos.descend≥{:.3}  cos.leaf≥{:.3}  M.activate≥{:.3}  var_prior={:.4}",
@@ -184,11 +225,45 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !route.uncertainty.is_empty() {
         println!("  uncertainty         {:?}", route.uncertainty);
     }
+}
 
+fn print_extraction(input_text: &str, out: &ExtractionOutput) {
     println!();
     println!("run_extractors (Step 5)");
-    let out = run_extractors(&input_text, &[], &policy, &hg, &route.active_regions);
-    stage_at("run_extractors (Step 5)", &mut mark);
+
+    // Step 5a — unconditional chunks. Always populated for non-empty input.
+    if out.unconditional_chunks.is_empty() {
+        println!("  unconditional_chunks: (none)");
+    } else {
+        let phrase_count = out
+            .unconditional_chunks
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.scale,
+                    crate::steps::orthographic::ChunkScale::Phrase
+                )
+            })
+            .count();
+        let token_count = out.unconditional_chunks.len() - phrase_count;
+        println!(
+            "  unconditional_chunks  {} total  ({} phrases, {} tokens)",
+            out.unconditional_chunks.len(),
+            phrase_count,
+            token_count
+        );
+        for c in &out.unconditional_chunks {
+            let truncated: String = if c.text.chars().count() > 36 {
+                let cut: String = c.text.chars().take(33).collect();
+                format!("{cut}…")
+            } else {
+                c.text.clone()
+            };
+            println!("    {:<8} {truncated}", format!("{:?}", c.scale));
+        }
+    }
+    println!();
+
     if out.instance_of.is_empty() {
         println!("  instance_of:  (none)");
     } else {
@@ -238,17 +313,4 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!();
         println!("  coref decisions: {}", out.coref.len());
     }
-
-    let dump_path = Path::new("inspect/last_run.md");
-    fs::create_dir_all(dump_path.parent().unwrap())?;
-    let md = render::render(&hg);
-    let mut file = fs::File::create(dump_path)?;
-    file.write_all(md.as_bytes())?;
-    println!(
-        "graph dump          wrote {} ({} bytes)",
-        dump_path.display(),
-        md.len()
-    );
-
-    Ok(())
 }
