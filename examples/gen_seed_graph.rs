@@ -169,14 +169,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── 3. Regions ────────────────────────────────────────────────────
+    // Polarity is inherited from parents: any parent under VOID makes
+    // the region itself Void. VOID is in `anchors:` (minted in §1), so
+    // by the time region minting runs, parent polarities are already
+    // resolvable via `elements[id]`.
     for raw in &pack.regions {
+        let polarity = raw
+            .parent_regions
+            .iter()
+            .map(|(parent_sym, _)| {
+                elements[symbol_to_id[parent_sym].0 as usize].polarity
+            })
+            .find(|&p| p == Polarity::Void)
+            .unwrap_or(Polarity::Signal);
         mint_element(
             &mut elements,
             &mut symbol_to_id,
             &raw.element_id,
             raw.names.clone(),
             embed_text(&raw.names[0]),
-            Polarity::Signal,
+            polarity,
         );
     }
 
@@ -214,9 +226,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Each region's `examples` list in YAML becomes a parallel list of
     // prototype Elements. Name: `<region>_proto_<i>`. The descriptor
     // is *not* embedded — it stays in YAML as human-readable metadata.
+    // Prototype polarity mirrors its parent region so the void-subtree
+    // prototypes are tagged correctly.
     let mut region_to_protos: HashMap<ElementId, Vec<ElementId>> = HashMap::new();
     for raw in &pack.regions {
         let region_id = symbol_to_id[&raw.element_id];
+        let region_polarity = elements[region_id.0 as usize].polarity;
         assert!(
             !raw.examples.is_empty(),
             "region {} has no examples — seed pack regression",
@@ -232,11 +247,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &proto_symbol,
                 vec![proto_name],
                 embed_text(example),
-                Polarity::Signal,
+                region_polarity,
             );
             protos.push(proto_id);
         }
         region_to_protos.insert(region_id, protos);
+    }
+
+    // ── 6b. Named member elements under each region ───────────────────
+    // Closed-class void regions seed their stop words here as named
+    // Elements (rather than a hardcoded list). Polarity inherits from
+    // the parent region. Each member also gets an `instance_of`
+    // relation to its region (minted below in §8b).
+    let mut region_to_members: HashMap<ElementId, Vec<ElementId>> = HashMap::new();
+    for raw in &pack.regions {
+        if raw.members.is_empty() {
+            continue;
+        }
+        let region_id = symbol_to_id[&raw.element_id];
+        let region_polarity = elements[region_id.0 as usize].polarity;
+        let mut members: Vec<ElementId> = Vec::with_capacity(raw.members.len());
+        for m in &raw.members {
+            let member_id = mint_element(
+                &mut elements,
+                &mut symbol_to_id,
+                &m.element_id,
+                m.names.clone(),
+                embed_text(&m.names[0]),
+                region_polarity,
+            );
+            members.push(member_id);
+        }
+        region_to_members.insert(region_id, members);
     }
 
     // Cached attribute IDs the runtime will read from the bin header.
@@ -249,6 +291,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prototype_attr_id = *name_to_attr_id
         .get("prototype")
         .expect("seed pack missing the 'prototype' attribute name");
+    let instance_of_attr_id = *name_to_attr_id
+        .get("instance_of")
+        .expect("seed pack missing the 'instance_of' attribute name");
 
     // ── 7. Seeded relations from the YAML ─────────────────────────────
     for entry in &pack.seeded_relations.region_class_pins.relations {
@@ -302,13 +347,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // ── 8b. Member instance_of relations ──────────────────────────────
+    // Each seeded member element from §6b gets a
+    // `(member, instance_of, region)` relation, parallel to the
+    // existing `(REGION_*, instance_of, REGION_CLASS)` pins.
+    for raw in &pack.regions {
+        let region_id = symbol_to_id[&raw.element_id];
+        if let Some(members) = region_to_members.get(&region_id) {
+            for &member_id in members {
+                mint_relation(
+                    &mut relations,
+                    subject_attr_id,
+                    member_id,
+                    instance_of_attr_id,
+                    region_id,
+                    1.0,
+                );
+            }
+        }
+    }
+
     // Sanity checks — fail loudly if the YAML's shape drifted.
-    // 2 anchors + 30 attrs + 14 regions + 8 frames + 2 classes + 280
-    // prototypes (14 regions × 20 examples) = 336 elements.
-    // 14 region-class + 8 frame-class + 14 region-parent + 280
-    // prototype-attach = 316 relations.
-    assert_eq!(elements.len(), 336, "expected 336 elements");
-    assert_eq!(relations.len(), 316, "expected 316 relations");
+    // Element budget:
+    //   2 anchors + 30 attrs + 22 regions (14 signal + 8 void)
+    //   + 8 frames + 2 classes
+    //   + 440 prototypes (22 regions × 20 examples)
+    //   + 118 void members
+    //   = 622.
+    // Relation budget:
+    //   22 region-class pins + 8 frame-class pins
+    //   + 22 region-parent pins
+    //   + 440 prototype-attach
+    //   + 118 member instance_of
+    //   = 610.
+    assert_eq!(elements.len(), 622, "expected 622 elements");
+    assert_eq!(relations.len(), 610, "expected 610 relations");
 
     // ── 9. Serialize ──────────────────────────────────────────────────
     let mut buf: Vec<u8> = Vec::new();

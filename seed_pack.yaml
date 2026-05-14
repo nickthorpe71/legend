@@ -39,9 +39,14 @@ anchors:
   - element_id: VOID
     names: ["void"]
     rationale: >
-      Sink for retracted / pruned elements that must remain referenceable
-      (so dangling pointers stay valid) without participating in routing
-      or focus aggregation.
+      Root of the polarity=Void subtree — the closed-class grammatical
+      regions (determiners, adpositions, conjunctions, pronouns,
+      auxiliaries, particles, interjections) sit under VOID and inherit
+      its polarity. Tokens that route into this subtree match via the
+      same cosine machinery as signal regions but are dropped from
+      downstream extraction. Also doubles as the historical sink for
+      retracted / pruned elements that need to remain referenceable
+      without participating in focus aggregation.
 
 # ---------------------------------------------------------------------
 # 2. Seeded attribute names — load-bearing because §3.4 emergence rules,
@@ -852,6 +857,388 @@ regions:
       modality-heavy inputs ensures those meta-relations get
       populated rather than dropped.
 
+  # ── Polarity = Void subtree ─────────────────────────────────────────
+  # Closed-class grammatical regions, sat under the VOID anchor. Every
+  # element minted under these regions inherits polarity=Void: routing
+  # uses the same cosine machinery as signal regions, but the matched
+  # token is *dropped* from downstream extraction rather than propagated.
+  # Categories follow the Universal Dependencies POS tagset.
+
+  - element_id: REGION_DETERMINERS
+    names: ["determiners"]
+    parent_regions: [[VOID, 1.0]]
+    descriptor: "Articles, demonstratives, and quantifiers — closed-class
+                 words that scope a noun phrase (UD `DET`)."
+    examples:
+      - "the cat sat on the mat"
+      - "an interesting idea came up"
+      - "this is the right way"
+      - "every dog has its day"
+      - "some people prefer tea"
+      - "no one knew the answer"
+      - "those books were heavy"
+      - "a few friends came over"
+      - "I bought a new car"
+      - "the door was closed"
+      - "she opened that envelope"
+      - "these flowers smell nice"
+      - "any minute now"
+      - "all the children laughed"
+      - "both options look fine"
+      - "many years had passed"
+      - "few people noticed"
+      - "the storm came suddenly"
+      - "an old friend called"
+      - "this house feels warm"
+    members:
+      - { element_id: VOID_DET_THE,   names: ["the"] }
+      - { element_id: VOID_DET_A,     names: ["a"] }
+      - { element_id: VOID_DET_AN,    names: ["an"] }
+      - { element_id: VOID_DET_THIS,  names: ["this"] }
+      - { element_id: VOID_DET_THAT,  names: ["that"] }
+      - { element_id: VOID_DET_THESE, names: ["these"] }
+      - { element_id: VOID_DET_THOSE, names: ["those"] }
+      - { element_id: VOID_DET_EVERY, names: ["every"] }
+      - { element_id: VOID_DET_SOME,  names: ["some"] }
+      - { element_id: VOID_DET_ANY,   names: ["any"] }
+      - { element_id: VOID_DET_NO,    names: ["no"] }
+      - { element_id: VOID_DET_ALL,   names: ["all"] }
+      - { element_id: VOID_DET_BOTH,  names: ["both"] }
+      - { element_id: VOID_DET_MANY,  names: ["many"] }
+      - { element_id: VOID_DET_FEW,   names: ["few"] }
+      - { element_id: VOID_DET_EACH,  names: ["each"] }
+    rationale: >
+      Determiners scope noun phrases in nearly every English clause;
+      filtering them as void preserves the "the cat sat on the mat" →
+      ["cat", "mat"] content-token residue. UD `DET`.
+
+  - element_id: REGION_ADPOSITIONS
+    names: ["adpositions"]
+    parent_regions: [[VOID, 1.0]]
+    descriptor: "Prepositions — closed-class words that link noun phrases
+                 to other constituents (UD `ADP`)."
+    examples:
+      - "the book of poems sat on the shelf"
+      - "she walked to the store"
+      - "we arrived at noon"
+      - "the cat jumped over the wall"
+      - "they came from far away"
+      - "he sat with great care"
+      - "the lamp by the window"
+      - "I left it for you"
+      - "she ran across the field"
+      - "the painting on the wall"
+      - "between the trees and the river"
+      - "into the woods we went"
+      - "the cup is under the table"
+      - "after the storm passed"
+      - "before sunset on Tuesday"
+      - "the door behind the curtain"
+      - "around the corner there's a shop"
+      - "near the old church"
+      - "through the long tunnel"
+      - "above the clouds"
+    members:
+      - { element_id: VOID_ADP_OF,      names: ["of"] }
+      - { element_id: VOID_ADP_IN,      names: ["in"] }
+      - { element_id: VOID_ADP_ON,      names: ["on"] }
+      - { element_id: VOID_ADP_AT,      names: ["at"] }
+      - { element_id: VOID_ADP_TO,      names: ["to"] }
+      - { element_id: VOID_ADP_FROM,    names: ["from"] }
+      - { element_id: VOID_ADP_WITH,    names: ["with"] }
+      - { element_id: VOID_ADP_BY,      names: ["by"] }
+      - { element_id: VOID_ADP_FOR,     names: ["for"] }
+      - { element_id: VOID_ADP_ABOUT,   names: ["about"] }
+      - { element_id: VOID_ADP_OVER,    names: ["over"] }
+      - { element_id: VOID_ADP_UNDER,   names: ["under"] }
+      - { element_id: VOID_ADP_THROUGH, names: ["through"] }
+      - { element_id: VOID_ADP_ACROSS,  names: ["across"] }
+      - { element_id: VOID_ADP_BETWEEN, names: ["between"] }
+      - { element_id: VOID_ADP_INTO,    names: ["into"] }
+      - { element_id: VOID_ADP_ONTO,    names: ["onto"] }
+      - { element_id: VOID_ADP_BEFORE,  names: ["before"] }
+      - { element_id: VOID_ADP_AFTER,   names: ["after"] }
+      - { element_id: VOID_ADP_UNTIL,   names: ["until"] }
+      - { element_id: VOID_ADP_SINCE,   names: ["since"] }
+      - { element_id: VOID_ADP_NEAR,    names: ["near"] }
+      - { element_id: VOID_ADP_BEHIND,  names: ["behind"] }
+      - { element_id: VOID_ADP_AROUND,  names: ["around"] }
+      - { element_id: VOID_ADP_AGAINST, names: ["against"] }
+      - { element_id: VOID_ADP_WITHOUT, names: ["without"] }
+      - { element_id: VOID_ADP_WITHIN,  names: ["within"] }
+      - { element_id: VOID_ADP_UPON,    names: ["upon"] }
+    rationale: >
+      Adpositions (English: prepositions) are the second-densest
+      closed-class category by token count. UD `ADP`.
+
+  - element_id: REGION_COORD_CONJ
+    names: ["coord_conj", "coordinating_conjunctions"]
+    parent_regions: [[VOID, 1.0]]
+    descriptor: "Coordinating conjunctions — connect equal-rank constituents
+                 (UD `CCONJ`)."
+    examples:
+      - "Alice and Bob went hiking"
+      - "we could leave or wait"
+      - "tired but happy"
+      - "neither hot nor cold"
+      - "she's young yet wise"
+      - "the sky cleared so we left"
+      - "he ran and jumped"
+      - "stop and listen"
+      - "fast or slow"
+      - "small but mighty"
+      - "she sang and danced"
+      - "cheap and easy"
+      - "loud yet clear"
+      - "ready or not"
+      - "calm but firm"
+      - "we tried and failed"
+      - "rain and snow fell together"
+      - "old and new ideas"
+      - "morning or night"
+      - "neither here nor there"
+    members:
+      - { element_id: VOID_CCONJ_AND, names: ["and"] }
+      - { element_id: VOID_CCONJ_OR,  names: ["or"] }
+      - { element_id: VOID_CCONJ_BUT, names: ["but"] }
+      - { element_id: VOID_CCONJ_NOR, names: ["nor"] }
+      - { element_id: VOID_CCONJ_YET, names: ["yet"] }
+      - { element_id: VOID_CCONJ_SO,  names: ["so"] }
+    rationale: >
+      Coordinating conjunctions are a small closed class. UD `CCONJ`.
+
+  - element_id: REGION_SUBORD_CONJ
+    names: ["subord_conj", "subordinating_conjunctions"]
+    parent_regions: [[VOID, 1.0]]
+    descriptor: "Subordinating conjunctions — introduce dependent clauses
+                 (UD `SCONJ`)."
+    examples:
+      - "we left when the rain started"
+      - "if you can find it"
+      - "she stayed because she loved it"
+      - "while the dog slept"
+      - "after they finished dinner"
+      - "before the meeting began"
+      - "until the lights came on"
+      - "since you asked"
+      - "although it was late"
+      - "unless you have other plans"
+      - "though it seemed unlikely"
+      - "whether they would come"
+      - "as the sun rose"
+      - "whereas mine is broken"
+      - "if the weather holds"
+      - "when nobody is looking"
+      - "because the wind shifted"
+      - "after a long day"
+      - "before anyone noticed"
+      - "until the next morning"
+    members:
+      - { element_id: VOID_SCONJ_IF,       names: ["if"] }
+      - { element_id: VOID_SCONJ_WHEN,     names: ["when"] }
+      - { element_id: VOID_SCONJ_WHILE,    names: ["while"] }
+      - { element_id: VOID_SCONJ_BECAUSE,  names: ["because"] }
+      - { element_id: VOID_SCONJ_ALTHOUGH, names: ["although"] }
+      - { element_id: VOID_SCONJ_THOUGH,   names: ["though"] }
+      - { element_id: VOID_SCONJ_UNLESS,   names: ["unless"] }
+      - { element_id: VOID_SCONJ_WHETHER,  names: ["whether"] }
+      - { element_id: VOID_SCONJ_WHEREAS,  names: ["whereas"] }
+      - { element_id: VOID_SCONJ_AS,       names: ["as"] }
+      - { element_id: VOID_SCONJ_THAT,     names: ["that"] }
+    rationale: >
+      Subordinating conjunctions introduce dependent clauses; English
+      shares some tokens with prepositions (`before`, `after`, `until`,
+      `since`) which surface in both regions — the cosine prototype is
+      the disambiguator. UD `SCONJ`.
+
+  - element_id: REGION_PRONOUNS
+    names: ["pronouns"]
+    parent_regions: [[VOID, 1.0]]
+    descriptor: "Pronouns — closed-class proforms substituting for noun
+                 phrases (UD `PRON`)."
+    examples:
+      - "I went to the store"
+      - "you should try this"
+      - "he said hello"
+      - "she opened the door"
+      - "it was raining"
+      - "we walked together"
+      - "they laughed loudly"
+      - "my favorite color is blue"
+      - "your shoes are wet"
+      - "his brother arrived early"
+      - "her phone was ringing"
+      - "its name is Spot"
+      - "our house is warm"
+      - "their car broke down"
+      - "tell me what happened"
+      - "give him a chance"
+      - "asked her to come"
+      - "found us by the river"
+      - "saw them at the park"
+      - "the book is mine"
+    members:
+      - { element_id: VOID_PRON_I,     names: ["I"] }
+      - { element_id: VOID_PRON_ME,    names: ["me"] }
+      - { element_id: VOID_PRON_YOU,   names: ["you"] }
+      - { element_id: VOID_PRON_HE,    names: ["he"] }
+      - { element_id: VOID_PRON_HIM,   names: ["him"] }
+      - { element_id: VOID_PRON_SHE,   names: ["she"] }
+      - { element_id: VOID_PRON_HER,   names: ["her"] }
+      - { element_id: VOID_PRON_IT,    names: ["it"] }
+      - { element_id: VOID_PRON_WE,    names: ["we"] }
+      - { element_id: VOID_PRON_US,    names: ["us"] }
+      - { element_id: VOID_PRON_THEY,  names: ["they"] }
+      - { element_id: VOID_PRON_THEM,  names: ["them"] }
+      - { element_id: VOID_PRON_MY,    names: ["my"] }
+      - { element_id: VOID_PRON_YOUR,  names: ["your"] }
+      - { element_id: VOID_PRON_HIS,   names: ["his"] }
+      - { element_id: VOID_PRON_ITS,   names: ["its"] }
+      - { element_id: VOID_PRON_OUR,   names: ["our"] }
+      - { element_id: VOID_PRON_THEIR, names: ["their"] }
+      - { element_id: VOID_PRON_MINE,  names: ["mine"] }
+      - { element_id: VOID_PRON_YOURS, names: ["yours"] }
+      - { element_id: VOID_PRON_HERS,  names: ["hers"] }
+      - { element_id: VOID_PRON_OURS,  names: ["ours"] }
+    rationale: >
+      Pronouns are closed-class but downstream coref (Step 5d) will
+      *want* to consult them — phase 6's filter applies to the
+      unconditional-chunks output, not to NER labels, so coref still
+      sees pronouns in the raw text. UD `PRON`.
+
+  - element_id: REGION_AUXILIARIES
+    names: ["auxiliaries"]
+    parent_regions: [[VOID, 1.0]]
+    descriptor: "Auxiliary and modal verbs — closed-class verb forms that
+                 carry tense, aspect, or mood without contributing lexical
+                 content (UD `AUX`)."
+    examples:
+      - "she is reading a book"
+      - "they are working late"
+      - "I was tired yesterday"
+      - "we were excited"
+      - "the meeting has ended"
+      - "they have arrived"
+      - "she had already left"
+      - "I do believe you"
+      - "she does enjoy it"
+      - "we did not know"
+      - "he can swim well"
+      - "she could explain it"
+      - "they will come soon"
+      - "we would never agree"
+      - "you should rest now"
+      - "he might call later"
+      - "she may agree"
+      - "we must hurry"
+      - "the door has been opened"
+      - "the path was blocked"
+    members:
+      - { element_id: VOID_AUX_BE,     names: ["be"] }
+      - { element_id: VOID_AUX_AM,     names: ["am"] }
+      - { element_id: VOID_AUX_IS,     names: ["is"] }
+      - { element_id: VOID_AUX_ARE,    names: ["are"] }
+      - { element_id: VOID_AUX_WAS,    names: ["was"] }
+      - { element_id: VOID_AUX_WERE,   names: ["were"] }
+      - { element_id: VOID_AUX_BEEN,   names: ["been"] }
+      - { element_id: VOID_AUX_BEING,  names: ["being"] }
+      - { element_id: VOID_AUX_HAVE,   names: ["have"] }
+      - { element_id: VOID_AUX_HAS,    names: ["has"] }
+      - { element_id: VOID_AUX_HAD,    names: ["had"] }
+      - { element_id: VOID_AUX_DO,     names: ["do"] }
+      - { element_id: VOID_AUX_DOES,   names: ["does"] }
+      - { element_id: VOID_AUX_DID,    names: ["did"] }
+      - { element_id: VOID_AUX_CAN,    names: ["can"] }
+      - { element_id: VOID_AUX_COULD,  names: ["could"] }
+      - { element_id: VOID_AUX_WILL,   names: ["will"] }
+      - { element_id: VOID_AUX_WOULD,  names: ["would"] }
+      - { element_id: VOID_AUX_SHALL,  names: ["shall"] }
+      - { element_id: VOID_AUX_SHOULD, names: ["should"] }
+      - { element_id: VOID_AUX_MAY,    names: ["may"] }
+      - { element_id: VOID_AUX_MIGHT,  names: ["might"] }
+      - { element_id: VOID_AUX_MUST,   names: ["must"] }
+    rationale: >
+      Auxiliaries dominate by raw token count in conversational English
+      (`is`, `was`, `do`) and carry tense / aspect / mood that the
+      pipeline reads from meta-relations rather than from the auxiliary
+      token directly. UD `AUX`.
+
+  - element_id: REGION_PARTICLES
+    names: ["particles"]
+    parent_regions: [[VOID, 1.0]]
+    descriptor: "Particles — function words that don't fit other categories
+                 (UD `PART`). Includes the infinitival `to`, negation `not`."
+    examples:
+      - "she did not see him"
+      - "they told me to wait"
+      - "she likes to read"
+      - "we want to leave"
+      - "he failed to notice"
+      - "do not enter"
+      - "we tried not to laugh"
+      - "he learned to swim"
+      - "remember to call"
+      - "told her to stop"
+      - "asked them to come"
+      - "I prefer not to comment"
+      - "decided not to attend"
+      - "she chose to stay"
+      - "started to rain"
+      - "began to understand"
+      - "tried to help"
+      - "they need to know"
+      - "ready to go"
+      - "do not panic"
+    members:
+      - { element_id: VOID_PART_NOT, names: ["not"] }
+      - { element_id: VOID_PART_TO,  names: ["to"] }
+    rationale: >
+      Two highly-frequent English particles. Note: `to` doubles as
+      preposition (`going to Paris`) and infinitival marker (`want to
+      go`); the cosine prototype distinguishes context. UD `PART`.
+
+  - element_id: REGION_INTERJECTIONS
+    names: ["interjections"]
+    parent_regions: [[VOID, 1.0]]
+    descriptor: "Interjections and discourse fillers — typically utterance-
+                 initial or standalone (UD `INTJ`)."
+    examples:
+      - "uh, I'm not sure"
+      - "hmm, that's interesting"
+      - "oh, I forgot"
+      - "wow, that's amazing"
+      - "hey, wait a second"
+      - "well, it depends"
+      - "yeah, you're right"
+      - "okay, let's go"
+      - "ouch, that hurt"
+      - "huh, I didn't know"
+      - "ah, I see now"
+      - "phew, close one"
+      - "alright, fine"
+      - "sure, sounds good"
+      - "right, of course"
+      - "whoa, slow down"
+      - "thanks, I appreciate it"
+      - "yikes, that's bad"
+      - "yes, absolutely"
+      - "no, never"
+    members:
+      - { element_id: VOID_INTJ_UH,    names: ["uh"] }
+      - { element_id: VOID_INTJ_HMM,   names: ["hmm"] }
+      - { element_id: VOID_INTJ_OH,    names: ["oh"] }
+      - { element_id: VOID_INTJ_WOW,   names: ["wow"] }
+      - { element_id: VOID_INTJ_HEY,   names: ["hey"] }
+      - { element_id: VOID_INTJ_WELL,  names: ["well"] }
+      - { element_id: VOID_INTJ_YEAH,  names: ["yeah"] }
+      - { element_id: VOID_INTJ_OKAY,  names: ["okay", "ok"] }
+      - { element_id: VOID_INTJ_HUH,   names: ["huh"] }
+      - { element_id: VOID_INTJ_AH,    names: ["ah"] }
+    rationale: >
+      Interjections and discourse fillers. Open-ended class but the
+      closed-class subset listed covers most modern English usage.
+      UD `INTJ`.
+
 # ---------------------------------------------------------------------
 # 4. Seed reference frames (8) — contextual scopes pointed at by
 #    `[target: R, frame: F]` meta-relations. Frame elements scope
@@ -949,6 +1336,15 @@ seeded_relations:
       - [REGION_PROVENANCE,       instance_of, REGION_CLASS]
       - [REGION_DOMAINS,          instance_of, REGION_CLASS]
       - [REGION_MODAL_NEGATED,    instance_of, REGION_CLASS]
+      # Polarity = Void subtree.
+      - [REGION_DETERMINERS,      instance_of, REGION_CLASS]
+      - [REGION_ADPOSITIONS,      instance_of, REGION_CLASS]
+      - [REGION_COORD_CONJ,       instance_of, REGION_CLASS]
+      - [REGION_SUBORD_CONJ,      instance_of, REGION_CLASS]
+      - [REGION_PRONOUNS,         instance_of, REGION_CLASS]
+      - [REGION_AUXILIARIES,      instance_of, REGION_CLASS]
+      - [REGION_PARTICLES,        instance_of, REGION_CLASS]
+      - [REGION_INTERJECTIONS,    instance_of, REGION_CLASS]
 
   reference_frame_class_pins:
     rationale: >
@@ -995,6 +1391,15 @@ seeded_relations:
       - [REGION_PROVENANCE,     parent_region, GENESIS, 1.0]
       - [REGION_DOMAINS,        parent_region, GENESIS, 1.0]
       - [REGION_MODAL_NEGATED,  parent_region, GENESIS, 1.0]
+      # Polarity = Void subtree.
+      - [REGION_DETERMINERS,    parent_region, VOID,    1.0]
+      - [REGION_ADPOSITIONS,    parent_region, VOID,    1.0]
+      - [REGION_COORD_CONJ,     parent_region, VOID,    1.0]
+      - [REGION_SUBORD_CONJ,    parent_region, VOID,    1.0]
+      - [REGION_PRONOUNS,       parent_region, VOID,    1.0]
+      - [REGION_AUXILIARIES,    parent_region, VOID,    1.0]
+      - [REGION_PARTICLES,      parent_region, VOID,    1.0]
+      - [REGION_INTERJECTIONS,  parent_region, VOID,    1.0]
 
 # ---------------------------------------------------------------------
 # 6. Intent prototype banks — Step 1's `Intent` vector (§11.2)

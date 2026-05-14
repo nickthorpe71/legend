@@ -51,9 +51,12 @@ pub struct RawElement {
 /// Region entries carry the generator's inputs: `parent_regions`
 /// (becomes one `parent_region` relation per parent, with the float as
 /// `stats.confidence`), `descriptor` (human-readable category definition,
-/// kept for documentation), and `examples` (concrete representative
+/// kept for documentation), `examples` (concrete representative
 /// sentences that get MiniLM-embedded into per-region prototype elements
-/// and drive mean/variance estimation for region-stats routing).
+/// and drive mean/variance estimation for region-stats routing), and
+/// `members` (named child Elements minted under the region — used by
+/// closed-class void regions to seed known stop words as graph
+/// citizens rather than a hard-coded list).
 #[derive(Deserialize)]
 pub struct RawRegion {
     pub element_id: String,
@@ -62,7 +65,18 @@ pub struct RawRegion {
     pub descriptor: String,
     #[serde(default)]
     pub examples: Vec<String>,
+    #[serde(default)]
+    pub members: Vec<RawNamedElement>,
     pub rationale: String,
+}
+
+/// Named Element attached directly to a region (as opposed to an
+/// anonymous prototype derived from an example phrase). Used by the
+/// closed-class void regions to seed known stop words.
+#[derive(Deserialize)]
+pub struct RawNamedElement {
+    pub element_id: String,
+    pub names: Vec<String>,
 }
 
 /// Three blocks of structural seed relations. Each block's `relations`

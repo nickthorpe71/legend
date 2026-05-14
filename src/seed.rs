@@ -376,11 +376,13 @@ mod tests {
     #[test]
     fn loads_expected_counts() {
         let hg = load_seed_graph();
-        // 2 anchors + 30 attrs + 14 regions + 8 frames + 2 classes + 280 prototypes
-        // (14 regions × 20 examples per region)
-        assert_eq!(hg.elements.len(), 336);
-        // 14 region-class + 8 frame-class + 14 region-parent + 280 prototype-attach
-        assert_eq!(hg.relations.len(), 316);
+        // 2 anchors + 30 attrs + 22 regions (14 signal + 8 void)
+        // + 8 frames + 2 classes + 440 prototypes (22 × 20)
+        // + 118 void members = 622.
+        assert_eq!(hg.elements.len(), 622);
+        // 22 region-class + 8 frame-class + 22 region-parent
+        // + 440 prototype-attach + 118 member instance_of = 610.
+        assert_eq!(hg.relations.len(), 610);
     }
 
     #[test]
@@ -414,13 +416,55 @@ mod tests {
     }
 
     #[test]
+    fn region_children_of_void_has_eight_entries() {
+        let hg = load_seed_graph();
+        let children = hg
+            .region_children
+            .get(&hg.void)
+            .expect("VOID should have 8 region children");
+        assert_eq!(children.len(), 8);
+        // All children of VOID must carry polarity = Void.
+        for &child_id in children {
+            let child = &hg.elements[child_id.0 as usize];
+            assert_eq!(
+                child.polarity,
+                Polarity::Void,
+                "{} (child of VOID) should be Polarity::Void, got {:?}",
+                child.names[0],
+                child.polarity,
+            );
+        }
+    }
+
+    #[test]
+    fn known_stop_words_resolve_to_void_elements() {
+        let hg = load_seed_graph();
+        for stop in ["the", "of", "and", "if", "is"] {
+            let ids = hg
+                .by_name
+                .get(stop)
+                .unwrap_or_else(|| panic!("stop word '{stop}' not in by_name"));
+            assert!(
+                ids.iter().any(|id| {
+                    hg.elements[id.0 as usize].polarity == Polarity::Void
+                }),
+                "no Polarity::Void element resolves '{stop}'",
+            );
+        }
+    }
+
+    #[test]
     fn every_seeded_region_has_twenty_prototypes_with_full_embedding() {
         let hg = load_seed_graph();
-        let regions = hg
+        let genesis_children = hg
             .region_children
             .get(&hg.genesis)
             .expect("GENESIS region children");
-        for region in regions {
+        let void_children = hg
+            .region_children
+            .get(&hg.void)
+            .expect("VOID region children");
+        for region in genesis_children.iter().chain(void_children.iter()) {
             let protos = hg
                 .region_prototypes
                 .get(region)
@@ -457,16 +501,25 @@ mod tests {
     #[test]
     fn region_stats_built_for_every_seed_region() {
         let hg = load_seed_graph();
-        let regions = hg
+        let genesis_children = hg
             .region_children
             .get(&hg.genesis)
             .expect("GENESIS region children");
+        let void_children = hg
+            .region_children
+            .get(&hg.void)
+            .expect("VOID region children");
+        let all_regions: Vec<ElementId> = genesis_children
+            .iter()
+            .chain(void_children.iter())
+            .copied()
+            .collect();
         assert_eq!(
             hg.region_stats.len(),
-            regions.len(),
-            "stats count should match region count"
+            all_regions.len(),
+            "stats count should match total region count (signal + void)"
         );
-        for region in regions {
+        for region in &all_regions {
             assert!(
                 hg.region_stats.contains_key(region),
                 "region {region:?} missing from region_stats"
