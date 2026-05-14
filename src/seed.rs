@@ -14,13 +14,13 @@
 
 use crate::embed::EMBEDDING_DIM;
 use crate::types::{
-    Attribute, Element, ElementId, Hypergraph, MemoryStats, Relation, RelationId, RelationStatus,
-    Term, Tick,
+    Attribute, Element, ElementId, Hypergraph, MemoryStats, Polarity, Relation, RelationId,
+    RelationStatus, Term, Tick,
 };
 
 /// On-disk format version. Bumped by the generator if the byte layout
 /// changes; the runtime refuses to load a mismatched version.
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 const SEED_GRAPH: &[u8] = include_bytes!("seed/graph.bin");
 
@@ -212,12 +212,18 @@ fn read_element(r: &mut Reader<'_>) -> Element {
     }
     let stats = read_stats(r);
     let created_at = Tick(r.u64());
+    let polarity = match r.u8() {
+        0 => Polarity::Signal,
+        1 => Polarity::Void,
+        other => panic!("unknown polarity byte {other} in seed pack"),
+    };
     Element {
         id,
         names,
         stats,
         created_at,
         embedding,
+        polarity,
     }
 }
 
@@ -520,6 +526,7 @@ mod tests {
             stats: MemoryStats::default(),
             created_at: Tick(0),
             embedding,
+            polarity: Polarity::Signal,
         };
         let zero = vec![0.0f32; EMBEDDING_DIM];
         let mut hg = Hypergraph {

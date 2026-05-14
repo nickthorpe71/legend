@@ -100,7 +100,8 @@ mod shared;
 
 use legend::embed::{EMBEDDING_DIM, embed_text};
 use legend::types::{
-    Attribute, Element, ElementId, MemoryStats, Relation, RelationId, RelationStatus, Term, Tick,
+    Attribute, Element, ElementId, MemoryStats, Polarity, Relation, RelationId, RelationStatus,
+    Term, Tick,
 };
 use shared::{RawElement, SeedPack, load_seed_pack};
 use std::collections::HashMap;
@@ -108,7 +109,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pack = load_seed_pack(Path::new("seed_pack.yaml"))?;
@@ -133,6 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "VOID",
         void_raw.names.clone(),
         embed_text(&void_raw.names[0]),
+        Polarity::Void,
     );
     assert_eq!(void_id, ElementId(0), "VOID must land at ElementId(0)");
 
@@ -143,6 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "GENESIS",
         genesis_raw.names.clone(),
         embed_text(&genesis_raw.names[0]),
+        Polarity::Signal,
     );
     assert_eq!(
         genesis_id,
@@ -158,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &raw.element_id,
             raw.names.clone(),
             embed_text(&raw.names[0]),
+            Polarity::Signal,
         );
         for name in &raw.names {
             name_to_attr_id.insert(name.clone(), id);
@@ -172,6 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &raw.element_id,
             raw.names.clone(),
             embed_text(&raw.names[0]),
+            Polarity::Signal,
         );
     }
 
@@ -183,6 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &raw.element_id,
             raw.names.clone(),
             embed_text(&raw.names[0]),
+            Polarity::Signal,
         );
     }
 
@@ -193,6 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "REGION_CLASS",
         vec!["region_class".into()],
         embed_text("region_class"),
+        Polarity::Signal,
     );
     let reference_frame_class_id = mint_element(
         &mut elements,
@@ -200,6 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "REFERENCE_FRAME_CLASS",
         vec!["reference_frame_class".into()],
         embed_text("reference_frame_class"),
+        Polarity::Signal,
     );
 
     // ── 6. Prototype elements (one per example per region) ────────────
@@ -224,6 +232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &proto_symbol,
                 vec![proto_name],
                 embed_text(example),
+                Polarity::Signal,
             );
             protos.push(proto_id);
         }
@@ -364,6 +373,7 @@ fn mint_element(
     symbol: &str,
     names: Vec<String>,
     embedding: Vec<f32>,
+    polarity: Polarity,
 ) -> ElementId {
     debug_assert_eq!(
         embedding.len(),
@@ -377,6 +387,7 @@ fn mint_element(
         stats: MemoryStats::default(),
         created_at: Tick(0),
         embedding,
+        polarity,
     });
     let prior = symbol_to_id.insert(symbol.to_string(), id);
     assert!(prior.is_none(), "duplicate symbol in seed pack: {symbol}");
@@ -500,6 +511,13 @@ fn write_element(buf: &mut Vec<u8>, e: &Element) {
     }
     write_stats(buf, &e.stats);
     write_u64(buf, e.created_at.0);
+    write_u8(
+        buf,
+        match e.polarity {
+            Polarity::Signal => 0,
+            Polarity::Void => 1,
+        },
+    );
 }
 
 fn write_relation(buf: &mut Vec<u8>, r: &Relation) {

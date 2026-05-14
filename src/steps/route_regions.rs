@@ -300,6 +300,7 @@ mod tests {
             stats: MemoryStats::default(),
             created_at: Tick(0),
             embedding,
+            polarity: crate::types::Polarity::Signal,
         };
 
         let mut hg = Hypergraph {

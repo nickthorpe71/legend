@@ -214,6 +214,34 @@ pub struct Element {
     /// Inline `Vec<f32>` so a single index lookup gets you the vector
     /// without an extra hash hop.
     pub embedding: Vec<f32>,
+
+    /// Semantic class — does this element carry content the downstream
+    /// pipeline should propagate (`Signal`), or is it filler that
+    /// matches without contributing (`Void`)? Inherited from parent at
+    /// mint time so every region under the seeded `void` anchor (the
+    /// closed-class grammatical regions — determiners, adpositions,
+    /// auxiliaries, …) automatically marks its members for filtering.
+    /// Routing uses the same cosine machinery for both classes; what
+    /// changes is the disposition of the matched token downstream.
+    pub polarity: Polarity,
+}
+
+/// Whether an element contributes content downstream (`Signal`) or
+/// filters it out (`Void`). The closed-class grammatical regions
+/// seeded under the `void` anchor — determiners, adpositions, and so
+/// on — and every element under them carry `Void`; everything else
+/// defaults to `Signal`. Not to be confused with routing-VOID, where
+/// `unrouted_count` counts branches that failed to clear
+/// `leaf_vigilance` regardless of element polarity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Polarity {
+    /// Carries content the downstream pipeline should propagate.
+    /// Default for newly minted elements.
+    #[default]
+    Signal,
+    /// Filler — matches the input via cosine but is dropped from
+    /// downstream extraction.
+    Void,
 }
 
 /// A claim that something is true about one or more elements. Six
