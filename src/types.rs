@@ -804,8 +804,10 @@ pub struct RegionDelta {
 
     /// Number of routing branches that died at sub-threshold quality
     /// (best child below `policy.leaf_vigilance`). Surfaces in the
-    /// frame as a routing-quality signal.
-    pub void_count: u32,
+    /// frame as a routing-quality signal. Not to be confused with
+    /// elements whose `polarity == Polarity::Void` — that's a
+    /// semantic-content classification, this is a routing failure.
+    pub unrouted_count: u32,
 }
 
 /// Mid-path insertion candidate. Populated by Step 8 from span-level

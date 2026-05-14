@@ -52,8 +52,9 @@ pub struct RegionScore {
 /// Algorithm at each node:
 /// - Score every child by both metrics.
 /// - If best `cosine` across children < `policy.leaf_vigilance`, the
-///   current branch dies into VOID (`delta.void_count += 1`); descent
-///   stops here.
+///   current branch is unrouted (`delta.unrouted_count += 1`); descent
+///   stops here. (Distinct from elements whose `polarity == Void` —
+///   this is a routing-quality failure, that's a semantic class.)
 /// - Otherwise descend into every child whose `cosine` ≥
 ///   `policy.descend_threshold` (no K cap).
 /// - Among descended children, activate those whose `mahalanobis` ≥
@@ -150,20 +151,21 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
             // No prototypes anywhere under this node — structural
             // anomaly (regions are seeded with prototypes; merges/
             // splits could create transient empties). Silent skip —
-            // not a routing-quality failure, so don't bump void_count.
+            // not a routing-quality failure, so don't bump
+            // unrouted_count.
             if scored.is_empty() {
                 continue;
             }
 
             // Leaf-vigilance gate — cosine. Best cosine across
             // children must clear the quality floor or this branch
-            // routes to VOID.
+            // is unrouted.
             let best_cosine = scored
                 .iter()
                 .map(|s| s.cosine)
                 .fold(f32::NEG_INFINITY, f32::max);
             if best_cosine < policy.leaf_vigilance {
-                delta.void_count += 1;
+                delta.unrouted_count += 1;
                 continue;
             }
 
@@ -248,7 +250,7 @@ mod tests {
     /// thresholds at or below 0. With both knobs at 0, every child of
     /// GENESIS descends. The seed substrate has 14 regions under
     /// GENESIS, so parent_attachments and prototype_updates each land
-    /// 14 entries and void_count stays 0.
+    /// 14 entries and unrouted_count stays 0.
     #[test]
     fn descends_every_child_with_permissive_thresholds() {
         let hg = load_seed_graph();
@@ -261,7 +263,7 @@ mod tests {
 
         assert_eq!(result.delta.parent_attachments.len(), 14);
         assert_eq!(result.delta.prototype_updates.len(), 14);
-        assert_eq!(result.delta.void_count, 0);
+        assert_eq!(result.delta.unrouted_count, 0);
     }
 
     /// Crank `region_activation_threshold` above the
@@ -282,11 +284,12 @@ mod tests {
         assert_eq!(result.uncertainty, vec![UncertaintySignal::DiffuseRouting]);
     }
 
-    /// VOID routing: build a synthetic Hypergraph where the input is
-    /// far from the region's mean in Mahalanobis units. With
-    /// leaf_vigilance set above the resulting score, the parent voids.
+    /// Unrouted branch: build a synthetic Hypergraph where the input
+    /// is far from the region's mean in Mahalanobis units. With
+    /// leaf_vigilance set above the resulting score, the parent fails
+    /// to route any deeper.
     #[test]
-    fn routes_to_void_when_below_leaf_vigilance() {
+    fn unroutes_when_below_leaf_vigilance() {
         use crate::types::{
             Attribute, Element, ElementId, MemoryStats, Relation, RelationId, RelationStatus, Term,
             Tick,
@@ -363,7 +366,8 @@ mod tests {
         // n=1 → variance is all zero → Mahalanobis dominated by the
         // prior. With prior=0.001 and diff=2.0 in one dim, D² = 4/0.001
         // = 4000; normalized = 4000/384 ≈ 10.4; similarity ≈ 0.087.
-        // Set leaf_vigilance comfortably above to force a void.
+        // Set leaf_vigilance comfortably above to force an unrouted
+        // branch.
         let policy = Policy {
             leaf_vigilance: 0.5,
             variance_prior: 0.001,
@@ -371,7 +375,7 @@ mod tests {
         };
 
         let result = route_regions(&anti, &hg, &policy);
-        assert_eq!(result.delta.void_count, 1);
+        assert_eq!(result.delta.unrouted_count, 1);
         assert!(result.active_regions.is_empty());
         assert_eq!(result.uncertainty, vec![UncertaintySignal::DiffuseRouting]);
     }

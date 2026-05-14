@@ -183,9 +183,10 @@ fn print_routing(hg: &Hypergraph, policy: &Policy, route: &RouteResult) {
         .iter()
         .map(|(c, _, _)| *c)
         .collect();
-    // Parent-voided when best COSINE across children falls below
-    // leaf_vigilance — matches route_regions' leaf gate.
-    let parent_voided = !scored.is_empty()
+    // Branch is unrouted when best COSINE across children falls below
+    // leaf_vigilance — matches route_regions' leaf gate. (Distinct from
+    // the polarity=Void semantic class — this is a routing failure.)
+    let branch_unrouted = !scored.is_empty()
         && scored
             .iter()
             .map(|(_, c, _, _)| *c)
@@ -203,8 +204,8 @@ fn print_routing(hg: &Hypergraph, policy: &Policy, route: &RouteResult) {
             "active"
         } else if descended.contains(id) {
             "descended"
-        } else if parent_voided {
-            "void (parent < leaf)"
+        } else if branch_unrouted {
+            "unrouted (parent < leaf)"
         } else {
             "below descend"
         };
@@ -221,7 +222,7 @@ fn print_routing(hg: &Hypergraph, policy: &Policy, route: &RouteResult) {
         "  prototype_updates   {}",
         route.delta.prototype_updates.len()
     );
-    println!("  void_count          {}", route.delta.void_count);
+    println!("  unrouted_count      {}", route.delta.unrouted_count);
     if !route.uncertainty.is_empty() {
         println!("  uncertainty         {:?}", route.uncertainty);
     }
