@@ -1,18 +1,17 @@
-//! Step 5a — orthographic chunker + statistical slices. Pure functions,
-//! no model, no persistent state. Produces content-bearing chunk
-//! candidates from punctuation, whitespace, casing, slash separators,
-//! within-input repetition, and within-input pointwise mutual
-//! information. Always produces output for non-empty inputs; never
+//! Step 5a — orthographic chunker. Pure functions, no model, no
+//! persistent state. Produces content-bearing chunk candidates from
+//! punctuation, whitespace, casing, slash separators, and within-input
+//! repetition. Always produces output for non-empty inputs; never
 //! depends on a label schema.
 //!
-//! Three slices stacked in order of how directly the signal comes from
+//! Two slices stacked in order of how directly the signal comes from
 //! the surface text:
 //!
-//! ### Slice 1 — Orthographic boundaries
-//! Phrase + Token chunks from punctuation / whitespace alone. The
-//! cognate of the brain's prosodic / orthographic boundary cues
-//! (Cutler & Norris 1988; Pierrehumbert & Hirschberg 1990) — pre-
-//! semantic segmentation. Always emits.
+//! ### Slice 1 — Orthographic boundaries (`Phrase`)
+//! Punctuation- and whitespace-delimited spans. The cognate of the
+//! brain's prosodic / orthographic boundary cues (Cutler & Norris 1988;
+//! Pierrehumbert & Hirschberg 1990) — pre-semantic segmentation.
+//! Always emits at least one chunk for non-empty input.
 //!
 //! ### Slice 2 — Repetition (`Repeated`)
 //! Any n-gram (`2 ≤ n ≤ 5` tokens) that appears at least twice in the
@@ -21,44 +20,25 @@
 //! only — cross-tick accumulation lands when Legend has a persistent
 //! stats store.
 //!
-//! ### Slice 3 — Pointwise mutual information (`Collocation`)
-//! For each adjacent bigram `(a, b)` in the input, compute
-//!     `pmi(a, b) = log2( p(a, b) / (p(a) · p(b)) )`
-//! and emit the top-scoring bigrams whose PMI clears `MIN_PMI` as
-//! `Collocation` chunks. Slice 2's text set is subtracted first so
-//! repeated bigrams don't double-emit; slice 3 then contributes the
-//! rare-pairs-that-co-occur signal slice 2 can't see.
-//!
-//! Within-input PMI has a known weakness: in a one-sentence input
-//! with all singletons, every bigram scores `log2(n_tokens)` and the
-//! signal is uniform noise. A future stateful pass over accumulated
-//! bigram counts will demote function words by giving them low PMI
-//! against any *specific* neighbor; until then, function words
-//! continue to emit as Tokens.
-//!
 //! Two scales emitted at decoding time (cf. Ding, Melloni, Zhang,
 //! Tian, Poeppel 2016 "Cortical tracking of hierarchical linguistic
-//! structures"): Phrases and Tokens map to clause-level and word-level
-//! cortical tracking respectively; Repeated and Collocation are added
-//! refinements that surface statistically grounded multi-word units.
+//! structures"): Phrases map to clause-level cortical tracking;
+//! Repeated is the statistical refinement that surfaces stable
+//! multi-word units.
 //!
 //! Sub-millisecond on typical inputs.
 //!
 //! ## What gets dropped (slice 1)
 //!
-//! - Single-character tokens (always — they carry no information).
-//! - Tokens that are pure punctuation after stripping.
-//! - Single-word phrases (already covered by Tokens; would be redundant).
 //! - Phrases shorter than 3 characters after trimming.
-//! - Exact-duplicate chunks within a single input (deduped on text + scale).
+//! - Phrases that don't contain at least one letter or digit.
+//! - Exact-duplicate phrases within a single input (deduped on text).
 //!
-//! ## What does NOT get dropped
-//!
-//! Function words ("the", "and", "on", "in", …) are emitted as Tokens.
-//! There is deliberately no stopword list — the brain doesn't have one
-//! either. Function-word filtering is the job of statistical learning
-//! (slice 3 over accumulated counts), which in the *stateless* regime
-//! we ship today contributes only to the positive collocation side.
+//! Token-level filtering (function words, fillers, …) is **not** done
+//! here. That job moves to token-level routing against the `void`
+//! subtree of the hypergraph (closed-class grammatical regions), where
+//! a learned cosine-against-prototype filter replaces the previous
+//! ad-hoc Token emission + stateless PMI passes.
 
 use std::collections::{HashMap, HashSet};
 
@@ -69,27 +49,16 @@ pub struct OrthographicChunk {
     pub char_end: usize,
     pub scale: ChunkScale,
     /// How often this exact chunk-text appears in the input. Always 1
-    /// for slice-1 outputs (Token / Phrase, deduped on first occurrence);
-    /// ≥ 2 for `Repeated`; the bigram-occurrence count for `Collocation`.
+    /// for slice-1 (`Phrase`) outputs; ≥ 2 for `Repeated`.
     pub repetitions: u32,
-    /// Pointwise mutual information score, populated only for
-    /// `Collocation` chunks. Higher means the two adjacent tokens
-    /// co-occur far more than chance would predict from their
-    /// individual frequencies in this input.
-    pub pmi: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChunkScale {
-    /// Whitespace-delimited atom after punctuation stripping and `/` splitting.
-    Token,
-    /// Major-punctuation-delimited span; stopwords retained.
+    /// Major-punctuation-delimited span.
     Phrase,
     /// N-gram (2..=5 tokens) that appears at least twice in the input.
     Repeated,
-    /// Adjacent bigram whose pointwise mutual information clears the
-    /// stateless threshold and isn't already captured as `Repeated`.
-    Collocation,
 }
 
 /// Major punctuation that ends a phrase. Comma is included because comma-
@@ -112,19 +81,8 @@ const TOKEN_INTERNAL_SPLIT: char = '/';
 /// tokens, exact repetition is rare and the chunk text gets unwieldy.
 const SLICE2_MAX_NGRAM: usize = 5;
 
-/// PMI floor for emitting a `Collocation` chunk. `2.0` ≈ "this bigram
-/// is 4× more likely than chance"; tuned to be selective in stateless
-/// short-input mode.
-const SLICE3_MIN_PMI: f32 = 2.0;
-
-/// Hard cap on how many `Collocation` chunks slice 3 contributes per
-/// tick. Without a cap, a long input can flood the output with
-/// statistically-flagged-but-marginal pairs.
-const SLICE3_TOP_K: usize = 5;
-
 /// Internal token record — every whitespace-and-slash atom in the input,
-/// with edges stripped but **not** deduped. Slices 2 and 3 walk this
-/// stream; slice 1's Token output is the deduped projection.
+/// with edges stripped but **not** deduped. Slice 2 walks this stream.
 struct RawToken {
     text: String,
     char_start: usize,
@@ -142,64 +100,32 @@ pub fn extract_chunks(text: &str) -> Vec<OrthographicChunk> {
     let raw_tokens = collect_raw_tokens(text);
 
     let mut out: Vec<OrthographicChunk> = Vec::new();
-    let mut emitted_texts: HashSet<(String, ChunkScale)> = HashSet::new();
+    let mut emitted_phrases: HashSet<String> = HashSet::new();
 
     // ── Slice 1: Phrases ────────────────────────────────────────────
-    // Multi-word only — single-word phrases would just duplicate Tokens.
     for (start, end) in split_on_chars(text, PHRASE_DELIMS) {
         let raw = &text[start..end];
         let (trimmed_text, trim_start, trim_end) = trim_span(raw, start);
         if trimmed_text.chars().count() < 3 {
             continue;
         }
-        if !is_multi_word(trimmed_text) {
+        if !has_letter_or_digit(trimmed_text) {
             continue;
         }
-        let key = (trimmed_text.to_string(), ChunkScale::Phrase);
-        if emitted_texts.insert(key.clone()) {
-            out.push(OrthographicChunk {
-                text: key.0,
-                char_start: trim_start,
-                char_end: trim_end,
-                scale: ChunkScale::Phrase,
-                repetitions: 1,
-                pmi: None,
-            });
-        }
-    }
-
-    // ── Slice 1: Tokens ─────────────────────────────────────────────
-    // First occurrence wins; `emitted_texts` deduplicates against earlier
-    // tokens in the stream. Repetition counts are recovered via a single
-    // pass over `raw_tokens` so callers see `repetitions ≥ 2` even when
-    // only the first occurrence is emitted.
-    let mut token_counts: HashMap<&str, u32> = HashMap::new();
-    for t in &raw_tokens {
-        *token_counts.entry(t.text.as_str()).or_insert(0) += 1;
-    }
-    for t in &raw_tokens {
-        let key = (t.text.clone(), ChunkScale::Token);
-        if !emitted_texts.insert(key.clone()) {
+        if !emitted_phrases.insert(trimmed_text.to_string()) {
             continue;
         }
         out.push(OrthographicChunk {
-            text: key.0,
-            char_start: t.char_start,
-            char_end: t.char_end,
-            scale: ChunkScale::Token,
-            repetitions: token_counts.get(t.text.as_str()).copied().unwrap_or(1),
-            pmi: None,
+            text: trimmed_text.to_string(),
+            char_start: trim_start,
+            char_end: trim_end,
+            scale: ChunkScale::Phrase,
+            repetitions: 1,
         });
     }
 
     // ── Slice 2: Repeated n-grams ───────────────────────────────────
-    let slice2 = slice2_repeated_ngrams(&raw_tokens);
-    let slice2_texts: HashSet<String> =
-        slice2.iter().map(|c| c.text.clone()).collect();
-    out.extend(slice2);
-
-    // ── Slice 3: PMI bigrams (excludes anything already in slice 2) ─
-    out.extend(slice3_pmi_bigrams(&raw_tokens, &slice2_texts));
+    out.extend(slice2_repeated_ngrams(&raw_tokens));
 
     // Stable order: by char_start, then scale priority (broader first
     // so consumers see the wide context before the narrow tokens).
@@ -215,8 +141,6 @@ fn scale_priority(s: ChunkScale) -> u8 {
     match s {
         ChunkScale::Phrase => 0,
         ChunkScale::Repeated => 1,
-        ChunkScale::Collocation => 2,
-        ChunkScale::Token => 3,
     }
 }
 
@@ -302,83 +226,10 @@ fn slice2_repeated_ngrams(raw: &[RawToken]) -> Vec<OrthographicChunk> {
                 char_end: raw[last].char_end,
                 scale: ChunkScale::Repeated,
                 repetitions: indices.len() as u32,
-                pmi: None,
             });
         }
     }
     out
-}
-
-/// Slice 3: emit `Collocation` chunks for the top `SLICE3_TOP_K`
-/// adjacent bigrams whose PMI clears `SLICE3_MIN_PMI` and aren't
-/// already captured by slice 2.
-fn slice3_pmi_bigrams(
-    raw: &[RawToken],
-    slice2_texts: &HashSet<String>,
-) -> Vec<OrthographicChunk> {
-    if raw.len() < 2 {
-        return Vec::new();
-    }
-
-    let n_tokens = raw.len() as f32;
-    let n_bigrams = (raw.len() - 1) as f32;
-
-    let mut unigram_counts: HashMap<&str, usize> = HashMap::new();
-    for t in raw {
-        *unigram_counts.entry(t.text.as_str()).or_insert(0) += 1;
-    }
-    let mut bigram_positions: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
-    for i in 0..raw.len() - 1 {
-        let pair = (raw[i].text.as_str(), raw[i + 1].text.as_str());
-        bigram_positions.entry(pair).or_default().push(i);
-    }
-
-    let mut scored: Vec<(f32, String, usize, usize, u32)> =
-        Vec::with_capacity(bigram_positions.len());
-    for ((a, b), positions) in &bigram_positions {
-        let c_ab = positions.len();
-        let c_a = unigram_counts[a];
-        let c_b = unigram_counts[b];
-        let p_ab = (c_ab as f32) / n_bigrams;
-        let p_a = (c_a as f32) / n_tokens;
-        let p_b = (c_b as f32) / n_tokens;
-        let pmi = (p_ab / (p_a * p_b)).log2();
-        if !pmi.is_finite() || pmi < SLICE3_MIN_PMI {
-            continue;
-        }
-
-        let text = format!("{a} {b}");
-        if slice2_texts.contains(&text) {
-            continue;
-        }
-        let first = positions[0];
-        scored.push((
-            pmi,
-            text,
-            raw[first].char_start,
-            raw[first + 1].char_end,
-            c_ab as u32,
-        ));
-    }
-
-    scored.sort_by(|x, y| {
-        y.0.partial_cmp(&x.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| x.2.cmp(&y.2))
-    });
-    scored.truncate(SLICE3_TOP_K);
-
-    scored
-        .into_iter()
-        .map(|(pmi, text, start, end, reps)| OrthographicChunk {
-            text,
-            char_start: start,
-            char_end: end,
-            scale: ChunkScale::Collocation,
-            repetitions: reps,
-            pmi: Some(pmi),
-        })
-        .collect()
 }
 
 fn join_tokens(tokens: &[RawToken]) -> String {
@@ -478,12 +329,6 @@ fn has_letter_or_digit(s: &str) -> bool {
     s.chars().any(|c| c.is_alphanumeric())
 }
 
-/// Whether `s` (assumed trimmed) contains at least one inner whitespace —
-/// i.e., has two or more whitespace-separated words.
-fn is_multi_word(s: &str) -> bool {
-    s.chars().any(|c| c.is_whitespace())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,80 +348,63 @@ mod tests {
     }
 
     #[test]
-    fn x86_64_sentence_produces_useful_chunks() {
+    fn x86_64_sentence_produces_useful_phrases() {
         let text = "On x86-64 Linux, integer args often come in registers like edi, esi, edx, etc., and return values usually come back in eax/rax.";
         let chunks = extract_chunks(text);
 
-        let tokens = texts(&chunks, ChunkScale::Token);
-        assert!(tokens.contains(&"edi"));
-        assert!(tokens.contains(&"esi"));
-        assert!(tokens.contains(&"edx"));
-        assert!(tokens.contains(&"eax"));
-        assert!(tokens.contains(&"rax"));
-        assert!(tokens.contains(&"x86-64"));
-        assert!(tokens.contains(&"Linux"));
-        assert!(tokens.contains(&"registers"));
-        assert!(tokens.contains(&"and"));
-        assert!(tokens.contains(&"etc"));
-
         let phrases = texts(&chunks, ChunkScale::Phrase);
         assert!(phrases.contains(&"On x86-64 Linux"));
-        assert!(!phrases.contains(&"esi"));
-        assert!(!phrases.contains(&"edx"));
-        assert!(!phrases.contains(&"etc"));
+        // Comma splits *after* `edi`, so `edi` is the tail of the
+        // preceding phrase. The standalone list items (between two
+        // commas) emit as their own phrases.
+        assert!(phrases.contains(&"esi"));
+        assert!(phrases.contains(&"edx"));
+        assert!(phrases.contains(&"etc"));
         assert!(
             phrases
                 .iter()
-                .any(|p| p.contains("integer args") && p.contains("registers"))
+                .any(|p| p.contains("integer args") && p.contains("edi"))
+        );
+        assert!(
+            phrases
+                .iter()
+                .any(|p| p.contains("return values") && p.contains("eax/rax"))
         );
     }
 
     #[test]
-    fn slash_splits_token_but_hyphen_does_not() {
-        let chunks = extract_chunks("eax/rax and x86-64");
-        let tokens = texts(&chunks, ChunkScale::Token);
-        assert!(tokens.contains(&"eax"));
-        assert!(tokens.contains(&"rax"));
-        assert!(tokens.contains(&"x86-64"));
+    fn single_word_input_still_emits_phrase() {
+        // Pre-change, single-word inputs survived only via the Token
+        // branch. Now Phrases pick them up — empty output is never a
+        // valid result for non-empty input.
+        let chunks = extract_chunks("Hello");
+        assert!(!chunks.is_empty(), "single-word input should emit a Phrase");
+        let phrases = texts(&chunks, ChunkScale::Phrase);
+        assert!(phrases.contains(&"Hello"));
     }
 
     #[test]
-    fn dedup_same_token_across_input() {
-        let chunks = extract_chunks("come here, come back, come now");
-        let tokens = texts(&chunks, ChunkScale::Token);
-        let come_count = tokens.iter().filter(|t| **t == "come").count();
-        assert_eq!(come_count, 1, "dedup failed for 'come': {tokens:?}");
-        // First-occurrence emit, but repetitions should reflect the
-        // three appearances of "come" in the raw stream.
-        let come = chunks
-            .iter()
-            .find(|c| c.scale == ChunkScale::Token && c.text == "come")
-            .expect("'come' token");
-        assert_eq!(come.repetitions, 3);
-    }
-
-    #[test]
-    fn strips_punctuation_edges() {
+    fn strips_punctuation_edges_from_phrases() {
         let chunks = extract_chunks("\"hello,\" she said.");
-        let tokens = texts(&chunks, ChunkScale::Token);
-        assert!(tokens.contains(&"hello"));
-        assert!(tokens.contains(&"said"));
+        let phrases = texts(&chunks, ChunkScale::Phrase);
+        assert!(phrases.iter().any(|p| p.contains("hello")));
+        assert!(phrases.iter().any(|p| p.contains("said")));
     }
 
     #[test]
     fn unicode_text_does_not_panic() {
         let chunks = extract_chunks("café résumé naïve. C'est très important — vraiment.");
-        let tokens = texts(&chunks, ChunkScale::Token);
-        assert!(tokens.iter().any(|t| t.contains("café")));
+        let phrases = texts(&chunks, ChunkScale::Phrase);
+        assert!(phrases.iter().any(|p| p.contains("café")));
     }
 
     #[test]
-    fn offsets_round_trip_into_original_text_for_slice1() {
+    fn phrase_offsets_round_trip_into_original_text() {
         let text = "On x86-64 Linux, integer args.";
         let chunks = extract_chunks(text);
         for c in &chunks {
-            if !matches!(c.scale, ChunkScale::Token | ChunkScale::Phrase) {
-                // Slice 2 / 3 store the canonical (single-space-joined)
+            if c.scale != ChunkScale::Phrase {
+                // Slice 2 stores the canonical (single-space-joined)
                 // form; the raw substring may contain comma-separators
                 // etc., so round-trip is only asserted for slice 1.
                 continue;
@@ -609,7 +437,6 @@ mod tests {
         let text = "we want the same thing over and over the same thing again";
         let chunks = extract_chunks(text);
         let repeated = texts(&chunks, ChunkScale::Repeated);
-        // "the same thing" repeats — should appear as a 3-gram.
         assert!(
             repeated.contains(&"the same thing"),
             "expected 3-gram repeat; got {repeated:?}"
@@ -624,66 +451,6 @@ mod tests {
         assert!(
             repeated.is_empty(),
             "expected no Repeated chunks; got {repeated:?}"
-        );
-    }
-
-    // ── Slice 3 tests ──────────────────────────────────────────────────
-
-    #[test]
-    fn slice3_emits_collocation_chunks_when_pmi_meets_threshold() {
-        // A rare-tokens-co-occurring case: each token appears once,
-        // so each adjacent bigram has the same (relatively high) PMI.
-        // Slice 3 should emit some of them — and never emit anything
-        // slice 2 already covered.
-        let text = "elephant moonwalks tomorrow afternoon";
-        let chunks = extract_chunks(text);
-        let collocations: Vec<_> = chunks
-            .iter()
-            .filter(|c| c.scale == ChunkScale::Collocation)
-            .collect();
-        assert!(
-            !collocations.is_empty(),
-            "expected some Collocation chunks for novel input; got {chunks:?}"
-        );
-        for c in &collocations {
-            assert!(c.pmi.is_some(), "Collocation chunk missing pmi: {c:?}");
-            assert!(
-                c.pmi.unwrap() >= SLICE3_MIN_PMI,
-                "Collocation below threshold: {c:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn slice3_does_not_double_emit_what_slice2_covered() {
-        let text = "the cat sat on the mat the cat ran fast the cat is fine";
-        let chunks = extract_chunks(text);
-        let repeated: HashSet<&str> = texts(&chunks, ChunkScale::Repeated)
-            .into_iter()
-            .collect();
-        let collocations: HashSet<&str> = texts(&chunks, ChunkScale::Collocation)
-            .into_iter()
-            .collect();
-        for r in &repeated {
-            assert!(
-                !collocations.contains(r),
-                "'{r}' present in both Repeated and Collocation",
-            );
-        }
-    }
-
-    #[test]
-    fn slice3_caps_at_top_k() {
-        // A long input with many high-PMI singleton bigrams.
-        let text = "zebra falcon orchid quartz nebula whisk ivory glade plume saffron";
-        let chunks = extract_chunks(text);
-        let collocations = chunks
-            .iter()
-            .filter(|c| c.scale == ChunkScale::Collocation)
-            .count();
-        assert!(
-            collocations <= SLICE3_TOP_K,
-            "slice 3 should cap at {SLICE3_TOP_K}; got {collocations}"
         );
     }
 }

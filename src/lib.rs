@@ -236,23 +236,17 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
         println!("  unconditional_chunks: (none)");
     } else {
         use crate::steps::orthographic::ChunkScale;
-        let mut by_scale: [usize; 4] = [0; 4]; // Phrase, Repeated, Collocation, Token
+        let mut n_phrases = 0usize;
+        let mut n_repeats = 0usize;
         for c in &out.unconditional_chunks {
-            let i = match c.scale {
-                ChunkScale::Phrase => 0,
-                ChunkScale::Repeated => 1,
-                ChunkScale::Collocation => 2,
-                ChunkScale::Token => 3,
-            };
-            by_scale[i] += 1;
+            match c.scale {
+                ChunkScale::Phrase => n_phrases += 1,
+                ChunkScale::Repeated => n_repeats += 1,
+            }
         }
         println!(
-            "  unconditional_chunks  {} total  ({} phrases, {} repeats, {} collocs, {} tokens)",
+            "  unconditional_chunks  {} total  ({n_phrases} phrases, {n_repeats} repeats)",
             out.unconditional_chunks.len(),
-            by_scale[0],
-            by_scale[1],
-            by_scale[2],
-            by_scale[3],
         );
         for c in &out.unconditional_chunks {
             let truncated: String = if c.text.chars().count() > 36 {
@@ -261,14 +255,11 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
             } else {
                 c.text.clone()
             };
-            // Show repetitions ≥ 2 for everything, and PMI for Collocations.
-            let mut annot = String::new();
-            if c.repetitions > 1 {
-                annot.push_str(&format!(" ×{}", c.repetitions));
-            }
-            if let Some(pmi) = c.pmi {
-                annot.push_str(&format!(" pmi={pmi:.2}"));
-            }
+            let annot = if c.repetitions > 1 {
+                format!(" ×{}", c.repetitions)
+            } else {
+                String::new()
+            };
             println!(
                 "    {:<12} {truncated}{annot}",
                 format!("{:?}", c.scale),
