@@ -59,6 +59,12 @@ pub enum ChunkScale {
     Phrase,
     /// N-gram (2..=5 tokens) that appears at least twice in the input.
     Repeated,
+    /// Whitespace-and-slash atom after punctuation stripping. Emitted
+    /// by `src/steps/void_filter.rs` only for tokens whose lowercase
+    /// form does *not* resolve to a `Polarity::Void` element — i.e.,
+    /// content tokens. Raw token emission was retired in phase 1 of
+    /// the void-tree rewrite; phase 6 reintroduces it gated.
+    Token,
 }
 
 /// Major punctuation that ends a phrase. Comma is included because comma-
@@ -82,11 +88,13 @@ const TOKEN_INTERNAL_SPLIT: char = '/';
 const SLICE2_MAX_NGRAM: usize = 5;
 
 /// Internal token record — every whitespace-and-slash atom in the input,
-/// with edges stripped but **not** deduped. Slice 2 walks this stream.
-struct RawToken {
-    text: String,
-    char_start: usize,
-    char_end: usize,
+/// with edges stripped but **not** deduped. Slice 2 walks this stream;
+/// `src/steps/void_filter.rs` also walks it to emit content-Token
+/// chunks.
+pub(crate) struct RawToken {
+    pub text: String,
+    pub char_start: usize,
+    pub char_end: usize,
 }
 
 /// Extract content-bearing chunks from raw input text. Always returns
@@ -141,12 +149,13 @@ fn scale_priority(s: ChunkScale) -> u8 {
     match s {
         ChunkScale::Phrase => 0,
         ChunkScale::Repeated => 1,
+        ChunkScale::Token => 2,
     }
 }
 
 /// Walk the input once, edge-strip every whitespace-and-slash atom,
 /// keep every surviving token (no dedup, no rejection of repeats).
-fn collect_raw_tokens(text: &str) -> Vec<RawToken> {
+pub(crate) fn collect_raw_tokens(text: &str) -> Vec<RawToken> {
     let mut out = Vec::new();
     for (ws_start, ws_end) in split_on_whitespace(text) {
         let atom = &text[ws_start..ws_end];

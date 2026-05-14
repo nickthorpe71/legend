@@ -24,6 +24,7 @@ use crate::steps::coref::{CorefDecision, resolve_coref};
 use crate::steps::orthographic::{OrthographicChunk, extract_chunks};
 use crate::steps::relation_patterns::{RelationProposal, extract_relations};
 use crate::steps::temporal::{TemporalSpan, extract_temporal};
+use crate::steps::void_filter::extract_content_tokens;
 use crate::types::{Hypergraph, Policy, RegionActivation, RelationStatus};
 
 /// One span-typing proposal. Maps to a single `(span, instance_of, K)`
@@ -103,11 +104,15 @@ pub fn run_extractors(
         }
     };
 
-    // 0. Step 5a — orthographic chunker. Pure-Rust, no model, always
-    //    produces something. Mirrors the brain's pre-semantic boundary
-    //    cues (punctuation, whitespace, casing). Output lands as
-    //    `unconditional_chunks`; downstream labeling is purely additive.
-    let unconditional_chunks = extract_chunks(input_text);
+    // 0. Step 5a — orthographic chunker (Phrase + Repeated) plus void-
+    //    filtered content tokens. The chunker is pure-Rust and model-
+    //    free; the content-token pass consults the hypergraph's
+    //    `by_name` index and drops any token whose lowercase form
+    //    resolves to a `Polarity::Void` element (closed-class
+    //    grammatical region — determiners, adpositions, etc.).
+    let mut unconditional_chunks = extract_chunks(input_text);
+    unconditional_chunks.extend(extract_content_tokens(input_text, hg));
+    unconditional_chunks.sort_by_key(|c| (c.char_start, c.char_end));
     stage("orthographic chunks");
 
     // 1. Build the NER label set. Caller-supplied labels override

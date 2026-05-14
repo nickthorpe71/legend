@@ -239,14 +239,16 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
         use crate::steps::orthographic::ChunkScale;
         let mut n_phrases = 0usize;
         let mut n_repeats = 0usize;
+        let mut n_tokens = 0usize;
         for c in &out.unconditional_chunks {
             match c.scale {
                 ChunkScale::Phrase => n_phrases += 1,
                 ChunkScale::Repeated => n_repeats += 1,
+                ChunkScale::Token => n_tokens += 1,
             }
         }
         println!(
-            "  unconditional_chunks  {} total  ({n_phrases} phrases, {n_repeats} repeats)",
+            "  unconditional_chunks  {} total  ({n_phrases} phrases, {n_repeats} repeats, {n_tokens} tokens)",
             out.unconditional_chunks.len(),
         );
         for c in &out.unconditional_chunks {
