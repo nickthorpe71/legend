@@ -1,6 +1,7 @@
 pub mod adjust_policy;
 pub mod coref;
 pub mod detect_intent;
+pub mod novelty_relations;
 pub mod orthographic;
 pub mod relation_patterns;
 pub mod route_regions;

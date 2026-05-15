@@ -22,8 +22,43 @@ use crate::inference::quantized_ops::{
 use crate::inference::weights_int8::{LayerWeightsInt8, WeightsInt8};
 
 /// Same signature as [`crate::inference::bert::forward`] but uses
-/// INT8 quantized weights.
+/// INT8 quantized weights. Returns the pooled, L2-normalized
+/// 384-dim sentence embedding.
 pub fn forward(weights: &WeightsInt8, input_ids: &[u32], attention_mask: &[u32]) -> Vec<f32> {
+    let (mut x, seq_len, hidden, mask_f) = forward_to_sequence(weights, input_ids, attention_mask);
+    let mut pooled = masked_mean_pool(&x, seq_len, hidden, &mask_f);
+    l2_normalize_inplace(&mut pooled);
+    let _ = &mut x; // x dropped here; explicit borrow keeps clippy quiet
+    pooled
+}
+
+/// Run the forward pass but return the **per-token contextualized
+/// output** (`seq_len * hidden`) instead of the pooled embedding.
+/// Used by `embed::embed_sequence_with_offsets` for span-level
+/// contextualized embeddings: each token's representation reflects
+/// both its lexical form AND its surrounding context.
+///
+/// No L2-normalization is applied — the caller decides whether to
+/// normalize after pooling over a span.
+pub fn forward_sequence(
+    weights: &WeightsInt8,
+    input_ids: &[u32],
+    attention_mask: &[u32],
+) -> Vec<f32> {
+    let (x, _, _, _) = forward_to_sequence(weights, input_ids, attention_mask);
+    x
+}
+
+/// Inner forward pass shared by [`forward`] and [`forward_sequence`].
+/// Returns `(sequence_output, seq_len, hidden, mask_f)`. Sequence
+/// output is `seq_len * hidden` in row-major order. Mask is the
+/// per-token attention-mask as f32 (1.0 for real tokens, 0.0 for
+/// padding) — used by the pooling step in [`forward`].
+fn forward_to_sequence(
+    weights: &WeightsInt8,
+    input_ids: &[u32],
+    attention_mask: &[u32],
+) -> (Vec<f32>, usize, usize, Vec<f32>) {
     let seq_len = input_ids.len();
     assert_eq!(attention_mask.len(), seq_len);
     assert!(seq_len <= weights.max_position);
@@ -80,10 +115,8 @@ pub fn forward(weights: &WeightsInt8, input_ids: &[u32], attention_mask: &[u32])
         );
     }
 
-    // ── 3. Mean pool + L2 normalize ───────────────────────────────
-    let mut pooled = masked_mean_pool(&x, seq_len, hidden, &scratch.mask_f);
-    l2_normalize_inplace(&mut pooled);
-    pooled
+    let mask_f = scratch.mask_f.clone();
+    (x, seq_len, hidden, mask_f)
 }
 
 /// Hot dot product for attention scoring. head_dim is 64 in MiniLM,

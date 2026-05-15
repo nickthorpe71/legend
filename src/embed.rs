@@ -42,6 +42,31 @@ pub fn embed_text(text: &str) -> Vec<f32> {
     bert_int8::forward(weights, &ids, &mask)
 }
 
+/// Run the forward pass and return the **per-token contextualized
+/// embeddings** together with each token's character offsets into the
+/// original `text`. Used to build span-level contextualized vectors
+/// (mean-pool over the tokens whose offsets fall inside a span).
+///
+/// Returns `(sequence_output, offsets)` where:
+/// - `sequence_output` is `seq_len * EMBEDDING_DIM` row-major,
+/// - `offsets[t]` is `(char_start, char_end)` for token `t` (special
+///   tokens like `[CLS]`/`[SEP]` get `(0, 0)`).
+///
+/// No L2-normalization is applied. The caller pools over span tokens
+/// and normalizes if it wants cosine-as-dot.
+pub fn embed_sequence_with_offsets(text: &str) -> (Vec<f32>, Vec<(usize, usize)>) {
+    if text.trim().is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let encoding = TOKENIZER.encode(text, true).expect("tokenization failed");
+    let ids: Vec<u32> = encoding.get_ids().to_vec();
+    let mask: Vec<u32> = encoding.get_attention_mask().to_vec();
+    let offsets: Vec<(usize, usize)> = encoding.get_offsets().to_vec();
+    let weights: &WeightsInt8 = WeightsInt8::load_bundled();
+    let sequence = bert_int8::forward_sequence(weights, &ids, &mask);
+    (sequence, offsets)
+}
+
 // Same tokenizer.json as the embedder, but with truncation and
 // padding both cleared so `token_count` reports the true length.
 // The bundled tokenizer.json ships with `padding: Fixed(128)` baked

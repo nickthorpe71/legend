@@ -9,7 +9,7 @@ into the binary as a `.bin` blob.
 
 ```
 text
- ├── embed_text() ──────────────► [f32; 384]   (all-MiniLM-L6-v2 quantized, tract-onnx)
+ ├── embed_text() ──────────────► [f32; 384]   (all-MiniLM-L6-v2 INT8, in-house BERT)
  └── extract_lexical_features() ► [f32; 34]    (hand-crafted: modals, person, mood, ...)
                                        │
                                        ▼
@@ -29,7 +29,7 @@ the embedding carries intent confounded with topic.
 | Path                                   | What                                                                      |
 | -------------------------------------- | ------------------------------------------------------------------------- |
 | `seed_pack.yaml` → `intent_prototypes` | High/low pole phrases + counterfactual pairs per dim                      |
-| `src/embed.rs`                         | tract-onnx wrapper. `embed_text(&str) -> Vec<f32>`, `EMBEDDING_DIM = 384` |
+| `src/embed.rs`                         | In-house INT8 BERT wrapper. `embed_text(&str) -> Vec<f32>`, `EMBEDDING_DIM = 384` |
 | `src/lexical_features.rs`              | `extract_lexical_features(&str) -> [f32; 34]`                             |
 | `src/intent_classifiers.rs`            | Loads the four `.bin` blobs at startup                                    |
 | `src/intent_classifiers/<dim>.bin`     | Trained weights — 418 f32 + 1 f32 bias, little-endian                     |

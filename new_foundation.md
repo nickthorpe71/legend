@@ -105,11 +105,13 @@ DURABILITY             snapshot (LZ4+MessagePack) + bounded WAL
                        checkpoint at N=1000 ticks ∨ S=5MB ∨ T=1hr,
                        boot fingerprint check refuses on mismatch     (§18)
 
-EMBEDDER               all-MiniLM-L6-v2 (ONNX-quantized) via tract-onnx,
+EMBEDDER               all-MiniLM-L6-v2 (INT8-quantized) via the
+                       in-house pure-Rust BERT engine
+                       (`src/inference/`; no tract, ort, or C deps),
                        pinned for life — model swap = re-ingest
                        per recoverability matrix                      (§15.1, §18.4)
 
-LATENCY BUDGET (v0)    ~200–300 ms p50; GLiNER2 dominates             (§11.0, §15.1)
+LATENCY BUDGET (v0)    ~80–230 ms p50; Step 5 GLiNER NER dominates    (§11.0, §15.1)
 
 CONFORMANCE GATES      §19 ten-tick walkthrough (substrate, mocked extractors)
                        §20.5 three companion fixtures (instance separation,
@@ -1076,7 +1078,7 @@ does during its slice of the tick.
         │  STEP 4   route_regions  ─► active_regions +   │
         │                              held RegionDelta  │
         │  STEP 5   run_extractors ─► proposals          │
-        │           ★ GLiNER2 = the long pole            │
+        │           ★ GLiNER NER = the long pole         │
         │  STEP 6   coreference    ─► reuse decisions    │
         ├────────────────────────────────────────────────┤
         │            ─── MUTATION PHASE ───              │
@@ -1475,7 +1477,14 @@ struct Element {
     stats: MemoryStats,
     created_at: Tick,
     embedding: Vec<f32>,          // semantic anchor, populated at mint time
+    polarity: Polarity,           // Signal (default) or Void — closed-class
+                                  // stop-word seeds under VOID carry Void
+                                  // so Step 5a's token pass can drop them.
+                                  // Distinct from "routing-VOID" (a Step 4
+                                  // unrouted_count signal, not an edge).
 }
+
+enum Polarity { Signal, Void }
 ```
 
 That is the entire Element struct. No kind enum. No type tag.
@@ -2005,6 +2014,14 @@ struct Hypergraph {
     recent_focus: VecDeque<RecentFocusEntry>,
 
     // Derived indices — rebuild on load, never serialize.
+    //
+    // v0 implementation status: only the indices that Steps 0–5 need
+    // are live today (`by_name`, `region_children`, `region_parents`,
+    // `region_prototypes`, plus a new `region_stats` carrying
+    // per-region mean+var of prototype embeddings for Mahalanobis
+    // routing). The meta-relation / recognition / lateral indices
+    // below land alongside the steps that consume them (Steps 6–12);
+    // until then the relation graph itself is consulted directly.
     by_name:                     HashMap<String, Vec<ElementId>>,
     // All relations that mention E as the value of any attribute. The
     // primary "what touches E?" lookup. No privileged head slot — the
@@ -2686,24 +2703,30 @@ vector modulates `Policy` (§11.2 / §10.6), not which steps execute.
 
 ### 11.0 Per-Step Latency Budget
 
-v0 budget table on commodity CPU (4-core, ONNX (Open Neural Network
-Exchange) — MiniLM-L6-v2 quantized via tract-onnx for the embedder,
-GLiNER2-small via gline-rs/`ort` for extraction). Numbers are p50
+v0 budget table on commodity CPU (4-core; both the MiniLM embedder
+and the Step 5 GLiNER NER encoder — DeBERTa-v3-small — run through
+the in-house INT8 BERT engine in `src/inference/`, AVX-VNNI when
+available, AVX2/scalar fallback otherwise). Numbers are p50
 (50th-percentile) targets; p95 (95th-percentile) typically runs
-1.5–2× p50 driven by GLiNER2 variance.
+1.5–2× p50 driven by NER variance.
 
 ```text
 step  name                              p50 budget    notes
 0     log entry (WAL append)            <1 ms         LZ4 hot segment append
-1     detect_intent                     5–15 ms       4 logistic classifiers over the precomputed
-                                                      embedding + lexical features; sub-ms marginal
-                                                      cost since the embedding is shared
+1     detect_intent                     <1 ms         4 logistic classifiers over the precomputed
+                                                      embedding + lexical features; sub-ms once the
+                                                      shared embedding is available
 2     adjust_policy                     <1 ms         scalar copy + multiplier apply
 3     REMOVED in v0                     —             caller chunks long inputs (§11.4)
                                                       (input embedding computed at tick entry,
-                                                      ~5–15 ms; consumed by Steps 1 & 4 — was Step 4)
-4     route_regions                     5–15 ms       DAG descent (one input per tick)
-5     run_extractors                    130–208 ms    ★ GLiNER2 — the long pole; one inference call
+                                                      ~1.7–2 ms on AVX-VNNI; consumed by Steps 1 & 4)
+4     route_regions                     5–15 ms       DAG descent over per-region prototypes
+                                                      (mean-of-top-K cosine + diagonal Mahalanobis;
+                                                      no model call)
+5     run_extractors                    50–150 ms     ★ Step 5b GLiNER NER (DeBERTa-v3-small INT8
+                                                      on the in-house BERT engine) — the long pole.
+                                                      5a chunker, 5c temporal regex, 5d pattern RE,
+                                                      and 5e coref stub are sub-ms each.
 6     score_coreference                 2–5 ms        small candidate sets, recency-based
 7     apply_region_delta                2–5 ms        k-means prototype updates
 8     build_relations                   3–8 ms        hashmap inserts + index updates
@@ -2712,34 +2735,32 @@ step  name                              p50 budget    notes
 11    decay_focus_radius                3–8 ms        bounded by policy.focus_decay_radius
 12    aggregate_focus + enqueue_replay  2–5 ms        RRF merge + handoff to replay thread
                                         ─────────
-                                        ~160–290 ms p50  (single tick, ≤480 tokens)
+                                        ~80–230 ms p50  (single tick, ≤480 tokens)
 
-★ GLiNER2 is v0's binding latency constraint. With Step 3 removed
-each tick processes a single ≤480-token unit (one inference call
-through GLiNER2), so the p50 floor moves linearly with extractor
-choice rather than with window count. Long inputs are the caller's
-responsibility (chunk into multiple ticks); the binding constraint
-is per-tick GLiNER2 cost, not aggregate input length. The p50 floor
-moves with whichever zero-shot extractor is in slot 5, not with
-infrastructure changes elsewhere.
+★ Step 5b GLiNER NER is v0's binding latency constraint. With Step 3
+removed each tick processes a single ≤480-token unit (one inference
+call through the NER encoder), so the p50 floor moves linearly with
+extractor choice rather than with window count. Long inputs are the
+caller's responsibility (chunk into multiple ticks); the binding
+constraint is per-tick NER cost, not aggregate input length.
 ```
 
-The path to sub-100 ms p50 is replacing or augmenting Step 5:
+The path to sub-50 ms p50 is replacing or augmenting Step 5:
 
-- **Pattern fast-path (§24.1).** Surface-pattern templates handle
-  common shapes (~5–20 ms) with GLiNER2 fallback for novel inputs.
-  Average tick latency drops as pattern hit-rate climbs on mature
-  corpora. This is the cheapest win.
+- **Pattern fast-path (§24.1).** Already live as Step 5d for the
+  seed-pack frames (`from`/`to`/`with`/`at`/`property`). Average
+  tick latency drops as pattern hit-rate climbs on mature corpora
+  and we can skip Step 5b on confident pattern hits. Cheapest win.
 - **Unified tiny-LLM extractor (§24.7).** A single Qwen-0.5B / Phi-3-
   mini class call replaces NER + RE + temporal + heuristic coref.
   ~50–150 ms on CPU INT8. Disruptive but flexible.
-- **Smaller GLiNER variant.** A calibration-only change during
-  bootstrap Step 6 (§21). Floor ~50–80 ms if the smaller variant
-  passes §19 + §20.5 quality gates.
+- **Smaller NER encoder.** A calibration-only change during
+  bootstrap Step 6 (§21). Floor lowers further if a smaller GLiNER
+  variant passes §19 + §20.5 quality gates.
 
 Read-path / background-work splitting (§24.2) addresses non-extractor
-contributions to tick latency, not the GLiNER2 long pole. It is
-secondary, not primary, on the path to sub-100 ms.
+contributions to tick latency, not the NER long pole. It is
+secondary, not primary, on the path to sub-50 ms.
 
 ### 11.1 The Function
 
@@ -3057,19 +3078,24 @@ Step 1 and Step 4 share one inference. The MiniLM call is no longer
 its own pipeline step — it runs once before Step 1 and the result
 threads through.)
 
-**all-MiniLM-L6-v2** (384-dim, 6 transformer layers, ONNX-quantized,
-~23 MB) running through **tract-onnx** (pure-Rust ONNX runtime,
-§15.1; no C++ deps). Model bytes are baked into the binary via
-`include_bytes!`. Tokenization is `tokenizers` (HuggingFace pure-Rust
-crate, §15.1). Quantized inference is ~3–5 ms per call on a 4-core
-commodity CPU. With Step 3 removed there are no multi-window
-fan-outs — one tick, one input, one inference.
+**all-MiniLM-L6-v2** (384-dim, 6 transformer layers, INT8-quantized,
+~22 MB) running through the **in-house pure-Rust BERT engine**
+(`src/inference/`, §15.1; no `tract-onnx`, no `ort`, no C deps).
+Model weights are baked into the binary via `include_bytes!`.
+Tokenization is `tokenizers` (HuggingFace pure-Rust crate, §15.1).
+Inference is ~1.7–2.0 ms per call at 13 tokens on AVX-VNNI
+(i7-1365U); AVX2 widen-pmaddwd and scalar fallbacks cover older
+silicon and ARM. Implementation rationale + kernel notes live in
+`docs/inference-engine.md`. With Step 3 removed there are no
+multi-window fan-outs — one tick, one input, one inference.
 
-**Storage format.** tract-onnx loads the quantized weights directly,
-so we don't carry a separate FP32 master alongside. Snapshots keep
-the embedding output (the L2-normalized 384-dim FP32 vector) inline
-on each Element's `embedding` field — that's an output of the
-quantized model, not the model weights themselves.
+**Storage format.** The in-house engine loads INT8 weights directly
+from the bundled bin, so we don't carry a separate FP32 master in
+production (an FP32 reference path is available under the
+`fp32_reference` feature flag for `examples/validate_int8.rs`).
+Snapshots keep the embedding output (the L2-normalized 384-dim FP32
+vector) inline on each Element's `embedding` field — that's an
+output of the quantized model, not the model weights themselves.
 
 **Consumers within the tick.**
 1. **Step 1 (`detect_intent`)** — feeds the embedding into the
@@ -3126,29 +3152,49 @@ surfaced to Step 5 is the **union** of each window's routing
 results — multi-window inputs touch multiple regions, which is the
 desired behavior.
 
-**Algorithm.** Starting from `GENESIS`, for each window's embedding:
+**Algorithm.** Starting from `GENESIS`, for the window embedding:
 
 1. Look up candidate children via `region_children[current]`.
 2. For each candidate region, fetch its prototype Elements via
-   `region_prototypes[region]` and read each prototype Element's
-   inline `embedding` field directly (FP32, no indirection).
-3. Score each candidate as the **max cosine** over its prototype
-   Elements' embeddings (multi-prototype regions preserve modes,
-   §10.4; max-pooling reflects "any prototype matches").
-4. Descend into the top-k children whose score exceeds
-   `policy.descend_threshold`.
-5. Stop when no child exceeds the threshold (leaf reached) or
-   when no child clears `policy.leaf_vigilance` (sub-threshold
-   input → routed to `VOID`).
+   `region_prototypes[region]` and per-region mean/var via
+   `region_stats[region]` (built at load time from the same set).
+3. Score each candidate by **two metrics** (Option D fusion):
+   - `cosine` = **mean of the top-K** prototype cosines
+     (K = `policy.cosine_top_k`, default 3; K=1 reproduces the
+     previous max-pool). Mean-of-top-K requires prototype
+     agreement so a single surface-overlap outlier can't dominate.
+     Multi-prototype regions still preserve modes (§10.4).
+   - `mahalanobis` = diagonal-Mahalanobis similarity against the
+     per-region mean/var, with `policy.variance_prior` mixed into
+     each per-dim variance for n=1 stability and small-n bootstrap
+     smoothing. Distribution-aware: "does this input fit the
+     region's spread?"
+4. **Descent gate (cosine).** Descend into every child whose
+   `cosine ≥ policy.descend_threshold` (no K cap on breadth).
+5. **Leaf-vigilance gate (cosine).** Stop on a branch when the
+   best `cosine` across children falls below `policy.leaf_vigilance`;
+   the branch is **unrouted** and `delta.unrouted_count` increments.
+   (Distinct from elements whose `polarity == Polarity::Void` —
+   that's a semantic-content classification; this is a routing
+   failure that surfaces as a quality signal in the frame, not an
+   actual edge into VOID.)
+6. **Activation gate (mahalanobis).** Among descended children,
+   activate those whose `mahalanobis ≥
+   policy.region_activation_threshold` (interpreted on the
+   Mahalanobis-similarity scale, not cosine).
+7. If the final active set is empty across the whole descent,
+   raise `UncertaintySignal::DiffuseRouting`.
 
 Each comparison is O(prototypes-in-region); the prototype set is
 kept small by `policy.merge_threshold` (collapses near-duplicates)
-and `policy.split_variance` (splits high-scatter regions). The `RegionDelta`
-returned alongside the `ActiveRegion` list captures proposed
-parent attachments, prototype-vector updates (k-means targets),
-and any newly-minted regions (§10.3.5 mid-path insertions); it is
-**held** through the read-mostly phase and committed by Step 7
-(§11.8a).
+and `policy.split_variance` (splits high-scatter regions). The
+`RegionDelta` returned alongside the `ActiveRegion` list captures
+proposed parent attachments, prototype-vector updates (k-means
+targets — `(best_cosine_prototype, target)` pairs so Step 7's
+spherical-k-means drift has per-prototype targets), and any
+newly-minted regions (§10.3.5 mid-path insertions — owned by
+Step 8, not Step 4); it is **held** through the read-mostly phase
+and committed by Step 7 (§11.8a).
 
 The `active_regions` set seeds extractor attention in Step 5 —
 when a region is active, attribute names authored within relations
@@ -3166,45 +3212,65 @@ consulted, which is what makes cross-sentence relations
 recoverable without pre-segmentation hazards. The output is the
 (entity, relation) candidate stream that feeds Step 6.
 
-The v0 extractor stack runs four extractors sequentially within the
-step (the step itself is the latency long pole because of GLiNER2):
+The v0 extractor stack runs five passes sequentially within the
+step (the step itself is the latency long pole because of GLiNER
+NER):
 
-- **NER** — `gline-rs` running GLiNER1 NER on `ort` (the ONNX
-  runtime, §15.1). INT8 zero-shot span tagging. Labels passed in
-  are the seed kinds (`person`, `org`, `place`, `weekday`,
-  `quantity`, `event`, ...). Returns `(span, kind, confidence)`
-  triples. Each tagged span auto-emits an `instance_of` relation:
-  `(span_element, instance_of, K)` where `K` is the seed-pack
-  kind. Auto-emitted `instance_of` relations dedup against
-  existing `(span_element, instance_of, K)` — if one is already
-  present on this element, no new relation is created and the
-  existing one's `MemoryStats` are reinforced via the normal
-  Step 8 path. NER confidence ≥ `policy.ner_assertion_threshold`
-  → `Entailed`; below → `Defeasible`. Anonymous spans (no surface
-  name) are minted with `name = "<kind>_<counter>"` where
-  `<kind>` is taken from the highest-confidence `instance_of`
-  proposal in the same tick.
-- **Temporal parser** — `chrono` + `chrono-english` (pure-Rust
-  crates, §15.1). No ML. Recognizes date / weekday / duration /
-  relative-time spans; each becomes a value-Element with the
-  surface form as a name. Typed comparison happens at read sites
-  by re-parsing the name on demand (§7.3, §15.1). The parser's
-  grounding confidence rides into `(R, valid_from, T)` /
-  `(R, valid_to, T)` meta-relations.
-- **Zero-shot relation extraction** — `gline-rs` / `gliner2` on
-  `ort`. INT8 zero-shot relation extraction. ~130–208 ms per call
-  across 5–50 candidate attribute-name labels. **★ This call is v0's
-  binding latency constraint and does not parallelize.** Emits
-  typed `(subj_span, attr_label, obj_span, confidence)` quads — each
-  binds a subject Element and an object Element via an attribute name
-  (the relation built in Step 8 has at minimum
-  `[subject: subj, attr_label: obj]`).
-- **Heuristic coref** — pure Rust, recency-based, no model.
-  Pronouns (he / she / it / they / this / that) and definite
-  descriptions ("the dentist") resolve to the most-recently-focused
-  `RecentFocusEntry` whose `attribute` (the attribute name binding
-  the element on its prior focus) matches the span's grammatical
-  slot (Centering Theory + Hobbs' algorithm baselines, §15.1).
+- **Step 5a — Orthographic chunker** (`src/steps/orthographic.rs`,
+  `src/steps/void_filter.rs`). Pure Rust, no model. Always runs
+  first; always emits at least one chunk for non-empty input.
+  Emits `OrthographicChunk` records at three scales: `Phrase`
+  (punctuation/whitespace-delimited spans), `Repeated` (any
+  2..=5-token n-gram appearing ≥ 2× in the input), `Token`
+  (content tokens — every whitespace-and-slash atom whose
+  lowercased form does **not** resolve to a `Polarity::Void`
+  element via `by_name`). The 118 closed-class void members
+  seeded under the 8 void regions cover the high-frequency
+  English function-word tail. Output lands in
+  `ExtractionOutput.unconditional_chunks`; Step 8 mints an
+  Element per entry regardless of whether NER labels it.
+- **Step 5b — NER** — hand-rolled GLiNER1 span tagger on the
+  in-house INT8 BERT engine (encoder = DeBERTa-v3-small, INT8).
+  Spec originally called for `gline-rs` on `ort`, but `ort` is
+  disqualified for portability and GLiNER2's disentangled-attention
+  `Clip` op blocks naive tract loading; the span head is bespoke.
+  Labels passed in are the seed kinds (`person`, `org`, `place`,
+  `weekday`, `quantity`, `event`, `role`, `state`, `time`) plus
+  warm-bias names from Step 4's active regions. Returns
+  `(span, kind, confidence)` triples. Each tagged span auto-emits
+  `(span_element, instance_of, K)`. Auto-emitted `instance_of`
+  relations dedup against existing equivalents; reinforcement
+  flows through the normal Step 8 path. Confidence
+  ≥ `policy.ner_assertion_threshold` → `Entailed`; below →
+  `Defeasible`. Anonymous spans are minted with
+  `name = "<kind>_<counter>"`.
+- **Step 5c — Temporal parser** (`src/steps/temporal.rs`). Pure
+  `regex` over weekdays / months / `today` / `tomorrow` /
+  `yesterday` / `tonight`. Each match becomes a value-Element with
+  the surface form as a name; spans overlapping a 5b NER hit are
+  dropped to avoid duplicate typing. Confidence is fixed at 0.95
+  (regex precision). **`chrono` / `chrono-english` relative-phrase
+  parsing is deferred** until we need to ground `"next Tuesday"`
+  to a concrete datetime; typed comparison still re-parses the
+  surface name on demand (§7.3).
+- **Step 5d — Pattern-based relation extraction**
+  (`src/steps/relation_patterns.rs`). Pure-Rust surface templates
+  (§15.1 / §24.1 fast-path) over Step 5b spans: `X from A to B`,
+  `X at Y`, `X with Y`, `X's Y`. Emits canonical
+  `(subj_span, attr_name, obj_span, confidence)` quads with
+  hardcoded attribute names (`from`, `to`, `with`, `at`,
+  `property`). Covers the seed-pack frames. **The GLiNER2
+  multi-task zero-shot RE model is deferred**; broader coverage
+  grows through replay and warm-region labels.
+- **Step 5e — Heuristic coref** (`src/steps/coref.rs`). Pure Rust,
+  recency-based, no model. Pronouns (he / she / it / they / this /
+  that) and definite descriptions ("the dentist") resolve to the
+  most-recently-focused `RecentFocusEntry` whose `attribute`
+  matches the span's grammatical slot (Centering Theory + Hobbs'
+  baselines, §15.1). **Currently a stub returning no decisions** —
+  wired into Step 5's return shape so the downstream API is stable,
+  but `Hypergraph.recent_focus` isn't populated until §11.11
+  lands, so there are no candidates to score against yet.
 
 All extractor output carries confidence. The tick's `source`
 parameter (§9.6, §11.1) flows into `(R, source, source)`
@@ -4174,24 +4240,35 @@ need to update without leaving [0, 1].
 
 ## 15. Model Stack
 
-Pure Rust plus deterministic ONNX. No Python, no JVM, no sidecars.
+Pure Rust, no Python, no JVM, no sidecars, **no ONNX runtime at
+runtime**. `tract-onnx` is retained as a *build-time* dev-dependency
+for one-time weight extraction; runtime inference is hand-rolled.
 
 ### 15.1 v0 Components
 
 1. **`tokenizers` (HuggingFace)** — tokenization. Apache-2.0, pure
    Rust. Golden-vector tests against reference outputs.
-2. **`tract-onnx` (Sonos)** — pure-Rust ONNX runtime. Carries the
-   embedder. No C++ deps; portable to any OS Rust supports. The
-   embedder weights are baked into the binary via `include_bytes!`.
+2. **In-house INT8 BERT engine** (`src/inference/`) — hand-rolled
+   forward pass with three matmul kernels (AVX-VNNI / AVX2
+   widen-pmaddwd / scalar), per-channel symmetric INT8 weights, and
+   per-row dynamic activation quant. Carries both the embedder and
+   the Step 5b NER encoder. ~17× faster than the `tract-onnx`
+   baseline on the same MiniLM model. Pipeline + kernel notes:
+   `docs/inference-engine.md`. `tract-onnx` is a dev-dependency
+   only — used by `examples/extract_weights.rs` to dump fp32
+   weights from the upstream ONNX one time, after which the runtime
+   carries no tract code.
 3. **~~`ort` (pyke.io)~~ — REMOVED.** Originally spec'd as a second
    ONNX runtime for GLiNER2 and SaT alongside tract. Disqualified:
    `ort` (Microsoft's C++ ONNX Runtime via pyke.io binding) fails to
-   link cleanly on dev machines we care about, and re-introducing
-   native-link friction per machine is non-negotiable. Tract is the
-   only acceptable runtime. Consequence: SaT is dropped (§11.4),
-   GLiNER2 is open (item 6 below), `gline-rs` is unusable as-is
-   (hard dep on `ort`).
-4. **all-MiniLM-L6-v2 (ONNX-quantized, ~23 MB)** as the embedder.
+   link cleanly on dev machines we care about. Tract was also
+   examined and rejected for runtime use (slow on our model,
+   doesn't load GLiNER2's disentangled-attention `Clip` op); the
+   in-house engine in item 2 above replaces both. Consequence: SaT
+   is dropped (§11.4); GLiNER1 NER ships on the in-house engine
+   (item 4 below); GLiNER2 multi-task RE is deferred in favor of
+   the pattern fast-path (item 5).
+4. **all-MiniLM-L6-v2 (INT8, ~22 MB)** as the embedder.
    384-dim, 6 transformer layers. Pinned for Legend's lifetime
    (§18.4). A model swap is a deliberate, hard, one-time event.
    Legend does not retain raw text or per-input records, so there is
@@ -4229,39 +4306,45 @@ Pure Rust plus deterministic ONNX. No Python, no JVM, no sidecars.
    deliberately. The §11.13 frame-assembly RRF fusion uses tantivy as
    the sparse signal alongside the dense focus-set / path-reinforced
    signals.
-5. **Temporal parser** — `chrono` + `chrono-english` for the easy 80% +
-   thin uncertainty-grounding layer. Carries grounding uncertainty.
-   Used at two sites:
-   (a) **Extraction (Step 5)** — recognizes date / weekday / duration
-   spans in input text and mints them as value-Elements with the
-   surface form as a name (e.g. an Element named `"Tuesday"` or
-   `"2026-04-30"`); the parser's confidence rides into the resulting
-   `(R, valid_from, T)` / `(R, valid_to, T)` meta-relations.
+5. **Temporal parser** — pure `regex` over weekdays / months /
+   `today` / `tomorrow` / `yesterday` / `tonight` (Step 5c). Each
+   match becomes a value-Element with the surface form as a name
+   (e.g. `"Tuesday"`); confidence is 0.95 (regex precision).
+   `chrono` / `chrono-english` relative-phrase grounding is
+   **deferred** — required only when we want to resolve
+   `"next Tuesday"` to a concrete datetime. Used at two sites:
+   (a) **Extraction (Step 5)** — see above.
    (b) **Comparison sites** — supersession's `from`/`to` ordering
-   (§11.10), frame-relative valid-time filtering (§11.13), and decay's
-   exact-value spare (§13.8) re-parse the relevant value-Elements'
-   names on demand. v0 stores no parsed form (§7.3); parse cost is
-   negligible relative to GLiNER2's 130–208 ms.
-6. **NER + relation extraction — OPEN.** Spec called for `gline-rs`
-   / `gliner2` (pure-Rust GLiNER inference on `ort`) for zero-shot
-   NER + RE at ~130–208 ms/call. Both crates have a hard dep on
-   `ort` (item 3 above), so this slot is unresolved. Smoke-tested
-   in tract: GLiNER2's encoder is DeBERTa-v3-large (1024 hidden, 24
-   layers); tract refuses on the disentangled-attention `Clip` op
-   over symbolic shape values. Real options for v0:
-   (a) try a BERT-backbone GLiNER variant (e.g.
-   `gliner-community/gliner_large-v2.5`) and verify tract loads it,
-   (b) write our own span-prediction head in Rust on top of a
-   tract-loaded encoder, (c) defer NER and use mocked extractors per
-   the §19 conformance gate. Decision deferred to Step 6 design.
+   (§11.10), frame-relative valid-time filtering (§11.13), and
+   decay's exact-value spare (§13.8) re-parse the relevant
+   value-Elements' names on demand. v0 stores no parsed form
+   (§7.3); parse cost is negligible.
+6. **NER + relation extraction — RESOLVED, hybrid.** The original
+   `gline-rs` / `gliner2` path is unusable (`ort` disqualified;
+   tract refuses GLiNER2's disentangled-attention `Clip` op over
+   symbolic shape values). Current v0 stack:
+   (a) **NER (Step 5b)** — GLiNER1 span head, hand-rolled, running
+   a DeBERTa-v3-small encoder through the in-house INT8 BERT engine.
+   ~50–150 ms per call. Output is `(span, kind, confidence)` triples
+   over seed kinds plus warm-bias active-region names.
+   (b) **Relation extraction (Step 5d)** — pure-Rust surface-pattern
+   templates (`X from A to B`, `X at Y`, `X with Y`, `X's Y`) in
+   `src/steps/relation_patterns.rs`. Covers the seed-pack frames.
+   Sub-ms.
+   (c) **Zero-shot RE (GLiNER2 multi-task) — deferred.** Pattern
+   coverage grows through replay + warm-region labels; revisit if
+   recall stalls.
 
-   **★ Binding latency constraint in v0.** Whatever lands here is
-   the long pole. The path to sub-100 ms p50 ticks runs through
-   replacing or augmenting this slot — pattern fast-paths (§24.1),
-   unified tiny-LLM extractor (§24.7), or a smaller GLiNER variant
-   if it passes §19 + §20.5. See §11.0 for the per-step budget table.
-7. **Heuristic coreference** — write from scratch in Rust. Recency-
-   based, defensible per Centering Theory + Hobbs' algorithm baselines.
+   **★ Binding latency constraint in v0.** Step 5b NER is the long
+   pole. The path to sub-50 ms p50 ticks runs through skipping
+   Step 5b on confident pattern hits (5d → label propagation), a
+   smaller NER encoder, or the unified tiny-LLM extractor (§24.7).
+   See §11.0 for the per-step budget table.
+7. **Heuristic coreference** — Step 5e (`src/steps/coref.rs`),
+   pure-Rust recency-based stub. Centering Theory + Hobbs'
+   baselines. Currently returns no decisions because
+   `Hypergraph.recent_focus` isn't populated until §11.11; wired
+   into Step 5's return shape for API stability.
 8. **~~SaT (Segment Any Text)~~ — REMOVED.** Original spec invoked
    SaT only on inputs > 480 tokens via the `ort` runtime. Three
    blockers compound: SaT's smallest variant is ~409 MB FP16
@@ -4297,13 +4380,15 @@ Solo developer, evenings/weekends:
 | Component | Estimate |
 |---|---|
 | `tokenizers` integration + golden-vector tests | ~0.25 wk |
-| tract-onnx integration + MiniLM round-trip | ~2 wk |
+| In-house INT8 BERT engine + MiniLM round-trip + validation | ~3 wk |
 | `tantivy` integration + Legend's index schema | ~0.5 wk |
-| Temporal parser (`chrono-english` + uncertainty layer) | ~2.5 wk |
-| NER + RE (open — gline-rs ruled out by `ort` dep, see §15.1.6) | ~1 wk |
-| Heuristic coref | ~1 wk |
+| Temporal parser (regex pass; chrono-english deferred) | ~0.25 wk |
+| NER (hand-rolled GLiNER1 head on in-house BERT) | ~2 wk |
+| Pattern-based RE (§24.1 fast-path; GLiNER2 deferred) | ~0.5 wk |
+| Heuristic coref (stub; activates when recent_focus lands) | ~0.5 wk |
+| Orthographic chunker + void filter (Step 5a) | ~0.5 wk |
 | ~~SaT integration + windowing logic + multi-window fan-out~~ — REMOVED with Step 3 (§11.4) | — |
-| **v0 model-stack total** | **~7 wk** |
+| **v0 model-stack total** | **~7.5 wk** |
 
 Plus substrate, seed pack, pipeline, replay (§21): ~9–11 wk
 additional (lighter than earlier estimates because patterns are
@@ -5405,15 +5490,15 @@ determinism contracts:
   hypergraph delta after each tick. This is the discipline already
   established in Step 4 ("hard-code §19 via direct `add_element` /
   `add_relation`, no NLP") and continues through every later step.
-  Substrate conformance does **not** call ONNX.
+  Substrate conformance does **not** call the inference engine.
 - **Full-stack smoke tests.** Run the actual extractor stack
-  (MiniLM via tract-onnx, GLiNER2 via gline-rs, chrono-english) on
-  the same fixtures. Pin CI hardware to a fixed machine class
-  (linux x86_64 AVX2 (Advanced Vector Extensions 2), quantized ONNX).
-  Assert structural shape (which
+  (MiniLM + GLiNER NER through the in-house INT8 BERT engine,
+  pattern-based RE, regex temporal) on the same fixtures. Pin CI
+  hardware to a fixed machine class (linux x86_64 AVX2 (Advanced
+  Vector Extensions 2), INT8). Assert structural shape (which
   elements/relations exist, statuses, supersession links) but allow
   ε-tolerance on confidence values. Cross-machine determinism is
-  out of substrate scope; ONNX FP rounding can shift confidences
+  out of substrate scope; INT8 / FP rounding can shift confidences
   enough to flip threshold-driven decisions on different hardware.
 
 The replay-determinism fixture (Step 11) is part of the substrate

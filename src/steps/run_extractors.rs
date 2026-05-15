@@ -21,6 +21,7 @@
 
 use crate::inference::deberta::predict::{LabeledSpan, predict_entities};
 use crate::steps::coref::{CorefDecision, resolve_coref};
+use crate::steps::novelty_relations::{NoveltyRelation, extract_novelty_relations};
 use crate::steps::orthographic::{OrthographicChunk, extract_chunks};
 use crate::steps::relation_patterns::{RelationProposal, extract_relations};
 use crate::steps::temporal::{TemporalSpan, extract_temporal};
@@ -50,20 +51,52 @@ pub enum ProposalSource {
     Pattern,
 }
 
-/// Everything Step 5 contributes to a tick: unconditional chunks from
-/// the model-free pass (5a), span typings, relation quads, and coref
-/// reuse decisions. Step 8 (when built) mints an Element per
-/// `unconditional_chunks` entry regardless of whether labeling
-/// succeeded — labels become meta-relations attached on top.
+/// Everything Step 5 contributes to a tick, split into two branches
+/// that always both run:
+///
+/// - **Known** — typed proposals (NER + temporal + pattern RE) plus
+///   coref decisions. Label-set bounded; high precision when the
+///   input fits known regions, silent when it doesn't.
+/// - **Novelty** — model-free, label-free surface chunks from the
+///   orthographic pass + void filter. Always produces output for
+///   non-empty input, regardless of whether anything labeled it.
+///
+/// Step 8 (when built) reconciles the two: typed proposals win when
+/// they cover a novelty chunk's span; uncovered novelty chunks mint
+/// Defeasible elements that mid-path insertion attaches to the
+/// closest existing region by their own embedding.
 #[derive(Debug, Default)]
 pub struct ExtractionOutput {
-    /// Step 5a output. Always populated for non-empty input — these are
-    /// the chunks the brain-inspired pre-semantic segmentation pass
-    /// produced. Categorization is optional and lives in `instance_of`.
-    pub unconditional_chunks: Vec<OrthographicChunk>,
+    pub known: KnownExtractions,
+    pub novelty: NoveltyExtractions,
+}
+
+/// Typed proposals + coref decisions. Slot into existing regions and
+/// attribute names.
+#[derive(Debug, Default)]
+pub struct KnownExtractions {
+    /// `(span, instance_of, kind)` proposals from NER and the temporal
+    /// regex pass.
     pub instance_of: Vec<ExtractionProposal>,
+    /// `(subj, attr, obj)` quads from the pattern RE pass.
     pub relations: Vec<RelationProposal>,
+    /// Pronoun / definite-description antecedent decisions. Currently
+    /// stubbed (no decisions until `recent_focus` is populated).
     pub coref: Vec<CorefDecision>,
+}
+
+/// Surface chunks that survive without any label match, plus
+/// candidate relations extracted purely from surface patterns. Always
+/// populated for non-empty input (at minimum, one Phrase chunk).
+#[derive(Debug, Default)]
+pub struct NoveltyExtractions {
+    /// Phrase + Token chunks from Step 5a.
+    pub chunks: Vec<OrthographicChunk>,
+    /// `(subject, attribute_text, object)` candidate triples from the
+    /// pattern OpenIE pass. No NER, no model — verb-shape morphology
+    /// over content tokens. Always Defeasible-bound; replay confirms
+    /// or prunes.
+    pub relations: Vec<NoveltyRelation>,
 }
 
 /// Seed entity kinds used as the NER label set when the caller doesn't
@@ -104,8 +137,8 @@ pub fn run_extractors(
         }
     };
 
-    // 0. Step 5a — orthographic chunker (Phrase + Repeated) plus void-
-    //    filtered content tokens. The chunker is pure-Rust and model-
+    // 0. Step 5a — orthographic chunker (Phrase) plus void-filtered
+    //    content tokens (Token). The chunker is pure-Rust and model-
     //    free; the content-token pass consults the hypergraph's
     //    `by_name` index and drops any token whose lowercase form
     //    resolves to a `Polarity::Void` element (closed-class
@@ -192,11 +225,23 @@ pub fn run_extractors(
     let coref: Vec<CorefDecision> = resolve_coref(input_text, hg);
     stage("coref");
 
+    // 7. Novelty-branch pattern OpenIE — verb-shape morphology over
+    //    content tokens; produces candidate triples that are always
+    //    Defeasible. Step 8 merges with the known-branch proposals.
+    let novelty_relations: Vec<NoveltyRelation> =
+        extract_novelty_relations(input_text, &unconditional_chunks);
+    stage("novelty_relations");
+
     ExtractionOutput {
-        unconditional_chunks,
-        instance_of,
-        relations,
-        coref,
+        known: KnownExtractions {
+            instance_of,
+            relations,
+            coref,
+        },
+        novelty: NoveltyExtractions {
+            chunks: unconditional_chunks,
+            relations: novelty_relations,
+        },
     }
 }
 
@@ -260,6 +305,7 @@ mod tests {
             &[],
         );
         let ner: Vec<&ExtractionProposal> = out
+            .known
             .instance_of
             .iter()
             .filter(|p| p.provenance == ProposalSource::Ner)
@@ -275,6 +321,7 @@ mod tests {
         // Tuesday + Friday already covered by NER (label="weekday") so
         // the temporal pass shouldn't emit duplicates.
         let temp: Vec<&ExtractionProposal> = out
+            .known
             .instance_of
             .iter()
             .filter(|p| p.provenance == ProposalSource::Temporal)
@@ -288,7 +335,12 @@ mod tests {
         // Pattern RE: "appointment ... with Dr. Rao" + "changed from
         // Tuesday to Friday" → at least the from/to pair plus the
         // companion 'with' link should fire.
-        let attrs: Vec<&'static str> = out.relations.iter().map(|r| r.attribute_name).collect();
+        let attrs: Vec<&'static str> = out
+            .known
+            .relations
+            .iter()
+            .map(|r| r.attribute_name)
+            .collect();
         assert!(attrs.contains(&"from"), "missing 'from' rel: {attrs:?}");
         assert!(attrs.contains(&"to"), "missing 'to' rel: {attrs:?}");
         assert!(attrs.contains(&"with"), "missing 'with' rel: {attrs:?}");
@@ -308,6 +360,7 @@ mod tests {
             &[],
         );
         let temp_texts: Vec<&str> = out
+            .known
             .instance_of
             .iter()
             .filter(|p| p.provenance == ProposalSource::Temporal)
@@ -319,8 +372,10 @@ mod tests {
     #[test]
     fn empty_input_returns_no_proposals() {
         let out = run_extractors_simple("", &default_policy());
-        assert!(out.instance_of.is_empty());
-        assert!(out.relations.is_empty());
-        assert!(out.coref.is_empty());
+        assert!(out.known.instance_of.is_empty());
+        assert!(out.known.relations.is_empty());
+        assert!(out.known.coref.is_empty());
+        assert!(out.novelty.chunks.is_empty());
+        assert!(out.novelty.relations.is_empty());
     }
 }

@@ -1,10 +1,11 @@
 # Seed graph (boot-time hypergraph)
 
-Legend boots with a seeded `Hypergraph` containing 72 elements and 53
-relations — the substrate's day-zero state. Without this, Step 4 region
-routing has nothing to descend into and nothing minted by extractors
-has a parent in the DAG. This doc describes the YAML → bin → runtime
-pipeline and how to modify the seeds.
+Legend boots with a seeded `Hypergraph` containing 622 elements and
+610 relations — the substrate's day-zero state. Without this, Step 4
+region routing has nothing to descend into, the token-level void
+filter has no closed-class anchors to consult, and nothing minted by
+extractors has a parent in the DAG. This doc describes the YAML →
+bin → runtime pipeline and how to modify the seeds.
 
 Source-of-truth design: `new_foundation.md` §10 (region topology) and
 §12 (seed pack); `new_foundation_v0_core.md` for the v0 scope.
@@ -16,39 +17,49 @@ seed_pack.yaml
  │
  │  cargo run --release --example gen_seed_graph
  │     ├── load_seed_pack()       (serde_yaml, dev-deps only)
- │     ├── mint elements          (VOID=0, GENESIS=1, attrs, regions, frames, classes, prototypes)
- │     ├── embed_text()           (MiniLM via tract-onnx — 87 calls)
- │     ├── synth relations        (region_class_pins + frame_class_pins + region_parent_pins + prototype_attach)
+ │     ├── mint elements          (VOID=0, GENESIS=1, attrs, regions, frames, classes, prototypes, void members)
+ │     ├── embed_text()           (MiniLM INT8 BERT — one call per prototype + void member)
+ │     ├── synth relations        (region_class_pins + frame_class_pins + region_parent_pins
+ │     │                           + prototype_attach + void_member instance_of pins)
  │     └── write little-endian bin
  ▼
-src/seed/graph.bin   (~120 KB; committed)
+src/seed/graph.bin   (~1 MB; committed)
  │
  │  cargo build → include_bytes!()
  ▼
 seed::load_seed_graph() → Hypergraph
  │
  ▼
-seed::rebuild_indices(&mut hg)   (by_name, region_children, region_parents, region_prototypes)
+seed::rebuild_indices(&mut hg)   (by_name, region_children, region_parents, region_prototypes, region_stats)
 ```
 
 ## What boots
 
 ```
-2  anchors           VOID (id 0), GENESIS (id 1)
-30 attribute names   ontology, meta-relation, region structural,
-                     generic participant, behavioral modal, causal
-15 regions           entities, events, states, change_history,
-                     relationships, quantities, time, locations,
-                     tasks, decisions, preferences, definitions,
-                     provenance, domains, modal_negated
-8  reference frames  user, project, domain, session, temporal_now,
-                     temporal_past, temporal_future, meta
-2  classes           REGION_CLASS, REFERENCE_FRAME_CLASS  (eagerly minted;
-                     YAML treats them as lazy)
-15 prototypes        one per region; embedding = MiniLM(descriptor)
+2    anchors           VOID (id 0), GENESIS (id 1)
+30   attribute names   ontology, meta-relation, region structural,
+                       generic participant, behavioral modal, causal
+14   signal regions    entities, events, change_history,
+                       relationships, quantities, time, locations,
+                       tasks, decisions, preferences, definitions,
+                       provenance, domains, modal_negated
+8    void regions      determiners, adpositions, coord_conj,
+                       subord_conj, pronouns, auxiliaries,
+                       particles, interjections
+                       (children of VOID; carry Polarity::Void)
+8    reference frames  user, project, domain, session, temporal_now,
+                       temporal_past, temporal_future, meta
+2    classes           REGION_CLASS, REFERENCE_FRAME_CLASS  (eagerly
+                       minted; YAML treats them as lazy)
+440  prototypes        20 examples per region (22 × 20); embedding =
+                       MiniLM(example)
+118  void members      closed-class stop words (the / of / and / …)
+                       seeded under the 8 void regions; carry
+                       Polarity::Void
 
-53 relations         15 region_class_pins + 8 frame_class_pins
-                   + 15 region_parent_pins + 15 prototype_attach
+610 relations         22 region_class_pins + 8 frame_class_pins
+                    + 22 region_parent_pins + 440 prototype_attach
+                    + 118 void_member instance_of pins
 ```
 
 Element IDs are assigned sequentially in mint order, so the layout is
@@ -81,6 +92,7 @@ HEADER (10 × u32):
 ELEMENTS:
   id(u32) name_count(u32) [name_len(u32) bytes]*
   embedding(384 × f32) stats(49 bytes) created_at(u64)
+  polarity(u8)        (0 = Signal, 1 = Void)
 
 RELATIONS:
   id(u32) attribute_count(u32)
@@ -88,13 +100,16 @@ RELATIONS:
   status(u8) stats(49 bytes) priority(i8) created_at(u64)
 ```
 
-`format_version = 1`. Bumped by the generator if the byte layout
+`format_version = 2`. Bumped by the generator if the byte layout
 changes; the runtime panics on mismatch and points at the regen
 command.
 
 Derived indices (`by_name`, `region_children`, `region_parents`,
-`region_prototypes`) are **never** serialized — the relation graph is
-authoritative. `rebuild_indices` repopulates them after deserialization.
+`region_prototypes`, `region_stats`) are **never** serialized — the
+relation graph is authoritative. `rebuild_indices` repopulates them
+after deserialization. `region_stats` (per-region mean + variance of
+prototype embeddings) is computed in the same pass, consumed by
+Step 4 Mahalanobis routing.
 
 ## Regenerate
 
@@ -105,10 +120,13 @@ cargo run --release --example gen_seed_graph
 Output:
 
 ```
-wrote 72 elements, 53 relations to src/seed/graph.bin (121442 bytes)
-  void=0 genesis=1 region_class=55 reference_frame_class=56
-  subject_attr=16 parent_region_attr=13 prototype_attr=15
+wrote 622 elements, 610 relations to src/seed/graph.bin
+  void=0 genesis=1 region_class=... reference_frame_class=...
+  subject_attr=... parent_region_attr=... prototype_attr=...
 ```
+
+(Exact class/attr IDs depend on YAML order; the test
+`seed::tests::loads_expected_counts` pins the 622/610 totals.)
 
 The runtime picks up the new bin at the next `cargo build` because it's
 pulled in via `include_bytes!`.
@@ -119,20 +137,41 @@ pulled in via `include_bytes!`.
 
 1. Add a `RawRegion` block to `seed_pack.yaml` under `regions:`. Required
    fields: `element_id`, `names`, `parent_regions: [[parent, weight]]`,
-   `descriptor`, `rationale`.
+   `descriptor`, `examples`, `rationale`.
 2. Add a corresponding entry to `region_class_pins.relations`:
    `[NEW_REGION, instance_of, REGION_CLASS]`.
 3. Add the parent edge to `region_parent_pins.relations`:
-   `[NEW_REGION, parent_region, GENESIS, 1.0]` (or another parent).
+   `[NEW_REGION, parent_region, GENESIS, 1.0]` (or another parent —
+   a child of `VOID` instead makes the region a void subtree, and
+   every member it owns inherits `Polarity::Void`).
 4. Update the count assertions in `gen_seed_graph.rs` (search for
    `assert_eq!(elements.len()` and `assert_eq!(relations.len()`).
 5. Regenerate. Tests in `src/seed.rs` will fail on count mismatches —
    update those too.
 
-The descriptor string is what gets MiniLM-embedded and becomes the
-region's day-zero prototype. Make it semantically representative.
-Replay (§14.8) will drift the prototype toward incoming inputs over
-time, but boot quality matters for the first dozen ticks.
+Each `examples` entry becomes a prototype Element whose embedding
+is `MiniLM(example)`; the per-region prototype set drives Step 4
+routing (mean of top-K cosine + diagonal Mahalanobis against
+`region_stats`). The `descriptor` field is documentation only at
+runtime — useful for the inspection MD dump and as a human-readable
+summary, but not embedded. Replay (§14.8) will drift prototypes
+toward incoming inputs over time; boot quality matters for the
+first dozen ticks.
+
+### Add a new void member (closed-class stop word)
+
+Void members live under one of the 8 void regions
+(`REGION_DETERMINERS`, `REGION_PRONOUNS`, …) via the region's
+`members:` list. They carry `Polarity::Void`, which is what
+`src/steps/void_filter.rs` keys on to drop function-word tokens
+from Step 5a's content stream.
+
+1. Find the right void region in `seed_pack.yaml` and append a new
+   entry to its `members:` list:
+   `{ element_id: VOID_DET_FOO, names: ["foo"] }`. Each member
+   becomes one Element (polarity Void) with a single
+   `instance_of <REGION>` pin.
+2. Update count assertions and tests; regenerate.
 
 ### Add a new attribute name
 

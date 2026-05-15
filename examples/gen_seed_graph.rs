@@ -3,14 +3,17 @@
 //!
 //! Run: `cargo run --release --example gen_seed_graph`
 //!
-//! Why this exists: the v0 substrate boots with ~54 seeded elements
-//! (anchors, attribute names, regions, frames) plus eagerly-minted
-//! `REGION_CLASS` / `REFERENCE_FRAME_CLASS` plus **one prototype
-//! Element per `examples` entry per region** (20 examples × 14
-//! regions = 280 prototypes). Each prototype's embedding is
-//! `embed_text(example)`; routing scores input via max-cosine across
-//! the per-region prototype set (and via mean/variance built from
-//! the same set in `region_stats`).
+//! Why this exists: the v0 substrate boots with 62 seeded entity
+//! elements (2 anchors + 30 attribute names + 14 signal regions +
+//! 8 void regions + 8 reference frames) plus eagerly-minted
+//! `REGION_CLASS` / `REFERENCE_FRAME_CLASS`, **one prototype Element
+//! per `examples` entry per region** (20 examples × 22 regions = 440
+//! prototypes; each `embedding = embed_text(example)`), and **one
+//! void-member Element per `members:` entry on each void region**
+//! (118 closed-class stop words, polarity = Void). Routing scores
+//! input via mean-of-top-K cosine across the per-region prototype
+//! set plus diagonal Mahalanobis against the mean/variance built
+//! from the same set in `region_stats`.
 //!
 //! Pattern matches `gen_intent_classifiers.rs`: build-time tool that
 //! reads YAML + runs the embedder + writes a tightly-packed
@@ -22,26 +25,31 @@
 //! 1. VOID at ElementId(0), GENESIS at ElementId(1) — anchor IDs are
 //!    fixed by the `Hypergraph` struct's contract.
 //! 2. The 30 seeded attribute names in YAML declaration order.
-//! 3. The 14 seeded regions.
+//! 3. The 22 seeded regions (14 signal + 8 void).
 //! 4. The 8 seeded reference frames.
 //! 5. REGION_CLASS, REFERENCE_FRAME_CLASS — the YAML treats these as
 //!    lazy (minted on first pin); we mint them eagerly so the runtime
 //!    has stable IDs to cache.
 //! 6. One prototype Element per `examples` entry on each region.
 //!    Name: `<region>_proto_<i>`. Embedding: `embed_text(example)`.
-//!    With 20 examples × 14 regions = 280 prototype elements.
+//!    Polarity = Signal. 20 × 22 = 440 prototype elements.
+//! 7. One void-member Element per `members:` entry on each void
+//!    region. Polarity = Void; carries the closed-class surface form
+//!    as its single name. 118 total.
 //!
-//! Total: 2 + 30 + 14 + 8 + 2 + 280 = 336 elements.
+//! Total: 2 + 30 + 22 + 8 + 2 + 440 + 118 = 622 elements.
 //!
 //! ── Relation minting order ───────────────────────────────────────────
 //!
-//! 1. 14 region_class_pins — `[REGION_X, instance_of, REGION_CLASS]`.
+//! 1. 22 region_class_pins — `[REGION_X, instance_of, REGION_CLASS]`.
 //! 2. 8 reference_frame_class_pins.
-//! 3. 14 region_parent_pins — carry confidence weights from the YAML.
-//! 4. 280 prototype-attachment pins — one per prototype minted in
+//! 3. 22 region_parent_pins — carry confidence weights from the YAML.
+//! 4. 440 prototype-attachment pins — one per prototype minted in
 //!    step 6 above.
+//! 5. 118 void_member instance_of pins — one per void member in
+//!    step 7 above.
 //!
-//! Total: 316 relations.
+//! Total: 610 relations.
 //!
 //! ── Binary format (consumed by src/seed.rs) ──────────────────────────
 //!
@@ -49,7 +57,7 @@
 //! `u32` byte-length prefix.
 //!
 //! HEADER (10 × u32 = 40 bytes):
-//!   format_version            u32  (currently 1)
+//!   format_version            u32  (currently 2)
 //!   element_count             u32
 //!   relation_count            u32
 //!   void_id                   u32
@@ -67,6 +75,7 @@
 //!   embedding     EMBEDDING_DIM × f32  (no length prefix; constant)
 //!   stats         (see MEMORY_STATS layout below)
 //!   created_at    u64  (Tick)
+//!   polarity      u8   (0 = Signal, 1 = Void)
 //!
 //! RELATIONS (relation_count × variable):
 //!   id              u32
@@ -177,9 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let polarity = raw
             .parent_regions
             .iter()
-            .map(|(parent_sym, _)| {
-                elements[symbol_to_id[parent_sym].0 as usize].polarity
-            })
+            .map(|(parent_sym, _)| elements[symbol_to_id[parent_sym].0 as usize].polarity)
             .find(|&p| p == Polarity::Void)
             .unwrap_or(Polarity::Signal);
         mint_element(

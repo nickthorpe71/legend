@@ -445,9 +445,8 @@ mod tests {
                 .get(stop)
                 .unwrap_or_else(|| panic!("stop word '{stop}' not in by_name"));
             assert!(
-                ids.iter().any(|id| {
-                    hg.elements[id.0 as usize].polarity == Polarity::Void
-                }),
+                ids.iter()
+                    .any(|id| { hg.elements[id.0 as usize].polarity == Polarity::Void }),
                 "no Polarity::Void element resolves '{stop}'",
             );
         }

@@ -39,7 +39,6 @@ pub fn extract_content_tokens(text: &str, hg: &Hypergraph) -> Vec<OrthographicCh
             char_start: t.char_start,
             char_end: t.char_end,
             scale: ChunkScale::Token,
-            repetitions: 1,
         });
     }
     out

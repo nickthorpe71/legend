@@ -232,46 +232,36 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
     println!();
     println!("run_extractors (Step 5)");
 
-    // Step 5a — unconditional chunks. Always populated for non-empty input.
-    if out.unconditional_chunks.is_empty() {
-        println!("  unconditional_chunks: (none)");
+    // Novelty branch — surface chunks. Always populated for non-empty input.
+    if out.novelty.chunks.is_empty() {
+        println!("  novelty.chunks: (none)");
     } else {
         use crate::steps::orthographic::ChunkScale;
         let mut n_phrases = 0usize;
-        let mut n_repeats = 0usize;
         let mut n_tokens = 0usize;
-        for c in &out.unconditional_chunks {
+        for c in &out.novelty.chunks {
             match c.scale {
                 ChunkScale::Phrase => n_phrases += 1,
-                ChunkScale::Repeated => n_repeats += 1,
                 ChunkScale::Token => n_tokens += 1,
             }
         }
         println!(
-            "  unconditional_chunks  {} total  ({n_phrases} phrases, {n_repeats} repeats, {n_tokens} tokens)",
-            out.unconditional_chunks.len(),
+            "  novelty.chunks  {} total  ({n_phrases} phrases, {n_tokens} tokens)",
+            out.novelty.chunks.len(),
         );
-        for c in &out.unconditional_chunks {
+        for c in &out.novelty.chunks {
             let truncated: String = if c.text.chars().count() > 36 {
                 let cut: String = c.text.chars().take(33).collect();
                 format!("{cut}…")
             } else {
                 c.text.clone()
             };
-            let annot = if c.repetitions > 1 {
-                format!(" ×{}", c.repetitions)
-            } else {
-                String::new()
-            };
-            println!(
-                "    {:<12} {truncated}{annot}",
-                format!("{:?}", c.scale),
-            );
+            println!("    {:<12} {truncated}", format!("{:?}", c.scale));
         }
     }
     println!();
 
-    if out.instance_of.is_empty() {
+    if out.known.instance_of.is_empty() {
         println!("  instance_of:  (none)");
     } else {
         #[allow(clippy::print_literal)]
@@ -285,7 +275,7 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
             "  {:-<24} {:-<14} {:->6}  {:-<10} {:-<8}",
             "", "", "", "", ""
         );
-        for p in &out.instance_of {
+        for p in &out.known.instance_of {
             let truncated: String = if p.subject_text.chars().count() > 24 {
                 let cut: String = p.subject_text.chars().take(21).collect();
                 format!("{cut}…")
@@ -302,10 +292,10 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
             );
         }
     }
-    if !out.relations.is_empty() {
+    if !out.known.relations.is_empty() {
         println!();
         println!("  relations");
-        for r in &out.relations {
+        for r in &out.known.relations {
             let subj = &input_text[r.subject_char_start..r.subject_char_end];
             let obj = &input_text[r.object_char_start..r.object_char_end];
             println!(
@@ -316,8 +306,21 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
             );
         }
     }
-    if !out.coref.is_empty() {
+    if !out.known.coref.is_empty() {
         println!();
-        println!("  coref decisions: {}", out.coref.len());
+        println!("  coref decisions: {}", out.known.coref.len());
+    }
+    if !out.novelty.relations.is_empty() {
+        println!();
+        println!("  novelty.relations  {}", out.novelty.relations.len());
+        for r in &out.novelty.relations {
+            let subj = &input_text[r.subject_char_start..r.subject_char_end];
+            let obj = &input_text[r.object_char_start..r.object_char_end];
+            println!(
+                "    ({subj}) [{attr}] ({obj})  conf={conf:.3}",
+                attr = r.attribute_text,
+                conf = r.confidence,
+            );
+        }
     }
 }

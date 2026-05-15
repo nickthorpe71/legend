@@ -60,12 +60,13 @@ DURABILITY             snapshot (LZ4+MessagePack) + bounded WAL
                        checkpoint at N=1000 ticks ∨ S=5MB ∨ T=1hr,
                        boot fingerprint check refuses on mismatch     (§18)
 
-EMBEDDER               all-MiniLM-L6-v2 (ONNX-quantized, ~23 MB),
-                       running through tract-onnx (pure-Rust runtime),
-                       384-dim, pinned for life — model swap =
-                       re-ingest per recoverability matrix            (§15.1, §18.4)
+EMBEDDER               all-MiniLM-L6-v2 (INT8-quantized, ~22 MB),
+                       running through an in-house pure-Rust BERT
+                       engine (no tract / ort / C deps), 384-dim,
+                       pinned for life — model swap = re-ingest per
+                       recoverability matrix                          (§15.1, §18.4)
 
-LATENCY BUDGET (v0)    ~200–300 ms p50; GLiNER2 dominates             (§11.0, §15.1)
+LATENCY BUDGET (v0)    ~80–230 ms p50; Step 5 GLiNER NER dominates    (§11.0, §15.1)
 
 CONFORMANCE GATES      §19 ten-tick walkthrough (substrate, mocked extractors)
                        §20.5 three companion fixtures
@@ -194,14 +195,23 @@ struct Element {
                                   // time from `names` (or originating
                                   // span text for anonymous NER (Named
                                   // Entity Recognition) spans)
+    polarity: Polarity,           // Signal (default) or Void — set
+                                  // on closed-class stop-word seeds
+                                  // under the VOID subtree so Step 5a's
+                                  // token pass can drop function words.
+                                  // Distinct from "routing-VOID" (a
+                                  // Step 4 routing-quality failure
+                                  // counted in delta.unrouted_count).
 }
+
+enum Polarity { Signal, Void }
 ```
 
-That's the entire Element. Region topology lives in the relation
-graph (§10) as `member_of` / `parent_region` / `lateral_region` /
-`prototype` claims; typed leaf values ("Tuesday", "6 pounds",
-"Berlin") are themselves Elements whose surface forms live in
-`names` and whose typed semantics are parsed on comparison (§7.3).
+Region topology lives in the relation graph (§10) as `member_of` /
+`parent_region` / `lateral_region` / `prototype` claims; typed leaf
+values ("Tuesday", "6 pounds", "Berlin") are themselves Elements
+whose surface forms live in `names` and whose typed semantics are
+parsed on comparison (§7.3).
 
 ### Relation
 
@@ -277,48 +287,41 @@ struct Hypergraph {
     policy: Policy,
     recent_focus: VecDeque<RecentFocusEntry>,
 
-    // Derived indices — rebuild on load, never serialize.
-    by_name:                     HashMap<String, Vec<ElementId>>,
-    // All relations that mention E as the value of any attribute.
-    // No subject/object split — `subject` is just a seeded attribute
-    // name (§16.3) with no structural privilege.
-    relations_by_element:        HashMap<ElementId, Vec<RelationId>>,
-    // Relations that have at least one attribute named N.
-    relations_by_attribute_name: HashMap<ElementId, Vec<RelationId>>,
+    // ── Derived indices (rebuild on load, never serialize) ──────────
+    //
+    // Day-zero scope: enough to drive Step 4 routing + Step 5a void
+    // lookup. Steps 6–12 add the meta-relation / recognition / lateral
+    // indices listed under "deferred" below as their consumers come
+    // online; the relation graph is the source of truth in either case.
 
-    // Region indices — derived from member_of / parent_region /
-    // lateral_region / prototype relations. Hot-path routing reads
-    // these instead of walking the relation graph.
-    region_members:         HashMap<ElementId, Vec<ElementId>>,
-    region_parents:         HashMap<ElementId, Vec<(ElementId, f32)>>,
-    region_children:        HashMap<ElementId, Vec<ElementId>>,
-    region_lateral:         HashMap<ElementId, Vec<ElementId>>,
-    region_prototypes:      HashMap<ElementId, Vec<ElementId>>,
+    by_name:           HashMap<String, Vec<ElementId>>,
+    region_children:   HashMap<ElementId, Vec<ElementId>>,
+    region_parents:    HashMap<ElementId, Vec<(ElementId, f32)>>,
+    region_prototypes: HashMap<ElementId, Vec<ElementId>>,
+    region_stats:      HashMap<ElementId, RegionStats>,  // per-region
+                                                          // mean+var of
+                                                          // prototype
+                                                          // embeddings;
+                                                          // consumed by
+                                                          // Step 4
+                                                          // Mahalanobis
 
-    // Meta-relation indices — two inverses. Specific lookups ("frame
-    // of R", "what supersedes R") become a small filter (typical 0–3
-    // entries) over the indexed list, keyed on attribute name.
-    //   meta_relations_by_subject[R]: meta-rels whose `target` (or
-    //                                 head-shaped) attribute value
-    //                                 is R — forward walks.
-    //   meta_relations_by_object[R]:  meta-rels mentioning R as the
-    //                                 value of a non-target slot
-    //                                 (`supersedes`, `derived_from`,
-    //                                 …) — inverse walks.
-    meta_relations_by_subject: HashMap<RelationId, Vec<RelationId>>,
-    meta_relations_by_object:  HashMap<RelationId, Vec<RelationId>>,
+    // Anchor IDs cached at seed-load time so the hot path doesn't
+    // round-trip through `by_name`.
+    void:                  ElementId,
+    genesis:               ElementId,
+    region_class:          ElementId,
+    reference_frame_class: ElementId,
+    subject_attr:          ElementId,
+    parent_region_attr:    ElementId,
+    prototype_attr:        ElementId,
 
-    // Recognition indices — derived attribute-name counts, no
-    // privileged head slot.
-    //   attribute_value_counts[E][N]: relations binding (name=N,
-    //                                 value=E). Drives concept /
-    //                                 frame recognition.
-    //   attribute_co_counts[E][N]:    relations mentioning E *and*
-    //                                 carrying an attribute named N.
-    //                                 Drives instance recognition.
-    attribute_value_counts: HashMap<ElementId, HashMap<ElementId, u32>>,
-    attribute_co_counts:    HashMap<ElementId, HashMap<ElementId, u32>>,
-    meta_relation_presence: HashMap<RelationId, HashSet<ElementId>>,
+    // ── Deferred (added when their consumer step lands) ─────────────
+    // relations_by_element, relations_by_attribute_name,
+    // region_members, region_lateral,
+    // meta_relations_by_subject, meta_relations_by_object,
+    // attribute_value_counts, attribute_co_counts,
+    // meta_relation_presence
 }
 ```
 
@@ -427,7 +430,7 @@ struct ModelFingerprint {
         │  STEP 4   route_regions  ─► active_regions +   │
         │                              held RegionDelta  │
         │  STEP 5   run_extractors ─► proposals          │
-        │           ★ GLiNER2 = the long pole            │
+        │           ★ GLiNER NER = the long pole         │
         │  STEP 6   coreference    ─► reuse decisions    │
         ├────────────────────────────────────────────────┤
         │            ─── MUTATION PHASE ───              │
@@ -461,7 +464,7 @@ fn tick(
     // and Step 4 (region routing). v0 collapses what was Step 4
     // ("embed") into this single up-front computation.
     let embedding = embed(&input);
-    let intent  = detect_intent(&input, &embedding, hg);      // Step 1
+    let intent  = detect_intent(&input, &embedding);          // Step 1
     let policy  = adjust_policy(&intent, &hg.policy);         // Step 2
     // Step 3 (window) — REMOVED in v0. Caller is responsible for
     // chunking long inputs into multiple ticks; one tick = one
@@ -491,16 +494,17 @@ fn tick(
 ```text
 step  name                              p50 budget    notes
 0     log entry (WAL append)            <1 ms         LZ4 hot segment append
-1     detect_intent                     5–15 ms       embedding + 4 logistic classifiers; today
-                                                      embeds independently (will share with Step 4
-                                                      once cached, then sub-ms marginal)
+1     detect_intent                     <1 ms         4 logistic classifiers over the shared
+                                                      embedding (computed once at tick entry,
+                                                      ~1.7–2 ms — billed separately below)
 2     adjust_policy                     <1 ms         scalar copy + multiplier
 3     REMOVED in v0                     —             caller chunks long inputs
                                                       (input embedding computed at tick
-                                                      entry, ~5–15 ms; consumed by
+                                                      entry, ~1.7–2 ms; consumed by
                                                       Steps 1 & 4 — was Step 4)
 4     route_regions                     5–15 ms       DAG (Directed Acyclic Graph) descent
-5     run_extractors                    130–208 ms    ★ GLiNER2 (one input, one call)
+5     run_extractors                    50–150 ms     ★ GLiNER NER on in-house INT8 BERT;
+                                                      patterns/temporal/coref are sub-ms each
 6     score_coreference                 2–5 ms        small candidate sets
 7     apply_region_delta                2–5 ms        k-means prototype updates
 8     build_relations                   3–8 ms        hashmap inserts + indices
@@ -509,12 +513,14 @@ step  name                              p50 budget    notes
 11    decay_focus_radius                3–8 ms        bounded radius
 12    aggregate_focus + enqueue_replay  2–5 ms        RRF (Reciprocal Rank Fusion) merge + handoff
                                         ─────────
-                                        ~160–290 ms p50  (single tick, ≤480 tokens)
+                                        ~80–230 ms p50  (single tick, ≤480 tokens)
 ```
 
-GLiNER2 is v0's binding latency constraint. Sub-100 ms p50 requires
-replacing/augmenting Step 5 — see full spec §24.1 (pattern fast-path)
-and §24.7 (unified tiny-LLM extractor).
+Step 5's GLiNER NER pass is v0's binding latency constraint.
+Sub-50 ms p50 would require either skipping NER on short / cold
+inputs (pattern fast-path covers the common templates already; see
+full spec §24.1) or migrating to a unified tiny-LLM extractor
+(§24.7).
 
 ### Step notes
 
@@ -571,12 +577,11 @@ extraction would supersede an existing Asserted relation. Not yet
 implemented; current score is purely linguistic. Lands with Step 5
 / Step 9.
 
-Cost: per-call dominated by embedding inference (~5–15 ms short
-input); lexical extraction + four 418-dim dot products are
-microseconds. **The input embedding is computed once at tick entry**
-(see Tick Entry note below) and threaded through to Step 1 here and
-Step 4 (route_regions); Step 1's marginal cost is sub-ms once the
-shared embedding is available.
+Cost: the embedding is computed once at tick entry (the in-house
+INT8 BERT runs ~1.7–2 ms at 13 tokens on AVX-VNNI; see
+`docs/inference-engine.md`) and threaded through to Step 1 and
+Step 4. With the shared embedding in hand, Step 1's own work
+(lexical extraction + four 418-dim dot products) is microseconds.
 
 **Step 2 — Adjust Policy.** Pure scalar arithmetic — no model. Map
 the 4-vector to the substrate knobs via the §10.6 formulas:
@@ -658,13 +663,15 @@ that hands off pre-chunked sub-inputs.
 **Tick Entry — Input Embedding.** (Was Step 4 in the original
 spec; folded into tick entry in v0 so Step 1 and Step 4 share one
 inference.) **all-MiniLM-L6-v2** (384-dim, 6 transformer layers,
-ONNX-quantized, ~23 MB) running through **tract-onnx** (pure-Rust
-ONNX runtime — no C++ deps, portable to any OS Rust supports).
-Model bytes are baked into the binary via `include_bytes!`.
-Tokenization is `tokenizers` (HuggingFace pure-Rust crate).
-Quantized inference is ~3–5 ms per call on a 4-core commodity CPU.
-The runtime carries only the quantized model — no separate FP32
-master, since tract-onnx loads quantized weights directly.
+INT8-quantized, ~22 MB) running through an **in-house pure-Rust
+BERT engine** (`src/inference/`) — no `tract-onnx`, no `ort`, no
+C deps. Model weights are baked into the binary via
+`include_bytes!`. Tokenization is `tokenizers` (HuggingFace
+pure-Rust crate). Inference is ~1.7–2.0 ms per call at 13 tokens
+on AVX-VNNI (i7-1365U), ~17× faster than the tract baseline; AVX2
+and scalar fallbacks are present for older silicon and ARM.
+Implementation rationale and kernel details live in
+`docs/inference-engine.md`.
 
 The embedding is computed once before Step 1 runs and threaded
 through to Step 1 (intent classifier features) and Step 4 (region
@@ -695,70 +702,138 @@ from/to construction, change-vs-state cue — things that don't reduce
 to any single extracted element) and lets extraction proceed with a
 correctly tuned label set on its first pass.
 
-Mechanics: read-only DAG descent — no model, just cosine similarity
-over already-computed vectors. Starting from GENESIS, walk
-`region_children[current]` to enumerate candidates; for each
-candidate region, look up its prototype Elements via
-`region_prototypes[region]` and read each prototype Element's
-`embedding` field directly (FP32 inline). Score = max cosine over
-the region's prototypes; descend into the top-k children whose
-score exceeds `policy.descend_threshold`. Stop when no child
-exceeds the threshold (leaf reached) or when no child clears
-`policy.leaf_vigilance` (sub-threshold input → routed to VOID).
+Mechanics: read-only DAG descent — no model, just dot products over
+already-computed vectors. Starting from GENESIS, walk
+`region_children[current]` to enumerate candidates; each candidate
+region's prototype Elements come from `region_prototypes[region]`
+and per-region mean/variance from `region_stats[region]` (built at
+load time from the same prototype set).
+
+**Two-score fusion (Option D).** Each candidate is scored against
+two metrics, both driving different gates:
+
+- **`cosine`** = mean of the top-K prototype cosines (K =
+  `policy.cosine_top_k`, default 3). Mean-of-top-K replaces the
+  earlier max-pool so a single surface-overlap prototype can't
+  dominate — a region ranks high only when several prototypes
+  agree. K = 1 reproduces the old max-pool behavior. Cosine drives
+  the sharp gates: **descent** (`cosine ≥ policy.descend_threshold`)
+  and **leaf-vigilance** (`cosine ≥ policy.leaf_vigilance`).
+- **`mahalanobis`** = diagonal-Mahalanobis similarity against
+  `region_stats[region]` (with `policy.variance_prior` mixed into
+  each per-dim variance for n=1 stability and small-n bootstrap
+  smoothing). Distribution-aware: "does this input look like a
+  typical member of this region?" rather than "did it match the
+  closest prototype?" Drives the **activation gate**
+  (`mahalanobis ≥ policy.region_activation_threshold`), so the
+  active set focuses on regions where the input fits the spread.
+
+At each node:
+- Score every child by both metrics.
+- If best `cosine` across children < `leaf_vigilance`, the current
+  branch is **unrouted**: `delta.unrouted_count += 1`; descent
+  stops. (Distinct from elements whose `polarity == Polarity::Void`
+  — that's a semantic-content classification; this is a routing
+  failure that surfaces as a quality signal in the frame.)
+- Otherwise descend into every child whose `cosine ≥ descend_threshold`
+  (no K cap on descent breadth).
+- Among descended children, **activate** those whose `mahalanobis ≥
+  region_activation_threshold`.
+- If the final active set is empty across the whole descent, raise
+  `UncertaintySignal::DiffuseRouting`.
+
 Each comparison is O(prototypes-in-region); the prototype set is
 kept small by `policy.merge_threshold` (collapses near-duplicates)
 and `policy.split_variance` (splits high-scatter regions).
-Parallelizes across windows via `par_iter`. Returns `(Vec<ActiveRegion>, RegionDelta)`;
+Parallelizes across windows via `par_iter` (single-window in v0,
+since Step 3 was removed). Returns `(Vec<ActiveRegion>, RegionDelta)`;
 the `RegionDelta` is **held** until Step 7.
 
-**Step 5 — Run Extractors.** One call per tick (Step 3 removed). For
-single-window inputs (the common case), the section runs once. For
-multi-window inputs, it runs N times and extractors fan out across
-windows via `rayon::par_iter`. Within each window the extractor sees
-the entire window at once; sentence boundaries inside a window are
-not consulted. Four extractors run sequentially within the step, but
-the step itself is the long pole:
+**Step 5 — Run Extractors.** One call per tick (Step 3 removed).
+Single-window only in v0. The step runs five passes; the GLiNER NER
+pass is the long pole.
 
-- **NER.** `gline-rs` running GLiNER1 NER on `ort` — INT8 zero-shot
-  span tagging. Labels passed in are the seed kinds (`person`,
-  `org`, `place`, `weekday`, `quantity`, `event`, ...). Returns
-  `(span, kind, confidence)` triples. Each tagged span auto-emits
-  `(span_element, instance_of, K)` Defeasible (or Entailed when
-  confidence ≥ `policy.ner_assertion_threshold`).
-- **Temporal parser.** `chrono` + `chrono-english` for date /
-  weekday / duration spans. Each match becomes a value-Element
-  with the surface form as a name (parses again on comparison;
-  §7.3); the parser's confidence rides into the resulting
-  `(R, valid_from, T)` / `(R, valid_to, T)` meta-relations.
-- **Zero-shot relation extraction.** `gline-rs` / `gliner2` on
-  `ort` — INT8 zero-shot RE. ~130–208 ms per call across 5–50
-  candidate attribute-name labels. Label set comes from (1) seed-pack
-  canonical attribute names always, plus (2) "warm" attribute names
-  whose `MemoryStats.activation` is above a floor — biased toward
-  attribute names whose participants live in the active regions
-  returned by Step 4. Returns `(subj_span, attr_label, obj_span,
-  confidence)` quads. **★ This call is the v0 latency floor and
-  does not parallelize.**
-- **Heuristic coref.** Pure Rust, recency-based — no model.
-  Pronouns (he / she / it / they / this / that) and definite
-  descriptions ("the dentist") resolve to the most-recently-focused
-  `RecentFocusEntry` whose attribute name matches the span's
-  grammatical slot (Centering Theory + Hobbs' algorithm baselines).
+**Step 5a — Orthographic chunker** (pre-semantic, no model). Always
+runs first; always emits at least one chunk for non-empty input.
+Two scales:
+- **`Phrase`** — punctuation- and whitespace-delimited spans
+  (orthographic / prosodic boundary cue, à la Cutler & Norris 1988;
+  Pierrehumbert & Hirschberg 1990). Phrases shorter than 3 chars,
+  alphanumeric-free, or exact duplicates within the input are
+  dropped.
+- **`Repeated`** — any n-gram (`2 ≤ n ≤ 5` tokens) appearing at
+  least twice in the input, emitted at its first occurrence (Ding,
+  Melloni, Zhang, Tian, Poeppel 2016 — cortical tracking of
+  hierarchical structure).
+- **`Token`** — content-bearing single-token chunks emitted by the
+  void filter (next bullet).
 
-**Attribute-name label resolution.** Each extractor proposal arrives as
-`(subj_span, attr_label, obj_span, confidence)`. The pipeline:
+A separate **token-level void filter** (`src/steps/void_filter.rs`)
+walks the same whitespace-and-slash atoms, drops any whose lowercased
+form resolves (via `by_name`) to an Element with
+`polarity == Polarity::Void`, and emits the survivors as `Token`
+chunks. The 118 closed-class stop words seeded under the 8 void
+regions cover the high-frequency English function-word tail (§12).
 
-1. **Exact-match tantivy lookup** (BM25 (Best Match 25) index over element
-   `names`). On hit, reuse the attribute-name Element.
-2. On miss: **embed `attr_label` with the MiniLM embedder** and run a
-   universal cosine search across **all** attribute-name elements
-   (not just warm ones — synonyms might be cold). On any hit ≥
-   `policy.attribute_name_dedup_threshold` (0.85), reuse the top hit
-   and mark the resulting relation `Defeasible` (alias mismatch).
-3. On miss: **mint** a new attribute-name Element with the label as
+Output lands in `ExtractionOutput.unconditional_chunks` — Step 8
+mints one Element per entry **regardless of whether NER labels it
+later**; labels become meta-relations on top.
+
+**Step 5b — NER.** Hand-rolled GLiNER1 span tagger running on the
+in-house INT8 BERT engine (encoder = DeBERTa-v3-small). The spec
+called for `gline-rs` on `ort`, but `ort` is disqualified for
+portability and `gline-rs`/tract have their own blockers (§11) —
+the inference engine is bespoke. Labels are the seed kinds
+(`person`, `org`, `place`, `weekday`, `quantity`, `event`, `role`,
+`state`, `time`) plus warm-bias names lifted from active-region
+Elements. Returns `(span, kind, confidence)` triples; each becomes
+an `(span, instance_of, K)` proposal — `Entailed` when
+`confidence ≥ policy.ner_assertion_threshold`, else `Defeasible`.
+
+**Step 5c — Temporal parser.** Pure `regex` over weekdays /
+months / `today` / `tomorrow` / `yesterday` / `tonight`. Each match
+emits an `instance_of` proposal with kind `"weekday" | "month" |
+"time"`; spans that overlap an NER hit are dropped to avoid
+duplicate typing. **`chrono` / `chrono-english` relative-phrase
+parsing is deferred** until we need to ground `"next Tuesday"` to a
+concrete datetime.
+
+**Step 5d — Pattern-based relation extraction.** Pure-Rust surface
+templates (§15.1 / §24.1 fast-path) over the NER spans —
+`X from A to B`, `X at Y`, `X with Y`, `X's Y`, etc. — emit
+`(subj_span, attr_name, obj_span, confidence)` quads with hardcoded
+canonical attribute names (`from`, `to`, `with`, `at`, `property`).
+Covers the seed-pack frames (valid-time, location). **The GLiNER
+multi-task zero-shot RE model is deferred**; broader coverage will
+grow through replay and warm-region labels.
+
+**Step 5e — Heuristic coref** (`src/steps/coref.rs`). Pure Rust,
+recency-based — no model. Pronouns (he / she / it / they / this /
+that) and definite descriptions ("the dentist") resolve to the
+most-recently-focused `RecentFocusEntry` whose attribute name
+matches the span's grammatical slot (Centering Theory + Hobbs'
+baselines). **Currently a stub returning no decisions** — wired
+into Step 5's return shape so the downstream API is stable, but
+`Hypergraph.recent_focus` isn't populated until §11.11 lands, so
+there are no candidates to score against yet.
+
+**Attribute-name label resolution.** Deferred to Step 8
+(`build_relations`). The Step 5 pattern pass emits canonical
+attribute names directly as `&'static str`; the tantivy / embedding
+/ mint pipeline below applies when extractors start producing
+free-form `attr_label`s:
+
+1. **Exact-match tantivy lookup** (BM25 over element `names`).
+   On hit, reuse the attribute-name Element.
+2. On miss: embed `attr_label` with the MiniLM embedder and run a
+   universal cosine search across all attribute-name elements. On
+   any hit ≥ `policy.attribute_name_dedup_threshold` (0.85),
+   reuse the top hit and mark the resulting relation `Defeasible`
+   (alias mismatch).
+3. On miss: mint a new attribute-name Element with the label as
    its name and an inline embedding. Every relation using it this
-   tick is `Defeasible` until replay confirms (≥ N independent ticks
-   in a window) or prunes.
+   tick is `Defeasible` until replay confirms (≥ N independent
+   ticks in a window) or prunes.
 
 Tick mints exceeding `policy.attribute_name_mint_warning_count` (5)
 flag the tick for priority replay-dedup.
@@ -1105,7 +1180,14 @@ struct Policy {
     merge_threshold: f32,
     split_variance: f32,
     void_threshold: f32,
-    region_activation_threshold: f32,   // 0.55
+    region_activation_threshold: f32,   // 0.55  (Mahalanobis-scale)
+    variance_prior: f32,                // 0.001 — diagonal-Mahalanobis
+                                        //         per-dim variance prior
+                                        //         (numerical stability +
+                                        //         small-n bootstrap)
+    cosine_top_k: u32,                  // 3 — mean-of-top-K prototype
+                                        //     cosines per region; K=1
+                                        //     reproduces max-pool
 
     // Attribute-name dedup (entity-collapse threshold for
     // attribute-name elements minted by §11.7).
@@ -1181,8 +1263,9 @@ builds. Inspect via `legend memory show-failures`.
 all consumers of a Legend instance share access. Consumers needing
 separation run separate Legend instances per trust boundary.
 
-**Embedder pin.** all-MiniLM-L6-v2 (ONNX-quantized) running through
-tract-onnx, pinned for life. A model swap means re-ingesting from
+**Embedder pin.** all-MiniLM-L6-v2 (INT8-quantized) running through
+the in-house pure-Rust BERT engine (`src/inference/`), pinned for
+life. A model swap means re-ingesting from
 `(R, source, S)` per the §15.1 recoverability matrix:
 
 ```text
@@ -1236,42 +1319,59 @@ holder death.
                        daemon (CLI-client)    one-shot
 snapshot deserialize   0 (in memory)          ~50–200 ms
 index rebuild          0                      ~10–30 ms
-tract + MiniLM load    0                      ~300–500 ms
-embedder warm-up       0                      ~100–200 ms
-tick (§11.0)           ~200–300 ms            ~200–300 ms
+INT8 BERT weight load  0                      ~50–150 ms  (mmap + page-in;
+                                                            no model compile)
+embedder warm-up       0                      ~5–10 ms
+tick (§11.0)           ~80–230 ms             ~80–230 ms
 IPC (Inter-Process            ~1 ms                  ~5–10 ms
   Communication) / lock
-total wall-clock       ~200–300 ms            ~700 ms – 1.5 s
+total wall-clock       ~80–230 ms             ~200–600 ms
 ```
 
-One-shot is ~3–5× slower than the daemon path but is a real tick
+One-shot is ~2–3× slower than the daemon path but is a real tick
 with the same correctness and durability guarantees. Run
 `legend start` for sustained workloads; reserve `legend "..."` for
-ad-hoc ticks.
+ad-hoc ticks. (Numbers are estimates pending §11.0 calibration on
+real workloads.)
 
 ---
 
 ## 11. Model Stack (v0)
 
-Pure Rust + deterministic ONNX.
+Pure Rust, no C deps, no ONNX runtime at runtime.
 
 1. **`tokenizers`** (HuggingFace) — Apache-2.0, pure Rust.
-2. **`tract-onnx`** (Sonos) — pure-Rust ONNX runtime; carries the
-   embedder. No C++ deps, portable to any OS Rust supports.
-3. **all-MiniLM-L6-v2 (quantized)** — 384-dim embedder, ONNX-
-   quantized, ~23 MB, baked into the binary, pinned for life. Runs
-   on tract.
-4. **`tantivy`** (current stable) — BM25 lexical index.
-5. **Temporal parser** — `chrono` + `chrono-english`.
-6. **GLiNER2 / NER+RE — TBD.** Spec called for `gline-rs` (pure-Rust
-   port of GLiNER on `ort`) but `ort` is disqualified (linking pain
-   on dev machines). Open question for Step 5 design: try GLiNER2 in
-   tract directly (encoder loads as DeBERTa-v3, fails on disentangled
-   attention `Clip` op — confirmed via smoke test), pick a
-   tract-friendly NER model, or build span-prediction by hand on
-   tract tensors.
+2. **In-house INT8 BERT engine** (`src/inference/`) — hand-rolled
+   forward pass with three matmul kernels (AVX-VNNI / AVX2 widen-
+   pmaddwd / scalar), per-channel symmetric INT8 weights, per-row
+   activation quant. Carries both the embedder and the Step 5b
+   NER encoder. `docs/inference-engine.md` has the full pipeline
+   + kernel notes.
+3. **all-MiniLM-L6-v2 (INT8)** — 384-dim embedder, ~22 MB on disk,
+   baked into the binary, pinned for life. Runs through (2).
+   `tract-onnx` is a dev-time-only dependency used by
+   `examples/extract_weights.rs` to dump fp32 weights from the
+   upstream ONNX one time.
+4. **GLiNER1 NER** — DeBERTa-v3-small encoder, INT8-quantized,
+   running through (2). Hand-rolled span-prediction head; not
+   `gline-rs`. (Spec originally called for `gline-rs` on `ort`,
+   but `ort` is disqualified for portability and GLiNER2's
+   disentangled-attention `Clip` op blocks naive tract loading.)
+5. **Pattern-based RE** (`src/steps/relation_patterns.rs`) — pure
+   Rust surface templates (§15.1 / §24.1 fast-path) over Step 5b
+   spans: `X from A to B`, `X at Y`, `X with Y`, `X's Y`. Covers
+   the seed-pack frames. **Zero-shot RE model is deferred** —
+   coverage grows through replay and warm-region labels.
+6. **Temporal parser** — `regex` over weekdays / months /
+   `today` / `tomorrow` / `yesterday` / `tonight`. **`chrono` /
+   `chrono-english` are deferred** until we need to ground
+   `"next Tuesday"` to a datetime.
 7. **Heuristic coref** — recency-based, written from scratch.
-8. **SaT — REMOVED.** Original spec invoked SaT only on inputs
+   **Currently a stub** (`src/steps/coref.rs`) — wired into Step 5's
+   return shape; activates once `recent_focus` is populated.
+8. **`tantivy`** (current stable) — BM25 lexical index. Used by
+   Step 8's attribute-name resolution and Step 12's RRF sparse leg.
+9. **SaT — REMOVED.** Original spec invoked SaT only on inputs
    > 480 tokens. v0 rejects oversized inputs at the tick boundary
    instead — chunking is the caller's responsibility (§11.4).
 
@@ -1279,7 +1379,9 @@ Pure Rust + deterministic ONNX.
 
 ## 12. The Seed Pack
 
-`seed_pack.yaml` at the repo root. ~55 elements:
+`seed_pack.yaml` at the repo root. 622 elements / 610 relations
+boot from disk (`src/seed/graph.bin`, regenerated by
+`cargo run --release --example gen_seed_graph`):
 
 ```text
 anchors (2):                 GENESIS, VOID
@@ -1306,14 +1408,34 @@ seeded attribute names (30):
                               "why" queries walk causal links only;
                               full doc §6 (8))
 
-regions (15):             entities, events, states, change_history,
+signal regions (14):      entities, events, change_history,
                           relationships, quantities, time, locations,
                           tasks, decisions, preferences, definitions,
                           provenance, domains, modal_negated
 
+void regions (8):         determiners, adpositions, coord_conj,
+                          subord_conj, pronouns, auxiliaries,
+                          particles, interjections
+                          (children of VOID; carry Polarity::Void)
+
 reference frames (8):     user, project, domain, session,
                           temporal_now, temporal_past,
                           temporal_future, meta
+
+classes (2):              REGION_CLASS, REFERENCE_FRAME_CLASS
+                          (eagerly minted; YAML treats as lazy)
+
+prototypes (440):         20 examples per region (22 × 20). Each
+                          example is MiniLM-embedded; Step 4 routes
+                          via mean-of-top-K cosine + Mahalanobis
+                          against the per-region mean/var.
+
+void members (118):       closed-class stop words ("the", "of",
+                          "and", …) under the 8 void regions; carry
+                          Polarity::Void. Step 5a's token pass
+                          (`src/steps/void_filter.rs`) drops any
+                          input token whose lowercased form
+                          resolves to one of these.
 ```
 
 The four region structural attribute names (`member_of`,
@@ -1515,7 +1637,7 @@ determinism is a separate concern and lives at the smoke-test tier.
 | 1 | §7 + §9 substrate types + indices | 50-element round-trip; supersession chain walks both directions; debug-asserts on Inv 9 | ~2 wk |
 | 2 | Snapshot + bounded WAL | Crash mid-corpus → restart → state matches; fingerprint check refuses on mismatch | ~1 wk |
 | 2.5 | CLI front-end + IPC + lock (§10.1) | `legend "..."` works in one-shot mode (cold-start ≤ 1.5 s); `legend start` brings up daemon; subsequent `legend "..."` lands in CLI-client mode at §11.0 latency; concurrent calls serialize on lock; stale socket from `kill -9 <daemon>` is cleaned up by next CLI call | ~1 wk |
-| 3 | Seed pack | ~55 elements boot in expected configuration; seeded `parent_region` / `prototype` relations populate the region indices | ~1.5 wk |
+| 3 | Seed pack | 622 elements / 610 relations boot in expected configuration; seeded `parent_region` / `prototype` relations populate the region indices; void subtree members carry `Polarity::Void` | ~1.5 wk |
 | 4 | Manual conformance set: §19 + §20.5 + non-appointment fixture (mocked extractors) | All four fixtures pass via direct add_element/add_relation | ~1 wk |
 | 5 | Embeddings + region routing | Spans land in expected regions; multi-prototype ≤ 8; creation rate decays | ~1.5 wk |
 | 6 | Temporal parser + NER + RE | Tick 1 emits `Tuesday`, `Friday`, `DrRao`, reschedule triple without hand-coding. Inputs >480 tokens are rejected at the tick boundary; caller chunks before submission. (Original gate also tested SaT-driven multi-window equivalence — REMOVED with Step 3.) | ~2.5 wk |
