@@ -67,6 +67,50 @@ pub fn embed_sequence_with_offsets(text: &str) -> (Vec<f32>, Vec<(usize, usize)>
     (sequence, offsets)
 }
 
+/// Update an existing element embedding *in place* by folding in a
+/// fresh observation (typically a re-mention's contextualized span
+/// vector). Implements the streaming centroid update:
+///
+/// ```text
+/// current ← (n_prev * current + observation) / (n_prev + 1)
+/// current ← current / ||current||
+/// ```
+///
+/// As `n_prev` grows, each new observation moves the centroid less
+/// — appropriate for accumulating stable evidence about an entity's
+/// typical usage context. With `n_prev = 0` the fold reduces to "use
+/// the observation as-is" (the first mention bootstraps the
+/// embedding).
+///
+/// Both inputs are expected to be L2-normalized; the output is also
+/// L2-normalized so cosine-as-dot continues to hold. The math is
+/// approximate (direction-correct, magnitude-renormalized) — for
+/// exact-mean tracking we'd carry the un-normalized sum, but
+/// direction is what cosine routing reads, so this is sufficient.
+///
+/// Phase 4 of `contextualized_embeddings_plan.md`. The call-site
+/// for re-mentions lands when Step 8 (`build_relations`) gets
+/// wired; until then this is a tested-but-uncalled primitive.
+///
+/// # Panics
+/// - if `current.len() != observation.len()`.
+pub fn fold_streaming_centroid(current: &mut [f32], observation: &[f32], n_prev: u32) {
+    assert_eq!(
+        current.len(),
+        observation.len(),
+        "centroid dimensions must match"
+    );
+    let n = n_prev as f32;
+    let denom = n + 1.0;
+    for i in 0..current.len() {
+        current[i] = (n * current[i] + observation[i]) / denom;
+    }
+    let norm: f32 = current.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+    for x in current.iter_mut() {
+        *x /= norm;
+    }
+}
+
 /// Embed `text` once, then mean-pool the contextualized token vectors
 /// whose character offsets overlap `[char_start, char_end)`. Returns
 /// an L2-normalized `Vec<f32>` for cosine-as-dot, or `None` if the
@@ -231,6 +275,116 @@ mod tests {
         let a = embed_span_in_context(text, s, s + "Berlin".len()).unwrap();
         let b = embed_span_in_context(text, s, s + "Berlin".len()).unwrap();
         assert_eq!(a, b);
+    }
+
+    fn unit(mut v: Vec<f32>) -> Vec<f32> {
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v {
+            *x /= norm;
+        }
+        v
+    }
+
+    #[test]
+    fn fold_first_observation_is_identity() {
+        // n_prev = 0 means current is meaningless / uninitialized;
+        // the fold should yield the observation as-is (normalized).
+        let mut current = vec![0.0; EMBEDDING_DIM];
+        let obs = unit(vec![1.0; EMBEDDING_DIM]);
+        fold_streaming_centroid(&mut current, &obs, 0);
+        for i in 0..EMBEDDING_DIM {
+            assert!(
+                (current[i] - obs[i]).abs() < 1e-5,
+                "i={i}: got {} expected {}",
+                current[i],
+                obs[i],
+            );
+        }
+    }
+
+    #[test]
+    fn fold_same_vector_is_idempotent() {
+        // Folding a vector into itself at any n leaves the vector
+        // unchanged (direction).
+        let v = unit({
+            let mut x = vec![0.0; EMBEDDING_DIM];
+            x[0] = 1.0;
+            x[1] = 1.0;
+            x[2] = 1.0;
+            x
+        });
+        let mut current = v.clone();
+        for n in [0u32, 1, 5, 100] {
+            fold_streaming_centroid(&mut current, &v, n);
+            for i in 0..EMBEDDING_DIM {
+                assert!(
+                    (current[i] - v[i]).abs() < 1e-5,
+                    "n={n} i={i}: drifted from input",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fold_yields_unit_vector() {
+        let mut current = unit({
+            let mut x = vec![0.1; EMBEDDING_DIM];
+            x[0] = 0.9;
+            x
+        });
+        let obs = unit({
+            let mut x = vec![0.05; EMBEDDING_DIM];
+            x[5] = 0.7;
+            x
+        });
+        fold_streaming_centroid(&mut current, &obs, 3);
+        let norm: f32 = current.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-4,
+            "expected unit norm after fold, got {norm}",
+        );
+    }
+
+    #[test]
+    fn fold_pulls_toward_observation_at_low_n() {
+        // Two orthogonal unit vectors. Fold A into B with n=0;
+        // result should be A. Fold A into B with n=1; result should
+        // be midpoint of A and B (50/50).
+        let mut a = vec![0.0; EMBEDDING_DIM];
+        a[0] = 1.0;
+        let mut b = vec![0.0; EMBEDDING_DIM];
+        b[1] = 1.0;
+
+        let mut current = a.clone();
+        fold_streaming_centroid(&mut current, &b, 1);
+        // 0.5*A + 0.5*B unnormalized = [0.5, 0.5, 0, ...]. Norm =
+        // sqrt(0.5) ≈ 0.707. Normalized = [1/sqrt(2), 1/sqrt(2), 0, ...].
+        let expected = 1.0 / 2.0f32.sqrt();
+        assert!((current[0] - expected).abs() < 1e-4);
+        assert!((current[1] - expected).abs() < 1e-4);
+        for i in 2..EMBEDDING_DIM {
+            assert!(current[i].abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn fold_stabilizes_at_high_n() {
+        // Same orthogonal A/B but fold with n=1000. The centroid
+        // should barely move toward B.
+        let a = {
+            let mut x = vec![0.0; EMBEDDING_DIM];
+            x[0] = 1.0;
+            x
+        };
+        let b = {
+            let mut x = vec![0.0; EMBEDDING_DIM];
+            x[1] = 1.0;
+            x
+        };
+        let mut current = a.clone();
+        fold_streaming_centroid(&mut current, &b, 1000);
+        assert!(current[0] > 0.999, "should remain near A, got {}", current[0]);
+        assert!(current[1] < 0.005, "should barely move toward B, got {}", current[1]);
     }
 
     #[test]
