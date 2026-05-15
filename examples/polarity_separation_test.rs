@@ -150,7 +150,10 @@ fn main() {
     println!("{:─<60}", "");
     let overall = (void_classified_void + signal_classified_signal) as f64
         / (void_embs.len() + signal_embs.len()) as f64;
-    println!("Overall nearest-centroid classification: {:.0}%", overall * 100.0);
+    println!(
+        "Overall nearest-centroid classification: {:.0}%",
+        overall * 100.0
+    );
     if overall >= 0.95 {
         println!("→ Polarity is recoverable from cosine alone. Polarity field");
         println!("  + void_filter could be deprecated; routing would do the work.");

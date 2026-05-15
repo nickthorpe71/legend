@@ -320,25 +320,65 @@ fn main() {
     // Context-aware test set: (sentence, span_text, expected_region).
     // Span must appear verbatim in the sentence.
     let cases: &[(&str, &str, Option<&str>)] = &[
-        ("Nick lived in Brantford for 3 years.", "Brantford", Some("locations")),
-        ("She moved to Berlin last year.", "Berlin", Some("locations")),
+        (
+            "Nick lived in Brantford for 3 years.",
+            "Brantford",
+            Some("locations"),
+        ),
+        (
+            "She moved to Berlin last year.",
+            "Berlin",
+            Some("locations"),
+        ),
         ("He flew to Paris on Tuesday.", "Paris", Some("locations")),
         ("We met at Times Square.", "Times Square", Some("locations")),
-        ("Nick lived in Brantford for 3 years.", "Nick", Some("entities")),
+        (
+            "Nick lived in Brantford for 3 years.",
+            "Nick",
+            Some("entities"),
+        ),
         ("Sarah called me yesterday.", "Sarah", Some("entities")),
-        ("Dr. Rao changed the appointment.", "Dr. Rao", Some("entities")),
-        ("The Apollo project shipped on time.", "Apollo project", Some("entities")),
+        (
+            "Dr. Rao changed the appointment.",
+            "Dr. Rao",
+            Some("entities"),
+        ),
+        (
+            "The Apollo project shipped on time.",
+            "Apollo project",
+            Some("entities"),
+        ),
         ("The meeting is on Tuesday.", "Tuesday", Some("time")),
         ("Her flight lands at 3pm.", "3pm", Some("time")),
         ("He called yesterday afternoon.", "yesterday", Some("time")),
-        ("Nick lived in Brantford for 3 years.", "3 years", Some("quantities")),
-        ("The baby weighed 6 pounds at birth.", "6 pounds", Some("quantities")),
+        (
+            "Nick lived in Brantford for 3 years.",
+            "3 years",
+            Some("quantities"),
+        ),
+        (
+            "The baby weighed 6 pounds at birth.",
+            "6 pounds",
+            Some("quantities"),
+        ),
         ("The book cost $42.", "$42", Some("quantities")),
-        ("The dentist saw three patients.", "dentist", Some("entities")),
+        (
+            "The dentist saw three patients.",
+            "dentist",
+            Some("entities"),
+        ),
         ("Sarah is happy today.", "happy", None),
         ("The meeting is scheduled.", "meeting", Some("events")),
-        ("She changed her mind about it.", "changed her mind", Some("change_history")),
-        ("I prefer tea over coffee.", "prefer tea", Some("preferences")),
+        (
+            "She changed her mind about it.",
+            "changed her mind",
+            Some("change_history"),
+        ),
+        (
+            "I prefer tea over coffee.",
+            "prefer tea",
+            Some("preferences"),
+        ),
     ];
 
     // Strategy A — embed_text(region_name)
@@ -366,10 +406,13 @@ fn main() {
     let anchors_c: Vec<(String, Vec<f32>)> = regions
         .iter()
         .map(|(name, members, contexts)| {
-            let span_vecs = members.iter().zip(contexts.iter()).map(|(member, sentence)| {
-                contextualized_span_embedding(sentence, member)
-                    .unwrap_or_else(|| embed_text(member)) // fallback if span not found
-            });
+            let span_vecs = members
+                .iter()
+                .zip(contexts.iter())
+                .map(|(member, sentence)| {
+                    contextualized_span_embedding(sentence, member)
+                        .unwrap_or_else(|| embed_text(member)) // fallback if span not found
+                });
             let v = mean_normalized(span_vecs);
             (name.to_string(), v)
         })
@@ -468,9 +511,7 @@ fn print_run(
         } else {
             sentence.to_string()
         };
-        print!(
-            "  {mark} {span:<20}  in {context_preview:<42}  exp={exp:<14}  top3:",
-        );
+        print!("  {mark} {span:<20}  in {context_preview:<42}  exp={exp:<14}  top3:",);
         for (n, s) in scored.iter().take(3) {
             print!("  {n}({s:+.3})");
         }

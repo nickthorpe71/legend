@@ -1,11 +1,17 @@
 # Contextualized-span-pool element embeddings
 
-> **Status:** Replacement for the abandoned LLM-extraction plan
-> (`llm_extraction_plan.md`). Validates via existing
-> `examples/route_element_test_v3.rs`: Strategy C (this plan's
-> approach) hits **83% top-1 routing accuracy**, vs **44%** for the
-> current `embed_text(name)` baseline. No new dependencies, no new
-> bundle weight, no new inference path.
+> **Status: complete (v0).** All five phases landed in commits
+> `87fbf89` → `6d51466`. Final measurement: production routing on
+> the regenerated seed pack hits **67% top-1** on the v3 18-case
+> fixture (up from 44% baseline). Polarity stays — the 85%
+> cosine-only separation isn't clean enough to deprecate it.
+> The remaining gap to v3's 83% comes from prototypes being
+> phrase-level rather than span-level; closing it is a future
+> seed_pack.yaml refactor (mark focal entity per example phrase).
+>
+> This document is kept as the design record. The code is canonical
+> (see `src/embed.rs::{embed_span_in_context, fold_streaming_centroid}`,
+> `examples/{route_seed_pack_test, polarity_separation_test}.rs`).
 
 ## 1. Goal
 

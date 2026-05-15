@@ -121,11 +121,7 @@ pub fn fold_streaming_centroid(current: &mut [f32], observation: &[f32], n_prev:
 /// (see `contextualized_embeddings_plan.md`). Routing accuracy on
 /// the v3 18-case fixture: **83% top-1**, vs 44% for
 /// `embed_text(name)` and 78% for `mean(embed_text(member))`.
-pub fn embed_span_in_context(
-    text: &str,
-    char_start: usize,
-    char_end: usize,
-) -> Option<Vec<f32>> {
+pub fn embed_span_in_context(text: &str, char_start: usize, char_end: usize) -> Option<Vec<f32>> {
     if char_end <= char_start {
         return None;
     }
@@ -257,8 +253,10 @@ mod tests {
         let bare = embed_text("Berlin");
         // Same direction-ish (both about Berlin), but materially different.
         let c = cosine(&ctx, &bare);
-        assert!(c > 0.4 && c < 0.99,
-            "expected cosine in (0.4, 0.99); got {c}");
+        assert!(
+            c > 0.4 && c < 0.99,
+            "expected cosine in (0.4, 0.99); got {c}"
+        );
     }
 
     #[test]
@@ -362,8 +360,8 @@ mod tests {
         let expected = 1.0 / 2.0f32.sqrt();
         assert!((current[0] - expected).abs() < 1e-4);
         assert!((current[1] - expected).abs() < 1e-4);
-        for i in 2..EMBEDDING_DIM {
-            assert!(current[i].abs() < 1e-5);
+        for c in current.iter().skip(2) {
+            assert!(c.abs() < 1e-5);
         }
     }
 
@@ -383,8 +381,16 @@ mod tests {
         };
         let mut current = a.clone();
         fold_streaming_centroid(&mut current, &b, 1000);
-        assert!(current[0] > 0.999, "should remain near A, got {}", current[0]);
-        assert!(current[1] < 0.005, "should barely move toward B, got {}", current[1]);
+        assert!(
+            current[0] > 0.999,
+            "should remain near A, got {}",
+            current[0]
+        );
+        assert!(
+            current[1] < 0.005,
+            "should barely move toward B, got {}",
+            current[1]
+        );
     }
 
     #[test]

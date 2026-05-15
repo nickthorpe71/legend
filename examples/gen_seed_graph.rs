@@ -249,14 +249,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (i, example) in raw.examples.iter().enumerate() {
             let proto_name = format!("{}_proto_{i}", raw.names[0]);
             let proto_symbol = format!("{}_PROTO_{i}", raw.element_id);
-            let emb = embed_span_in_context(example, 0, example.len())
-                .unwrap_or_else(|| {
-                    eprintln!(
-                        "warn: prototype {proto_symbol} fell back to embed_text — \
+            let emb = embed_span_in_context(example, 0, example.len()).unwrap_or_else(|| {
+                eprintln!(
+                    "warn: prototype {proto_symbol} fell back to embed_text — \
                          embed_span_in_context returned None for {example:?}"
-                    );
-                    embed_text(example)
-                });
+                );
+                embed_text(example)
+            });
             let proto_id = mint_element(
                 &mut elements,
                 &mut symbol_to_id,
@@ -290,15 +289,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let region_polarity = elements[region_id.0 as usize].polarity;
         let mut members: Vec<ElementId> = Vec::with_capacity(raw.members.len());
         for m in &raw.members {
-            let emb = embed_member_in_context(&raw.examples, &m.names[0])
-                .unwrap_or_else(|| {
-                    eprintln!(
-                        "warn: void member '{}' not found as whole word in any \
+            let emb = embed_member_in_context(&raw.examples, &m.names[0]).unwrap_or_else(|| {
+                eprintln!(
+                    "warn: void member '{}' not found as whole word in any \
                          '{}' example — falling back to embed_text(name)",
-                        m.names[0], raw.element_id
-                    );
-                    embed_text(&m.names[0])
-                });
+                    m.names[0], raw.element_id
+                );
+                embed_text(&m.names[0])
+            });
             let member_id = mint_element(
                 &mut elements,
                 &mut symbol_to_id,

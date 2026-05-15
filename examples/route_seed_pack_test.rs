@@ -22,25 +22,65 @@ use legend::types::{ElementId, Hypergraph};
 /// `expected = None` means "no strong prior" — counted in the run
 /// totals but not in the accuracy ratio.
 const CASES: &[(&str, &str, Option<&str>)] = &[
-    ("Nick lived in Brantford for 3 years.", "Brantford", Some("locations")),
-    ("She moved to Berlin last year.", "Berlin", Some("locations")),
+    (
+        "Nick lived in Brantford for 3 years.",
+        "Brantford",
+        Some("locations"),
+    ),
+    (
+        "She moved to Berlin last year.",
+        "Berlin",
+        Some("locations"),
+    ),
     ("He flew to Paris on Tuesday.", "Paris", Some("locations")),
     ("We met at Times Square.", "Times Square", Some("locations")),
-    ("Nick lived in Brantford for 3 years.", "Nick", Some("entities")),
+    (
+        "Nick lived in Brantford for 3 years.",
+        "Nick",
+        Some("entities"),
+    ),
     ("Sarah called me yesterday.", "Sarah", Some("entities")),
-    ("Dr. Rao changed the appointment.", "Dr. Rao", Some("entities")),
-    ("The Apollo project shipped on time.", "Apollo project", Some("entities")),
+    (
+        "Dr. Rao changed the appointment.",
+        "Dr. Rao",
+        Some("entities"),
+    ),
+    (
+        "The Apollo project shipped on time.",
+        "Apollo project",
+        Some("entities"),
+    ),
     ("The meeting is on Tuesday.", "Tuesday", Some("time")),
     ("Her flight lands at 3pm.", "3pm", Some("time")),
     ("He called yesterday afternoon.", "yesterday", Some("time")),
-    ("Nick lived in Brantford for 3 years.", "3 years", Some("quantities")),
-    ("The baby weighed 6 pounds at birth.", "6 pounds", Some("quantities")),
+    (
+        "Nick lived in Brantford for 3 years.",
+        "3 years",
+        Some("quantities"),
+    ),
+    (
+        "The baby weighed 6 pounds at birth.",
+        "6 pounds",
+        Some("quantities"),
+    ),
     ("The book cost $42.", "$42", Some("quantities")),
-    ("The dentist saw three patients.", "dentist", Some("entities")),
+    (
+        "The dentist saw three patients.",
+        "dentist",
+        Some("entities"),
+    ),
     ("Sarah is happy today.", "happy", None),
     ("The meeting is scheduled.", "meeting", Some("events")),
-    ("She changed her mind about it.", "changed her mind", Some("change_history")),
-    ("I prefer tea over coffee.", "prefer tea", Some("preferences")),
+    (
+        "She changed her mind about it.",
+        "changed her mind",
+        Some("change_history"),
+    ),
+    (
+        "I prefer tea over coffee.",
+        "prefer tea",
+        Some("preferences"),
+    ),
 ];
 
 fn main() {
@@ -67,8 +107,8 @@ fn main() {
             .unwrap_or_else(|| panic!("span {span:?} not in {sentence:?}"));
         let q_span = embed_span_in_context(sentence, span_start, span_start + span.len())
             .expect("query span must resolve");
-        let q_sentence = embed_span_in_context(sentence, 0, sentence.len())
-            .expect("sentence span must resolve");
+        let q_sentence =
+            embed_span_in_context(sentence, 0, sentence.len()).expect("sentence span must resolve");
 
         // Anchor columns: bare-name, K=1 (max), K=3 (production), K=∞ (full mean).
         let preds = [
@@ -109,10 +149,18 @@ fn main() {
     let row = |label: &str, r: &[usize]| {
         println!(
             "  {label:<24} | {:>3}/{:<2} ({:>3.0}%) | {:>3}/{:<2} ({:>3.0}%) | {:>3}/{:<2} ({:>3.0}%) | {:>3}/{:<2} ({:>3.0}%)",
-            r[0], total_with_expected, pct(r[0]),
-            r[1], total_with_expected, pct(r[1]),
-            r[2], total_with_expected, pct(r[2]),
-            r[3], total_with_expected, pct(r[3]),
+            r[0],
+            total_with_expected,
+            pct(r[0]),
+            r[1],
+            total_with_expected,
+            pct(r[1]),
+            r[2],
+            total_with_expected,
+            pct(r[2]),
+            r[3],
+            total_with_expected,
+            pct(r[3]),
         );
     };
     row("span-in-context", &acc[0]);
@@ -122,11 +170,7 @@ fn main() {
 
 /// Score each region by cosine against `embed_text(region.names[0])`.
 /// Returns (best_region_id, score).
-fn pick_by_bare_name(
-    query: &[f32],
-    regions: &[ElementId],
-    hg: &Hypergraph,
-) -> (ElementId, f32) {
+fn pick_by_bare_name(query: &[f32], regions: &[ElementId], hg: &Hypergraph) -> (ElementId, f32) {
     let mut best: (ElementId, f32) = (regions[0], f32::NEG_INFINITY);
     for &id in regions {
         let name = &hg.elements[id.0 as usize].names[0];
@@ -134,32 +178,6 @@ fn pick_by_bare_name(
         let s = dot(query, &anchor);
         if s > best.1 {
             best = (id, s);
-        }
-    }
-    best
-}
-
-/// Score each region by the MAX cosine across its prototype set
-/// (matches `route_regions`'s scoring).
-fn pick_by_max_prototype(
-    query: &[f32],
-    regions: &[ElementId],
-    hg: &Hypergraph,
-) -> (ElementId, f32) {
-    let mut best: (ElementId, f32) = (regions[0], f32::NEG_INFINITY);
-    for &id in regions {
-        let Some(protos) = hg.region_prototypes.get(&id) else {
-            continue;
-        };
-        let mut region_score = f32::NEG_INFINITY;
-        for p_id in protos {
-            let s = dot(query, &hg.elements[p_id.0 as usize].embedding);
-            if s > region_score {
-                region_score = s;
-            }
-        }
-        if region_score > best.1 {
-            best = (id, region_score);
         }
     }
     best

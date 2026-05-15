@@ -87,7 +87,10 @@ pub fn extract_novelty_relations(
 ) -> Vec<NoveltyRelation> {
     let mut out = Vec::new();
 
-    for phrase in novelty_chunks.iter().filter(|c| c.scale == ChunkScale::Phrase) {
+    for phrase in novelty_chunks
+        .iter()
+        .filter(|c| c.scale == ChunkScale::Phrase)
+    {
         let tokens: Vec<&OrthographicChunk> = novelty_chunks
             .iter()
             .filter(|c| {
@@ -147,9 +150,7 @@ pub fn extract_novelty_relations(
             // subj_last for k>0 would swallow the previous object
             // into the attribute text.
             let prev_tail_end = tokens[vi - 1].char_end;
-            let attr_text = text[prev_tail_end..obj_first.char_start]
-                .trim()
-                .to_string();
+            let attr_text = text[prev_tail_end..obj_first.char_start].trim().to_string();
             if attr_text.is_empty() {
                 continue;
             }
@@ -259,8 +260,14 @@ mod tests {
         assert_eq!(rels[1].attribute_text, "and lives in");
         // Each object stays distinct: triple 1's object is Google,
         // triple 2's object is Paris.
-        assert_eq!(&text[rels[0].object_char_start..rels[0].object_char_end], "Google");
-        assert_eq!(&text[rels[1].object_char_start..rels[1].object_char_end], "Paris");
+        assert_eq!(
+            &text[rels[0].object_char_start..rels[0].object_char_end],
+            "Google"
+        );
+        assert_eq!(
+            &text[rels[1].object_char_start..rels[1].object_char_end],
+            "Paris"
+        );
     }
 
     #[test]
@@ -298,8 +305,14 @@ mod tests {
         let chunks = chunks_for(text);
         let rels = extract_novelty_relations(text, &chunks);
         assert_eq!(rels.len(), 2, "expected 2 triples, got {rels:?}");
-        assert_eq!(&text[rels[0].subject_char_start..rels[0].subject_char_end], "Sarah");
-        assert_eq!(&text[rels[1].subject_char_start..rels[1].subject_char_end], "John");
+        assert_eq!(
+            &text[rels[0].subject_char_start..rels[0].subject_char_end],
+            "Sarah"
+        );
+        assert_eq!(
+            &text[rels[1].subject_char_start..rels[1].subject_char_end],
+            "John"
+        );
     }
 
     #[test]

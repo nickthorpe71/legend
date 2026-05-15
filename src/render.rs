@@ -474,7 +474,7 @@ fn write_relations_grouped(s: &mut String, hg: &Hypergraph) {
     }
 
     let mut ordered: Vec<_> = grouped.into_iter().collect();
-    ordered.sort_by(|a, b| canonical_name(hg, a.0).cmp(&canonical_name(hg, b.0)));
+    ordered.sort_by_key(|a| canonical_name(hg, a.0));
 
     for (attr_id, mut entries) in ordered {
         let attr_name = canonical_name(hg, attr_id);
