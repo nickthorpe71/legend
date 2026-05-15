@@ -107,7 +107,7 @@
 #[path = "shared/mod.rs"]
 mod shared;
 
-use legend::embed::{EMBEDDING_DIM, embed_text};
+use legend::embed::{EMBEDDING_DIM, embed_span_in_context, embed_text};
 use legend::types::{
     Attribute, Element, ElementId, MemoryStats, Polarity, Relation, RelationId, RelationStatus,
     Term, Tick,
@@ -231,10 +231,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 6. Prototype elements (one per example per region) ────────────
     // Each region's `examples` list in YAML becomes a parallel list of
-    // prototype Elements. Name: `<region>_proto_<i>`. The descriptor
-    // is *not* embedded — it stays in YAML as human-readable metadata.
-    // Prototype polarity mirrors its parent region so the void-subtree
-    // prototypes are tagged correctly.
+    // prototype Elements. Embedding = mean-pool of the example phrase's
+    // contextualized content tokens (skips [CLS]/[SEP]). On the v3
+    // routing-accuracy fixture this beat naive `embed_text(phrase)` —
+    // the contextualized pool is what `embed_span_in_context` does
+    // when given the whole-phrase span.
     let mut region_to_protos: HashMap<ElementId, Vec<ElementId>> = HashMap::new();
     for raw in &pack.regions {
         let region_id = symbol_to_id[&raw.element_id];
@@ -248,12 +249,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (i, example) in raw.examples.iter().enumerate() {
             let proto_name = format!("{}_proto_{i}", raw.names[0]);
             let proto_symbol = format!("{}_PROTO_{i}", raw.element_id);
+            let emb = embed_span_in_context(example, 0, example.len())
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "warn: prototype {proto_symbol} fell back to embed_text — \
+                         embed_span_in_context returned None for {example:?}"
+                    );
+                    embed_text(example)
+                });
             let proto_id = mint_element(
                 &mut elements,
                 &mut symbol_to_id,
                 &proto_symbol,
                 vec![proto_name],
-                embed_text(example),
+                emb,
                 region_polarity,
             );
             protos.push(proto_id);
@@ -266,6 +275,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Elements (rather than a hardcoded list). Polarity inherits from
     // the parent region. Each member also gets an `instance_of`
     // relation to its region (minted below in §8b).
+    //
+    // Embedding strategy: search the parent region's `examples` for
+    // the first example phrase containing the member's surface form
+    // as a whole word (case-insensitive), pool the contextualized
+    // token vectors for that span. Falls back to `embed_text(name)`
+    // when no example contains the member.
     let mut region_to_members: HashMap<ElementId, Vec<ElementId>> = HashMap::new();
     for raw in &pack.regions {
         if raw.members.is_empty() {
@@ -275,12 +290,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let region_polarity = elements[region_id.0 as usize].polarity;
         let mut members: Vec<ElementId> = Vec::with_capacity(raw.members.len());
         for m in &raw.members {
+            let emb = embed_member_in_context(&raw.examples, &m.names[0])
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "warn: void member '{}' not found as whole word in any \
+                         '{}' example — falling back to embed_text(name)",
+                        m.names[0], raw.element_id
+                    );
+                    embed_text(&m.names[0])
+                });
             let member_id = mint_element(
                 &mut elements,
                 &mut symbol_to_id,
                 &m.element_id,
                 m.names.clone(),
-                embed_text(&m.names[0]),
+                emb,
                 region_polarity,
             );
             members.push(member_id);
@@ -445,6 +469,52 @@ fn find_anchor<'a>(pack: &'a SeedPack, symbol: &str) -> &'a RawElement {
         .iter()
         .find(|a| a.element_id == symbol)
         .unwrap_or_else(|| panic!("seed pack missing anchor: {symbol}"))
+}
+
+/// Scan `examples` for the first phrase containing `member_name` as a
+/// whole word (case-insensitive), then return the contextualized
+/// embedding for that span. Whole-word match prevents `"the"` from
+/// matching `"they"` or `"other"`. Returns `None` if no example
+/// contains the member as a whole word.
+fn embed_member_in_context(examples: &[String], member_name: &str) -> Option<Vec<f32>> {
+    for ex in examples {
+        if let Some((start, end)) = find_whole_word_ci(ex, member_name)
+            && let Some(v) = embed_span_in_context(ex, start, end)
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Find `needle` in `haystack` as a whole word, case-insensitively.
+/// Returns the byte range of the match in `haystack`. Word boundary =
+/// start of string OR previous byte is non-alphanumeric, applied on
+/// both sides. ASCII-only boundary check is fine for our closed-class
+/// stop-word names ("the", "of", "and", ...).
+fn find_whole_word_ci(haystack: &str, needle: &str) -> Option<(usize, usize)> {
+    let needle_lower = needle.to_lowercase();
+    let needle_byte_len = needle.len();
+    let bytes = haystack.as_bytes();
+    let len = haystack.len();
+    for (start, _) in haystack.char_indices() {
+        let end = start + needle_byte_len;
+        if end > len || !haystack.is_char_boundary(end) {
+            continue;
+        }
+        let left_boundary = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        if !left_boundary {
+            continue;
+        }
+        let right_boundary = end == len || !bytes[end].is_ascii_alphanumeric();
+        if !right_boundary {
+            continue;
+        }
+        if haystack[start..end].to_lowercase() == needle_lower {
+            return Some((start, end));
+        }
+    }
+    None
 }
 
 fn mint_element(
