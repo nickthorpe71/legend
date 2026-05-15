@@ -18,7 +18,7 @@
 //!
 //! Run: `cargo run --release --example route_element_test_v3`
 
-use legend::embed::{EMBEDDING_DIM, embed_sequence_with_offsets, embed_text};
+use legend::embed::{EMBEDDING_DIM, embed_span_in_context, embed_text};
 use legend::math::dot;
 
 fn main() {
@@ -422,48 +422,14 @@ fn mean_normalized<I: Iterator<Item = Vec<f32>>>(iter: I) -> Vec<f32> {
     acc
 }
 
-/// Run the input forward pass, mean-pool the contextualized embeddings
-/// over the tokens whose char offsets fall inside the span, return the
-/// L2-normalized result. `None` if the span doesn't match any tokens.
+/// Thin substring-based wrapper around `embed_span_in_context` for
+/// readability in this example — looks up the span's char range by
+/// `text.find(span)` before delegating. Production code uses
+/// `embed_span_in_context` with explicit offsets.
 fn contextualized_span_embedding(text: &str, span: &str) -> Option<Vec<f32>> {
     let span_start = text.find(span)?;
     let span_end = span_start + span.len();
-
-    let (sequence, offsets) = embed_sequence_with_offsets(text);
-    if sequence.is_empty() {
-        return None;
-    }
-
-    // Mean-pool over tokens whose offset (char_start, char_end) overlaps
-    // the span. Skip special tokens (offsets = (0, 0)).
-    let mut acc = vec![0.0f32; EMBEDDING_DIM];
-    let mut n = 0usize;
-    for (t, &(start, end)) in offsets.iter().enumerate() {
-        if start == 0 && end == 0 {
-            continue;
-        }
-        let overlaps = end > span_start && start < span_end;
-        if !overlaps {
-            continue;
-        }
-        let base = t * EMBEDDING_DIM;
-        for i in 0..EMBEDDING_DIM {
-            acc[i] += sequence[base + i];
-        }
-        n += 1;
-    }
-    if n == 0 {
-        return None;
-    }
-    let inv = 1.0 / n as f32;
-    for x in &mut acc {
-        *x *= inv;
-    }
-    let norm: f32 = acc.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
-    for x in &mut acc {
-        *x /= norm;
-    }
-    Some(acc)
+    embed_span_in_context(text, span_start, span_end)
 }
 
 fn print_run(

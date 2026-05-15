@@ -67,6 +67,60 @@ pub fn embed_sequence_with_offsets(text: &str) -> (Vec<f32>, Vec<(usize, usize)>
     (sequence, offsets)
 }
 
+/// Embed `text` once, then mean-pool the contextualized token vectors
+/// whose character offsets overlap `[char_start, char_end)`. Returns
+/// an L2-normalized `Vec<f32>` for cosine-as-dot, or `None` if the
+/// span doesn't intersect any non-special token (e.g., span sits
+/// inside a multi-byte character, or input is empty).
+///
+/// This is the substrate for description-rich element embeddings
+/// (see `contextualized_embeddings_plan.md`). Routing accuracy on
+/// the v3 18-case fixture: **83% top-1**, vs 44% for
+/// `embed_text(name)` and 78% for `mean(embed_text(member))`.
+pub fn embed_span_in_context(
+    text: &str,
+    char_start: usize,
+    char_end: usize,
+) -> Option<Vec<f32>> {
+    if char_end <= char_start {
+        return None;
+    }
+    let (sequence, offsets) = embed_sequence_with_offsets(text);
+    if sequence.is_empty() {
+        return None;
+    }
+    let mut acc = vec![0.0f32; EMBEDDING_DIM];
+    let mut n = 0usize;
+    for (t, &(start, end)) in offsets.iter().enumerate() {
+        // Skip special tokens ([CLS] / [SEP] / pad — all reported as (0,0)).
+        if start == 0 && end == 0 {
+            continue;
+        }
+        // Token overlaps the span iff their char ranges intersect.
+        let overlaps = end > char_start && start < char_end;
+        if !overlaps {
+            continue;
+        }
+        let base = t * EMBEDDING_DIM;
+        for i in 0..EMBEDDING_DIM {
+            acc[i] += sequence[base + i];
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    let inv = 1.0 / n as f32;
+    for x in &mut acc {
+        *x *= inv;
+    }
+    let norm: f32 = acc.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-12);
+    for x in &mut acc {
+        *x /= norm;
+    }
+    Some(acc)
+}
+
 // Same tokenizer.json as the embedder, but with truncation and
 // padding both cleared so `token_count` reports the true length.
 // The bundled tokenizer.json ships with `padding: Fixed(128)` baked
@@ -131,5 +185,78 @@ mod tests {
     fn token_count_matches_expected() {
         // "hello world" → [CLS] hello world [SEP] = 4 tokens.
         assert_eq!(token_count("hello world"), 4);
+    }
+
+    fn cosine(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>()
+    }
+
+    #[test]
+    fn embed_span_in_context_yields_unit_vector() {
+        let text = "Sarah moved to Berlin last year.";
+        let span_start = text.find("Berlin").unwrap();
+        let v = embed_span_in_context(text, span_start, span_start + "Berlin".len())
+            .expect("Berlin span should resolve");
+        assert_eq!(v.len(), EMBEDDING_DIM);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-4, "expected unit, got {norm}");
+    }
+
+    #[test]
+    fn embed_span_differs_from_bare_word_embedding() {
+        // The whole point: contextualized 'Berlin' in a movement
+        // sentence should not be identical to bare embed_text('Berlin').
+        let text = "She moved to Berlin last year.";
+        let span_start = text.find("Berlin").unwrap();
+        let ctx = embed_span_in_context(text, span_start, span_start + "Berlin".len())
+            .expect("span should resolve");
+        let bare = embed_text("Berlin");
+        // Same direction-ish (both about Berlin), but materially different.
+        let c = cosine(&ctx, &bare);
+        assert!(c > 0.4 && c < 0.99,
+            "expected cosine in (0.4, 0.99); got {c}");
+    }
+
+    #[test]
+    fn embed_span_empty_or_oob_returns_none() {
+        assert!(embed_span_in_context("", 0, 5).is_none());
+        assert!(embed_span_in_context("hello", 5, 5).is_none()); // zero-width
+        assert!(embed_span_in_context("hello", 100, 200).is_none()); // out of bounds
+    }
+
+    #[test]
+    fn embed_span_deterministic() {
+        let text = "She moved to Berlin last year.";
+        let s = text.find("Berlin").unwrap();
+        let a = embed_span_in_context(text, s, s + "Berlin".len()).unwrap();
+        let b = embed_span_in_context(text, s, s + "Berlin".len()).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn embed_span_separates_different_kinds() {
+        // 'London' as a place should cluster with another place
+        // contextualization more than with a random temporal context.
+        let london = {
+            let t = "She moved to London last year.";
+            let s = t.find("London").unwrap();
+            embed_span_in_context(t, s, s + "London".len()).unwrap()
+        };
+        let paris = {
+            let t = "He flew to Paris on Tuesday.";
+            let s = t.find("Paris").unwrap();
+            embed_span_in_context(t, s, s + "Paris".len()).unwrap()
+        };
+        let tuesday = {
+            let t = "The meeting is on Tuesday.";
+            let s = t.find("Tuesday").unwrap();
+            embed_span_in_context(t, s, s + "Tuesday".len()).unwrap()
+        };
+        let london_paris = cosine(&london, &paris);
+        let london_tuesday = cosine(&london, &tuesday);
+        assert!(
+            london_paris > london_tuesday,
+            "expected London-Paris (place/place) cosine to exceed London-Tuesday (place/time); got {london_paris:.3} vs {london_tuesday:.3}",
+        );
     }
 }
