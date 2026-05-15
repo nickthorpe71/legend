@@ -16,6 +16,7 @@ use std::time::SystemTime;
 
 use seed::load_seed_graph;
 use steps::adjust_policy::adjust_policy;
+use steps::apply_region_delta::apply_region_delta;
 use steps::detect_intent::detect_intent;
 use steps::route_regions::{RouteResult, route_regions};
 use steps::run_extractors::{ExtractionOutput, run_extractors};
@@ -67,7 +68,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let hg = load_seed_graph();
+    let mut hg = load_seed_graph();
     stage_at("load_seed_graph", &mut mark);
     print_seed_graph(&hg);
 
@@ -90,6 +91,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let out = run_extractors(&input_text, &[], &policy, &hg, &route.active_regions);
     stage_at("run_extractors (Step 5)", &mut mark);
     print_extraction(&input_text, &out);
+
+    // Step 7 — commit the RegionDelta collected by Step 4. With v0
+    // defaults (policy.hebbian_rate = 0.0) this is a structural no-op:
+    // access_counts bump but prototype embeddings stay put.
+    apply_region_delta(&mut hg, &route.delta, &policy);
+    stage_at("apply_region_delta (Step 7)", &mut mark);
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;

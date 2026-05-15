@@ -1,4 +1,5 @@
 pub mod adjust_policy;
+pub mod apply_region_delta;
 pub mod coref;
 pub mod detect_intent;
 pub mod novelty_relations;
