@@ -4,7 +4,7 @@
 //! Run: `cargo run --release --example gen_seed_graph`
 //!
 //! Why this exists: the v0 substrate boots with 62 seeded entity
-//! elements (2 anchors + 30 attribute names + 14 signal regions +
+//! elements (2 anchors + 32 attribute names + 14 signal regions +
 //! 8 void regions + 8 reference frames) plus eagerly-minted
 //! `REGION_CLASS` / `REFERENCE_FRAME_CLASS`, **one prototype Element
 //! per `examples` entry per region** (20 examples × 22 regions = 440
@@ -24,7 +24,7 @@
 //!
 //! 1. VOID at ElementId(0), GENESIS at ElementId(1) — anchor IDs are
 //!    fixed by the `Hypergraph` struct's contract.
-//! 2. The 30 seeded attribute names in YAML declaration order.
+//! 2. The 32 seeded attribute names in YAML declaration order.
 //! 3. The 22 seeded regions (14 signal + 8 void).
 //! 4. The 8 seeded reference frames.
 //! 5. REGION_CLASS, REFERENCE_FRAME_CLASS — the YAML treats these as
@@ -37,7 +37,7 @@
 //!    region. Polarity = Void; carries the closed-class surface form
 //!    as its single name. 118 total.
 //!
-//! Total: 2 + 30 + 22 + 8 + 2 + 440 + 118 = 622 elements.
+//! Total: 2 + 32 + 22 + 8 + 2 + 440 + 118 = 624 elements.
 //!
 //! ── Relation minting order ───────────────────────────────────────────
 //!
@@ -398,18 +398,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Sanity checks — fail loudly if the YAML's shape drifted.
     // Element budget:
-    //   2 anchors + 30 attrs + 22 regions (14 signal + 8 void)
+    //   2 anchors + 32 attrs + 22 regions (14 signal + 8 void)
     //   + 8 frames + 2 classes
     //   + 440 prototypes (22 regions × 20 examples)
     //   + 118 void members
-    //   = 622.
+    //   = 624.
     // Relation budget:
     //   22 region-class pins + 8 frame-class pins
     //   + 22 region-parent pins
     //   + 440 prototype-attach
     //   + 118 member instance_of
     //   = 610.
-    assert_eq!(elements.len(), 622, "expected 622 elements");
+    assert_eq!(elements.len(), 624, "expected 624 elements");
     assert_eq!(relations.len(), 610, "expected 610 relations");
 
     // ── 9. Serialize ──────────────────────────────────────────────────

@@ -108,6 +108,52 @@ pub struct Hypergraph {
     /// variance prior at use time to keep the score well-defined.
     pub region_stats: HashMap<ElementId, RegionStats>,
 
+    // ── Step 8 relation indices ────────────────────────────────────────
+    //
+    // Populated by `rebuild_indices` over `hg.relations` and updated
+    // incrementally by Step 8 (`build_relations`) per minted relation.
+    // None of these are serialized — they're derived caches that
+    // rebuild deterministically from the relations themselves.
+    /// For each Element `E`, the list of Relations that mention `E` as
+    /// the value of any of their attributes. Drives "what does the
+    /// graph claim about E?" lookups (Step 9's supersession search,
+    /// Step 12's focus walk).
+    pub relations_by_element: HashMap<ElementId, Vec<RelationId>>,
+
+    /// For each attribute-name Element `A`, the list of Relations that
+    /// use `A` as one of their attribute names. Drives label-set
+    /// resolution and Step 9's filtering ("relations with a `property`
+    /// attribute").
+    pub relations_by_attribute_name: HashMap<ElementId, Vec<RelationId>>,
+
+    /// For each Relation `R`, the list of meta-relations whose
+    /// `target` attribute points at `R`. Chain walks (supersession,
+    /// derivation) go through here.
+    pub meta_relations_by_subject: HashMap<RelationId, Vec<RelationId>>,
+
+    /// For each Relation `R`, the list of meta-relations whose
+    /// non-`target` attribute slot references `R` via `Term::Relation`.
+    /// The inverse of `meta_relations_by_subject` — lets a relation
+    /// find which meta-relations name it as their object.
+    pub meta_relations_by_object: HashMap<RelationId, Vec<RelationId>>,
+
+    /// Per `(attribute_name, value)` pair, the count of base relations
+    /// that bind that pair. Cheap recognition signal: "how many
+    /// relations say X is an instance_of person?" without scanning
+    /// `relations`.
+    pub attribute_value_counts: HashMap<(ElementId, ElementId), u32>,
+
+    /// Per ordered pair of attribute names co-occurring on the same
+    /// relation's attribute list, the count of relations exhibiting
+    /// that co-occurrence. Drives §3.4 frame recognition.
+    pub attribute_co_counts: HashMap<(ElementId, ElementId), u32>,
+
+    /// Per `(relation, attribute_name)`, presence flag: does relation
+    /// `R` carry a meta-attribute with this name? `true` iff present.
+    /// Lets Step 9 / Step 10 ask "is R `intervened`?" in O(1) without
+    /// walking the meta-relation index.
+    pub meta_relation_presence: HashMap<(RelationId, ElementId), bool>,
+
     // ── Anchor IDs ─────────────────────────────────────────────────────
     //
     // Cached at seed-load time so hot-path lookups don't have to round-
@@ -150,6 +196,13 @@ pub struct Hypergraph {
     /// Cached ID of the seeded `prototype` attribute name. Same role
     /// as `parent_region_attr`, but for the prototype index.
     pub prototype_attr: ElementId,
+
+    /// Cached ID of the seeded `target` attribute name. Meta-relations
+    /// use `target` to point at their parent relation
+    /// (`(target: R_parent, derived_from: ...)`); the index splits on
+    /// this attribute name to populate `meta_relations_by_subject`
+    /// vs `meta_relations_by_object`.
+    pub target_attr: ElementId,
 }
 
 impl Default for Hypergraph {
@@ -169,6 +222,13 @@ impl Default for Hypergraph {
             region_parents: HashMap::new(),
             region_prototypes: HashMap::new(),
             region_stats: HashMap::new(),
+            relations_by_element: HashMap::new(),
+            relations_by_attribute_name: HashMap::new(),
+            meta_relations_by_subject: HashMap::new(),
+            meta_relations_by_object: HashMap::new(),
+            attribute_value_counts: HashMap::new(),
+            attribute_co_counts: HashMap::new(),
+            meta_relation_presence: HashMap::new(),
             void: ElementId(u32::MAX),
             genesis: ElementId(u32::MAX),
             region_class: ElementId(u32::MAX),
@@ -176,6 +236,7 @@ impl Default for Hypergraph {
             subject_attr: ElementId(u32::MAX),
             parent_region_attr: ElementId(u32::MAX),
             prototype_attr: ElementId(u32::MAX),
+            target_attr: ElementId(u32::MAX),
         }
     }
 }

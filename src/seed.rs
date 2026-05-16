@@ -104,6 +104,13 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
     hg.region_parents.clear();
     hg.region_prototypes.clear();
     hg.region_stats.clear();
+    hg.relations_by_element.clear();
+    hg.relations_by_attribute_name.clear();
+    hg.meta_relations_by_subject.clear();
+    hg.meta_relations_by_object.clear();
+    hg.attribute_value_counts.clear();
+    hg.attribute_co_counts.clear();
+    hg.meta_relation_presence.clear();
 
     for e in &hg.elements {
         for name in &e.names {
@@ -111,10 +118,19 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
         }
     }
 
+    // `target_attr` is derivable — `target` is seeded as a unique
+    // Signal attribute-name element. Resolving here rather than reading
+    // a 4th cached ID from the bin header keeps the on-disk format
+    // stable across the Step 8 plumbing.
+    if let Some(ids) = hg.by_name.get("target")
+        && let Some(&id) = ids.first()
+    {
+        hg.target_attr = id;
+    }
+
+    // Region indices — same logic as before, ignoring subject-less
+    // relations (meta-relations) since they don't carry region topology.
     for r in &hg.relations {
-        // Find the subject. A relation without a subject attribute has
-        // no role to play in the region indices — could be a future
-        // meta-relation or a malformed entry; either way, skip it.
         let subject = match find_subject(r, hg.subject_attr) {
             Some(s) => s,
             None => continue,
@@ -138,6 +154,53 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
                     .entry(subject)
                     .or_default()
                     .push(target);
+            }
+        }
+    }
+
+    // Step 8 indices — every relation contributes, including meta-
+    // relations. Mirrors the incremental update logic Step 8 runs
+    // per minted relation so build-from-scratch and incremental paths
+    // produce identical index state.
+    for r in &hg.relations {
+        for attr in &r.attributes {
+            hg.relations_by_attribute_name
+                .entry(attr.name)
+                .or_default()
+                .push(r.id);
+            match attr.value {
+                Term::Element(e) => {
+                    hg.relations_by_element.entry(e).or_default().push(r.id);
+                    *hg.attribute_value_counts.entry((attr.name, e)).or_insert(0) += 1;
+                }
+                Term::Relation(parent) => {
+                    if attr.name == hg.target_attr {
+                        hg.meta_relations_by_subject
+                            .entry(parent)
+                            .or_default()
+                            .push(r.id);
+                    } else {
+                        hg.meta_relations_by_object
+                            .entry(parent)
+                            .or_default()
+                            .push(r.id);
+                    }
+                    hg.meta_relation_presence.insert((parent, attr.name), true);
+                }
+            }
+        }
+        // Co-occurrence: every ordered pair (i, j) of distinct
+        // attribute positions on this relation. Symmetric pairs are
+        // both counted — Step 12's frame-recognition logic reads
+        // directional co-occurrence, not the symmetric collapse.
+        for i in 0..r.attributes.len() {
+            for j in 0..r.attributes.len() {
+                if i == j {
+                    continue;
+                }
+                *hg.attribute_co_counts
+                    .entry((r.attributes[i].name, r.attributes[j].name))
+                    .or_insert(0) += 1;
             }
         }
     }
@@ -376,10 +439,10 @@ mod tests {
     #[test]
     fn loads_expected_counts() {
         let hg = load_seed_graph();
-        // 2 anchors + 30 attrs + 22 regions (14 signal + 8 void)
+        // 2 anchors + 32 attrs + 22 regions (14 signal + 8 void)
         // + 8 frames + 2 classes + 440 prototypes (22 × 20)
-        // + 118 void members = 622.
-        assert_eq!(hg.elements.len(), 622);
+        // + 118 void members = 624.
+        assert_eq!(hg.elements.len(), 624);
         // 22 region-class + 8 frame-class + 22 region-parent
         // + 440 prototype-attach + 118 member instance_of = 610.
         assert_eq!(hg.relations.len(), 610);
@@ -491,10 +554,64 @@ mod tests {
         let before_children = hg.region_children.clone();
         let before_protos = hg.region_prototypes.clone();
         let before_stats = hg.region_stats.clone();
+        let before_rels_by_el = hg.relations_by_element.clone();
+        let before_rels_by_attr = hg.relations_by_attribute_name.clone();
+        let before_meta_subj = hg.meta_relations_by_subject.clone();
+        let before_meta_obj = hg.meta_relations_by_object.clone();
+        let before_attr_vals = hg.attribute_value_counts.clone();
+        let before_attr_co = hg.attribute_co_counts.clone();
+        let before_meta_pres = hg.meta_relation_presence.clone();
+        let before_target = hg.target_attr;
         rebuild_indices(&mut hg);
         assert_eq!(hg.region_children, before_children);
         assert_eq!(hg.region_prototypes, before_protos);
         assert_eq!(hg.region_stats, before_stats);
+        assert_eq!(hg.relations_by_element, before_rels_by_el);
+        assert_eq!(hg.relations_by_attribute_name, before_rels_by_attr);
+        assert_eq!(hg.meta_relations_by_subject, before_meta_subj);
+        assert_eq!(hg.meta_relations_by_object, before_meta_obj);
+        assert_eq!(hg.attribute_value_counts, before_attr_vals);
+        assert_eq!(hg.attribute_co_counts, before_attr_co);
+        assert_eq!(hg.meta_relation_presence, before_meta_pres);
+        assert_eq!(hg.target_attr, before_target);
+    }
+
+    /// `target_attr` should resolve via the `by_name` lookup against
+    /// the uniquely-seeded `target` attribute-name element.
+    #[test]
+    fn target_attr_resolves() {
+        let hg = load_seed_graph();
+        assert_ne!(
+            hg.target_attr,
+            ElementId(u32::MAX),
+            "target_attr must resolve at seed load",
+        );
+        let el = &hg.elements[hg.target_attr.0 as usize];
+        assert_eq!(el.names[0], "target");
+    }
+
+    /// Every seeded relation should appear in `relations_by_element`
+    /// for each of its Element-valued attribute targets, and in
+    /// `relations_by_attribute_name` for every attribute name.
+    #[test]
+    fn step8_indices_cover_every_seed_relation() {
+        let hg = load_seed_graph();
+        for r in &hg.relations {
+            for attr in &r.attributes {
+                let by_attr = hg
+                    .relations_by_attribute_name
+                    .get(&attr.name)
+                    .expect("attribute name must be indexed");
+                assert!(by_attr.contains(&r.id), "missing in by_attribute_name");
+                if let crate::types::Term::Element(e) = attr.value {
+                    let by_el = hg
+                        .relations_by_element
+                        .get(&e)
+                        .expect("element must be indexed");
+                    assert!(by_el.contains(&r.id), "missing in by_element");
+                }
+            }
+        }
     }
 
     #[test]

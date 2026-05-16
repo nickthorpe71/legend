@@ -9,9 +9,9 @@
 # else emerges via extraction and replay (§3.4: "the seed pack is
 # bootstrapping, not a closed vocabulary").
 #
-# Counts:    2 anchors + 30 seeded attribute-name elements
+# Counts:    2 anchors + 32 seeded attribute-name elements
 #          + 15 regions + 8 reference frames
-#          ≈ 55 elements
+#          ≈ 57 elements
 #
 # Predicates and roles collapse into one uniform "attribute name"
 # namespace (§7.2 attribute collapse). Every attribute on a Relation
@@ -251,6 +251,23 @@ seeded_attribute_names:
       Cause or rationale; used in decision, revision, and causation
       extractions. Necessary for "because" / "due to" expressions to
       carry their justificatory content forward.
+
+  - element_id: ATTR_WITH
+    names: ["with"]
+    rationale: >
+      Co-participant slot — "appointment with Dr. Rao", "meeting with
+      the team". Pattern RE (§11.7) emits this label for the
+      `X with Y` template. Seeded as a Signal attribute name alongside
+      the Void adposition `VOID_ADP_WITH` so by-name resolution from
+      the extractor doesn't accidentally bind to the function-word
+      member.
+
+  - element_id: ATTR_AT
+    names: ["at"]
+    rationale: >
+      Location or temporal anchor slot — "met at Times Square", "lands
+      at 3pm". Pattern RE emits this label for the `X at Y` template.
+      Same Signal/Void duplication pattern as `ATTR_WITH`.
 
   # Deliberately not seeded:
   #   `time`     — temporal scope lives on `valid_from`/`valid_to`
