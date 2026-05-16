@@ -1,8 +1,21 @@
 # Step 9 — Supersession and Cache
 
-> **Status: design pass.** Spec source: `tick_pipeline_focus.md §11.10`.
-> Step 8 (`build_relations`) shipped; Step 9 reads its n-ary event
-> output and writes the supersession chain.
+> **Status: complete (v0).** All six phases landed.
+> Implementation lives in `src/steps/supersede.rs`; design notes
+> below are the canonical record. Step 9 runs in `lib.rs::run()`
+> after `build_relations` and surfaces cache + supersession output
+> via `print_step9`. 17 unit tests cover property inference, cache
+> mint, prior supersession + linking metas, intervened/observed
+> gating, and a two-tick end-to-end integration. Total lib test
+> count: 128.
+>
+> Future work flagged in §12-13: property inference can move
+> upstream into Step 8 once frame walking surfaces a need;
+> `meta_relation_presence` index could be fixed to record sibling
+> attribute names (current implementation records target_attr
+> tautologically, so Step 9 uses a 1–3-element walk instead);
+> transitive supersession is deliberately a read-time chain walk,
+> not eagerly closed.
 
 ## 1. What Step 9 is
 

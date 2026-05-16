@@ -1020,6 +1020,160 @@ mod tests {
         );
     }
 
+    /// End-to-end two-tick integration test. Tick 1 establishes a
+    /// cache via a `moved from Monday to Tuesday` event; tick 2
+    /// supersedes it with `moved from Tuesday to Friday`. Verifies
+    /// the full §11.10 contract: status flip, new cache, both
+    /// linking meta-relations, and that the meta-relation indices
+    /// support the chain walks.
+    #[test]
+    fn two_tick_supersession_integration() {
+        use crate::seed::load_seed_graph;
+        use crate::steps::build_relations::build_relations;
+        use crate::steps::run_extractors::run_extractors;
+
+        let policy = crate::types::Policy::default();
+        let mut hg = load_seed_graph();
+        let labels = &["event", "weekday"];
+
+        // ── Tick 1 ─────────────────────────────────────────────────
+        let text1 = "The meeting moved from Monday to Tuesday.";
+        let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
+        let step8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
+        let step9_1 = supersede(&mut hg, &step8_1.minted_relations, &policy);
+        assert!(
+            !step9_1.cache_relations.is_empty(),
+            "tick 1 should mint at least one cache",
+        );
+        assert!(
+            step9_1.superseded.is_empty(),
+            "tick 1 has no priors to flip",
+        );
+
+        // Pick the highest-confidence Asserted cache as the one we
+        // expect tick 2 to supersede.
+        let prior_cache: RelationId = step9_1
+            .cache_relations
+            .iter()
+            .copied()
+            .find(|rid| hg.relations[rid.0 as usize].status == RelationStatus::Asserted)
+            .expect("at least one Asserted cache in tick 1");
+
+        // ── Tick 2 ─────────────────────────────────────────────────
+        let text2 = "The meeting moved from Tuesday to Friday.";
+        let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
+        let step8_2 = build_relations(text2, &mut hg, &ext2, &policy, None);
+        let step9_2 = supersede(&mut hg, &step8_2.minted_relations, &policy);
+
+        // (a) Prior flipped.
+        assert_eq!(
+            hg.relations[prior_cache.0 as usize].status,
+            RelationStatus::Superseded,
+            "tick 1's cache should now be Superseded",
+        );
+        assert!(
+            step9_2.superseded.contains(&prior_cache),
+            "Step9Output.superseded should include the flipped prior",
+        );
+
+        // (b) New cache lands Asserted with Friday as the to-value.
+        let new_cache = step9_2
+            .cache_relations
+            .iter()
+            .copied()
+            .find(|rid| hg.relations[rid.0 as usize].status == RelationStatus::Asserted)
+            .expect("tick 2 should mint an Asserted cache");
+        let new_r = &hg.relations[new_cache.0 as usize];
+        let friday_id = hg.by_name["Friday"][0];
+        assert!(
+            new_r.attributes.iter().any(|a| matches!(
+                a.value,
+                Term::Element(e) if e == friday_id
+            )),
+            "new cache's value slot should bind to Friday",
+        );
+
+        // (c) supersedes meta-relation exists: target=new_cache, value=prior_cache.
+        let supersedes_attr = hg.by_name["supersedes"][0];
+        let target_attr = hg.target_attr;
+        let metas_on_new = hg
+            .meta_relations_by_subject
+            .get(&new_cache)
+            .cloned()
+            .unwrap_or_default();
+        let mut found_supersedes_link = false;
+        for &mid in &metas_on_new {
+            let m = &hg.relations[mid.0 as usize];
+            let has_target = m.attributes.iter().any(|a| {
+                a.name == target_attr && matches!(a.value, Term::Relation(rid) if rid == new_cache)
+            });
+            let has_supersedes_to_prior = m.attributes.iter().any(|a| {
+                a.name == supersedes_attr
+                    && matches!(a.value, Term::Relation(rid) if rid == prior_cache)
+            });
+            if has_target && has_supersedes_to_prior {
+                found_supersedes_link = true;
+                break;
+            }
+        }
+        assert!(
+            found_supersedes_link,
+            "expected a supersedes meta linking new_cache → prior_cache",
+        );
+
+        // (d) derived_from meta-relation exists: target=new_cache, value=event.
+        let derived_attr = hg.by_name["derived_from"][0];
+        let event_id = step8_2
+            .minted_relations
+            .iter()
+            .copied()
+            .find(|&rid| {
+                let r = &hg.relations[rid.0 as usize];
+                let from_attr_id = hg.by_name["from"]
+                    .iter()
+                    .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+                    .copied()
+                    .unwrap();
+                let to_attr_id = hg.by_name["to"]
+                    .iter()
+                    .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+                    .copied()
+                    .unwrap();
+                let has_from = r.attributes.iter().any(|a| a.name == from_attr_id);
+                let has_to = r.attributes.iter().any(|a| a.name == to_attr_id);
+                has_from && has_to && r.attributes.len() == 4
+            })
+            .expect("tick 2 should mint at least one n-ary event");
+        let found_derived_link = metas_on_new.iter().any(|&mid| {
+            let m = &hg.relations[mid.0 as usize];
+            m.attributes.iter().any(|a| a.name == derived_attr)
+                && m.attributes.iter().any(|a| {
+                    a.name == derived_attr
+                        && matches!(a.value, Term::Relation(rid) if rid == event_id)
+                })
+        });
+        assert!(
+            found_derived_link,
+            "expected a derived_from meta linking new_cache → event",
+        );
+
+        // (e) Inverse chain walk: meta_relations_by_object[prior_cache]
+        //     should contain the supersedes meta (the meta points AT
+        //     prior_cache via its supersedes slot).
+        let metas_on_old = hg
+            .meta_relations_by_object
+            .get(&prior_cache)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            metas_on_old.iter().any(|&mid| hg.relations[mid.0 as usize]
+                .attributes
+                .iter()
+                .any(|a| a.name == supersedes_attr)),
+            "meta_relations_by_object[prior_cache] should index the supersedes meta",
+        );
+    }
+
     #[test]
     fn no_kind_at_all_falls_back_to_value() {
         let mut hg = synth_hg();
