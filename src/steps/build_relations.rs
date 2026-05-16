@@ -707,20 +707,44 @@ fn mint_event_relations(
 /// Canonical event-kind label for a surface verb. Small lookup table
 /// covering the seed-pack frames; on miss, returns the verb itself
 /// (replay can collapse synonyms once it has enough mentions).
+///
+/// Pattern RE's anchor extractor sometimes captures more than the
+/// verb proper ("rescheduled the meeting"), so look up keyed on the
+/// LAST whitespace-delimited token, which carries the verb head in
+/// English. Multi-token verb phrases (e.g. "moved to") are rare
+/// enough at the pattern level that the last-token heuristic is fine.
 fn event_kind_for(verb: &str) -> &str {
-    match verb.to_ascii_lowercase().as_str() {
+    let head = verb_head(verb);
+    match head {
         "changed" | "change" | "changes" | "changing" => "change_event",
         "rescheduled" | "reschedule" | "reschedules" | "rescheduling" => "reschedule_event",
         "moved" | "move" | "moves" | "moving" => "move_event",
         "shifted" | "shift" | "shifts" | "shifting" => "shift_event",
-        // Fallback: use the verb itself as the kind label. Caller's
+        // Fallback: use the head verb as the kind label. Caller's
         // resolve_label_element will mint it on miss.
-        _ => verb,
+        _ => head,
     }
 }
 
-/// Returns `true` iff the verb's lowercase form is in the agent-
-/// action lexicon (§11.7). Matches base + common tense forms.
+/// Extract the verb head from a pattern-RE anchor — the first
+/// whitespace-delimited token, with trailing ASCII punctuation
+/// stripped. Pattern RE's anchor is everything between the subject
+/// span and the " from " connective, so for "Sarah rescheduled the
+/// meeting" the captured anchor is "rescheduled the meeting" and
+/// the verb sits at the start. Multi-token verb phrases like "has
+/// rescheduled" are rare in this position because the 32-char
+/// connective cap excludes most auxiliaries.
+fn verb_head(anchor: &str) -> &str {
+    anchor
+        .split_whitespace()
+        .next()
+        .unwrap_or(anchor)
+        .trim_end_matches(|c: char| c.is_ascii_punctuation())
+}
+
+/// Returns `true` iff the verb's lowercase head form is in the
+/// agent-action lexicon (§11.7). Reads via `verb_head` so anchor
+/// noise like "rescheduled the meeting" still resolves to the head.
 fn is_intervention_verb(verb: &str) -> bool {
     const LEXICON: &[&str] = &[
         "reschedule",
@@ -769,7 +793,7 @@ fn is_intervention_verb(verb: &str) -> bool {
         "deleting",
         "deleted",
     ];
-    let lower = verb.to_ascii_lowercase();
+    let lower = verb_head(verb).to_ascii_lowercase();
     LEXICON.iter().any(|&v| v == lower)
 }
 

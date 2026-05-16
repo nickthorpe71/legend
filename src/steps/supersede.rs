@@ -119,13 +119,14 @@ pub struct Step9Output {
 pub fn supersede(
     hg: &mut Hypergraph,
     new_relations: &[RelationId],
-    _policy: &crate::types::Policy,
+    policy: &crate::types::Policy,
 ) -> Step9Output {
     let mut out = Step9Output::default();
 
     let Some((from_attr, to_attr)) = signal_from_to_attrs(hg) else {
         return out;
     };
+    let intervened_attr = signal_attr(hg, "intervened");
 
     // Take a snapshot of the relation IDs we care about up front —
     // we'll mutate `hg.relations` (via mint_relation) inside the
@@ -146,18 +147,32 @@ pub fn supersede(
         let cache_attr_label = format!("current_{property_kind}");
         let cache_attr_id = resolve_or_mint_signal_attr(hg, &cache_attr_label, &mut out);
 
+        // ── Gate: intervened vs. observed (§11.10) ─────────────────
+        // Intervened events (do()) supersede unconditionally.
+        // Observed events must clear policy.supersession_threshold.
+        // Failed gate → cache lands Defeasible; no supersedes meta;
+        // derived_from still fires (audit trail).
+        let event_conf = hg.relations[event_id.0 as usize].stats.confidence;
+        let intervened =
+            intervened_attr.is_some_and(|attr| event_has_meta_attr(hg, event_id, attr));
+        let gate_passed = intervened || event_conf >= policy.supersession_threshold;
+
         // ── Prior-cache lookup ─────────────────────────────────────
-        // Any relation that mentions `target` AND carries this
-        // current_<property> attribute name is a candidate cache.
-        // Live (Asserted/Entailed) candidates get flipped.
+        // Live priors get flipped only if the gate passed.
         let priors = collect_prior_caches(hg, frame.target, cache_attr_id);
-        for &prior in &priors {
-            hg.relations[prior.0 as usize].status = RelationStatus::Superseded;
-            out.superseded.push(prior);
+        if gate_passed {
+            for &prior in &priors {
+                hg.relations[prior.0 as usize].status = RelationStatus::Superseded;
+                out.superseded.push(prior);
+            }
         }
 
         // ── New cache relation ─────────────────────────────────────
-        let event_confidence = hg.relations[event_id.0 as usize].stats.confidence;
+        let cache_status = if gate_passed {
+            RelationStatus::Asserted
+        } else {
+            RelationStatus::Defeasible
+        };
         let cache_id = mint_relation(
             hg,
             vec![
@@ -170,15 +185,14 @@ pub fn supersede(
                     value: Term::Element(frame.to_value),
                 },
             ],
-            RelationStatus::Asserted,
-            event_confidence,
+            cache_status,
+            event_conf,
         );
         out.cache_relations.push(cache_id);
 
         // ── Linking meta-relations ─────────────────────────────────
-        // (target: cache, derived_from: event) — always. The cache
-        // derived from this event regardless of whether it
-        // superseded anything.
+        // derived_from: always emitted. Audit trail records that
+        // the cache came from this event regardless of gate outcome.
         if let Some(derived_attr) = signal_attr(hg, "derived_from") {
             let meta = mint_relation(
                 hg,
@@ -197,8 +211,9 @@ pub fn supersede(
             );
             out.meta_relations.push(meta);
         }
-        // (target: cache, supersedes: prior) — one per flipped prior.
-        if !priors.is_empty()
+        // supersedes: only when the gate passed AND priors flipped.
+        if gate_passed
+            && !priors.is_empty()
             && let Some(supersedes_attr) = signal_attr(hg, "supersedes")
         {
             for &prior in &priors {
@@ -223,6 +238,27 @@ pub fn supersede(
     }
 
     out
+}
+
+/// True if any meta-relation pointing at `event_id` (via its
+/// `target` slot) carries an attribute named `attr_name`. Used to
+/// detect the `intervened` tag without depending on the
+/// `meta_relation_presence` index, which currently records the
+/// target attribute name rather than sibling attribute names.
+///
+/// O(K) where K = number of meta-relations on this event,
+/// typically 0–3. Cheap.
+fn event_has_meta_attr(hg: &Hypergraph, event_id: RelationId, attr_name: ElementId) -> bool {
+    let Some(metas) = hg.meta_relations_by_subject.get(&event_id) else {
+        return false;
+    };
+    for &mid in metas {
+        let m = &hg.relations[mid.0 as usize];
+        if m.attributes.iter().any(|a| a.name == attr_name) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Find live prior cache relations for the same `(target, property)`
@@ -577,14 +613,26 @@ mod tests {
             .copied()
             .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
             .expect("current_date should have been minted by Step 9");
+        // At least one cache should land Asserted — the high-conf
+        // pattern (Dr. Rao subject, conf ~0.7) clears the gate.
+        // Pattern RE over-extracts with low-conf subjects too
+        // (e.g. "appointment" with NER conf ~0.367) → those caches
+        // land Defeasible, which is correct gate behavior.
+        let mut saw_asserted = false;
         for &rid in &out.cache_relations {
             let r = &hg.relations[rid.0 as usize];
             assert_eq!(r.attributes.len(), 2, "cache is binary");
             let has_subject = r.attributes.iter().any(|a| a.name == hg.subject_attr);
             let has_current = r.attributes.iter().any(|a| a.name == current_date_id);
             assert!(has_subject && has_current);
-            assert_eq!(r.status, RelationStatus::Asserted);
+            if r.status == RelationStatus::Asserted {
+                saw_asserted = true;
+            }
         }
+        assert!(
+            saw_asserted,
+            "at least one cache should clear the default gate threshold",
+        );
     }
 
     #[test]
@@ -731,6 +779,110 @@ mod tests {
                 .any(|a| a.name == supersedes_id)
         });
         assert!(!has_supersedes, "no supersedes meta when no prior flipped",);
+    }
+
+    #[test]
+    fn intervened_event_supersedes_low_confidence_prior() {
+        // Use `rescheduled` (in the intervention lexicon) so Step 8
+        // emits an `intervened` meta. Step 9's gate should flip
+        // priors unconditionally, even if the event's confidence
+        // is below policy.supersession_threshold.
+        let policy = crate::types::Policy {
+            supersession_threshold: 0.95, // very high; observed events would fail
+            ..Default::default()
+        };
+
+        let text1 = "Sarah rescheduled the meeting from Monday to Tuesday.";
+        let (mut hg, minted1) = {
+            use crate::seed::load_seed_graph;
+            use crate::steps::build_relations::build_relations;
+            use crate::steps::run_extractors::run_extractors;
+            let mut h = load_seed_graph();
+            let ext = run_extractors(text1, &["person", "event", "weekday"], &policy, &h, &[]);
+            let s8 = build_relations(text1, &mut h, &ext, &policy, None);
+            (h, s8.minted_relations)
+        };
+        let _ = supersede(&mut hg, &minted1, &policy);
+
+        let text2 = "Sarah rescheduled the meeting from Tuesday to Friday.";
+        let ext2 = crate::steps::run_extractors::run_extractors(
+            text2,
+            &["person", "event", "weekday"],
+            &policy,
+            &hg,
+            &[],
+        );
+        let step8 =
+            crate::steps::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
+        let out2 = supersede(&mut hg, &step8.minted_relations, &policy);
+
+        assert!(
+            !out2.superseded.is_empty(),
+            "intervened event should flip priors unconditionally",
+        );
+    }
+
+    #[test]
+    fn observed_low_confidence_event_skips_supersession() {
+        // `changed` is NOT in the intervention lexicon — observed
+        // event. Policy threshold is high enough that the event's
+        // confidence (~0.7 from pattern RE) can't clear it.
+        let policy = crate::types::Policy {
+            supersession_threshold: 0.99,
+            ..Default::default()
+        };
+
+        let text1 = "The meeting moved from Monday to Tuesday.";
+        let (mut hg, minted1) = {
+            use crate::seed::load_seed_graph;
+            use crate::steps::build_relations::build_relations;
+            use crate::steps::run_extractors::run_extractors;
+            let mut h = load_seed_graph();
+            let ext = run_extractors(text1, &["event", "weekday"], &policy, &h, &[]);
+            let s8 = build_relations(text1, &mut h, &ext, &policy, None);
+            (h, s8.minted_relations)
+        };
+        let _ = supersede(&mut hg, &minted1, &policy);
+
+        let text2 = "The meeting changed from Tuesday to Friday.";
+        let ext2 = crate::steps::run_extractors::run_extractors(
+            text2,
+            &["event", "weekday"],
+            &policy,
+            &hg,
+            &[],
+        );
+        let step8 =
+            crate::steps::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
+        let out2 = supersede(&mut hg, &step8.minted_relations, &policy);
+
+        // Gate failed: no flips, no supersedes meta, cache lands Defeasible.
+        assert!(out2.superseded.is_empty(), "low-conf observed → no flip");
+        for &rid in &out2.cache_relations {
+            assert_eq!(
+                hg.relations[rid.0 as usize].status,
+                RelationStatus::Defeasible,
+                "low-conf observed cache should be Defeasible",
+            );
+        }
+        let supersedes_id = hg.by_name["supersedes"][0];
+        let has_supersedes = out2.meta_relations.iter().any(|rid| {
+            hg.relations[rid.0 as usize]
+                .attributes
+                .iter()
+                .any(|a| a.name == supersedes_id)
+        });
+        assert!(!has_supersedes, "no supersedes meta on failed gate");
+
+        // derived_from still fires — audit trail preserved.
+        let derived_id = hg.by_name["derived_from"][0];
+        let has_derived = out2.meta_relations.iter().any(|rid| {
+            hg.relations[rid.0 as usize]
+                .attributes
+                .iter()
+                .any(|a| a.name == derived_id)
+        });
+        assert!(has_derived, "derived_from should always fire");
     }
 
     #[test]
