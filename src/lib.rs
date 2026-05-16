@@ -21,6 +21,7 @@ use steps::build_relations::{build_relations, print_step8};
 use steps::detect_intent::detect_intent;
 use steps::route_regions::{RouteResult, route_regions};
 use steps::run_extractors::{ExtractionOutput, run_extractors};
+use steps::supersede::{print_step9, supersede};
 use types::{ElementId, Hypergraph, Intent, Policy};
 
 /// Maximum tokens accepted in a single tick. Matches GLiNER2's 512-token
@@ -108,6 +109,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let step8 = build_relations(&input_text, &mut hg, &out, &policy, None);
     stage_at("build_relations (Step 8)", &mut mark);
     print_step8(&step8, &hg, prior_elements, prior_relations);
+
+    // Step 9 — supersede prior cache state for each event Step 8
+    // minted; write the new cache + linking meta-relations. Reads
+    // policy.supersession_threshold (intent-modulated by Step 2)
+    // and any `intervened` meta-relations on the event.
+    let prior_elements_9 = hg.elements.len();
+    let prior_relations_9 = hg.relations.len();
+    let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
+    stage_at("supersede (Step 9)", &mut mark);
+    print_step9(&step9, &hg, prior_elements_9, prior_relations_9);
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;

@@ -240,6 +240,115 @@ pub fn supersede(
     out
 }
 
+/// Hand-rolled debug print so the dev-time tick output shows what
+/// Step 9 actually wrote. Mirrors `print_step8`.
+pub fn print_step9(
+    out: &Step9Output,
+    hg: &Hypergraph,
+    prior_element_count: usize,
+    prior_relation_count: usize,
+) {
+    println!();
+    println!("supersede (Step 9)");
+    println!(
+        "  cache relations    {} ({} → {})",
+        out.cache_relations.len(),
+        prior_element_count,
+        hg.elements.len(),
+    );
+    println!("  superseded priors  {}", out.superseded.len(),);
+    println!(
+        "  linking metas      {}  (derived_from + supersedes)",
+        out.meta_relations.len(),
+    );
+    if out.attr_names_minted > 0 {
+        println!(
+            "  new attribute names {}  (current_<property> siblings)",
+            out.attr_names_minted,
+        );
+    }
+    let _ = prior_relation_count;
+    if out.cache_relations.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "  {:<6} {:<14} {:<24} {:<24} {:<10}",
+        "id", "status", "subject", "current_<prop>", "value",
+    );
+    println!(
+        "  {:-<6} {:-<14} {:-<24} {:-<24} {:-<10}",
+        "", "", "", "", ""
+    );
+    for &rid in &out.cache_relations {
+        let r = &hg.relations[rid.0 as usize];
+        let subject = r
+            .attributes
+            .iter()
+            .find(|a| a.name == hg.subject_attr)
+            .and_then(|a| match a.value {
+                Term::Element(e) => hg.elements[e.0 as usize].names.first().cloned(),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let (attr_name, value_name) = r
+            .attributes
+            .iter()
+            .find(|a| a.name != hg.subject_attr)
+            .map(|a| {
+                let an = hg.elements[a.name.0 as usize]
+                    .names
+                    .first()
+                    .cloned()
+                    .unwrap_or_default();
+                let vn = match a.value {
+                    Term::Element(e) => hg.elements[e.0 as usize]
+                        .names
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                (an, vn)
+            })
+            .unwrap_or_default();
+        println!(
+            "  {:<6} {:<14} {:<24} {:<24} {:<10}",
+            rid.0,
+            format!("{:?}", r.status),
+            truncate(&subject, 24),
+            truncate(&attr_name, 24),
+            truncate(&value_name, 10),
+        );
+    }
+    if !out.superseded.is_empty() {
+        println!();
+        println!("  flipped to Superseded:");
+        for &rid in &out.superseded {
+            let r = &hg.relations[rid.0 as usize];
+            let subj_name = r
+                .attributes
+                .iter()
+                .find(|a| a.name == hg.subject_attr)
+                .and_then(|a| match a.value {
+                    Term::Element(e) => hg.elements[e.0 as usize].names.first().cloned(),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            println!("    R{:<5} subject={subj_name}", rid.0);
+        }
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
 /// True if any meta-relation pointing at `event_id` (via its
 /// `target` slot) carries an attribute named `attr_name`. Used to
 /// detect the `intervened` tag without depending on the
