@@ -17,6 +17,7 @@ use std::time::SystemTime;
 use seed::load_seed_graph;
 use steps::adjust_policy::adjust_policy;
 use steps::apply_region_delta::{RegionDeltaApplied, apply_region_delta};
+use steps::build_relations::{build_relations, print_step8};
 use steps::detect_intent::detect_intent;
 use steps::route_regions::{RouteResult, route_regions};
 use steps::run_extractors::{ExtractionOutput, run_extractors};
@@ -98,6 +99,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let applied = apply_region_delta(&mut hg, &route.delta, &policy);
     stage_at("apply_region_delta (Step 7)", &mut mark);
     print_apply_region_delta(&policy, &applied);
+
+    // Step 8 — mint elements + relations from Step 5's proposals.
+    // No `source` plumbed yet; CLI runs are sourceless (the source
+    // parameter is for replay and inter-agent inputs, §11.1).
+    let prior_elements = hg.elements.len();
+    let prior_relations = hg.relations.len();
+    let step8 = build_relations(&input_text, &mut hg, &out, &policy, None);
+    stage_at("build_relations (Step 8)", &mut mark);
+    print_step8(&step8, &hg, prior_elements, prior_relations);
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;

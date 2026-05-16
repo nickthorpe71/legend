@@ -1,0 +1,649 @@
+//! Step 8 — build Relations + Events.
+//!
+//! Pure HashMap inserts + index updates over what Step 5 already
+//! proposed. For each surviving extractor proposal:
+//!
+//! 1. Resolve every span to an existing Element, or mint a fresh one.
+//!    Reuse folds the new contextualized vector into the element's
+//!    running centroid.
+//! 2. Resolve `attr_label` to an attribute-name Element (exact-name
+//!    today; cosine-dedup deferred — see `resolve_attribute_name`).
+//! 3. Build one Relation per proposal — attribute list assembled
+//!    from the extractor's frame.
+//! 4. Stamp status from `policy.ner_assertion_threshold`; stamp
+//!    `stats.confidence` from `policy.default_conf × extractor_conf`.
+//! 5. Write a `source` meta-relation if the tick's source is `Some`.
+//! 6. Incrementally update all seven Step 8 indices.
+//!
+//! See `step_8_design.md` for the full spec; this is Phase 2 (binary
+//! relations only). Phase 3 adds n-ary event merging.
+
+use std::collections::HashMap;
+
+use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
+use crate::steps::relation_patterns::RelationProposal;
+use crate::steps::run_extractors::ExtractionOutput;
+use crate::types::{
+    Attribute, Element, ElementId, Hypergraph, MemoryStats, Polarity, Relation, RelationId,
+    RelationStatus, Term,
+};
+
+/// Surface of Step 8's work in a single tick — what got minted and
+/// how many new attribute names appeared. Frame's `durable_writes`
+/// reads `minted_elements`; observability reads `attr_names_minted`.
+#[derive(Debug, Default, Clone)]
+pub struct Step8Output {
+    pub minted_elements: Vec<ElementId>,
+    pub minted_relations: Vec<RelationId>,
+    /// New attribute-name elements minted this tick. Threshold
+    /// signalling lives at the caller — Step 8 just counts.
+    pub attr_names_minted: u32,
+}
+
+/// Build relations + events for one tick.
+///
+/// - `input_text` — the raw input. Spans are character offsets into this.
+/// - `hg` — mutated in place; new Elements/Relations appended,
+///   all seven Step 8 indices updated incrementally.
+/// - `out` — the `ExtractionOutput` from Step 5.
+/// - `policy` — adjusted Policy from Step 2 (Steps 4–12 read this).
+/// - `source` — the tick's source (§11.1). If `Some`, every minted
+///   base relation gets a companion `(target: R, source: source)`.
+///
+/// The current implementation handles binary `instance_of` and
+/// pattern-RE proposals. N-ary event merging lands in Phase 3;
+/// novelty branch mints land in Phase 4.
+pub fn build_relations(
+    input_text: &str,
+    hg: &mut Hypergraph,
+    out: &ExtractionOutput,
+    policy: &crate::types::Policy,
+    source: Option<ElementId>,
+) -> Step8Output {
+    let mut result = Step8Output::default();
+
+    // Char-span → ElementId cache for this tick. Two proposals over
+    // the same span resolve to the same element without re-running
+    // mint/dedup and without bumping access_count twice for one mention.
+    let mut span_cache: HashMap<(usize, usize), ElementId> = HashMap::new();
+
+    // ── §6.1 — Binary instance_of proposals (NER + Temporal) ────────
+    let mut base_rel_ids: Vec<RelationId> = Vec::new();
+    for p in &out.known.instance_of {
+        let subj_id = resolve_span(
+            hg,
+            input_text,
+            p.subject_char_start,
+            p.subject_char_end,
+            &p.subject_text,
+            &mut span_cache,
+            &mut result,
+        );
+        let label_id = resolve_label_element(hg, &p.object_label, &mut result);
+        let attr_id = resolve_attribute_name(hg, p.attribute_name, &mut result);
+        let rel_id = mint_relation(
+            hg,
+            vec![
+                Attribute {
+                    name: hg.subject_attr,
+                    value: Term::Element(subj_id),
+                },
+                Attribute {
+                    name: attr_id,
+                    value: Term::Element(label_id),
+                },
+            ],
+            p.status,
+            confidence_for(p.confidence, policy),
+        );
+        base_rel_ids.push(rel_id);
+        result.minted_relations.push(rel_id);
+    }
+
+    // ── §6.2 — Binary pattern RE proposals ──────────────────────────
+    for p in &out.known.relations {
+        let rel_id = mint_pattern_relation(hg, input_text, p, policy, &mut span_cache, &mut result);
+        base_rel_ids.push(rel_id);
+        result.minted_relations.push(rel_id);
+    }
+
+    // ── §7 — Source meta-relations ──────────────────────────────────
+    if let Some(source_id) = source {
+        let source_attr = match hg.by_name.get("source").and_then(|v| v.first().copied()) {
+            Some(id) => id,
+            None => return result, // pack-shape error; nothing to do
+        };
+        for &base_id in &base_rel_ids {
+            let meta_id = mint_relation(
+                hg,
+                vec![
+                    Attribute {
+                        name: hg.target_attr,
+                        value: Term::Relation(base_id),
+                    },
+                    Attribute {
+                        name: source_attr,
+                        value: Term::Element(source_id),
+                    },
+                ],
+                RelationStatus::Entailed,
+                1.0,
+            );
+            result.minted_relations.push(meta_id);
+        }
+    }
+
+    result
+}
+
+/// Resolve a character span to an `ElementId`. Cached per tick.
+/// Exact-name lookup; on miss, mint with the span's contextualized
+/// embedding. Reuse folds the contextualized vector into the
+/// element's running centroid and bumps `access_count`.
+fn resolve_span(
+    hg: &mut Hypergraph,
+    input_text: &str,
+    char_start: usize,
+    char_end: usize,
+    span_text: &str,
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+    result: &mut Step8Output,
+) -> ElementId {
+    if let Some(&id) = span_cache.get(&(char_start, char_end)) {
+        return id;
+    }
+
+    let observed = embed_span_in_context(input_text, char_start, char_end);
+
+    // 1. Exact-name lookup. If multiple IDs share the name, pick the
+    //    one with highest cosine to the contextualized vector (or the
+    //    first, if we have no contextualized vector to compare against).
+    let existing = hg.by_name.get(span_text).cloned().unwrap_or_default();
+    if let Some(id) = pick_best_by_cosine(&existing, observed.as_deref(), hg) {
+        // Reuse path: fold the new mention's vector + bump access count.
+        if let Some(obs) = observed.as_ref() {
+            let prev_n = hg.elements[id.0 as usize].stats.access_count;
+            fold_streaming_centroid(&mut hg.elements[id.0 as usize].embedding, obs, prev_n);
+        }
+        let el = &mut hg.elements[id.0 as usize];
+        el.stats.access_count = el.stats.access_count.saturating_add(1);
+        el.stats.last_seen = hg.clock;
+        span_cache.insert((char_start, char_end), id);
+        return id;
+    }
+
+    // 2. Mint. Use contextualized vector if available; otherwise fall
+    //    back to surface-form text embedding (matches the seed-pack
+    //    void-member fallback path).
+    let embedding = observed.unwrap_or_else(|| embed_text(span_text));
+    let id = mint_element(
+        hg,
+        vec![span_text.to_string()],
+        embedding,
+        Polarity::Signal,
+        policy_default_conf_or_one(hg),
+    );
+    span_cache.insert((char_start, char_end), id);
+    result.minted_elements.push(id);
+    id
+}
+
+/// Resolve a type-class label (e.g. `"person"`, `"weekday"`, `"event"`)
+/// to an `ElementId`. Mints a fresh element if no match exists.
+/// Distinct from `resolve_span` because labels don't have char offsets
+/// or a contextualized vector — they're symbolic.
+fn resolve_label_element(hg: &mut Hypergraph, label: &str, result: &mut Step8Output) -> ElementId {
+    let existing = hg.by_name.get(label).cloned().unwrap_or_default();
+    if let Some(&id) = existing.first() {
+        // Reuse, bump access. No streaming centroid (no observed vector).
+        let el = &mut hg.elements[id.0 as usize];
+        el.stats.access_count = el.stats.access_count.saturating_add(1);
+        el.stats.last_seen = hg.clock;
+        return id;
+    }
+    let id = mint_element(
+        hg,
+        vec![label.to_string()],
+        embed_text(label),
+        Polarity::Signal,
+        policy_default_conf_or_one(hg),
+    );
+    result.minted_elements.push(id);
+    id
+}
+
+/// Resolve an attribute-name surface form (e.g. `"instance_of"`,
+/// `"from"`) to its attribute-name Element. Exact-name today; cosine
+/// dedup (§5 step 2) is deferred — synonym normalization isn't urgent
+/// because pattern RE emits canonical names already seeded, and NER's
+/// auto-emitted `instance_of` matches the seeded `ATTR_INSTANCE_OF`.
+///
+/// On miss, mints a new attribute-name element and bumps
+/// `attr_names_minted`. Caller is responsible for deciding whether
+/// the relation should land `Defeasible` because of the mint.
+fn resolve_attribute_name(hg: &mut Hypergraph, label: &str, result: &mut Step8Output) -> ElementId {
+    if let Some(ids) = hg.by_name.get(label)
+        && let Some(&id) = ids.first()
+    {
+        // Prefer a Signal hit over a Void hit — `with` and `at` exist
+        // as both Signal attribute-name elements and Void adposition
+        // members; the Signal sibling is the right binding here.
+        for candidate in ids {
+            if hg.elements[candidate.0 as usize].polarity == Polarity::Signal {
+                return *candidate;
+            }
+        }
+        return id;
+    }
+    let id = mint_element(
+        hg,
+        vec![label.to_string()],
+        embed_text(label),
+        Polarity::Signal,
+        policy_default_conf_or_one(hg),
+    );
+    result.minted_elements.push(id);
+    result.attr_names_minted = result.attr_names_minted.saturating_add(1);
+    id
+}
+
+fn mint_pattern_relation(
+    hg: &mut Hypergraph,
+    input_text: &str,
+    p: &RelationProposal,
+    policy: &crate::types::Policy,
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+    result: &mut Step8Output,
+) -> RelationId {
+    let subj_text = &input_text[p.subject_char_start..p.subject_char_end];
+    let obj_text = &input_text[p.object_char_start..p.object_char_end];
+    let subj_id = resolve_span(
+        hg,
+        input_text,
+        p.subject_char_start,
+        p.subject_char_end,
+        subj_text,
+        span_cache,
+        result,
+    );
+    let obj_id = resolve_span(
+        hg,
+        input_text,
+        p.object_char_start,
+        p.object_char_end,
+        obj_text,
+        span_cache,
+        result,
+    );
+    let attr_id = resolve_attribute_name(hg, p.attribute_name, result);
+    mint_relation(
+        hg,
+        vec![
+            Attribute {
+                name: hg.subject_attr,
+                value: Term::Element(subj_id),
+            },
+            Attribute {
+                name: attr_id,
+                value: Term::Element(obj_id),
+            },
+        ],
+        p.status,
+        confidence_for(p.confidence, policy),
+    )
+}
+
+/// Mint a fresh Element + update `by_name`. Returns the new ID.
+pub(crate) fn mint_element(
+    hg: &mut Hypergraph,
+    names: Vec<String>,
+    embedding: Vec<f32>,
+    polarity: Polarity,
+    default_conf: f32,
+) -> ElementId {
+    let id = ElementId(hg.elements.len() as u32);
+    let stats = MemoryStats {
+        confidence: default_conf,
+        plasticity: 1.0,
+        last_seen: hg.clock,
+        ..MemoryStats::default()
+    };
+    let el = Element {
+        id,
+        names: names.clone(),
+        stats,
+        created_at: hg.clock,
+        embedding,
+        polarity,
+    };
+    hg.elements.push(el);
+    for name in names {
+        hg.by_name.entry(name).or_default().push(id);
+    }
+    id
+}
+
+/// Append a Relation, run the §8 index updates, return its ID.
+pub(crate) fn mint_relation(
+    hg: &mut Hypergraph,
+    attributes: Vec<Attribute>,
+    status: RelationStatus,
+    confidence: f32,
+) -> RelationId {
+    let id = RelationId(hg.relations.len() as u32);
+    let stats = MemoryStats {
+        confidence,
+        plasticity: 1.0,
+        last_seen: hg.clock,
+        ..MemoryStats::default()
+    };
+    let r = Relation {
+        id,
+        attributes,
+        status,
+        stats,
+        priority: 0,
+        created_at: hg.clock,
+    };
+    index_relation(hg, &r);
+    hg.relations.push(r);
+    id
+}
+
+/// Apply §8 incremental index updates for one Relation. Mirrors the
+/// build-from-scratch loop in `seed::rebuild_indices` so the two
+/// paths converge.
+fn index_relation(hg: &mut Hypergraph, r: &Relation) {
+    let r_id = r.id;
+    for attr in &r.attributes {
+        hg.relations_by_attribute_name
+            .entry(attr.name)
+            .or_default()
+            .push(r_id);
+        match attr.value {
+            Term::Element(e) => {
+                hg.relations_by_element.entry(e).or_default().push(r_id);
+                *hg.attribute_value_counts.entry((attr.name, e)).or_insert(0) += 1;
+            }
+            Term::Relation(parent) => {
+                if attr.name == hg.target_attr {
+                    hg.meta_relations_by_subject
+                        .entry(parent)
+                        .or_default()
+                        .push(r_id);
+                } else {
+                    hg.meta_relations_by_object
+                        .entry(parent)
+                        .or_default()
+                        .push(r_id);
+                }
+                hg.meta_relation_presence.insert((parent, attr.name), true);
+            }
+        }
+    }
+    for i in 0..r.attributes.len() {
+        for j in 0..r.attributes.len() {
+            if i == j {
+                continue;
+            }
+            *hg.attribute_co_counts
+                .entry((r.attributes[i].name, r.attributes[j].name))
+                .or_insert(0) += 1;
+        }
+    }
+}
+
+fn pick_best_by_cosine(
+    candidates: &[ElementId],
+    observed: Option<&[f32]>,
+    hg: &Hypergraph,
+) -> Option<ElementId> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let Some(obs) = observed else {
+        return Some(candidates[0]);
+    };
+    let mut best: Option<(ElementId, f32)> = None;
+    for &id in candidates {
+        let cand_emb = &hg.elements[id.0 as usize].embedding;
+        let score = crate::math::dot(obs, cand_emb);
+        match best {
+            Some((_, b)) if score <= b => {}
+            _ => best = Some((id, score)),
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+/// Confidence stamped onto the Relation. Spec: `default_conf ×
+/// extractor_confidence`. `default_conf` is intent-modulated by
+/// Step 2.
+fn confidence_for(extractor_conf: f32, policy: &crate::types::Policy) -> f32 {
+    (policy.default_conf * extractor_conf).clamp(0.0, 1.0)
+}
+
+/// Mint-time confidence for new Elements. The Policy isn't threaded
+/// into every mint site; reading the rest-state default off the
+/// Hypergraph is good enough — Step 12's frame walker reads
+/// `stats.confidence` for ranking, not for truth-bearing.
+fn policy_default_conf_or_one(hg: &Hypergraph) -> f32 {
+    hg.policy.default_conf
+}
+
+/// Hand-rolled debug print so the dev-time tick output shows what
+/// Step 8 actually wrote. Mirrors the style of `print_extraction`
+/// in `lib.rs`.
+pub fn print_step8(
+    out: &Step8Output,
+    hg: &Hypergraph,
+    prior_element_count: usize,
+    prior_relation_count: usize,
+) {
+    println!();
+    println!("build_relations (Step 8)");
+    println!(
+        "  minted elements    {} ({} → {})",
+        out.minted_elements.len(),
+        prior_element_count,
+        hg.elements.len(),
+    );
+    println!(
+        "  minted relations   {} ({} → {})",
+        out.minted_relations.len(),
+        prior_relation_count,
+        hg.relations.len(),
+    );
+    if out.attr_names_minted > 0 {
+        println!(
+            "  new attribute names {}  (>{} would warn per policy)",
+            out.attr_names_minted, hg.policy.attribute_name_mint_warning_count,
+        );
+    }
+    if out.minted_elements.is_empty() {
+        return;
+    }
+    println!();
+    println!("  {:<6} {:<28} {:<8}", "id", "name", "polarity");
+    println!("  {:-<6} {:-<28} {:-<8}", "", "", "");
+    for &id in &out.minted_elements {
+        let el = &hg.elements[id.0 as usize];
+        let name = el.names.first().map(|s| s.as_str()).unwrap_or("?");
+        println!("  {:<6} {:<28} {:?}", id.0, truncate(name, 28), el.polarity);
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::seed::load_seed_graph;
+    use crate::steps::run_extractors::run_extractors;
+    use crate::types::Policy;
+
+    fn run_step8(text: &str) -> (Hypergraph, Step8Output) {
+        run_step8_labeled(text, &[])
+    }
+
+    fn run_step8_labeled(text: &str, labels: &[&str]) -> (Hypergraph, Step8Output) {
+        let mut hg = load_seed_graph();
+        let policy = Policy::default();
+        let out = run_extractors(text, labels, &policy, &hg, &[]);
+        let step8 = build_relations(text, &mut hg, &out, &policy, None);
+        (hg, step8)
+    }
+
+    #[test]
+    fn mints_element_for_unseen_span() {
+        let (hg, out) = run_step8("Nick lived in Brantford for 3 years.");
+        // Nick + Brantford + 3 years (NER) — plus the type-label
+        // elements (person, place, time) if not already seeded as
+        // attribute names. `person`/`place`/`time` are NOT seeded as
+        // Element names today, so they get minted too.
+        assert!(
+            out.minted_elements.len() >= 3,
+            "expected ≥3 mints, got {}: {:?}",
+            out.minted_elements.len(),
+            out.minted_elements
+                .iter()
+                .map(|id| &hg.elements[id.0 as usize].names[0])
+                .collect::<Vec<_>>(),
+        );
+        let names: Vec<&str> = out
+            .minted_elements
+            .iter()
+            .map(|id| hg.elements[id.0 as usize].names[0].as_str())
+            .collect();
+        assert!(names.contains(&"Nick"));
+        assert!(names.contains(&"Brantford"));
+    }
+
+    #[test]
+    fn instance_of_relation_uses_seeded_attribute_name() {
+        let (hg, out) = run_step8("Sarah called me yesterday.");
+        // At least one instance_of relation should have been minted.
+        let instance_of_attr = hg.by_name["instance_of"][0];
+        let has_io = out.minted_relations.iter().any(|&rid| {
+            let r = &hg.relations[rid.0 as usize];
+            r.attributes.iter().any(|a| a.name == instance_of_attr)
+        });
+        assert!(has_io, "expected at least one instance_of relation");
+    }
+
+    #[test]
+    fn indices_updated_after_mint() {
+        let (hg, out) = run_step8("Nick lived in Brantford for 3 years.");
+        // Every minted relation should appear in
+        // relations_by_attribute_name for every attribute it has.
+        for &rid in &out.minted_relations {
+            let r = &hg.relations[rid.0 as usize];
+            for attr in &r.attributes {
+                let bucket = hg
+                    .relations_by_attribute_name
+                    .get(&attr.name)
+                    .expect("attribute name must be indexed");
+                assert!(bucket.contains(&rid));
+            }
+        }
+    }
+
+    #[test]
+    fn span_cache_prevents_double_mint() {
+        // "Nick" appears once but both NER (person) and pattern RE
+        // (subject of `at`) reference the same char range. Step 8
+        // should hit the cache the second time.
+        let (hg, out) = run_step8("Nick lived in Brantford for 3 years.");
+        let nick_count = out
+            .minted_elements
+            .iter()
+            .filter(|id| hg.elements[id.0 as usize].names.iter().any(|n| n == "Nick"))
+            .count();
+        assert_eq!(nick_count, 1, "expected exactly one Nick mint");
+    }
+
+    #[test]
+    fn signal_attr_name_wins_over_void_for_with() {
+        // ATTR_WITH is Signal, VOID_ADP_WITH is Void. Resolver should
+        // pick the Signal one for the relation's attribute slot.
+        // Pattern RE needs two NER-tagged spans flanking "with" to
+        // fire — this sentence supplies both ("appointment" → event,
+        // "Dr. Rao" → person). The explicit label set matches what
+        // active-region warming would do in a fully wired tick.
+        let (hg, out) = run_step8_labeled(
+            "My dentist appointment with Dr. Rao changed from Tuesday to Friday.",
+            &["person", "event", "weekday", "role"],
+        );
+        let with_attr_id = hg.by_name["with"]
+            .iter()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .copied()
+            .expect("Signal `with` attribute must be seeded");
+
+        let any_uses_signal = out.minted_relations.iter().any(|&rid| {
+            let r = &hg.relations[rid.0 as usize];
+            r.attributes.iter().any(|a| a.name == with_attr_id)
+        });
+        assert!(
+            any_uses_signal,
+            "Step 8 should bind `with` to the Signal attribute name",
+        );
+
+        // Make sure no relation accidentally bound to the Void `with`.
+        let void_with_id = hg.by_name["with"]
+            .iter()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Void)
+            .copied()
+            .expect("Void `with` adposition must be seeded");
+        let any_uses_void = out.minted_relations.iter().any(|&rid| {
+            let r = &hg.relations[rid.0 as usize];
+            r.attributes.iter().any(|a| a.name == void_with_id)
+        });
+        assert!(
+            !any_uses_void,
+            "no relation should bind to the Void `with` adposition",
+        );
+    }
+
+    #[test]
+    fn source_meta_relation_emitted_when_source_some() {
+        let mut hg = load_seed_graph();
+        let policy = Policy::default();
+        let text = "Sarah called me yesterday.";
+        let out = run_extractors(text, &[], &policy, &hg, &[]);
+
+        // Pick an arbitrary source element — any seeded one is fine.
+        let user_id = hg.by_name["user"][0];
+        let prior_rel_count = hg.relations.len();
+        let result = build_relations(text, &mut hg, &out, &policy, Some(user_id));
+
+        let source_attr = hg.by_name["source"][0];
+        let source_metas: Vec<RelationId> = (prior_rel_count..hg.relations.len())
+            .map(|i| RelationId(i as u32))
+            .filter(|rid| {
+                hg.relations[rid.0 as usize]
+                    .attributes
+                    .iter()
+                    .any(|a| a.name == source_attr)
+            })
+            .collect();
+        assert!(
+            !source_metas.is_empty(),
+            "expected source meta-relations when source = Some",
+        );
+        // Every base relation should have one meta companion.
+        let base_count = result.minted_relations.len() - source_metas.len();
+        assert_eq!(
+            source_metas.len(),
+            base_count,
+            "one source meta per base relation",
+        );
+    }
+}
