@@ -15,7 +15,11 @@
 //! No model. Everything reads from the seven Step 8 indices.
 //! See `step_9_design.md` for the full spec.
 
-use crate::types::{ElementId, Hypergraph, Term};
+use crate::embed::embed_text;
+use crate::steps::build_relations::{mint_element, mint_relation};
+use crate::types::{
+    Attribute, ElementId, Hypergraph, Polarity, Relation, RelationId, RelationStatus, Term,
+};
 
 /// Walk `value_id`'s `instance_of` relations and return the kind
 /// label's surface form. Returns `None` if `value_id` has no
@@ -45,9 +49,7 @@ pub(crate) fn kind_of(hg: &Hypergraph, value_id: ElementId) -> Option<String> {
                 kind_value = Some(e);
             }
         }
-        if is_subject
-            && let Some(kid) = kind_value
-        {
+        if is_subject && let Some(kid) = kind_value {
             return hg.elements[kid.0 as usize].names.first().cloned();
         }
     }
@@ -79,12 +81,210 @@ pub fn infer_property_kind(hg: &Hypergraph, from_id: ElementId, to_id: ElementId
     }
 }
 
+// ─── Step 9 surface ────────────────────────────────────────────────────
+
+/// Per-tick summary of what `supersede` actually did. Surfaces in
+/// the debug print and feeds the frame's `superseded` field
+/// (§11.12 of `tick_pipeline_focus.md`).
+#[derive(Debug, Default, Clone)]
+pub struct Step9Output {
+    /// Cache relations minted this tick (one per event that fired).
+    pub cache_relations: Vec<RelationId>,
+    /// Prior cache relations flipped from `Asserted`/`Entailed` to
+    /// `Superseded` this tick.
+    pub superseded: Vec<RelationId>,
+    /// `supersedes` and `derived_from` meta-relations written.
+    pub meta_relations: Vec<RelationId>,
+    /// New attribute-name elements minted by Step 9 itself
+    /// (typically `current_<property>` siblings). Lets the caller
+    /// fold these into the tick-wide observability total.
+    pub attr_names_minted: u32,
+}
+
+/// Run Step 9 over the relations Step 8 minted this tick.
+///
+/// Filters `new_relations` to event-shaped entries (have both
+/// `from` AND `to` attribute names), and for each event:
+///
+/// 1. Extracts `target`, `from_value`, `to_value` from the event's
+///    attribute list. Skips defensively if any are missing.
+/// 2. Infers a coarse property kind from the value types.
+/// 3. Resolves (or mints) `current_<property>` as a Signal
+///    attribute-name element.
+/// 4. Mints a binary cache relation
+///    `[subject: target, current_<property>: to_value]`.
+///
+/// Phase 2 (this commit) stops here — prior-cache supersession and
+/// linking meta-relations land in phase 3.
+pub fn supersede(
+    hg: &mut Hypergraph,
+    new_relations: &[RelationId],
+    _policy: &crate::types::Policy,
+) -> Step9Output {
+    let mut out = Step9Output::default();
+
+    let Some((from_attr, to_attr)) = signal_from_to_attrs(hg) else {
+        return out;
+    };
+
+    // Take a snapshot of the relation IDs we care about up front —
+    // we'll mutate `hg.relations` (via mint_relation) inside the
+    // loop, so we can't hold borrows across iterations.
+    let event_ids: Vec<RelationId> = new_relations
+        .iter()
+        .copied()
+        .filter(|&rid| is_event_shaped(hg, rid, from_attr, to_attr))
+        .collect();
+
+    for event_id in event_ids {
+        let frame = match extract_event_frame(hg, event_id, from_attr, to_attr) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        let property_kind = infer_property_kind(hg, frame.from_value, frame.to_value);
+        let cache_attr_label = format!("current_{property_kind}");
+        let cache_attr_id = resolve_or_mint_signal_attr(hg, &cache_attr_label, &mut out);
+
+        let event_confidence = hg.relations[event_id.0 as usize].stats.confidence;
+        let cache_id = mint_relation(
+            hg,
+            vec![
+                Attribute {
+                    name: hg.subject_attr,
+                    value: Term::Element(frame.target),
+                },
+                Attribute {
+                    name: cache_attr_id,
+                    value: Term::Element(frame.to_value),
+                },
+            ],
+            RelationStatus::Asserted,
+            event_confidence,
+        );
+        out.cache_relations.push(cache_id);
+    }
+
+    out
+}
+
+/// Slots extracted from an event-shaped Relation. Step 9 needs all
+/// three to synthesize a cache; missing any means the relation
+/// isn't really an event and gets skipped defensively.
+#[derive(Debug, Clone, Copy)]
+struct EventFrame {
+    target: ElementId,
+    from_value: ElementId,
+    to_value: ElementId,
+}
+
+/// Pull the Signal-polarity `from` and `to` attribute-name IDs out
+/// of `by_name`. Returns `None` if either isn't seeded (means the
+/// pack is broken — defensive only).
+fn signal_from_to_attrs(hg: &Hypergraph) -> Option<(ElementId, ElementId)> {
+    let from = signal_attr(hg, "from")?;
+    let to = signal_attr(hg, "to")?;
+    Some((from, to))
+}
+
+fn signal_attr(hg: &Hypergraph, name: &str) -> Option<ElementId> {
+    let ids = hg.by_name.get(name)?;
+    ids.iter()
+        .copied()
+        .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+        .or_else(|| ids.first().copied())
+}
+
+fn is_event_shaped(
+    hg: &Hypergraph,
+    rid: RelationId,
+    from_attr: ElementId,
+    to_attr: ElementId,
+) -> bool {
+    let r = &hg.relations[rid.0 as usize];
+    let mut has_from = false;
+    let mut has_to = false;
+    for attr in &r.attributes {
+        if attr.name == from_attr {
+            has_from = true;
+        }
+        if attr.name == to_attr {
+            has_to = true;
+        }
+    }
+    has_from && has_to
+}
+
+/// Pull the event's `target`, `from`-value, `to`-value Element IDs.
+/// Returns `None` if any are missing — Step 8's n-ary events should
+/// always have all three, but the filter is permissive on shape so
+/// guard at extraction time.
+fn extract_event_frame(
+    hg: &Hypergraph,
+    rid: RelationId,
+    from_attr: ElementId,
+    to_attr: ElementId,
+) -> Option<EventFrame> {
+    let r: &Relation = &hg.relations[rid.0 as usize];
+    let target_attr = hg.target_attr;
+    let mut target = None;
+    let mut from_value = None;
+    let mut to_value = None;
+    for attr in &r.attributes {
+        let Term::Element(e) = attr.value else {
+            continue;
+        };
+        if attr.name == target_attr {
+            target = Some(e);
+        } else if attr.name == from_attr {
+            from_value = Some(e);
+        } else if attr.name == to_attr {
+            to_value = Some(e);
+        }
+    }
+    Some(EventFrame {
+        target: target?,
+        from_value: from_value?,
+        to_value: to_value?,
+    })
+}
+
+/// Resolve `label` to a Signal attribute-name Element ID. Mints
+/// one if no Signal match exists, bumping
+/// `Step9Output.attr_names_minted`. Step 9 mints these on the fly
+/// rather than seeding them so the seed pack stays slim.
+fn resolve_or_mint_signal_attr(
+    hg: &mut Hypergraph,
+    label: &str,
+    out: &mut Step9Output,
+) -> ElementId {
+    if let Some(ids) = hg.by_name.get(label) {
+        // Prefer Signal; only fall through to Void if no Signal exists.
+        for &id in ids {
+            if hg.elements[id.0 as usize].polarity == Polarity::Signal {
+                return id;
+            }
+        }
+        if let Some(&id) = ids.first() {
+            return id;
+        }
+    }
+    let id = mint_element(
+        hg,
+        vec![label.to_string()],
+        embed_text(label),
+        Polarity::Signal,
+        hg.policy.default_conf,
+    );
+    out.attr_names_minted = out.attr_names_minted.saturating_add(1);
+    id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::embed::EMBEDDING_DIM;
-    use crate::steps::build_relations::{mint_element, mint_relation};
-    use crate::types::{Attribute, Element, Hypergraph, MemoryStats, Polarity, RelationStatus, Tick};
+    use crate::types::{Element, MemoryStats, Tick};
 
     /// Set up a synthetic Hypergraph with the seeded structural
     /// attribute-name elements at fixed IDs, then return it. We
@@ -216,6 +416,93 @@ mod tests {
         let tue = mint_with_kind(&mut hg, "Tuesday", "weekday");
         let ten = mint_with_kind(&mut hg, "$10", "quantity");
         assert_eq!(infer_property_kind(&hg, tue, ten), "value");
+    }
+
+    /// End-to-end fixture: load the real seed pack, run Step 5 and
+    /// Step 8, then return the Hypergraph + Step8Output so Step 9
+    /// tests can hand its `minted_relations` to `supersede`. This
+    /// integration-style fixture mirrors what `lib.rs::run` does
+    /// between Step 8 and Step 9.
+    fn run_through_step8(text: &str, labels: &[&str]) -> (Hypergraph, Vec<RelationId>) {
+        use crate::seed::load_seed_graph;
+        use crate::steps::build_relations::build_relations;
+        use crate::steps::run_extractors::run_extractors;
+        let mut hg = load_seed_graph();
+        let policy = crate::types::Policy::default();
+        let ext = run_extractors(text, labels, &policy, &hg, &[]);
+        let step8 = build_relations(text, &mut hg, &ext, &policy, None);
+        (hg, step8.minted_relations)
+    }
+
+    #[test]
+    fn supersede_skips_non_event_relations() {
+        // "Sarah called me yesterday." — produces instance_of
+        // relations but no event-shaped from/to relations. Step 9
+        // should mint zero caches.
+        let (mut hg, minted) = run_through_step8("Sarah called me yesterday.", &[]);
+        let policy = crate::types::Policy::default();
+        let out = supersede(&mut hg, &minted, &policy);
+        assert!(
+            out.cache_relations.is_empty(),
+            "expected no cache mints without a from/to event; got {:?}",
+            out.cache_relations,
+        );
+    }
+
+    #[test]
+    fn supersede_mints_cache_for_dentist_event() {
+        let (mut hg, minted) = run_through_step8(
+            "My dentist appointment with Dr. Rao changed from Tuesday to Friday.",
+            &["person", "event", "weekday", "role"],
+        );
+        let policy = crate::types::Policy::default();
+        let out = supersede(&mut hg, &minted, &policy);
+
+        assert!(
+            !out.cache_relations.is_empty(),
+            "expected at least one cache mint from the changed-from/to event",
+        );
+
+        // Cache shape: [subject: target, current_date: to_value].
+        let current_date_id = hg.by_name["current_date"]
+            .iter()
+            .copied()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .expect("current_date should have been minted by Step 9");
+        for &rid in &out.cache_relations {
+            let r = &hg.relations[rid.0 as usize];
+            assert_eq!(r.attributes.len(), 2, "cache is binary");
+            let has_subject = r.attributes.iter().any(|a| a.name == hg.subject_attr);
+            let has_current = r.attributes.iter().any(|a| a.name == current_date_id);
+            assert!(has_subject && has_current);
+            assert_eq!(r.status, RelationStatus::Asserted);
+        }
+    }
+
+    #[test]
+    fn current_property_attribute_is_reused_across_events() {
+        // Two events in one tick that both resolve to property=date
+        // should both bind to the SAME current_date attribute-name
+        // Element. Tests Step 9's mint-and-cache behavior.
+        let (mut hg, minted) = run_through_step8(
+            "Sarah rescheduled the meeting from Tuesday to Friday.",
+            &["person", "event", "weekday"],
+        );
+        let policy = crate::types::Policy::default();
+        let out = supersede(&mut hg, &minted, &policy);
+
+        // attr_names_minted should be ≤ 1 — the first event mints
+        // current_date, every subsequent event reuses it.
+        assert!(
+            out.attr_names_minted <= 1,
+            "expected current_date to be minted at most once, got {}",
+            out.attr_names_minted,
+        );
+        // The current_date attr should exist in by_name now.
+        assert!(
+            hg.by_name.contains_key("current_date"),
+            "Step 9 should have minted current_date",
+        );
     }
 
     #[test]
