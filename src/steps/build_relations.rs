@@ -100,11 +100,41 @@ pub fn build_relations(
         result.minted_relations.push(rel_id);
     }
 
-    // ── §6.2 — Binary pattern RE proposals ──────────────────────────
-    for p in &out.known.relations {
+    // ── §6.3 — N-ary event merge (computed up front) ────────────────
+    // Identify groups of verb-anchored from/to proposals that will
+    // collapse into one event relation. Subsumed indices are skipped
+    // in the binary loop below.
+    let merge_groups = compute_event_merge_groups(&out.known.relations);
+    let mut subsumed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for g in &merge_groups {
+        subsumed.insert(g.from_idx);
+        subsumed.insert(g.to_idx);
+    }
+
+    // ── §6.2 — Binary pattern RE proposals (non-subsumed only) ──────
+    for (idx, p) in out.known.relations.iter().enumerate() {
+        if subsumed.contains(&idx) {
+            continue;
+        }
         let rel_id = mint_pattern_relation(hg, input_text, p, policy, &mut span_cache, &mut result);
         base_rel_ids.push(rel_id);
         result.minted_relations.push(rel_id);
+    }
+
+    // ── §6.3 — Emit n-ary event relations ───────────────────────────
+    for (seq, g) in merge_groups.iter().enumerate() {
+        if let Some(rel_id) = mint_event_relations(
+            hg,
+            input_text,
+            &out.known.relations,
+            g,
+            seq,
+            policy,
+            &mut span_cache,
+            &mut result,
+        ) {
+            base_rel_ids.push(rel_id);
+        }
     }
 
     // ── §7 — Source meta-relations ──────────────────────────────────
@@ -431,6 +461,285 @@ fn policy_default_conf_or_one(hg: &Hypergraph) -> f32 {
     hg.policy.default_conf
 }
 
+// ─── §6.3 — N-ary event merging ───────────────────────────────────────
+
+/// One group of pattern proposals that collapse into a single n-ary
+/// event relation. Holds the indices (into `known.relations`) of the
+/// `from` and `to` proposals plus the surface verb that anchored them.
+#[derive(Debug, Clone)]
+struct EventMergeGroup {
+    /// Surface verb (`"changed"`, `"rescheduled"`, …). Used to mint
+    /// the event element's name and to gate the `intervened` meta.
+    anchor: String,
+    /// Index of the `from` proposal in `known.relations`.
+    from_idx: usize,
+    /// Index of the `to` proposal in `known.relations`.
+    to_idx: usize,
+}
+
+/// Group verb-anchored pattern proposals by `(subject_span, anchor)`.
+/// A group is emitted iff both a `from` and a `to` proposal exist for
+/// the pair (one-sided proposals stay binary — they're not a
+/// state-change frame). The first matching pair wins; pattern RE
+/// emits at most one `from` and one `to` per `(subject, verb)` triple
+/// over a sliding window so collisions in practice are vanishingly
+/// rare.
+fn compute_event_merge_groups(relations: &[RelationProposal]) -> Vec<EventMergeGroup> {
+    use std::collections::HashMap;
+    type Key = ((usize, usize), String);
+    let mut from_idx: HashMap<Key, usize> = HashMap::new();
+    let mut to_idx: HashMap<Key, usize> = HashMap::new();
+    for (i, p) in relations.iter().enumerate() {
+        let Some(anchor) = p.event_anchor.as_ref() else {
+            continue;
+        };
+        let key = ((p.subject_char_start, p.subject_char_end), anchor.clone());
+        match p.attribute_name {
+            "from" => {
+                from_idx.entry(key).or_insert(i);
+            }
+            "to" => {
+                to_idx.entry(key).or_insert(i);
+            }
+            _ => {}
+        }
+    }
+    let mut groups: Vec<EventMergeGroup> = Vec::new();
+    for (key, fi) in from_idx {
+        if let Some(&ti) = to_idx.get(&key) {
+            groups.push(EventMergeGroup {
+                anchor: key.1,
+                from_idx: fi,
+                to_idx: ti,
+            });
+        }
+    }
+    // Stable order so test assertions don't flake on HashMap iteration.
+    groups.sort_by_key(|g| g.from_idx);
+    groups
+}
+
+/// Mint the event element + the n-ary relation + the typing relation
+/// and the `intervened` meta-relation when applicable. Returns the
+/// n-ary relation's `RelationId` so the caller can attach a source
+/// meta-relation to it.
+#[allow(clippy::too_many_arguments)]
+fn mint_event_relations(
+    hg: &mut Hypergraph,
+    input_text: &str,
+    relations: &[RelationProposal],
+    g: &EventMergeGroup,
+    seq: usize,
+    policy: &crate::types::Policy,
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+    result: &mut Step8Output,
+) -> Option<RelationId> {
+    let from_p = &relations[g.from_idx];
+    let to_p = &relations[g.to_idx];
+
+    // Resolve participant elements via the same span cache used by
+    // the binary path — keeps duplicate-mention dedup consistent.
+    let subj_text = &input_text[from_p.subject_char_start..from_p.subject_char_end];
+    let subj_id = resolve_span(
+        hg,
+        input_text,
+        from_p.subject_char_start,
+        from_p.subject_char_end,
+        subj_text,
+        span_cache,
+        result,
+    );
+    let from_text = &input_text[from_p.object_char_start..from_p.object_char_end];
+    let from_val_id = resolve_span(
+        hg,
+        input_text,
+        from_p.object_char_start,
+        from_p.object_char_end,
+        from_text,
+        span_cache,
+        result,
+    );
+    let to_text = &input_text[to_p.object_char_start..to_p.object_char_end];
+    let to_val_id = resolve_span(
+        hg,
+        input_text,
+        to_p.object_char_start,
+        to_p.object_char_end,
+        to_text,
+        span_cache,
+        result,
+    );
+
+    // Event element — a fresh identity per merge. Name carries the
+    // verb + tick + seq so it stays human-readable in dumps.
+    let event_name = format!("{}_event_{}_{}", g.anchor, hg.clock.0, seq);
+    let event_emb = embed_text(&event_name);
+    let event_id = mint_element(
+        hg,
+        vec![event_name],
+        event_emb,
+        Polarity::Signal,
+        policy_default_conf_or_one(hg),
+    );
+    result.minted_elements.push(event_id);
+
+    // Typing relation — `(event, instance_of, <verb-kind>)`. Verb kind
+    // resolves via lookup table; falls back to the verb itself if no
+    // canonical kind is seeded.
+    let kind_label = event_kind_for(&g.anchor);
+    let kind_id = resolve_label_element(hg, kind_label, result);
+    let instance_of_attr = resolve_attribute_name(hg, "instance_of", result);
+    let typing_id = mint_relation(
+        hg,
+        vec![
+            Attribute {
+                name: hg.subject_attr,
+                value: Term::Element(event_id),
+            },
+            Attribute {
+                name: instance_of_attr,
+                value: Term::Element(kind_id),
+            },
+        ],
+        RelationStatus::Entailed,
+        1.0,
+    );
+    result.minted_relations.push(typing_id);
+
+    // N-ary relation — `[subject: event, target: subj, from: …, to: …]`.
+    // `property` is omitted in v0; Step 9 supersession can find pairs
+    // by (target, from) / (target, to) without it.
+    let target_attr = hg.target_attr;
+    let from_attr = resolve_attribute_name(hg, "from", result);
+    let to_attr = resolve_attribute_name(hg, "to", result);
+    let nary_conf = confidence_for(from_p.confidence.min(to_p.confidence), policy);
+    let nary_status = if from_p.confidence.min(to_p.confidence) >= policy.ner_assertion_threshold {
+        RelationStatus::Asserted
+    } else {
+        RelationStatus::Defeasible
+    };
+    let nary_id = mint_relation(
+        hg,
+        vec![
+            Attribute {
+                name: hg.subject_attr,
+                value: Term::Element(event_id),
+            },
+            Attribute {
+                name: target_attr,
+                value: Term::Element(subj_id),
+            },
+            Attribute {
+                name: from_attr,
+                value: Term::Element(from_val_id),
+            },
+            Attribute {
+                name: to_attr,
+                value: Term::Element(to_val_id),
+            },
+        ],
+        nary_status,
+        nary_conf,
+    );
+    result.minted_relations.push(nary_id);
+
+    // `intervened` meta-relation — fires when the surface verb is in
+    // the agent-action lexicon (§11.7's causal-shape conventions). The
+    // value points at an Element capturing the verb itself, so future
+    // ticks recognizing the same verb reuse the element.
+    if is_intervention_verb(&g.anchor) {
+        let intervened_attr = resolve_attribute_name(hg, "intervened", result);
+        let verb_id = resolve_label_element(hg, &g.anchor, result);
+        let meta_id = mint_relation(
+            hg,
+            vec![
+                Attribute {
+                    name: target_attr,
+                    value: Term::Relation(nary_id),
+                },
+                Attribute {
+                    name: intervened_attr,
+                    value: Term::Element(verb_id),
+                },
+            ],
+            RelationStatus::Entailed,
+            1.0,
+        );
+        result.minted_relations.push(meta_id);
+    }
+
+    Some(nary_id)
+}
+
+/// Canonical event-kind label for a surface verb. Small lookup table
+/// covering the seed-pack frames; on miss, returns the verb itself
+/// (replay can collapse synonyms once it has enough mentions).
+fn event_kind_for(verb: &str) -> &str {
+    match verb.to_ascii_lowercase().as_str() {
+        "changed" | "change" | "changes" | "changing" => "change_event",
+        "rescheduled" | "reschedule" | "reschedules" | "rescheduling" => "reschedule_event",
+        "moved" | "move" | "moves" | "moving" => "move_event",
+        "shifted" | "shift" | "shifts" | "shifting" => "shift_event",
+        // Fallback: use the verb itself as the kind label. Caller's
+        // resolve_label_element will mint it on miss.
+        _ => verb,
+    }
+}
+
+/// Returns `true` iff the verb's lowercase form is in the agent-
+/// action lexicon (§11.7). Matches base + common tense forms.
+fn is_intervention_verb(verb: &str) -> bool {
+    const LEXICON: &[&str] = &[
+        "reschedule",
+        "rescheduled",
+        "reschedules",
+        "rescheduling",
+        "move",
+        "moved",
+        "moves",
+        "moving",
+        "set",
+        "sets",
+        "setting",
+        "configure",
+        "configured",
+        "configures",
+        "configuring",
+        "decide",
+        "decided",
+        "decides",
+        "deciding",
+        "cancel",
+        "cancels",
+        "cancelling",
+        "canceling",
+        "cancelled",
+        "canceled",
+        "ship",
+        "ships",
+        "shipping",
+        "shipped",
+        "revert",
+        "reverts",
+        "reverting",
+        "reverted",
+        "merge",
+        "merges",
+        "merging",
+        "merged",
+        "deploy",
+        "deploys",
+        "deploying",
+        "deployed",
+        "delete",
+        "deletes",
+        "deleting",
+        "deleted",
+    ];
+    let lower = verb.to_ascii_lowercase();
+    LEXICON.iter().any(|&v| v == lower)
+}
+
 /// Hand-rolled debug print so the dev-time tick output shows what
 /// Step 8 actually wrote. Mirrors the style of `print_extraction`
 /// in `lib.rs`.
@@ -609,6 +918,157 @@ mod tests {
         assert!(
             !any_uses_void,
             "no relation should bind to the Void `with` adposition",
+        );
+    }
+
+    #[test]
+    fn from_to_pair_collapses_into_one_nary_event() {
+        // "appointment changed from Tuesday to Friday" — pattern RE
+        // emits (subj, from, Tuesday) and (subj, to, Friday) with
+        // event_anchor=Some("changed"); Step 8 merges them into one
+        // n-ary relation plus a typing relation. The original two
+        // binary from/to relations should NOT exist independently.
+        let (hg, out) = run_step8_labeled(
+            "My dentist appointment with Dr. Rao changed from Tuesday to Friday.",
+            &["person", "event", "weekday", "role"],
+        );
+        let from_attr = hg.by_name["from"]
+            .iter()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .copied()
+            .expect("Signal `from` attribute must be seeded");
+        let to_attr = hg.by_name["to"]
+            .iter()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .copied()
+            .expect("Signal `to` attribute must be seeded");
+
+        // Find n-ary relations: contain both `from` and `to`.
+        // Pattern RE can emit multiple overlapping from/to triples
+        // when several NER spans flank the verb; each triggers a
+        // merge. We assert the *shape* of every n-ary, not the count
+        // (pattern recall/precision is a separate concern).
+        let nary: Vec<RelationId> = out
+            .minted_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                let r = &hg.relations[rid.0 as usize];
+                let has_from = r.attributes.iter().any(|a| a.name == from_attr);
+                let has_to = r.attributes.iter().any(|a| a.name == to_attr);
+                has_from && has_to
+            })
+            .collect();
+        assert!(!nary.is_empty(), "expected at least one n-ary event");
+        for &rid in &nary {
+            let r = &hg.relations[rid.0 as usize];
+            assert_eq!(
+                r.attributes.len(),
+                4,
+                "n-ary should have [subject, target, from, to]; got {:?}",
+                r.attributes,
+            );
+        }
+
+        // No standalone binary `from` relation should remain — every
+        // verb-anchored from/to pair was consumed by a merge.
+        let standalone_from: Vec<RelationId> = out
+            .minted_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                let r = &hg.relations[rid.0 as usize];
+                r.attributes.len() == 2 && r.attributes.iter().any(|a| a.name == from_attr)
+            })
+            .collect();
+        assert!(
+            standalone_from.is_empty(),
+            "binary from relation should be subsumed by the merge",
+        );
+    }
+
+    #[test]
+    fn flight_from_to_stays_binary_no_verb_anchor() {
+        // "Flight from JFK to LAX" — no verb between subject and
+        // "from", so event_anchor is None and the merge pass doesn't
+        // fire. Should produce two standalone binary relations.
+        let (hg, out) = run_step8_labeled("Flight from JFK to LAX.", &["place", "event"]);
+        let from_attr = hg.by_name["from"]
+            .iter()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .copied()
+            .expect("Signal `from` attribute must be seeded");
+
+        let nary: Vec<RelationId> = out
+            .minted_relations
+            .iter()
+            .copied()
+            .filter(|rid| hg.relations[rid.0 as usize].attributes.len() >= 4)
+            .collect();
+        assert!(
+            nary.is_empty(),
+            "no n-ary event should fire without a verb anchor",
+        );
+
+        let binary_from: Vec<RelationId> = out
+            .minted_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                let r = &hg.relations[rid.0 as usize];
+                r.attributes.len() == 2 && r.attributes.iter().any(|a| a.name == from_attr)
+            })
+            .collect();
+        assert_eq!(binary_from.len(), 1, "expected one standalone binary from");
+    }
+
+    #[test]
+    fn intervention_verb_emits_intervened_meta() {
+        // `rescheduled` is in the intervention lexicon. Test should
+        // fire even though our pack doesn't seed change_event etc.;
+        // the merge mints those on the fly.
+        let (hg, out) = run_step8_labeled(
+            "The meeting rescheduled from Tuesday to Friday.",
+            &["event", "weekday"],
+        );
+        let intervened_attr = hg
+            .by_name
+            .get("intervened")
+            .and_then(|v| v.first().copied())
+            .expect("`intervened` attribute must be seeded");
+        let any_intervened = out.minted_relations.iter().any(|&rid| {
+            hg.relations[rid.0 as usize]
+                .attributes
+                .iter()
+                .any(|a| a.name == intervened_attr)
+        });
+        assert!(
+            any_intervened,
+            "intervened meta-relation should fire for `rescheduled`",
+        );
+    }
+
+    #[test]
+    fn non_intervention_verb_skips_intervened_meta() {
+        // `changed` is NOT in the lexicon — observation, not action.
+        let (hg, out) = run_step8_labeled(
+            "My dentist appointment with Dr. Rao changed from Tuesday to Friday.",
+            &["person", "event", "weekday", "role"],
+        );
+        let intervened_attr = hg
+            .by_name
+            .get("intervened")
+            .and_then(|v| v.first().copied())
+            .expect("`intervened` attribute must be seeded");
+        let any_intervened = out.minted_relations.iter().any(|&rid| {
+            hg.relations[rid.0 as usize]
+                .attributes
+                .iter()
+                .any(|a| a.name == intervened_attr)
+        });
+        assert!(
+            !any_intervened,
+            "intervened should not fire for observed `changed`",
         );
     }
 
