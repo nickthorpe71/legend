@@ -16,7 +16,7 @@ use std::time::SystemTime;
 
 use seed::load_seed_graph;
 use steps::adjust_policy::adjust_policy;
-use steps::apply_region_delta::apply_region_delta;
+use steps::apply_region_delta::{RegionDeltaApplied, apply_region_delta};
 use steps::detect_intent::detect_intent;
 use steps::route_regions::{RouteResult, route_regions};
 use steps::run_extractors::{ExtractionOutput, run_extractors};
@@ -95,8 +95,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Step 7 — commit the RegionDelta collected by Step 4. With v0
     // defaults (policy.hebbian_rate = 0.0) this is a structural no-op:
     // access_counts bump but prototype embeddings stay put.
-    apply_region_delta(&mut hg, &route.delta, &policy);
+    let applied = apply_region_delta(&mut hg, &route.delta, &policy);
     stage_at("apply_region_delta (Step 7)", &mut mark);
+    print_apply_region_delta(&policy, &applied);
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;
@@ -232,6 +233,23 @@ fn print_routing(hg: &Hypergraph, policy: &Policy, route: &RouteResult) {
     println!("  unrouted_count      {}", route.delta.unrouted_count);
     if !route.uncertainty.is_empty() {
         println!("  uncertainty         {:?}", route.uncertainty);
+    }
+}
+
+fn print_apply_region_delta(policy: &Policy, applied: &RegionDeltaApplied) {
+    println!();
+    println!("apply_region_delta (Step 7)");
+    println!("  prototype access bumps  {}", applied.touched);
+    if applied.drifted > 0 {
+        println!(
+            "  prototypes drifted      {}  (lr = plasticity × hebbian_rate = {:.4})",
+            applied.drifted, policy.hebbian_rate,
+        );
+    } else {
+        println!(
+            "  prototypes drifted      0  (lr = 0 at hebbian_rate {:.3} — no-op)",
+            policy.hebbian_rate,
+        );
     }
 }
 

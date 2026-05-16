@@ -36,9 +36,27 @@
 
 use crate::types::{Hypergraph, Policy, RegionDelta};
 
+/// Per-tick summary of what `apply_region_delta` actually did.
+/// Surfaces in the debug print so callers can see at a glance
+/// whether drift fired (vs. silently skipping because `lr == 0`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegionDeltaApplied {
+    /// Total prototype_updates the delta carried — also the number
+    /// of `access_count` bumps applied to those prototypes.
+    pub touched: usize,
+    /// How many of those prototypes actually had their embedding
+    /// drifted (`lr > 0`). The rest were access-count bumps only.
+    pub drifted: usize,
+}
+
 /// Apply the drift portion of a `RegionDelta`. Idempotent on a
 /// no-op delta (no `prototype_updates`).
-pub fn apply_region_delta(hg: &mut Hypergraph, delta: &RegionDelta, policy: &Policy) {
+pub fn apply_region_delta(
+    hg: &mut Hypergraph,
+    delta: &RegionDelta,
+    policy: &Policy,
+) -> RegionDeltaApplied {
+    let mut applied = RegionDeltaApplied::default();
     for (proto_id, target) in &delta.prototype_updates {
         let idx = proto_id.0 as usize;
         let proto = &mut hg.elements[idx];
@@ -66,12 +84,15 @@ pub fn apply_region_delta(hg: &mut Hypergraph, delta: &RegionDelta, policy: &Pol
             for x in proto.embedding.iter_mut() {
                 *x /= norm;
             }
+            applied.drifted += 1;
         }
         // Access count bumps whether or not drift fired — the
         // prototype was hit by routing, which is what
         // `access_count` measures.
         proto.stats.access_count = proto.stats.access_count.saturating_add(1);
+        applied.touched += 1;
     }
+    applied
 }
 
 #[cfg(test)]
