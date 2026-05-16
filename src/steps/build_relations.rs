@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
+use crate::steps::coref::CorefDecision;
 use crate::steps::novelty_relations::NoveltyRelation;
 use crate::steps::orthographic::OrthographicChunk;
 use crate::steps::relation_patterns::RelationProposal;
@@ -68,6 +69,16 @@ pub fn build_relations(
     // the same span resolve to the same element without re-running
     // mint/dedup and without bumping access_count twice for one mention.
     let mut span_cache: HashMap<(usize, usize), ElementId> = HashMap::new();
+
+    // ── §4a — Coref override ───────────────────────────────────────
+    // Pre-populate the span cache from coref decisions BEFORE any
+    // proposal-driven resolution runs. Each decision folds the
+    // pronoun's contextualized vector into the antecedent and pins
+    // the pronoun's char range to the antecedent's id. Downstream
+    // `resolve_span` calls for that range short-circuit on the cache.
+    // No-op behaviorally today (Step 5e is a stub), but the wiring
+    // lands so once `recent_focus` lights up the override is live.
+    apply_coref_decisions(hg, input_text, &out.known.coref, &mut span_cache);
 
     // ── §6.1 — Binary instance_of proposals (NER + Temporal) ────────
     let mut base_rel_ids: Vec<RelationId> = Vec::new();
@@ -153,7 +164,8 @@ pub fn build_relations(
         &mut result,
     );
     for nr in &out.novelty.relations {
-        let rel_id = mint_novelty_relation(hg, input_text, nr, policy, &mut span_cache, &mut result);
+        let rel_id =
+            mint_novelty_relation(hg, input_text, nr, policy, &mut span_cache, &mut result);
         base_rel_ids.push(rel_id);
         result.minted_relations.push(rel_id);
     }
@@ -761,6 +773,49 @@ fn is_intervention_verb(verb: &str) -> bool {
     LEXICON.iter().any(|&v| v == lower)
 }
 
+// ─── §4a — Coref override ─────────────────────────────────────────────
+
+/// Apply coref decisions by binding each pronoun's character range
+/// to its antecedent element via the span cache. Folds the pronoun's
+/// contextualized vector into the antecedent (coref ≠ no-op for the
+/// embedding — the new mention's context legitimately updates the
+/// element's centroid). Bumps `access_count` and `last_seen` once
+/// per decision.
+///
+/// Antecedents that don't resolve in `by_name` are silently skipped —
+/// the resolver falls back to the normal mint path, which is
+/// defensive against incomplete coref output.
+fn apply_coref_decisions(
+    hg: &mut Hypergraph,
+    input_text: &str,
+    decisions: &[CorefDecision],
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+) {
+    for d in decisions {
+        let antecedent_id = match hg.by_name.get(&d.antecedent_text) {
+            Some(ids) => match ids.first() {
+                Some(&id) => id,
+                None => continue,
+            },
+            None => continue,
+        };
+        if let Some(obs) =
+            embed_span_in_context(input_text, d.pronoun_char_start, d.pronoun_char_end)
+        {
+            let prev_n = hg.elements[antecedent_id.0 as usize].stats.access_count;
+            fold_streaming_centroid(
+                &mut hg.elements[antecedent_id.0 as usize].embedding,
+                &obs,
+                prev_n,
+            );
+        }
+        let el = &mut hg.elements[antecedent_id.0 as usize];
+        el.stats.access_count = el.stats.access_count.saturating_add(1);
+        el.stats.last_seen = hg.clock;
+        span_cache.insert((d.pronoun_char_start, d.pronoun_char_end), antecedent_id);
+    }
+}
+
 // ─── §6.4 — Novelty branch ────────────────────────────────────────────
 
 /// Mint Elements for every novelty chunk that doesn't already have
@@ -1202,15 +1257,75 @@ mod tests {
             .filter(|rid| {
                 let r = &hg.relations[rid.0 as usize];
                 r.status == RelationStatus::Defeasible
-                    && r.attributes.iter().any(|a| matches!(
-                        a.value,
-                        Term::Element(e) if e == nick_id
-                    ))
+                    && r.attributes.iter().any(|a| {
+                        matches!(
+                            a.value,
+                            Term::Element(e) if e == nick_id
+                        )
+                    })
             })
             .collect();
         assert!(
             !nick_defeasible.is_empty(),
             "expected at least one Defeasible Nick relation from novelty",
+        );
+    }
+
+    #[test]
+    fn coref_override_binds_pronoun_to_antecedent() {
+        // Build a graph that already contains a Sarah element, then
+        // feed a coref decision for "she" → Sarah and verify
+        // apply_coref_decisions pins "she"'s char range to Sarah's id.
+        let mut hg = load_seed_graph();
+        // Mint Sarah manually so we have a target to bind to.
+        let sarah_id = mint_element(
+            &mut hg,
+            vec!["Sarah".to_string()],
+            embed_text("Sarah"),
+            Polarity::Signal,
+            1.0,
+        );
+        let text = "She arrived.";
+        let decisions = vec![CorefDecision {
+            pronoun_text: "She".to_string(),
+            pronoun_char_start: 0,
+            pronoun_char_end: 3,
+            antecedent_text: "Sarah".to_string(),
+            confidence: 0.9,
+        }];
+        let mut cache: HashMap<(usize, usize), ElementId> = HashMap::new();
+        let prior_access = hg.elements[sarah_id.0 as usize].stats.access_count;
+        apply_coref_decisions(&mut hg, text, &decisions, &mut cache);
+
+        assert_eq!(
+            cache.get(&(0, 3)).copied(),
+            Some(sarah_id),
+            "coref should pin the pronoun range to Sarah's id",
+        );
+        assert_eq!(
+            hg.elements[sarah_id.0 as usize].stats.access_count,
+            prior_access + 1,
+            "antecedent's access_count must bump on coref bind",
+        );
+    }
+
+    #[test]
+    fn coref_override_skips_unknown_antecedent() {
+        // If the antecedent isn't in by_name, the override is a no-op.
+        let mut hg = load_seed_graph();
+        let text = "She arrived.";
+        let decisions = vec![CorefDecision {
+            pronoun_text: "She".to_string(),
+            pronoun_char_start: 0,
+            pronoun_char_end: 3,
+            antecedent_text: "SomeoneUnseeded".to_string(),
+            confidence: 0.9,
+        }];
+        let mut cache: HashMap<(usize, usize), ElementId> = HashMap::new();
+        apply_coref_decisions(&mut hg, text, &decisions, &mut cache);
+        assert!(
+            cache.is_empty(),
+            "no binding should be created for unknown antecedent",
         );
     }
 
