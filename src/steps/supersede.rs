@@ -146,6 +146,17 @@ pub fn supersede(
         let cache_attr_label = format!("current_{property_kind}");
         let cache_attr_id = resolve_or_mint_signal_attr(hg, &cache_attr_label, &mut out);
 
+        // ── Prior-cache lookup ─────────────────────────────────────
+        // Any relation that mentions `target` AND carries this
+        // current_<property> attribute name is a candidate cache.
+        // Live (Asserted/Entailed) candidates get flipped.
+        let priors = collect_prior_caches(hg, frame.target, cache_attr_id);
+        for &prior in &priors {
+            hg.relations[prior.0 as usize].status = RelationStatus::Superseded;
+            out.superseded.push(prior);
+        }
+
+        // ── New cache relation ─────────────────────────────────────
         let event_confidence = hg.relations[event_id.0 as usize].stats.confidence;
         let cache_id = mint_relation(
             hg,
@@ -163,8 +174,105 @@ pub fn supersede(
             event_confidence,
         );
         out.cache_relations.push(cache_id);
+
+        // ── Linking meta-relations ─────────────────────────────────
+        // (target: cache, derived_from: event) — always. The cache
+        // derived from this event regardless of whether it
+        // superseded anything.
+        if let Some(derived_attr) = signal_attr(hg, "derived_from") {
+            let meta = mint_relation(
+                hg,
+                vec![
+                    Attribute {
+                        name: hg.target_attr,
+                        value: Term::Relation(cache_id),
+                    },
+                    Attribute {
+                        name: derived_attr,
+                        value: Term::Relation(event_id),
+                    },
+                ],
+                RelationStatus::Entailed,
+                1.0,
+            );
+            out.meta_relations.push(meta);
+        }
+        // (target: cache, supersedes: prior) — one per flipped prior.
+        if !priors.is_empty()
+            && let Some(supersedes_attr) = signal_attr(hg, "supersedes")
+        {
+            for &prior in &priors {
+                let meta = mint_relation(
+                    hg,
+                    vec![
+                        Attribute {
+                            name: hg.target_attr,
+                            value: Term::Relation(cache_id),
+                        },
+                        Attribute {
+                            name: supersedes_attr,
+                            value: Term::Relation(prior),
+                        },
+                    ],
+                    RelationStatus::Entailed,
+                    1.0,
+                );
+                out.meta_relations.push(meta);
+            }
+        }
     }
 
+    out
+}
+
+/// Find live prior cache relations for the same `(target, property)`
+/// pair. Live = not Superseded, not Retracted. We dedup via the
+/// candidate Vec because `relations_by_element` allows a single
+/// relation to appear multiple times when the target is referenced
+/// in two attribute slots — unusual for caches but the dedup is
+/// cheap and prevents double-flips.
+fn collect_prior_caches(
+    hg: &Hypergraph,
+    target: ElementId,
+    cache_attr: ElementId,
+) -> Vec<RelationId> {
+    let Some(candidates) = hg.relations_by_element.get(&target) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for &rid in candidates {
+        if !seen.insert(rid) {
+            continue;
+        }
+        let r = &hg.relations[rid.0 as usize];
+        if matches!(
+            r.status,
+            RelationStatus::Superseded | RelationStatus::Retracted
+        ) {
+            continue;
+        }
+        // Must have the cache_attr in its attribute list AND have
+        // target in the subject slot (the cache shape). If target
+        // sits in some other slot of this relation, it's not the
+        // matching cache.
+        let mut has_cache_attr = false;
+        let mut subject_is_target = false;
+        for attr in &r.attributes {
+            if attr.name == cache_attr {
+                has_cache_attr = true;
+            }
+            if attr.name == hg.subject_attr
+                && let Term::Element(e) = attr.value
+                && e == target
+            {
+                subject_is_target = true;
+            }
+        }
+        if has_cache_attr && subject_is_target {
+            out.push(rid);
+        }
+    }
     out
 }
 
@@ -477,6 +585,152 @@ mod tests {
             assert!(has_subject && has_current);
             assert_eq!(r.status, RelationStatus::Asserted);
         }
+    }
+
+    #[test]
+    fn prior_cache_flips_to_superseded() {
+        // Two-step setup: run a "Tuesday" event, then a "Friday"
+        // event over the same target. The first event's cache
+        // should flip when the second one mints.
+        let text1 = "The meeting moved from Monday to Tuesday.";
+        let (mut hg, minted1) = run_through_step8(text1, &["event", "weekday"]);
+        let policy = crate::types::Policy::default();
+        let out1 = supersede(&mut hg, &minted1, &policy);
+        assert!(
+            !out1.cache_relations.is_empty(),
+            "tick 1 should mint a cache"
+        );
+        // Tick 1's cache should be Asserted.
+        for &rid in &out1.cache_relations {
+            assert_eq!(
+                hg.relations[rid.0 as usize].status,
+                RelationStatus::Asserted
+            );
+        }
+
+        // Run a second event that should supersede tick 1's cache.
+        // Use the same subject name so resolve_span hits the existing
+        // element via by_name.
+        let text2 = "The meeting moved from Tuesday to Friday.";
+        let ext2 = crate::steps::run_extractors::run_extractors(
+            text2,
+            &["event", "weekday"],
+            &policy,
+            &hg,
+            &[],
+        );
+        let step8 =
+            crate::steps::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
+        let out2 = supersede(&mut hg, &step8.minted_relations, &policy);
+
+        assert!(
+            !out2.superseded.is_empty(),
+            "tick 2 should flip at least one prior cache",
+        );
+        for &flipped in &out2.superseded {
+            assert_eq!(
+                hg.relations[flipped.0 as usize].status,
+                RelationStatus::Superseded,
+            );
+        }
+    }
+
+    #[test]
+    fn supersession_emits_derived_from_and_supersedes_metas() {
+        let text1 = "The meeting moved from Monday to Tuesday.";
+        let (mut hg, minted1) = run_through_step8(text1, &["event", "weekday"]);
+        let policy = crate::types::Policy::default();
+        let _ = supersede(&mut hg, &minted1, &policy);
+
+        let text2 = "The meeting moved from Tuesday to Friday.";
+        let ext2 = crate::steps::run_extractors::run_extractors(
+            text2,
+            &["event", "weekday"],
+            &policy,
+            &hg,
+            &[],
+        );
+        let step8 =
+            crate::steps::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
+        let out2 = supersede(&mut hg, &step8.minted_relations, &policy);
+
+        let derived_from_id = hg.by_name["derived_from"][0];
+        let supersedes_id = hg.by_name["supersedes"][0];
+
+        let derived_metas: Vec<RelationId> = out2
+            .meta_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                hg.relations[rid.0 as usize]
+                    .attributes
+                    .iter()
+                    .any(|a| a.name == derived_from_id)
+            })
+            .collect();
+        let supersedes_metas: Vec<RelationId> = out2
+            .meta_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                hg.relations[rid.0 as usize]
+                    .attributes
+                    .iter()
+                    .any(|a| a.name == supersedes_id)
+            })
+            .collect();
+
+        assert!(
+            !derived_metas.is_empty(),
+            "at least one derived_from meta per minted cache",
+        );
+        assert!(
+            !supersedes_metas.is_empty(),
+            "at least one supersedes meta when a prior flipped",
+        );
+
+        // Every meta should point at a Step9-minted cache via target.
+        for &mid in derived_metas.iter().chain(supersedes_metas.iter()) {
+            let r = &hg.relations[mid.0 as usize];
+            let target_slot = r
+                .attributes
+                .iter()
+                .find(|a| a.name == hg.target_attr)
+                .expect("meta must carry a target slot");
+            match target_slot.value {
+                Term::Relation(rid) => {
+                    assert!(
+                        out2.cache_relations.contains(&rid),
+                        "meta target should point at a Step9 cache",
+                    );
+                }
+                Term::Element(_) => panic!("target slot must be a Term::Relation"),
+            }
+        }
+    }
+
+    #[test]
+    fn no_prior_no_supersedes() {
+        // First event over a fresh target. Cache mints, derived_from
+        // fires (audit trail), but no supersedes meta should appear.
+        let text = "Sarah rescheduled the meeting from Tuesday to Friday.";
+        let (mut hg, minted) = run_through_step8(text, &["person", "event", "weekday"]);
+        let policy = crate::types::Policy::default();
+        let out = supersede(&mut hg, &minted, &policy);
+
+        assert!(!out.cache_relations.is_empty());
+        assert!(
+            out.superseded.is_empty(),
+            "no prior caches existed; nothing should flip",
+        );
+        let supersedes_id = hg.by_name["supersedes"][0];
+        let has_supersedes = out.meta_relations.iter().any(|rid| {
+            hg.relations[rid.0 as usize]
+                .attributes
+                .iter()
+                .any(|a| a.name == supersedes_id)
+        });
+        assert!(!has_supersedes, "no supersedes meta when no prior flipped",);
     }
 
     #[test]
