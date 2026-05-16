@@ -21,6 +21,8 @@
 use std::collections::HashMap;
 
 use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
+use crate::steps::novelty_relations::NoveltyRelation;
+use crate::steps::orthographic::OrthographicChunk;
 use crate::steps::relation_patterns::RelationProposal;
 use crate::steps::run_extractors::ExtractionOutput;
 use crate::types::{
@@ -135,6 +137,25 @@ pub fn build_relations(
         ) {
             base_rel_ids.push(rel_id);
         }
+    }
+
+    // ── §6.4 — Novelty branch ───────────────────────────────────────
+    // Mint an Element per novelty chunk (Phrase + Token) so spans
+    // NER missed still get substrate identities. Span cache dedups
+    // overlapping chunks against the spans the known branch already
+    // resolved. Then mint a Defeasible Relation per NoveltyRelation
+    // triple — these are candidates for replay confirmation.
+    mint_novelty_chunks(
+        hg,
+        input_text,
+        &out.novelty.chunks,
+        &mut span_cache,
+        &mut result,
+    );
+    for nr in &out.novelty.relations {
+        let rel_id = mint_novelty_relation(hg, input_text, nr, policy, &mut span_cache, &mut result);
+        base_rel_ids.push(rel_id);
+        result.minted_relations.push(rel_id);
     }
 
     // ── §7 — Source meta-relations ──────────────────────────────────
@@ -740,6 +761,82 @@ fn is_intervention_verb(verb: &str) -> bool {
     LEXICON.iter().any(|&v| v == lower)
 }
 
+// ─── §6.4 — Novelty branch ────────────────────────────────────────────
+
+/// Mint Elements for every novelty chunk that doesn't already have
+/// one. Span cache dedups against the known branch's mints so we
+/// don't get two elements for the same character range.
+fn mint_novelty_chunks(
+    hg: &mut Hypergraph,
+    input_text: &str,
+    chunks: &[OrthographicChunk],
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+    result: &mut Step8Output,
+) {
+    for c in chunks {
+        let _id = resolve_span(
+            hg,
+            input_text,
+            c.char_start,
+            c.char_end,
+            &c.text,
+            span_cache,
+            result,
+        );
+    }
+}
+
+/// Mint a binary `Defeasible` Relation from a novelty triple. The
+/// attribute text (the verbatim connective from the input — verb
+/// surface form plus any void words around it) is resolved against
+/// `by_name`; on miss, a new attribute-name element is minted and
+/// `attr_names_minted` bumps.
+fn mint_novelty_relation(
+    hg: &mut Hypergraph,
+    input_text: &str,
+    nr: &NoveltyRelation,
+    policy: &crate::types::Policy,
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+    result: &mut Step8Output,
+) -> RelationId {
+    let subj_text = &input_text[nr.subject_char_start..nr.subject_char_end];
+    let obj_text = &input_text[nr.object_char_start..nr.object_char_end];
+    let subj_id = resolve_span(
+        hg,
+        input_text,
+        nr.subject_char_start,
+        nr.subject_char_end,
+        subj_text,
+        span_cache,
+        result,
+    );
+    let obj_id = resolve_span(
+        hg,
+        input_text,
+        nr.object_char_start,
+        nr.object_char_end,
+        obj_text,
+        span_cache,
+        result,
+    );
+    let attr_id = resolve_attribute_name(hg, &nr.attribute_text, result);
+    mint_relation(
+        hg,
+        vec![
+            Attribute {
+                name: hg.subject_attr,
+                value: Term::Element(subj_id),
+            },
+            Attribute {
+                name: attr_id,
+                value: Term::Element(obj_id),
+            },
+        ],
+        RelationStatus::Defeasible,
+        confidence_for(nr.confidence, policy),
+    )
+}
+
 /// Hand-rolled debug print so the dev-time tick output shows what
 /// Step 8 actually wrote. Mirrors the style of `print_extraction`
 /// in `lib.rs`.
@@ -1069,6 +1166,51 @@ mod tests {
         assert!(
             !any_intervened,
             "intervened should not fire for observed `changed`",
+        );
+    }
+
+    #[test]
+    fn novelty_chunks_mint_elements_for_unlabeled_tokens() {
+        // "Nick lived in Brantford" — `lived` is a content token NER
+        // doesn't tag (no verb labels in SEED_KINDS), but the novelty
+        // chunker emits it. Step 8 should mint an Element for it.
+        let (hg, out) = run_step8("Nick lived in Brantford for 3 years.");
+        let names: Vec<&str> = out
+            .minted_elements
+            .iter()
+            .map(|id| hg.elements[id.0 as usize].names[0].as_str())
+            .collect();
+        assert!(
+            names.contains(&"lived"),
+            "novelty chunker should mint `lived`; got {names:?}",
+        );
+    }
+
+    #[test]
+    fn novelty_relation_lands_as_defeasible() {
+        let (hg, out) = run_step8("Nick lived in Brantford for 3 years.");
+        // Find a Defeasible relation whose subject is "Nick".
+        let nick_id = hg
+            .by_name
+            .get("Nick")
+            .and_then(|v| v.first().copied())
+            .expect("Nick should have been minted");
+        let nick_defeasible: Vec<RelationId> = out
+            .minted_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                let r = &hg.relations[rid.0 as usize];
+                r.status == RelationStatus::Defeasible
+                    && r.attributes.iter().any(|a| matches!(
+                        a.value,
+                        Term::Element(e) if e == nick_id
+                    ))
+            })
+            .collect();
+        assert!(
+            !nick_defeasible.is_empty(),
+            "expected at least one Defeasible Nick relation from novelty",
         );
     }
 

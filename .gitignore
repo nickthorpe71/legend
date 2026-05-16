@@ -35,3 +35,6 @@ models/gliner2-fp32.bin
 # already existing elements were commented out
 
 #/target
+
+# Claude Code local state — local-only, never check in.
+.claude/
