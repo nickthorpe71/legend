@@ -8,5 +8,6 @@ pub mod orthographic;
 pub mod relation_patterns;
 pub mod route_regions;
 pub mod run_extractors;
+pub mod supersede;
 pub mod temporal;
 pub mod void_filter;
