@@ -1329,6 +1329,134 @@ mod tests {
         );
     }
 
+    /// End-to-end integration test for the §11.9 worked example.
+    /// Validates that Step 5 → Step 8 produces the expected substrate
+    /// state: minted entities, event element, instance_of relations,
+    /// n-ary event relation, binary `with` relation, intervened
+    /// presence/absence, and index population.
+    #[test]
+    fn dentist_sentence_integration() {
+        let text = "My dentist appointment with Dr. Rao changed from Tuesday to Friday.";
+        let (hg, out) = run_step8_labeled(text, &["person", "event", "weekday", "role"]);
+
+        // ── Entities — NER tags spans (events/persons/weekdays).
+        // "My dentist appointment" lands as one event-typed span per
+        // Q1 (whole-span minting); the test asserts presence by name.
+        let minted_names: Vec<&str> = out
+            .minted_elements
+            .iter()
+            .map(|id| hg.elements[id.0 as usize].names[0].as_str())
+            .collect();
+        for must_be_minted in &["Dr. Rao", "Tuesday", "Friday"] {
+            assert!(
+                minted_names.contains(must_be_minted),
+                "expected `{must_be_minted}` to land; got {minted_names:?}",
+            );
+        }
+        // The compound event span — NER's exact text varies slightly
+        // ("My dentist appointment" vs "dentist appointment") so we
+        // accept any minted name containing "appointment".
+        assert!(
+            minted_names.iter().any(|n| n.contains("appointment")),
+            "expected an appointment-style span minted; got {minted_names:?}",
+        );
+
+        // ── Event element — at least one "<verb>_event_<tick>_<seq>".
+        let event_names: Vec<&str> = minted_names
+            .iter()
+            .copied()
+            .filter(|n| n.contains("_event_"))
+            .collect();
+        assert!(
+            !event_names.is_empty(),
+            "n-ary merge should mint at least one event element; got {minted_names:?}",
+        );
+
+        // ── N-ary event relation — has [subject(event), target, from, to].
+        let from_attr = hg.by_name["from"]
+            .iter()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .copied()
+            .unwrap();
+        let to_attr = hg.by_name["to"]
+            .iter()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .copied()
+            .unwrap();
+        let nary: Vec<RelationId> = out
+            .minted_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                let r = &hg.relations[rid.0 as usize];
+                r.attributes.iter().any(|a| a.name == from_attr)
+                    && r.attributes.iter().any(|a| a.name == to_attr)
+                    && r.attributes.len() == 4
+            })
+            .collect();
+        assert!(
+            !nary.is_empty(),
+            "expected at least one n-ary event relation",
+        );
+
+        // ── Binary `with` relation — appointment with Dr. Rao.
+        let with_attr = hg.by_name["with"]
+            .iter()
+            .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .copied()
+            .unwrap();
+        let with_rels: Vec<RelationId> = out
+            .minted_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                let r = &hg.relations[rid.0 as usize];
+                r.attributes.len() == 2 && r.attributes.iter().any(|a| a.name == with_attr)
+            })
+            .collect();
+        assert!(
+            !with_rels.is_empty(),
+            "expected a binary `with` relation tying appointment to Dr. Rao",
+        );
+
+        // ── No `intervened` meta-relation — `changed` is observation,
+        //    not agent action (lexicon excludes it).
+        let intervened_attr = hg.by_name["intervened"][0];
+        let intervened_metas: Vec<RelationId> = out
+            .minted_relations
+            .iter()
+            .copied()
+            .filter(|rid| {
+                hg.relations[rid.0 as usize]
+                    .attributes
+                    .iter()
+                    .any(|a| a.name == intervened_attr)
+            })
+            .collect();
+        assert!(
+            intervened_metas.is_empty(),
+            "`changed` ∉ intervention lexicon → no intervened meta expected",
+        );
+
+        // ── Indices populated — every minted base relation is
+        //    indexed under every Element-valued attribute it has.
+        for &rid in &out.minted_relations {
+            let r = &hg.relations[rid.0 as usize];
+            for attr in &r.attributes {
+                if let Term::Element(e) = attr.value {
+                    let bucket = hg
+                        .relations_by_element
+                        .get(&e)
+                        .unwrap_or_else(|| panic!("element {e:?} missing from index"));
+                    assert!(
+                        bucket.contains(&rid),
+                        "relation {rid:?} missing from relations_by_element[{e:?}]",
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn source_meta_relation_emitted_when_source_some() {
         let mut hg = load_seed_graph();

@@ -1,8 +1,17 @@
 # Step 8 — Build Relations and Events
 
-> **Status: design pass.** Spec source: `tick_pipeline_focus.md §11.9`.
-> Step 7 (`apply_region_delta`) shipped; Step 8 is next in the
-> pipeline order.
+> **Status: complete (v0).** All six phases landed.
+> Implementation lives in `src/steps/build_relations.rs`; design
+> notes below are the canonical record. Production tick output
+> shows minted elements + relations via the `print_step8` helper
+> in `lib.rs::run()`. 15 unit tests cover binary mints, n-ary
+> merge, novelty branch, coref override, source meta, indices,
+> and an end-to-end dentist-sentence integration.
+>
+> Future work (post-v0): `property` slot inference in n-ary
+> events, span-level seed prototypes, cosine-dedup for spans
+> against `region_members`, Tantivy lexical index for
+> attribute-name resolution. See §13's "Out of scope" list.
 
 ## 1. What Step 8 is
 
