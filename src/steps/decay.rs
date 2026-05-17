@@ -653,6 +653,115 @@ mod tests {
         }
     }
 
+    // ── Phase 4: integration over the real pipeline ─────────────
+
+    /// Drive Step 5 → 8 → 9 → 10 → 11 over a real sentence with a
+    /// non-default policy that actually exercises decay. Tests that:
+    /// - reinforced relations from Step 10 are NOT decayed
+    /// - non-reinforced periphery relations DO decay
+    /// - status + support_count stay untouched (spec invariant)
+    /// - max_depth_reached <= focus_decay_radius
+    #[test]
+    fn integration_real_sentence_decays_periphery_not_focus() {
+        use crate::seed::load_seed_graph;
+        use crate::steps::build_relations::build_relations;
+        use crate::steps::hebbian::hebbian_and_salience;
+        use crate::steps::run_extractors::run_extractors;
+        use crate::steps::supersede::supersede;
+
+        let policy = Policy {
+            focus_decay_radius: 2,
+            decay_rate: 0.4,
+            hebbian_rate: 0.6, // non-zero so Step 10 actually bumps
+            ..Default::default()
+        };
+        let labels: &[&str] = &["event", "weekday"];
+        let mut hg = load_seed_graph();
+
+        // Tick 1: mint baseline + bump activation on reinforced relations.
+        let text1 = "The meeting moved from Monday to Tuesday.";
+        let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
+        let step8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
+        let step9_1 = supersede(&mut hg, &step8_1.minted_relations, &policy);
+        let step10_1 = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy);
+
+        // Snapshot every reinforced relation's activation before decay.
+        let reinforced_before: Vec<(RelationId, f32)> = step10_1
+            .reinforced
+            .iter()
+            .map(|&rid| (rid, hg.relations[rid.0 as usize].stats.activation))
+            .collect();
+        // Snapshot every reinforced relation's support_count and status.
+        let support_status_before: Vec<(RelationId, u32, RelationStatus)> = step10_1
+            .reinforced
+            .iter()
+            .map(|&rid| {
+                let r = &hg.relations[rid.0 as usize];
+                (rid, r.stats.support_count, r.status)
+            })
+            .collect();
+
+        // Step 11.
+        let out = focus_radius_decay(&mut hg, &step10_1.reinforced, &policy);
+
+        assert!(
+            out.elements_walked > 0,
+            "BFS should walk at least the seed elements",
+        );
+        assert!(
+            out.max_depth_reached <= policy.focus_decay_radius,
+            "max depth must respect radius cap; got {} > {}",
+            out.max_depth_reached,
+            policy.focus_decay_radius,
+        );
+
+        // Invariant: reinforced relations' activation unchanged.
+        for (rid, before) in &reinforced_before {
+            let after = hg.relations[rid.0 as usize].stats.activation;
+            assert!(
+                (after - before).abs() < 1e-5,
+                "reinforced relation {rid:?} activation drifted: {before} → {after}",
+            );
+        }
+        // Invariant: support_count and status untouched everywhere.
+        for (rid, sup_before, status_before) in &support_status_before {
+            let r = &hg.relations[rid.0 as usize];
+            assert_eq!(
+                r.stats.support_count, *sup_before,
+                "support_count for {rid:?} drifted: {sup_before} → {}",
+                r.stats.support_count,
+            );
+            assert_eq!(
+                r.status, *status_before,
+                "status for {rid:?} drifted: {status_before:?} → {:?}",
+                r.status,
+            );
+        }
+    }
+
+    #[test]
+    fn integration_no_op_under_default_policy() {
+        // The full pipeline under default policy should produce a
+        // zero-count Step11Output and leave activation untouched
+        // across the substrate.
+        use crate::seed::load_seed_graph;
+        use crate::steps::build_relations::build_relations;
+        use crate::steps::hebbian::hebbian_and_salience;
+        use crate::steps::run_extractors::run_extractors;
+        use crate::steps::supersede::supersede;
+
+        let policy = Policy::default();
+        let mut hg = load_seed_graph();
+        let text = "Sarah called me yesterday.";
+        let ext = run_extractors(text, &[], &policy, &hg, &[]);
+        let step8 = build_relations(text, &mut hg, &ext, &policy, None);
+        let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
+        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let out = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
+        assert_eq!(out.elements_walked, 0);
+        assert_eq!(out.relations_decayed, 0);
+    }
+
     #[test]
     fn no_op_when_rate_zero() {
         let mut hg = crate::types::Hypergraph::default();

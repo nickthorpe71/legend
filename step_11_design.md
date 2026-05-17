@@ -1,10 +1,20 @@
 # Step 11 — Focus-Radius Decay
 
-> **Status: design pass.** Spec source: `tick_pipeline_focus.md §11.12`
-> + `new_foundation.md §14.7 / §14.9`. Step 10 (`hebbian + salience`)
-> shipped; Step 11 is the last "no-model" mutation step before
-> Step 12's frame assembly. `bounded_hebbian_decay` already lives
-> in `src/hebbian.rs` from Step 10 Phase 1.
+> **Status: complete (v0).** All four phases landed.
+> `src/steps/decay.rs` ships `compute_utility`, `normalize_utility`,
+> `effective_decay_rate`, and the BFS body. Step 11 runs in
+> `lib.rs::run()` after `hebbian_and_salience` and surfaces
+> elements/relations walked + max depth via `print_step11`.
+> 18 decay tests + 199 lib tests total pass; clippy + fmt clean.
+>
+> Default policy (`decay_rate=0` AND `focus_decay_radius=0`)
+> collapses Step 11 to a no-op gate — same story as Steps 7/10.
+> Tests use `decay_rate=0.4`, `radius=2-3` to exercise the walk.
+>
+> Deferred per spec: Element activation (nothing reads it yet),
+> salience decay (replay's job), background sweep over the
+> full graph (§14.8 replay thread), utility's noise/redundancy/
+> age terms (need observability infra that doesn't exist).
 
 ## 1. What Step 11 is
 
