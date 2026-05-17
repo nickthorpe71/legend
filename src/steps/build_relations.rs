@@ -502,6 +502,69 @@ fn confidence_for(extractor_conf: f32, policy: &crate::types::Policy) -> f32 {
     (policy.default_conf * extractor_conf).clamp(0.0, 1.0)
 }
 
+// ─── Property kind inference (used by n-ary mint + Step 9) ────────────
+
+/// Walk `value_id`'s `instance_of` relations and return the kind
+/// label's surface form. Returns `None` if `value_id` has no
+/// `instance_of` relation in the subject slot.
+///
+/// "Subject slot" means `[subject: value_id, instance_of: kind]`.
+/// Relations where `value_id` appears in other slots (e.g. as
+/// `from` or `to`) are skipped — we want the typing of `value_id`,
+/// not relations that mention it.
+pub(crate) fn kind_of(hg: &Hypergraph, value_id: ElementId) -> Option<String> {
+    let instance_of_attr = hg.by_name.get("instance_of")?.first().copied()?;
+    let candidates = hg.relations_by_element.get(&value_id)?;
+    for &rid in candidates {
+        let r = &hg.relations[rid.0 as usize];
+        let mut is_subject = false;
+        let mut kind_value: Option<ElementId> = None;
+        for attr in &r.attributes {
+            if attr.name == hg.subject_attr {
+                if let Term::Element(e) = attr.value
+                    && e == value_id
+                {
+                    is_subject = true;
+                }
+            } else if attr.name == instance_of_attr
+                && let Term::Element(e) = attr.value
+            {
+                kind_value = Some(e);
+            }
+        }
+        if is_subject && let Some(kid) = kind_value {
+            return hg.elements[kid.0 as usize].names.first().cloned();
+        }
+    }
+    None
+}
+
+/// Derive a coarse property-kind label from the `from` and `to`
+/// value types of a state-change event. Step 8 reads this at n-ary
+/// mint time and adds the result as a `property` attribute slot on
+/// the event relation. Step 9 reads it back off the event without
+/// re-inferring.
+///
+/// Match table:
+///
+/// - both weekday or month (any combination) → `"date"`
+/// - both time → `"time"`
+/// - both quantity → `"amount"`
+/// - both place → `"location"`
+/// - else → `"value"` (generic fallback)
+pub fn infer_property_kind(hg: &Hypergraph, from_id: ElementId, to_id: ElementId) -> &'static str {
+    let f = kind_of(hg, from_id);
+    let t = kind_of(hg, to_id);
+    let (f, t) = (f.as_deref(), t.as_deref());
+    match (f, t) {
+        (Some("weekday" | "month"), Some("weekday" | "month")) => "date",
+        (Some("time"), Some("time")) => "time",
+        (Some("quantity"), Some("quantity")) => "amount",
+        (Some("place"), Some("place")) => "location",
+        _ => "value",
+    }
+}
+
 /// Mint-time confidence for new Elements. The Policy isn't threaded
 /// into every mint site; reading the rest-state default off the
 /// Hypergraph is good enough — Step 12's frame walker reads
@@ -655,12 +718,18 @@ fn mint_event_relations(
     );
     result.minted_relations.push(typing_id);
 
-    // N-ary relation — `[subject: event, target: subj, from: …, to: …]`.
-    // `property` is omitted in v0; Step 9 supersession can find pairs
-    // by (target, from) / (target, to) without it.
+    // N-ary relation —
+    // `[subject: event, target: subj, property: kind, from: …, to: …]`.
+    // The `property` slot carries the coarse value-type inference so
+    // Step 9 (supersession) can identify the cache bucket without
+    // re-walking value Elements' `instance_of` relations. Falls back
+    // to the generic "value" kind when the values aren't typed.
     let target_attr = hg.target_attr;
     let from_attr = resolve_attribute_name(hg, "from", result);
     let to_attr = resolve_attribute_name(hg, "to", result);
+    let property_attr = resolve_attribute_name(hg, "property", result);
+    let property_kind_label = infer_property_kind(hg, from_val_id, to_val_id);
+    let property_kind_id = resolve_label_element(hg, property_kind_label, result);
     let nary_conf = confidence_for(from_p.confidence.min(to_p.confidence), policy);
     let nary_status = if from_p.confidence.min(to_p.confidence) >= policy.ner_assertion_threshold {
         RelationStatus::Asserted
@@ -677,6 +746,10 @@ fn mint_event_relations(
             Attribute {
                 name: target_attr,
                 value: Term::Element(subj_id),
+            },
+            Attribute {
+                name: property_attr,
+                value: Term::Element(property_kind_id),
             },
             Attribute {
                 name: from_attr,
@@ -1156,8 +1229,8 @@ mod tests {
             let r = &hg.relations[rid.0 as usize];
             assert_eq!(
                 r.attributes.len(),
-                4,
-                "n-ary should have [subject, target, from, to]; got {:?}",
+                5,
+                "n-ary should have [subject, target, property, from, to]; got {:?}",
                 r.attributes,
             );
         }
@@ -1176,6 +1249,35 @@ mod tests {
         assert!(
             standalone_from.is_empty(),
             "binary from relation should be subsumed by the merge",
+        );
+    }
+
+    #[test]
+    fn nary_event_carries_property_slot() {
+        // Step 8's n-ary merge should now stamp a `property` slot on
+        // every event so Step 9 doesn't have to re-infer. Both values
+        // are weekdays → property kind = "date".
+        let (hg, out) = run_step8_labeled(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+        );
+        let property_attr = hg.by_name["property"][0];
+        let date_id = hg
+            .by_name
+            .get("date")
+            .and_then(|v| v.first().copied())
+            .expect("Step 8 should mint the `date` kind element");
+
+        // Find an n-ary event and verify the property slot binds to `date`.
+        let nary_with_date = out.minted_relations.iter().any(|&rid| {
+            let r = &hg.relations[rid.0 as usize];
+            r.attributes.iter().any(|a| {
+                a.name == property_attr && matches!(a.value, Term::Element(e) if e == date_id)
+            })
+        });
+        assert!(
+            nary_with_date,
+            "n-ary event should carry a property slot bound to `date`",
         );
     }
 
@@ -1431,7 +1533,7 @@ mod tests {
                 let r = &hg.relations[rid.0 as usize];
                 r.attributes.iter().any(|a| a.name == from_attr)
                     && r.attributes.iter().any(|a| a.name == to_attr)
-                    && r.attributes.len() == 4
+                    && r.attributes.len() == 5
             })
             .collect();
         assert!(

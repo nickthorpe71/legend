@@ -9,12 +9,14 @@
 > gating, and a two-tick end-to-end integration. Total lib test
 > count: 128.
 >
-> Future work flagged in §12-13: property inference can move
-> upstream into Step 8 once frame walking surfaces a need;
-> `meta_relation_presence` index could be fixed to record sibling
-> attribute names (current implementation records target_attr
-> tautologically, so Step 9 uses a 1–3-element walk instead);
-> transitive supersession is deliberately a read-time chain walk,
+> Two deferred items from the initial v0 land have since shipped:
+> property inference moved upstream into Step 8's `mint_event_relations`
+> so events self-describe (Step 9 reads the `property` slot and falls
+> back to inference only when absent), and `meta_relation_presence`
+> was fixed to record `(parent, sibling_attr)` instead of the
+> tautological `(parent, target_attr)`, so the intervened gate is
+> now an O(1) HashMap lookup. Transitive supersession remains a
+> deliberate read-time chain walk via `meta_relations_by_subject`,
 > not eagerly closed.
 
 ## 1. What Step 9 is

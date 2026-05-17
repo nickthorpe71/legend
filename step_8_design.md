@@ -221,10 +221,12 @@ as Elements minted from the NER pass for the same spans.
 
 ### 6.3 N-ary event relations
 
-The dentist worked example wants one Relation with five attributes
-(subject + four role slots — the §11.9 shorthand
-`reschedule_event_1 [target, property, from, to]` expands to
-`[subject: reschedule_event_1, target, property, from, to]`):
+The n-ary relation has five attributes — subject (the event
+element) plus four role slots. `property` is inferred from the
+`from`/`to` value types via `infer_property_kind` (originally
+deferred to Step 9 in the first v0 draft; moved upstream to Step 8
+so events self-describe and Step 9 can read the slot directly
+without re-walking the graph):
 
 ```text
 Relation {

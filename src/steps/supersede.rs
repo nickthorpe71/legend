@@ -16,70 +16,10 @@
 //! See `step_9_design.md` for the full spec.
 
 use crate::embed::embed_text;
-use crate::steps::build_relations::{mint_element, mint_relation};
+use crate::steps::build_relations::{infer_property_kind, mint_element, mint_relation};
 use crate::types::{
     Attribute, ElementId, Hypergraph, Polarity, Relation, RelationId, RelationStatus, Term,
 };
-
-/// Walk `value_id`'s `instance_of` relations and return the kind
-/// label's surface form. Returns `None` if `value_id` has no
-/// `instance_of` relation in the subject slot.
-///
-/// "Subject slot" means `[subject: value_id, instance_of: kind]`.
-/// Relations where `value_id` appears in other slots (e.g. as
-/// `from` or `to`) are skipped — we want the typing of `value_id`,
-/// not relations that mention it.
-pub(crate) fn kind_of(hg: &Hypergraph, value_id: ElementId) -> Option<String> {
-    let instance_of_attr = hg.by_name.get("instance_of")?.first().copied()?;
-    let candidates = hg.relations_by_element.get(&value_id)?;
-    for &rid in candidates {
-        let r = &hg.relations[rid.0 as usize];
-        let mut is_subject = false;
-        let mut kind_value: Option<ElementId> = None;
-        for attr in &r.attributes {
-            if attr.name == hg.subject_attr {
-                if let Term::Element(e) = attr.value
-                    && e == value_id
-                {
-                    is_subject = true;
-                }
-            } else if attr.name == instance_of_attr
-                && let Term::Element(e) = attr.value
-            {
-                kind_value = Some(e);
-            }
-        }
-        if is_subject && let Some(kid) = kind_value {
-            return hg.elements[kid.0 as usize].names.first().cloned();
-        }
-    }
-    None
-}
-
-/// Derive a coarse property-kind label from the `from` and `to`
-/// value types of a state-change event. Used by Step 9 to construct
-/// the cache attribute name `current_<property>`.
-///
-/// Match table:
-///
-/// - both weekday or month (any combination) → `"date"`
-/// - both time → `"time"`
-/// - both quantity → `"amount"`
-/// - both place → `"location"`
-/// - else → `"value"` (generic fallback)
-pub fn infer_property_kind(hg: &Hypergraph, from_id: ElementId, to_id: ElementId) -> &'static str {
-    let f = kind_of(hg, from_id);
-    let t = kind_of(hg, to_id);
-    let (f, t) = (f.as_deref(), t.as_deref());
-    match (f, t) {
-        // Dates: both temporal-class kinds line up under one bucket.
-        (Some("weekday" | "month"), Some("weekday" | "month")) => "date",
-        (Some("time"), Some("time")) => "time",
-        (Some("quantity"), Some("quantity")) => "amount",
-        (Some("place"), Some("place")) => "location",
-        _ => "value",
-    }
-}
 
 // ─── Step 9 surface ────────────────────────────────────────────────────
 
@@ -143,7 +83,15 @@ pub fn supersede(
             None => continue,
         };
 
-        let property_kind = infer_property_kind(hg, frame.from_value, frame.to_value);
+        // Prefer the property slot Step 8 wrote on the event; fall
+        // back to per-value inference for defensiveness (events
+        // synthesized outside Step 8's n-ary path may not carry one).
+        let property_kind: String = frame
+            .property
+            .and_then(|pid| hg.elements[pid.0 as usize].names.first().cloned())
+            .unwrap_or_else(|| {
+                infer_property_kind(hg, frame.from_value, frame.to_value).to_string()
+            });
         let cache_attr_label = format!("current_{property_kind}");
         let cache_attr_id = resolve_or_mint_signal_attr(hg, &cache_attr_label, &mut out);
 
@@ -414,12 +362,15 @@ fn collect_prior_caches(
 
 /// Slots extracted from an event-shaped Relation. Step 9 needs all
 /// three to synthesize a cache; missing any means the relation
-/// isn't really an event and gets skipped defensively.
+/// isn't really an event and gets skipped defensively. `property`
+/// is the kind Element from the event's `property` slot when
+/// Step 8 wrote one; `None` triggers Step-9-side inference.
 #[derive(Debug, Clone, Copy)]
 struct EventFrame {
     target: ElementId,
     from_value: ElementId,
     to_value: ElementId,
+    property: Option<ElementId>,
 }
 
 /// Pull the Signal-polarity `from` and `to` attribute-name IDs out
@@ -459,10 +410,14 @@ fn is_event_shaped(
     has_from && has_to
 }
 
-/// Pull the event's `target`, `from`-value, `to`-value Element IDs.
-/// Returns `None` if any are missing — Step 8's n-ary events should
-/// always have all three, but the filter is permissive on shape so
-/// guard at extraction time.
+/// Pull the event's `target`, `from`-value, `to`-value, and
+/// optional `property` Element IDs. Returns `None` if target /
+/// from / to are missing — Step 8's n-ary events should always
+/// have all three, but the filter is permissive on shape so guard
+/// at extraction time. `property` is optional: Step 8 began
+/// writing it post-Step-9-launch, but pre-existing event relations
+/// (from older code paths) may not carry one — Step 9 falls back
+/// to inference in that case.
 fn extract_event_frame(
     hg: &Hypergraph,
     rid: RelationId,
@@ -471,9 +426,11 @@ fn extract_event_frame(
 ) -> Option<EventFrame> {
     let r: &Relation = &hg.relations[rid.0 as usize];
     let target_attr = hg.target_attr;
+    let property_attr = hg.by_name.get("property").and_then(|v| v.first().copied());
     let mut target = None;
     let mut from_value = None;
     let mut to_value = None;
+    let mut property = None;
     for attr in &r.attributes {
         let Term::Element(e) = attr.value else {
             continue;
@@ -484,12 +441,15 @@ fn extract_event_frame(
             from_value = Some(e);
         } else if attr.name == to_attr {
             to_value = Some(e);
+        } else if property_attr == Some(attr.name) {
+            property = Some(e);
         }
     }
     Some(EventFrame {
         target: target?,
         from_value: from_value?,
         to_value: to_value?,
+        property,
     })
 }
 
@@ -528,6 +488,7 @@ fn resolve_or_mint_signal_attr(
 mod tests {
     use super::*;
     use crate::embed::EMBEDDING_DIM;
+    use crate::steps::build_relations::kind_of;
     use crate::types::{Element, MemoryStats, Tick};
 
     /// Set up a synthetic Hypergraph with the seeded structural
@@ -1132,7 +1093,7 @@ mod tests {
                     .unwrap();
                 let has_from = r.attributes.iter().any(|a| a.name == from_attr_id);
                 let has_to = r.attributes.iter().any(|a| a.name == to_attr_id);
-                has_from && has_to && r.attributes.len() == 4
+                has_from && has_to && r.attributes.len() == 5
             })
             .expect("tick 2 should mint at least one n-ary event");
         let found_derived_link = metas_on_new.iter().any(|&mid| {
