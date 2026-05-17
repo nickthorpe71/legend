@@ -20,7 +20,10 @@
 //! (skeleton + utility helpers). Phases 2-4 add the BFS walk
 //! + wiring + integration tests.
 
-use crate::types::{Policy, Relation, RelationId};
+use std::collections::{HashSet, VecDeque};
+
+use crate::hebbian::bounded_hebbian_decay;
+use crate::types::{ElementId, Hypergraph, Policy, Relation, RelationId, Term};
 
 /// Per-tick summary of what Step 11 actually did. Counts only —
 /// the work is diffuse (a chatty tick can walk hundreds of
@@ -89,19 +92,124 @@ pub fn effective_decay_rate(r: &Relation, policy: &Policy) -> f32 {
 /// `focus_decay_radius == 0`) returns an empty summary without
 /// touching the graph.
 ///
-/// Phase 1 (this commit) ships only the early-return path;
-/// phase 2 wires the BFS walk over Step 8/9/10 outputs.
+/// BFS expands outward from the seed Element set (every Element-
+/// valued attribute of every relation in `reinforced_relations`),
+/// up to `policy.focus_decay_radius` hops via `relations_by_element`.
+/// Each relation reached at depth ≥ 1 is decayed via
+/// `bounded_hebbian_decay(activation, effective_rate)`. Seed
+/// elements themselves (depth 0) are NOT decayed — they're the
+/// focus-bearing set; Step 10 just bumped their relations.
+///
+/// Per-relation dedup: once decayed, a relation is not decayed
+/// again this tick, even if reached via a second path.
 pub fn focus_radius_decay(
-    _hg: &mut crate::types::Hypergraph,
-    _reinforced_relations: &[RelationId],
+    hg: &mut Hypergraph,
+    reinforced_relations: &[RelationId],
     policy: &Policy,
 ) -> Step11Output {
     if policy.focus_decay_radius == 0 || policy.decay_rate <= 0.0 {
         // No-op gate. Skip building the seed set, skip BFS.
         return Step11Output::default();
     }
-    // Phase 2 lands the BFS body.
-    Step11Output::default()
+
+    // 1. Seed Element set: every Element-valued attribute of every
+    //    reinforced relation. Term::Relation slots (meta-relation
+    //    targets) are skipped — those are relation references, not
+    //    elements to walk from.
+    let seed: Vec<ElementId> = collect_seed_elements(hg, reinforced_relations);
+    if seed.is_empty() {
+        return Step11Output::default();
+    }
+
+    // 2. BFS. Visited tracks elements we've enqueued so we don't
+    //    revisit. Decayed tracks relations we've already applied
+    //    decay to so a relation reachable via two paths only takes
+    //    one decay hit per tick.
+    let mut visited: HashSet<ElementId> = HashSet::new();
+    let mut decayed: HashSet<RelationId> = HashSet::new();
+    let mut reinforced_set: HashSet<RelationId> = HashSet::new();
+    reinforced_set.extend(reinforced_relations.iter().copied());
+
+    let mut queue: VecDeque<(ElementId, u32)> = VecDeque::new();
+    for &e in &seed {
+        if visited.insert(e) {
+            queue.push_back((e, 0));
+        }
+    }
+
+    let radius = policy.focus_decay_radius;
+    let mut max_depth: u32 = 0;
+    let mut relations_decayed: u32 = 0;
+
+    while let Some((elem, depth)) = queue.pop_front() {
+        if depth >= radius {
+            // Reached the radius; don't expand further. But the
+            // current element's relations at depth+1 would still
+            // count as in-radius if depth+1 <= radius — which it
+            // isn't here, so stop.
+            continue;
+        }
+        let Some(relation_ids) = hg.relations_by_element.get(&elem).cloned() else {
+            continue;
+        };
+        for rid in relation_ids {
+            // Skip reinforced relations — Step 10 just bumped them;
+            // immediately decaying would partially undo the bump.
+            if reinforced_set.contains(&rid) {
+                continue;
+            }
+            // Decay each relation at most once per tick.
+            if decayed.insert(rid) {
+                let r = &hg.relations[rid.0 as usize];
+                let rate = effective_decay_rate(r, policy);
+                let r_mut = &mut hg.relations[rid.0 as usize];
+                r_mut.stats.activation = bounded_hebbian_decay(r_mut.stats.activation, rate);
+                relations_decayed += 1;
+                max_depth = max_depth.max(depth + 1);
+            }
+            // Expand: enqueue each Element-valued attribute target
+            // (other than `elem` itself) at depth + 1, capped by
+            // radius. Term::Relation values are skipped.
+            let next_depth = depth + 1;
+            if next_depth <= radius {
+                let r = &hg.relations[rid.0 as usize];
+                for attr in &r.attributes {
+                    if let Term::Element(target) = attr.value
+                        && target != elem
+                        && visited.insert(target)
+                    {
+                        queue.push_back((target, next_depth));
+                    }
+                }
+            }
+        }
+    }
+
+    Step11Output {
+        elements_walked: visited.len() as u32,
+        relations_decayed,
+        max_depth_reached: max_depth,
+    }
+}
+
+/// Build the BFS seed Element set: every Element-valued attribute
+/// of every relation in `reinforced_relations`. Deduped. Term::
+/// Relation values (meta-relation targets) are skipped because
+/// those are relation references, not elements.
+fn collect_seed_elements(hg: &Hypergraph, reinforced: &[RelationId]) -> Vec<ElementId> {
+    let mut seen: HashSet<ElementId> = HashSet::new();
+    let mut out: Vec<ElementId> = Vec::new();
+    for &rid in reinforced {
+        let r = &hg.relations[rid.0 as usize];
+        for attr in &r.attributes {
+            if let Term::Element(e) = attr.value
+                && seen.insert(e)
+            {
+                out.push(e);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -216,6 +324,303 @@ mod tests {
         let out = focus_radius_decay(&mut hg, &[], &policy);
         assert_eq!(out.elements_walked, 0);
         assert_eq!(out.relations_decayed, 0);
+    }
+
+    // ── Phase 2 tests: BFS + decay behavior ─────────────────────
+
+    use crate::steps::build_relations::{mint_element, mint_relation};
+    use crate::types::{Attribute, ElementId as ElId, Polarity};
+
+    /// Build a synthetic Hypergraph with N "ring" elements where
+    /// each element has one relation pointing to the next element,
+    /// plus a "periphery" element reachable from the last ring
+    /// element through one more relation. Lets us drive BFS depth
+    /// explicitly.
+    fn synth_chain(
+        n: usize,
+    ) -> (
+        crate::types::Hypergraph,
+        Vec<ElId>,
+        Vec<crate::types::RelationId>,
+    ) {
+        let mut hg = crate::types::Hypergraph::default();
+        // Seed structural attribute names at low IDs so chain
+        // relations can build [subject, attr] shape.
+        let subject_id = mint_element(
+            &mut hg,
+            vec!["subject".to_string()],
+            vec![0.0; crate::embed::EMBEDDING_DIM],
+            Polarity::Signal,
+            1.0,
+        );
+        let attr_id = mint_element(
+            &mut hg,
+            vec!["points_to".to_string()],
+            vec![0.0; crate::embed::EMBEDDING_DIM],
+            Polarity::Signal,
+            1.0,
+        );
+        hg.subject_attr = subject_id;
+        hg.target_attr = attr_id;
+        let mut elements: Vec<ElId> = Vec::with_capacity(n);
+        for i in 0..n {
+            elements.push(mint_element(
+                &mut hg,
+                vec![format!("e{i}")],
+                vec![0.0; crate::embed::EMBEDDING_DIM],
+                Polarity::Signal,
+                1.0,
+            ));
+        }
+        // Chain: e0 -> e1 -> e2 -> ... -> e_{n-1}, one relation
+        // per hop, [subject: e_i, points_to: e_{i+1}].
+        let mut relations = Vec::with_capacity(n.saturating_sub(1));
+        for i in 0..(n.saturating_sub(1)) {
+            let rid = mint_relation(
+                &mut hg,
+                vec![
+                    Attribute {
+                        name: subject_id,
+                        value: Term::Element(elements[i]),
+                    },
+                    Attribute {
+                        name: attr_id,
+                        value: Term::Element(elements[i + 1]),
+                    },
+                ],
+                RelationStatus::Asserted,
+                1.0,
+            );
+            relations.push(rid);
+        }
+        (hg, elements, relations)
+    }
+
+    #[test]
+    fn bfs_respects_radius_cap() {
+        // 5-element chain: e0 -> e1 -> e2 -> e3 -> e4 via 4 relations.
+        // Seed via the FIRST relation (which only references e0 and
+        // e1). With radius=1, the seed set is {e0, e1} (visited at
+        // depth 0); we expand each at depth 0 → 1, decaying their
+        // relations. Crucially, e1 → e2 lives at depth 1 (still in
+        // radius); e2 → e3 lives at depth 2 (out of radius); etc.
+        let (mut hg, _elements, relations) = synth_chain(5);
+        // Pre-set activation on every chain relation so decay shows.
+        for &rid in &relations {
+            hg.relations[rid.0 as usize].stats.activation = 1.0;
+        }
+        // Seed via first relation; Step 10 normally provides this.
+        let seed_relation = &[relations[0]];
+        let policy = Policy {
+            focus_decay_radius: 1,
+            decay_rate: 0.5,
+            ..Default::default()
+        };
+        let out = focus_radius_decay(&mut hg, seed_relation, &policy);
+
+        // Relation 0 itself is in the reinforced set (seed) and
+        // skipped by the "don't decay reinforced" guard. Relation 1
+        // (e1 → e2) is reachable at depth 1 from e1 and should decay.
+        // Relation 2+ are out of radius from the seed.
+        assert!(
+            out.relations_decayed >= 1,
+            "at least one relation should decay"
+        );
+        assert_eq!(
+            hg.relations[relations[0].0 as usize].stats.activation, 1.0,
+            "reinforced relation should NOT be decayed",
+        );
+        assert!(
+            hg.relations[relations[1].0 as usize].stats.activation < 1.0,
+            "depth-1 relation should be decayed",
+        );
+        // Relation 3 is depth-2+; shouldn't decay.
+        assert_eq!(
+            hg.relations[relations[3].0 as usize].stats.activation, 1.0,
+            "out-of-radius relation should stay untouched; got {}",
+            hg.relations[relations[3].0 as usize].stats.activation,
+        );
+    }
+
+    #[test]
+    fn radius_zero_skips_walk_entirely() {
+        let (mut hg, _elements, relations) = synth_chain(3);
+        for &rid in &relations {
+            hg.relations[rid.0 as usize].stats.activation = 1.0;
+        }
+        let policy = Policy {
+            focus_decay_radius: 0,
+            decay_rate: 0.5,
+            ..Default::default()
+        };
+        let out = focus_radius_decay(&mut hg, &[relations[0]], &policy);
+        assert_eq!(out.relations_decayed, 0);
+        for &rid in &relations {
+            assert_eq!(hg.relations[rid.0 as usize].stats.activation, 1.0);
+        }
+    }
+
+    #[test]
+    fn higher_radius_decays_more_relations() {
+        let (mut hg, _elements, relations) = synth_chain(5);
+        for &rid in &relations {
+            hg.relations[rid.0 as usize].stats.activation = 1.0;
+        }
+        let policy = Policy {
+            focus_decay_radius: 3,
+            decay_rate: 0.5,
+            ..Default::default()
+        };
+        let out = focus_radius_decay(&mut hg, &[relations[0]], &policy);
+        // With radius 3 we should reach all 4 chain relations
+        // (relation 0 is reinforced/skipped).
+        assert!(
+            out.relations_decayed >= 3,
+            "radius=3 over chain should decay ≥ 3 relations; got {}",
+            out.relations_decayed,
+        );
+    }
+
+    #[test]
+    fn relation_decayed_at_most_once() {
+        // Build a diamond: e0 -> e1, e0 -> e2, e1 -> e3, e2 -> e3.
+        // The relation e1->e3 is reachable from e0 only via e1. But
+        // we'll seed with TWO different relations that both touch
+        // e3 to verify the visited/decayed set prevents double-decay.
+        let mut hg = crate::types::Hypergraph::default();
+        let subject_id = mint_element(
+            &mut hg,
+            vec!["subject".to_string()],
+            vec![0.0; crate::embed::EMBEDDING_DIM],
+            Polarity::Signal,
+            1.0,
+        );
+        let attr_id = mint_element(
+            &mut hg,
+            vec!["a".to_string()],
+            vec![0.0; crate::embed::EMBEDDING_DIM],
+            Polarity::Signal,
+            1.0,
+        );
+        hg.subject_attr = subject_id;
+        hg.target_attr = attr_id;
+        let mk_node = |hg: &mut crate::types::Hypergraph, name: &str| {
+            mint_element(
+                hg,
+                vec![name.to_string()],
+                vec![0.0; crate::embed::EMBEDDING_DIM],
+                Polarity::Signal,
+                1.0,
+            )
+        };
+        let e0 = mk_node(&mut hg, "e0");
+        let e1 = mk_node(&mut hg, "e1");
+        let e2 = mk_node(&mut hg, "e2");
+        let e3 = mk_node(&mut hg, "e3");
+
+        let mk_rel = |hg: &mut crate::types::Hypergraph, s: ElId, t: ElId| {
+            mint_relation(
+                hg,
+                vec![
+                    Attribute {
+                        name: subject_id,
+                        value: Term::Element(s),
+                    },
+                    Attribute {
+                        name: attr_id,
+                        value: Term::Element(t),
+                    },
+                ],
+                RelationStatus::Asserted,
+                1.0,
+            )
+        };
+        let r01 = mk_rel(&mut hg, e0, e1);
+        let r02 = mk_rel(&mut hg, e0, e2);
+        let r13 = mk_rel(&mut hg, e1, e3);
+        let r23 = mk_rel(&mut hg, e2, e3);
+
+        // Set activation high so decay shows.
+        for &rid in &[r01, r02, r13, r23] {
+            hg.relations[rid.0 as usize].stats.activation = 1.0;
+        }
+
+        // Seed via r01 + r02 (both reinforced — neither decays itself).
+        let seed = &[r01, r02];
+        let policy = Policy {
+            focus_decay_radius: 3,
+            decay_rate: 0.5,
+            ..Default::default()
+        };
+        let out = focus_radius_decay(&mut hg, seed, &policy);
+
+        // r13 and r23 each reachable. Both should decay exactly once.
+        // (If we re-decayed r13 via e3's incoming edges, activation
+        // would drop further.)
+        let act_13_after = hg.relations[r13.0 as usize].stats.activation;
+        let act_23_after = hg.relations[r23.0 as usize].stats.activation;
+        // One bounded_hebbian_decay(1.0, 0.5) = 0.5. Two would = 0.25.
+        // Both should land at ~0.5 if dedup works.
+        assert!(
+            (act_13_after - 0.5).abs() < 1e-4,
+            "r13 should decay exactly once; activation={act_13_after} (expected ~0.5)",
+        );
+        assert!(
+            (act_23_after - 0.5).abs() < 1e-4,
+            "r23 should decay exactly once; activation={act_23_after} (expected ~0.5)",
+        );
+        assert_eq!(
+            out.relations_decayed, 2,
+            "exactly 2 relations should decay (r13 + r23); got {}",
+            out.relations_decayed,
+        );
+    }
+
+    #[test]
+    fn high_utility_relation_barely_decays() {
+        let (mut hg, _elements, relations) = synth_chain(3);
+        // Set the peripheral relation's activation HIGH and stats
+        // HIGH so utility is very large → effective rate near 0.
+        let periphery = relations[1];
+        hg.relations[periphery.0 as usize].stats.activation = 1.0;
+        hg.relations[periphery.0 as usize].stats.focus_success_count = 100;
+        hg.relations[periphery.0 as usize].stats.support_count = 100;
+        hg.relations[periphery.0 as usize].stats.salience = 1.0;
+        // The seed relation (relations[0]) keeps default zero stats
+        // but won't be decayed (it's reinforced).
+        let policy = Policy {
+            focus_decay_radius: 2,
+            decay_rate: 0.5,
+            ..Default::default()
+        };
+        let _ = focus_radius_decay(&mut hg, &[relations[0]], &policy);
+        let act = hg.relations[periphery.0 as usize].stats.activation;
+        assert!(
+            act > 0.95,
+            "high-utility periphery should barely decay; got {act}",
+        );
+    }
+
+    #[test]
+    fn status_and_support_count_untouched_by_decay() {
+        let (mut hg, _elements, relations) = synth_chain(3);
+        for &rid in &relations {
+            hg.relations[rid.0 as usize].stats.activation = 1.0;
+            hg.relations[rid.0 as usize].stats.support_count = 5;
+        }
+        let policy = Policy {
+            focus_decay_radius: 2,
+            decay_rate: 0.5,
+            ..Default::default()
+        };
+        let _ = focus_radius_decay(&mut hg, &[relations[0]], &policy);
+        // Spec invariant: only activation decays. Support count
+        // and status must stay put.
+        for &rid in &relations {
+            let r = &hg.relations[rid.0 as usize];
+            assert_eq!(r.stats.support_count, 5, "support_count must not decay");
+            assert_eq!(r.status, RelationStatus::Asserted, "status must not change");
+        }
     }
 
     #[test]
