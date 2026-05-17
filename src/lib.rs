@@ -1,4 +1,5 @@
 pub mod embed;
+pub mod hebbian;
 pub mod inference;
 pub mod intent_classifiers;
 pub mod lexical_features;
