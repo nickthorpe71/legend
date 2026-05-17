@@ -349,25 +349,16 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// True if any meta-relation pointing at `event_id` (via its
-/// `target` slot) carries an attribute named `attr_name`. Used to
-/// detect the `intervened` tag without depending on the
-/// `meta_relation_presence` index, which currently records the
-/// target attribute name rather than sibling attribute names.
-///
-/// O(K) where K = number of meta-relations on this event,
-/// typically 0–3. Cheap.
+/// True if `event_id` carries a meta-attribute named `attr_name`
+/// (i.e., some meta-relation `[target: event_id, ...attr_name...]`
+/// exists). O(1) lookup against `meta_relation_presence`, which
+/// `index_relation` populates by marking every non-`target` sibling
+/// attribute as present on the parent.
 fn event_has_meta_attr(hg: &Hypergraph, event_id: RelationId, attr_name: ElementId) -> bool {
-    let Some(metas) = hg.meta_relations_by_subject.get(&event_id) else {
-        return false;
-    };
-    for &mid in metas {
-        let m = &hg.relations[mid.0 as usize];
-        if m.attributes.iter().any(|a| a.name == attr_name) {
-            return true;
-        }
-    }
-    false
+    hg.meta_relation_presence
+        .get(&(event_id, attr_name))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// Find live prior cache relations for the same `(target, property)`

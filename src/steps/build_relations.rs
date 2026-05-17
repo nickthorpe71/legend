@@ -418,6 +418,10 @@ pub(crate) fn mint_relation(
 /// paths converge.
 fn index_relation(hg: &mut Hypergraph, r: &Relation) {
     let r_id = r.id;
+    // First pass: per-attribute indices + collect any parent relations
+    // this relation points at via `target` (Term::Relation). That set
+    // drives the second pass for `meta_relation_presence`.
+    let mut parent_relations: Vec<RelationId> = Vec::new();
     for attr in &r.attributes {
         hg.relations_by_attribute_name
             .entry(attr.name)
@@ -434,12 +438,24 @@ fn index_relation(hg: &mut Hypergraph, r: &Relation) {
                         .entry(parent)
                         .or_default()
                         .push(r_id);
+                    parent_relations.push(parent);
                 } else {
                     hg.meta_relations_by_object
                         .entry(parent)
                         .or_default()
                         .push(r_id);
                 }
+            }
+        }
+    }
+    // Second pass: for each `parent` we point at via `target`, mark
+    // every NON-target sibling attribute as present on the parent.
+    // This is the semantics the field comment promises: "does relation
+    // R carry a meta-attribute with this name?" Used by Step 9's
+    // `intervened` gate as an O(1) lookup.
+    for &parent in &parent_relations {
+        for attr in &r.attributes {
+            if attr.name != hg.target_attr {
                 hg.meta_relation_presence.insert((parent, attr.name), true);
             }
         }

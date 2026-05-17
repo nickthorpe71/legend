@@ -163,6 +163,7 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
     // per minted relation so build-from-scratch and incremental paths
     // produce identical index state.
     for r in &hg.relations {
+        let mut parent_relations: Vec<RelationId> = Vec::new();
         for attr in &r.attributes {
             hg.relations_by_attribute_name
                 .entry(attr.name)
@@ -179,12 +180,24 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
                             .entry(parent)
                             .or_default()
                             .push(r.id);
+                        parent_relations.push(parent);
                     } else {
                         hg.meta_relations_by_object
                             .entry(parent)
                             .or_default()
                             .push(r.id);
                     }
+                }
+            }
+        }
+        // For every parent we point at via `target`, mark every
+        // NON-target sibling attribute as present on the parent.
+        // Lets `meta_relation_presence` answer "does relation R
+        // carry a meta-attribute named X?" without a meta walk —
+        // Step 9's `intervened` gate reads this.
+        for &parent in &parent_relations {
+            for attr in &r.attributes {
+                if attr.name != hg.target_attr {
                     hg.meta_relation_presence.insert((parent, attr.name), true);
                 }
             }
@@ -588,6 +601,71 @@ mod tests {
         );
         let el = &hg.elements[hg.target_attr.0 as usize];
         assert_eq!(el.names[0], "target");
+    }
+
+    /// `meta_relation_presence` should record `(parent, sibling)` for
+    /// every non-target sibling on a meta-relation. Concretely: for
+    /// `[target: R_p, intervened: V]`, the index should hold
+    /// `(R_p, intervened_attr) → true` but NOT `(R_p, target_attr)`
+    /// (the target attribute is the link itself, not a sibling).
+    #[test]
+    fn meta_relation_presence_records_sibling_attributes() {
+        use crate::types::{Attribute, RelationStatus};
+        let mut hg = load_seed_graph();
+        let intervened_id = hg.by_name["intervened"][0];
+        let target_id = hg.target_attr;
+
+        // Pick an arbitrary seeded element to use as a parent value.
+        // The base relation we'll attach a meta to:
+        //   [subject: user, instance_of: user] (whatever lands).
+        // We mint our own base relation so the parent is fresh.
+        let user_id = hg.by_name["user"][0];
+        let instance_of_id = hg.by_name["instance_of"][0];
+        let subject_id = hg.subject_attr;
+        let base = crate::steps::build_relations::mint_relation(
+            &mut hg,
+            vec![
+                Attribute {
+                    name: subject_id,
+                    value: Term::Element(user_id),
+                },
+                Attribute {
+                    name: instance_of_id,
+                    value: Term::Element(user_id),
+                },
+            ],
+            RelationStatus::Entailed,
+            1.0,
+        );
+
+        // Meta-relation pointing at `base` with an `intervened` slot.
+        let _ = crate::steps::build_relations::mint_relation(
+            &mut hg,
+            vec![
+                Attribute {
+                    name: target_id,
+                    value: Term::Relation(base),
+                },
+                Attribute {
+                    name: intervened_id,
+                    value: Term::Element(user_id),
+                },
+            ],
+            RelationStatus::Entailed,
+            1.0,
+        );
+
+        assert_eq!(
+            hg.meta_relation_presence
+                .get(&(base, intervened_id))
+                .copied(),
+            Some(true),
+            "intervened should be marked present on the parent",
+        );
+        assert!(
+            !hg.meta_relation_presence.contains_key(&(base, target_id)),
+            "target is the link itself; not a sibling — should NOT be indexed as present",
+        );
     }
 
     /// Every seeded relation should appear in `relations_by_element`

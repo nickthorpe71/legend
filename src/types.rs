@@ -149,9 +149,13 @@ pub struct Hypergraph {
     pub attribute_co_counts: HashMap<(ElementId, ElementId), u32>,
 
     /// Per `(relation, attribute_name)`, presence flag: does relation
-    /// `R` carry a meta-attribute with this name? `true` iff present.
-    /// Lets Step 9 / Step 10 ask "is R `intervened`?" in O(1) without
-    /// walking the meta-relation index.
+    /// `R` carry a meta-attribute with this name? `true` iff some
+    /// meta-relation `[target: R, ..., <attribute_name>: ...]` exists.
+    /// Populated by walking every relation's attributes — when an
+    /// attribute is `Term::Relation(R)` and named `target`, every
+    /// non-`target` sibling attribute on that relation gets marked
+    /// present on `R`. Lets Step 9 / Step 10 ask
+    /// "does this event have an `intervened` meta?" in O(1).
     pub meta_relation_presence: HashMap<(RelationId, ElementId), bool>,
 
     // ── Anchor IDs ─────────────────────────────────────────────────────
