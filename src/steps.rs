@@ -2,6 +2,7 @@ pub mod adjust_policy;
 pub mod apply_region_delta;
 pub mod build_relations;
 pub mod coref;
+pub mod decay;
 pub mod detect_intent;
 pub mod hebbian;
 pub mod novelty_relations;
