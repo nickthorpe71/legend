@@ -26,7 +26,7 @@ use std::collections::HashSet;
 use crate::hebbian::bounded_hebbian_bump;
 use crate::steps::build_relations::{Step8Output, kind_of};
 use crate::steps::supersede::Step9Output;
-use crate::types::{Hypergraph, Policy, RelationId, Term};
+use crate::types::{Hypergraph, Policy, RelationId, RelationStatus, Term};
 
 /// Per-tick summary of what Step 10 actually did. Surfaces in the
 /// debug print and (for `promoted`) in the frame's downstream
@@ -92,10 +92,78 @@ pub fn hebbian_and_salience(
             r.stats.salience,
             (bump * policy.hebbian_rate).clamp(0.0, 1.0),
         );
+
+        // support_count bumps every tick the relation is reinforced.
+        // Per §11.11, support_diversity tracks topologically
+        // independent sources — replay's job; stays at 0 for v0.
+        r.stats.support_count = r.stats.support_count.saturating_add(1);
     }
     out.reinforced.extend(reinforcement_set.iter().copied());
 
+    // Defeasible → Asserted promotion. Walk only the reinforcement
+    // set; full-graph sweeps belong to replay (§14.8).
+    for &rid in &reinforcement_set {
+        if hg.relations[rid.0 as usize].status != RelationStatus::Defeasible {
+            continue;
+        }
+        if check_promotion(hg, rid, policy) {
+            let r = &mut hg.relations[rid.0 as usize];
+            r.status = RelationStatus::Asserted;
+            // Lift confidence so downstream queries see the higher
+            // belief strength. Don't drop below the existing value.
+            r.stats.confidence = r.stats.confidence.max(policy.default_conf).clamp(0.0, 1.0);
+            out.promoted.push(rid);
+        }
+    }
+
     out
+}
+
+/// Returns `true` iff Defeasible relation `R` clears all three
+/// promotion gates per §11.11:
+///
+/// 1. `support_count >= policy.promotion_min_count`
+/// 2. `support_diversity >= policy.promotion_min_diversity`
+///    (v0 leaves this at 0 — replay's job to maintain)
+/// 3. No live `supersedes` meta-relation points at R
+///    (`meta_relations_by_object[R]` filtered to entries whose
+///    attribute list contains `supersedes`)
+fn check_promotion(hg: &Hypergraph, rid: RelationId, policy: &Policy) -> bool {
+    let r = &hg.relations[rid.0 as usize];
+    if r.stats.support_count < policy.promotion_min_count {
+        return false;
+    }
+    if r.stats.support_diversity < policy.promotion_min_diversity {
+        return false;
+    }
+    if has_live_supersedes_meta(hg, rid) {
+        return false;
+    }
+    true
+}
+
+fn has_live_supersedes_meta(hg: &Hypergraph, rid: RelationId) -> bool {
+    let Some(supersedes_attr) = hg
+        .by_name
+        .get("supersedes")
+        .and_then(|v| v.first().copied())
+    else {
+        return false;
+    };
+    let Some(metas) = hg.meta_relations_by_object.get(&rid) else {
+        return false;
+    };
+    for &mid in metas {
+        let m = &hg.relations[mid.0 as usize];
+        // Skip metas that have themselves been retracted.
+        if matches!(m.status, RelationStatus::Retracted) {
+            continue;
+        }
+        if m.attributes.iter().any(|a| a.name == supersedes_attr) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Salience score per §11.11. Components stack additively; v0 uses
@@ -377,6 +445,228 @@ mod tests {
         assert!(
             cache_sal > 0.5,
             "cache (supersession-derived) salience should clear 0.5; got {cache_sal}",
+        );
+    }
+
+    #[test]
+    fn support_count_increments_per_reinforcement() {
+        let policy = Policy::default();
+        let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
+
+        let pick = step8.minted_relations[0];
+        // support_count starts at 0; bumps by 1 per Step 10 call.
+        assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 0);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 1);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 2);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 3);
+    }
+
+    #[test]
+    fn defeasible_promotes_when_gate_clears() {
+        // Custom policy: min_count=3, min_diversity=0 (so v0's
+        // 0-by-design diversity counter doesn't block).
+        let policy = Policy {
+            promotion_min_count: 3,
+            promotion_min_diversity: 0,
+            ..Default::default()
+        };
+
+        // Use a sentence whose NER score on `meeting` is below the
+        // assertion threshold → instance_of relation lands Defeasible.
+        let (mut hg, step8, step9) = run_through_step9(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+            &policy,
+        );
+
+        // Find a Defeasible instance_of relation to track.
+        let instance_of_attr = hg.by_name["instance_of"][0];
+        let target_rid = step8
+            .minted_relations
+            .iter()
+            .copied()
+            .find(|rid| {
+                let r = &hg.relations[rid.0 as usize];
+                r.status == RelationStatus::Defeasible
+                    && r.attributes.iter().any(|a| a.name == instance_of_attr)
+            })
+            .expect("expected at least one Defeasible instance_of");
+
+        // First two reinforcements: support_count climbs to 2; gate
+        // not yet cleared.
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        assert_eq!(
+            hg.relations[target_rid.0 as usize].status,
+            RelationStatus::Defeasible,
+            "not promoted yet at support_count=2",
+        );
+
+        // Third reinforcement clears support_count >= 3.
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        assert_eq!(
+            hg.relations[target_rid.0 as usize].status,
+            RelationStatus::Asserted,
+            "expected promotion at support_count=3",
+        );
+        assert!(
+            out.promoted.contains(&target_rid),
+            "Step10Output.promoted must list the promoted relation",
+        );
+    }
+
+    #[test]
+    fn promotion_blocked_by_low_support_count() {
+        let policy = Policy {
+            promotion_min_count: 5,
+            promotion_min_diversity: 0,
+            ..Default::default()
+        };
+        let (mut hg, step8, step9) = run_through_step9(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+            &policy,
+        );
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        // After one tick, support_count == 1; min is 5; nothing
+        // should have promoted.
+        assert!(
+            out.promoted.is_empty(),
+            "no promotion expected with support_count=1 and min=5",
+        );
+    }
+
+    #[test]
+    fn promotion_blocked_by_default_min_diversity() {
+        // Default policy has min_diversity=2 and v0 leaves diversity
+        // at 0 forever, so nothing ever promotes under defaults.
+        let policy = Policy {
+            promotion_min_count: 1, // even trivially low won't help
+            ..Default::default()
+        };
+        let (mut hg, step8, step9) = run_through_step9(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+            &policy,
+        );
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        assert!(
+            out.promoted.is_empty(),
+            "min_diversity=2 with diversity=0 should block promotion",
+        );
+    }
+
+    #[test]
+    fn promotion_blocked_by_supersedes_meta() {
+        // Two-tick fixture: tick 1 mints a Defeasible cache-attribute
+        // relation; tick 2 supersedes it. Step 10 on tick 2 must NOT
+        // promote the flipped-prior cache even if support_count clears.
+        // (The flipped prior is excluded from reinforcement, so this
+        // is really a test of the supersedes-meta gate via secondary
+        // visibility — the cache that *was* superseded has a
+        // meta_relations_by_object entry containing a supersedes meta.)
+        let policy = Policy {
+            promotion_min_count: 1,
+            promotion_min_diversity: 0,
+            ..Default::default()
+        };
+        let labels: &[&str] = &["event", "weekday"];
+
+        let mut hg = load_seed_graph();
+        let ext1 = run_extractors(
+            "The meeting moved from Monday to Tuesday.",
+            labels,
+            &policy,
+            &hg,
+            &[],
+        );
+        let step8_1 = build_relations(
+            "The meeting moved from Monday to Tuesday.",
+            &mut hg,
+            &ext1,
+            &policy,
+            None,
+        );
+        let step9_1 = supersede(&mut hg, &step8_1.minted_relations, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, &policy);
+
+        // Tick 2 supersedes tick 1's cache.
+        let ext2 = run_extractors(
+            "The meeting moved from Tuesday to Friday.",
+            labels,
+            &policy,
+            &hg,
+            &[],
+        );
+        let step8_2 = build_relations(
+            "The meeting moved from Tuesday to Friday.",
+            &mut hg,
+            &ext2,
+            &policy,
+            None,
+        );
+        let step9_2 = supersede(&mut hg, &step8_2.minted_relations, &policy);
+        assert!(!step9_2.superseded.is_empty());
+        let prior = step9_2.superseded[0];
+
+        // Force the prior into Defeasible just for this test — we
+        // want to verify the supersedes-meta gate, not the status
+        // bookkeeping the prior already underwent.
+        hg.relations[prior.0 as usize].status = RelationStatus::Defeasible;
+
+        // Manually craft a reinforcement set containing the prior so
+        // promotion would be considered. Step10's normal path
+        // excludes superseded; this synthetic call exercises the
+        // gate logic only.
+        let mut synthetic_step9 = step9_2.clone();
+        synthetic_step9.superseded.clear();
+        synthetic_step9.cache_relations.push(prior); // include in reinforcement set
+        let out = hebbian_and_salience(&mut hg, &step8_2, &synthetic_step9, &policy);
+
+        assert!(
+            !out.promoted.contains(&prior),
+            "promotion must be blocked by an existing supersedes meta",
+        );
+    }
+
+    #[test]
+    fn promotion_bumps_confidence_to_default_conf() {
+        let policy = Policy {
+            promotion_min_count: 1,
+            promotion_min_diversity: 0,
+            default_conf: 0.9,
+            ..Default::default()
+        };
+        let (mut hg, step8, step9) = run_through_step9(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+            &policy,
+        );
+        let instance_of_attr = hg.by_name["instance_of"][0];
+        let target_rid = step8
+            .minted_relations
+            .iter()
+            .copied()
+            .find(|rid| {
+                let r = &hg.relations[rid.0 as usize];
+                r.status == RelationStatus::Defeasible
+                    && r.attributes.iter().any(|a| a.name == instance_of_attr)
+            })
+            .expect("expected at least one Defeasible instance_of");
+        let conf_before = hg.relations[target_rid.0 as usize].stats.confidence;
+        assert!(conf_before < 0.9);
+
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        assert_eq!(
+            hg.relations[target_rid.0 as usize].status,
+            RelationStatus::Asserted,
+        );
+        assert!(
+            (hg.relations[target_rid.0 as usize].stats.confidence - 0.9).abs() < 1e-5,
+            "promotion should lift confidence to default_conf",
         );
     }
 
