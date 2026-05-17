@@ -100,6 +100,15 @@ pub fn hebbian_and_salience(
         // Per §11.11, support_diversity tracks topologically
         // independent sources — replay's job; stays at 0 for v0.
         r.stats.support_count = r.stats.support_count.saturating_add(1);
+
+        // focus_success_count tracks "this relation landed in a
+        // successful focus path this tick." Step 12's RRF uses it as
+        // the path-reinforced ranking signal alongside the
+        // dense (activation-based) signal. Per §11.13 the spec
+        // distinguishes "in the focus path" from "got bumped" —
+        // v0 collapses both: every reinforced relation is a
+        // focus-path success. Replay can refine later.
+        r.stats.focus_success_count = r.stats.focus_success_count.saturating_add(1);
     }
     out.reinforced.extend(reinforcement_set.iter().copied());
 

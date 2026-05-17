@@ -4,6 +4,7 @@ pub mod build_relations;
 pub mod coref;
 pub mod decay;
 pub mod detect_intent;
+pub mod frame;
 pub mod hebbian;
 pub mod novelty_relations;
 pub mod orthographic;

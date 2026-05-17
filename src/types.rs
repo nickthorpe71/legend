@@ -923,12 +923,18 @@ pub struct NewRegion {
     pub initial_prototype: Vec<f32>,
 }
 
-/// One relation in the frame's ranked focus list. Activation is the
-/// fused RRF score from Step 12.
+/// One relation in the frame's ranked focus list. `activation`
+/// carries the Step 12 RRF-fused score (NOT the raw
+/// `stats.activation` post-decay — those drive the RRF input
+/// ranking, not the output). `is_defeasible` mirrors
+/// `status == Defeasible` so callers can filter without an
+/// extra lookup; consumers typically present Defeasible relations
+/// with reduced weight or in a separate tray.
 #[derive(Clone, Copy, Debug)]
 pub struct RelationActivation {
     pub relation: RelationId,
     pub activation: f32,
+    pub is_defeasible: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
