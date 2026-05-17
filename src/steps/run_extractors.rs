@@ -221,8 +221,11 @@ pub fn run_extractors(
     let relations: Vec<RelationProposal> = extract_relations(input_text, &ner_spans);
     stage("relations");
 
-    // 6. Coref. Currently a stub; included for API stability.
-    let coref: Vec<CorefDecision> = resolve_coref(input_text, hg);
+    // 6. Coref. Reads `hg.recent_focus` (Step 10's output from
+    //    prior ticks) plus this tick's NER spans to skip
+    //    already-typed entities. Emits empty on the first tick
+    //    of a session (no recent_focus yet).
+    let coref: Vec<CorefDecision> = resolve_coref(input_text, hg, &ner_spans);
     stage("coref");
 
     // 7. Novelty-branch pattern OpenIE — verb-shape morphology over
