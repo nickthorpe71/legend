@@ -13,11 +13,12 @@
 //! a wrong coref binds two distinct entities together, which is
 //! hard to unwind.
 //!
-//! See `step_6_design.md` for the spec; this is phase 1 (ambiguous-
-//! span detection only). Phases 2-5 add scoring + threshold + tests.
+//! See `step_6_design.md` for the spec.
 
+use crate::embed::embed_span_in_context;
 use crate::inference::deberta::predict::LabeledSpan;
-use crate::types::Hypergraph;
+use crate::math::dot;
+use crate::types::{ElementId, Hypergraph, Policy, Tick};
 
 /// A pronoun or definite-description span that referred to an
 /// already-mentioned entity. Step 8 uses these to bind the pronoun's
@@ -58,17 +59,67 @@ const PRONOUNS: &[&str] = &[
 ];
 
 /// Resolve coreferences within `input_text` given the current
-/// hypergraph state. Returns an empty vector while
-/// `Hypergraph.recent_focus` is unpopulated.
+/// hypergraph state.
 ///
-/// Phase 1 ships ambiguous-span detection only; phases 2-5 wire
-/// scoring + threshold gate + decisions.
+/// For each ambiguous span (pronoun or definite description),
+/// score every `recent_focus` candidate and emit a `CorefDecision`
+/// if the max-scoring candidate clears `policy.coref_threshold`.
+/// Below threshold: no decision (the span falls through to Step 8's
+/// normal mint path).
+///
+/// Returns an empty vector when `recent_focus` is empty (first tick
+/// of a session) or when no ambiguous spans are present.
 pub fn resolve_coref(
-    _input_text: &str,
-    _hg: &Hypergraph,
-    _ner_spans: &[LabeledSpan],
+    input_text: &str,
+    hg: &Hypergraph,
+    ner_spans: &[LabeledSpan],
+    policy: &Policy,
 ) -> Vec<CorefDecision> {
-    Vec::new()
+    let spans = detect_ambiguous_spans(input_text, hg, ner_spans);
+    if spans.is_empty() || hg.recent_focus.is_empty() {
+        return Vec::new();
+    }
+    let candidates = collect_candidates(hg);
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    // Max possible score: 1 (name) + 1 (embedding) + 0.5 (attr) +
+    // 1 (recency) = 3.5. We divide by this for the published
+    // confidence.
+    const MAX_SCORE: f32 = 3.5;
+
+    let mut decisions: Vec<CorefDecision> = Vec::new();
+    for span in &spans {
+        let mut best: Option<(&Candidate, f32)> = None;
+        for cand in &candidates {
+            let s = score_candidate(span, input_text, hg, cand);
+            match best {
+                Some((_, b)) if s <= b => {}
+                _ => best = Some((cand, s)),
+            }
+        }
+        let Some((cand, score)) = best else { continue };
+        if score < policy.coref_threshold {
+            continue;
+        }
+        let antecedent_name = hg.elements[cand.element.0 as usize]
+            .names
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        if antecedent_name.is_empty() {
+            continue;
+        }
+        decisions.push(CorefDecision {
+            pronoun_text: span.text.clone(),
+            pronoun_char_start: span.char_start,
+            pronoun_char_end: span.char_end,
+            antecedent_text: antecedent_name,
+            confidence: (score / MAX_SCORE).clamp(0.0, 1.0),
+        });
+    }
+    decisions
 }
 
 /// Walk `input_text` and identify pronouns + definite descriptions
@@ -174,6 +225,136 @@ pub fn detect_ambiguous_spans(
     out
 }
 
+// ─── Phase 2: candidate set + scoring ────────────────────────────────
+
+/// One coref candidate gathered from `Hypergraph.recent_focus`.
+/// Multiple focus entries pointing at the same element collapse
+/// into one Candidate that carries the union of their attribute
+/// slots and the freshest tick.
+#[derive(Debug, Clone)]
+pub(crate) struct Candidate {
+    pub element: ElementId,
+    /// Attribute slots this element was focused under (subject /
+    /// target / actor / ...). Lets the attribute_overlap_hint
+    /// score know whether the element has ever been focal.
+    pub attributes: Vec<Option<ElementId>>,
+    /// Freshest tick across this element's recent_focus entries.
+    /// Drives the recency bonus.
+    pub freshest_tick: Tick,
+}
+
+/// Dedupe `hg.recent_focus` by element. Most recent entry wins for
+/// `freshest_tick`; attribute slots accumulate. Returns candidates
+/// in recency-first order (matching the deque order).
+pub(crate) fn collect_candidates(hg: &Hypergraph) -> Vec<Candidate> {
+    let mut by_element: std::collections::HashMap<ElementId, Candidate> =
+        std::collections::HashMap::new();
+    let mut order: Vec<ElementId> = Vec::new();
+    for entry in &hg.recent_focus {
+        let cand = by_element.entry(entry.element).or_insert_with(|| {
+            order.push(entry.element);
+            Candidate {
+                element: entry.element,
+                attributes: Vec::new(),
+                freshest_tick: entry.tick,
+            }
+        });
+        if !cand.attributes.contains(&entry.attribute) {
+            cand.attributes.push(entry.attribute);
+        }
+        if entry.tick.0 > cand.freshest_tick.0 {
+            cand.freshest_tick = entry.tick;
+        }
+    }
+    order
+        .into_iter()
+        .map(|id| by_element.remove(&id).unwrap())
+        .collect()
+}
+
+/// name_overlap: how well does the span's surface form match the
+/// candidate's seeded / minted names? Pronouns return 0 (no surface
+/// info). For definite descriptions, exact head-match → 1.0;
+/// substring match → 0.5; else 0.
+pub(crate) fn name_overlap(span: &AmbiguousSpan, hg: &Hypergraph, candidate_id: ElementId) -> f32 {
+    if matches!(span.kind, AmbiguousKind::Pronoun) {
+        return 0.0;
+    }
+    // Definite-description head = last whitespace-delimited token.
+    let head = span.text.split_whitespace().last().unwrap_or("");
+    let head_lower = head.to_ascii_lowercase();
+    let names = &hg.elements[candidate_id.0 as usize].names;
+    for name in names {
+        let name_lower = name.to_ascii_lowercase();
+        if name_lower == head_lower {
+            return 1.0;
+        }
+    }
+    for name in names {
+        let name_lower = name.to_ascii_lowercase();
+        if name_lower.contains(&head_lower) || head_lower.contains(&name_lower) {
+            return 0.5;
+        }
+    }
+    0.0
+}
+
+/// embedding_similarity: cosine between the span's contextualized
+/// embedding and the candidate Element's embedding. Returns 0 if
+/// the span doesn't tokenize cleanly (no contextualized vector).
+pub(crate) fn embedding_similarity(
+    span: &AmbiguousSpan,
+    input_text: &str,
+    hg: &Hypergraph,
+    candidate_id: ElementId,
+) -> f32 {
+    let Some(span_emb) = embed_span_in_context(input_text, span.char_start, span.char_end) else {
+        return 0.0;
+    };
+    let cand_emb = &hg.elements[candidate_id.0 as usize].embedding;
+    if cand_emb.len() != span_emb.len() {
+        return 0.0;
+    }
+    // Both are L2-normalized → cosine == dot. Clamp to [0, 1] so a
+    // negative dot product (extremely rare for sentence embeddings)
+    // doesn't drag the score below the threshold floor.
+    dot(&span_emb, cand_emb).clamp(0.0, 1.0)
+}
+
+/// attribute_overlap_hint: in lieu of real syntactic-role detection,
+/// boost candidates that have ANY recorded attribute slot. Rewards
+/// elements that were focal in some role over elements that just
+/// happen to be in recent_focus without an attribute binding.
+pub(crate) fn attribute_overlap_hint(candidate: &Candidate) -> f32 {
+    if candidate.attributes.iter().any(|a| a.is_some()) {
+        0.5
+    } else {
+        0.0
+    }
+}
+
+/// recency_bonus: linearly decays with tick distance. Same-tick
+/// entries score 1.0; an entry from N ticks ago scores 1/(1+N).
+/// Stays in [0, 1].
+pub(crate) fn recency_bonus(candidate: &Candidate, now: Tick) -> f32 {
+    let ticks_ago = now.0.saturating_sub(candidate.freshest_tick.0);
+    1.0 / (1.0 + ticks_ago as f32)
+}
+
+/// Aggregate score per §11.8 (v0 terms only). Returns a non-negative
+/// score; the caller compares against `policy.coref_threshold`.
+pub(crate) fn score_candidate(
+    span: &AmbiguousSpan,
+    input_text: &str,
+    hg: &Hypergraph,
+    candidate: &Candidate,
+) -> f32 {
+    name_overlap(span, hg, candidate.element)
+        + embedding_similarity(span, input_text, hg, candidate.element)
+        + attribute_overlap_hint(candidate)
+        + recency_bonus(candidate, hg.clock)
+}
+
 fn overlaps_ner(start: usize, end: usize, ner_spans: &[LabeledSpan]) -> bool {
     ner_spans
         .iter()
@@ -212,10 +393,103 @@ mod tests {
     use super::*;
     use crate::seed::load_seed_graph;
 
+    // ── Phase 5: end-to-end integration ─────────────────────────
+
+    #[test]
+    fn resolves_pronoun_to_subject_from_recent_focus() {
+        // Set up: a candidate `Sarah` element in recent_focus with
+        // a subject binding. A pronoun span "She" in the input
+        // should resolve to Sarah and emit a CorefDecision.
+        let mut hg = load_seed_graph();
+        let sarah_id = crate::steps::build_relations::mint_element(
+            &mut hg,
+            vec!["Sarah".to_string()],
+            crate::embed::embed_text("Sarah"),
+            crate::types::Polarity::Signal,
+            1.0,
+        );
+        let subject = hg.subject_attr;
+        hg.recent_focus.push_front(RecentFocusEntry {
+            element: sarah_id,
+            attribute: Some(subject),
+            frame: None,
+            tick: Tick(0),
+        });
+        let policy = Policy::default();
+
+        let decisions = resolve_coref("She emailed me.", &hg, &[], &policy);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].pronoun_text, "She");
+        assert_eq!(decisions[0].antecedent_text, "Sarah");
+        assert!(decisions[0].confidence > 0.0);
+    }
+
+    #[test]
+    fn no_decision_when_no_compatible_candidates() {
+        // recent_focus is empty → no candidates → no decision.
+        let hg = load_seed_graph();
+        let policy = Policy::default();
+        let decisions = resolve_coref("She emailed me.", &hg, &[], &policy);
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn threshold_gate_blocks_low_score_binds() {
+        // With a recent_focus entry of an UNATTRIBUTED element and
+        // a pronoun span, the score is just recency_bonus = 1.0 —
+        // below default threshold (1.0 is not >= 1.0 since the
+        // default is "must clear at least one substantive signal").
+        // Bump threshold to 1.6 so even a 1.0 recency bonus + small
+        // embedding bump won't clear, and verify nothing fires.
+        let mut hg = load_seed_graph();
+        let user_id = hg.by_name["user"][0];
+        hg.recent_focus.push_front(RecentFocusEntry {
+            element: user_id,
+            attribute: None, // no attribute → no hint bonus
+            frame: None,
+            tick: Tick(0),
+        });
+        let policy = Policy {
+            coref_threshold: 2.5, // very high; pronouns can't clear
+            ..Default::default()
+        };
+        let decisions = resolve_coref("She emailed me.", &hg, &[], &policy);
+        assert!(
+            decisions.is_empty(),
+            "high threshold should block low-score binds",
+        );
+    }
+
+    #[test]
+    fn definite_description_binds_when_head_matches() {
+        // "the user" → user element via name_overlap = 1.0 (exact).
+        let mut hg = load_seed_graph();
+        let user_id = hg.by_name["user"][0];
+        hg.recent_focus.push_front(RecentFocusEntry {
+            element: user_id,
+            attribute: Some(hg.subject_attr),
+            frame: None,
+            tick: Tick(0),
+        });
+        let policy = Policy::default();
+        let decisions = resolve_coref("the user replied.", &hg, &[], &policy);
+        let dd: Vec<&CorefDecision> = decisions
+            .iter()
+            .filter(|d| d.pronoun_text.starts_with("the"))
+            .collect();
+        assert_eq!(dd.len(), 1);
+        assert_eq!(dd[0].antecedent_text, "user");
+        assert!(
+            dd[0].confidence >= 0.7,
+            "high-conf bind expected; got {}",
+            dd[0].confidence
+        );
+    }
+
     #[test]
     fn returns_empty_with_no_recent_focus() {
         let hg = Hypergraph::default();
-        let decisions = resolve_coref("She left.", &hg, &[]);
+        let decisions = resolve_coref("She left.", &hg, &[], &Policy::default());
         assert!(decisions.is_empty());
     }
 
@@ -299,6 +573,149 @@ mod tests {
         let spans = detect_ambiguous_spans("That is mine.", &hg, &[]);
         let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
         assert!(texts.contains(&"That"));
+    }
+
+    // ── Phase 2 tests: candidates + scoring ─────────────────────
+
+    use crate::types::RecentFocusEntry;
+
+    fn pronoun_span(text: &str, start: usize, end: usize) -> AmbiguousSpan {
+        AmbiguousSpan {
+            text: text.to_string(),
+            char_start: start,
+            char_end: end,
+            kind: AmbiguousKind::Pronoun,
+        }
+    }
+
+    fn def_desc_span(text: &str, start: usize, end: usize) -> AmbiguousSpan {
+        AmbiguousSpan {
+            text: text.to_string(),
+            char_start: start,
+            char_end: end,
+            kind: AmbiguousKind::DefiniteDescription,
+        }
+    }
+
+    #[test]
+    fn collect_candidates_dedupes_by_element() {
+        let mut hg = load_seed_graph();
+        let user_id = hg.by_name["user"][0];
+        // Push the same element twice — under subject AND target.
+        hg.recent_focus.push_front(RecentFocusEntry {
+            element: user_id,
+            attribute: Some(hg.subject_attr),
+            frame: None,
+            tick: Tick(0),
+        });
+        hg.recent_focus.push_front(RecentFocusEntry {
+            element: user_id,
+            attribute: Some(hg.target_attr),
+            frame: None,
+            tick: Tick(1),
+        });
+        let cands = collect_candidates(&hg);
+        assert_eq!(cands.len(), 1, "duplicate element should collapse");
+        let c = &cands[0];
+        assert_eq!(c.element, user_id);
+        assert_eq!(c.attributes.len(), 2);
+        assert!(c.attributes.contains(&Some(hg.subject_attr)));
+        assert!(c.attributes.contains(&Some(hg.target_attr)));
+        assert_eq!(c.freshest_tick.0, 1, "freshest tick should win");
+    }
+
+    #[test]
+    fn name_overlap_pronoun_returns_zero() {
+        let hg = load_seed_graph();
+        let user_id = hg.by_name["user"][0];
+        let span = pronoun_span("She", 0, 3);
+        assert_eq!(name_overlap(&span, &hg, user_id), 0.0);
+    }
+
+    #[test]
+    fn name_overlap_definite_description_exact_match() {
+        let hg = load_seed_graph();
+        let user_id = hg.by_name["user"][0];
+        let span = def_desc_span("the user", 0, 8);
+        assert_eq!(name_overlap(&span, &hg, user_id), 1.0);
+    }
+
+    #[test]
+    fn name_overlap_definite_description_substring() {
+        // Pick an element whose name contains "user" but isn't exact.
+        // (Synthetic case — `user` is a one-word seeded element so
+        // we mint a custom element to test the substring branch.)
+        let mut hg = load_seed_graph();
+        let elem = crate::types::Element {
+            id: ElementId(hg.elements.len() as u32),
+            names: vec!["super_user".to_string()],
+            stats: crate::types::MemoryStats::default(),
+            created_at: Tick(0),
+            embedding: vec![0.0; crate::embed::EMBEDDING_DIM],
+            polarity: crate::types::Polarity::Signal,
+        };
+        let id = elem.id;
+        hg.elements.push(elem);
+        hg.by_name.insert("super_user".to_string(), vec![id]);
+
+        let span = def_desc_span("the user", 0, 8);
+        assert_eq!(name_overlap(&span, &hg, id), 0.5);
+    }
+
+    #[test]
+    fn recency_bonus_drops_with_tick_distance() {
+        let mut hg = load_seed_graph();
+        let user_id = hg.by_name["user"][0];
+        hg.clock = Tick(10);
+        let cand = Candidate {
+            element: user_id,
+            attributes: vec![],
+            freshest_tick: Tick(10),
+        };
+        assert_eq!(recency_bonus(&cand, hg.clock), 1.0);
+        let cand_old = Candidate {
+            freshest_tick: Tick(0),
+            ..cand.clone()
+        };
+        let bonus = recency_bonus(&cand_old, hg.clock);
+        assert!(bonus < 0.1, "10 ticks ago should score < 0.1; got {bonus}");
+    }
+
+    #[test]
+    fn attribute_overlap_hint_rewards_attributed_focus() {
+        let hg = load_seed_graph();
+        let user_id = hg.by_name["user"][0];
+        let attributed = Candidate {
+            element: user_id,
+            attributes: vec![Some(hg.subject_attr)],
+            freshest_tick: Tick(0),
+        };
+        let unattributed = Candidate {
+            element: user_id,
+            attributes: vec![None],
+            freshest_tick: Tick(0),
+        };
+        assert_eq!(attribute_overlap_hint(&attributed), 0.5);
+        assert_eq!(attribute_overlap_hint(&unattributed), 0.0);
+    }
+
+    #[test]
+    fn score_candidate_combines_terms() {
+        let mut hg = load_seed_graph();
+        let user_id = hg.by_name["user"][0];
+        hg.clock = Tick(0);
+        let span = def_desc_span("the user", 0, 8);
+        let cand = Candidate {
+            element: user_id,
+            attributes: vec![Some(hg.subject_attr)],
+            freshest_tick: Tick(0),
+        };
+        let s = score_candidate(&span, "the user replied.", &hg, &cand);
+        // name_overlap = 1.0; embedding_sim ∈ [0, 1]; attr hint = 0.5;
+        // recency = 1.0 (same-tick). Lower bound ≈ 2.5.
+        assert!(s >= 2.5, "expected >= 2.5; got {s}");
+        // Upper bound 3.5 (1 + 1 + 0.5 + 1).
+        assert!(s <= 3.5, "expected <= 3.5; got {s}");
     }
 
     #[test]

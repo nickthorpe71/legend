@@ -223,9 +223,10 @@ pub fn run_extractors(
 
     // 6. Coref. Reads `hg.recent_focus` (Step 10's output from
     //    prior ticks) plus this tick's NER spans to skip
-    //    already-typed entities. Emits empty on the first tick
+    //    already-typed entities. Gates decisions on
+    //    `policy.coref_threshold`. Emits empty on the first tick
     //    of a session (no recent_focus yet).
-    let coref: Vec<CorefDecision> = resolve_coref(input_text, hg, &ner_spans);
+    let coref: Vec<CorefDecision> = resolve_coref(input_text, hg, &ner_spans, policy);
     stage("coref");
 
     // 7. Novelty-branch pattern OpenIE — verb-shape morphology over

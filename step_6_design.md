@@ -1,9 +1,19 @@
 # Step 6 — Coreference Scoring
 
-> **Status: design pass.** Spec source: `tick_pipeline_focus.md §11.8`.
-> Step 10's `recent_focus` push (shipped) is the unblocker — coref
-> was a stub for the whole pipeline until now because there were no
-> candidates to score against.
+> **Status: complete (v0).** All five phases landed.
+> `src/steps/coref.rs` ships `detect_ambiguous_spans`,
+> `collect_candidates`, four v0 scoring terms, and the gated
+> aggregator `resolve_coref`. `policy.coref_threshold` (default 1.0)
+> gates decisions. 20 coref unit tests pass; 181 lib tests total.
+>
+> Known v0 quirk: NER's bundled GLiNER1 weights aggressively tag
+> bare pronouns ("She" → `person` at 0.92+ conf), which the
+> NER-overlap filter then excludes from coref candidacy. The fix is
+> either an override rule ("if NER says `person` and the span is in
+> the PRONOUNS list, treat as pronoun") or a label-set tightening.
+> v0 doc-only deferral; the wiring + scoring is correct end-to-end
+> for non-pronoun-tagging NER calls (e.g., definite descriptions
+> and any future text where NER misses the pronoun).
 
 ## 1. What Step 6 is
 

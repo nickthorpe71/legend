@@ -674,6 +674,15 @@ pub struct Policy {
     /// relation as `Defeasible` rather than `Asserted`.
     pub ner_assertion_threshold: f32,
 
+    // ── Coref ────────────────────────────────────────────────────────
+    /// Minimum aggregate score for a Step 6 coref decision to fire.
+    /// Below this, the ambiguous span falls through to Step 8's
+    /// normal mint path. Tuned conservatively (default 1.0) so a
+    /// recency bonus alone isn't enough to bind — coref needs at
+    /// least one substantive signal on top. Wrong binds are harder
+    /// to unwind than missed binds (replay can merge later).
+    pub coref_threshold: f32,
+
     // ── Intent-modulated knobs (Step 2 outputs) ──────────────────────
     //
     // These five fields hold the rest-state base on the Hypergraph's
@@ -746,6 +755,8 @@ impl Default for Policy {
             replay_focus_floor: 3,
 
             ner_assertion_threshold: 0.7,
+
+            coref_threshold: 1.0,
 
             // §10.6 base values. `default_conf = 1.0` lines up with the
             // worked examples (high-conviction → ~0.90, hedged → ~0.09).
