@@ -19,6 +19,7 @@ use seed::load_seed_graph;
 use steps::adjust_policy::adjust_policy;
 use steps::apply_region_delta::{RegionDeltaApplied, apply_region_delta};
 use steps::build_relations::{build_relations, print_step8};
+use steps::decay::{focus_radius_decay, print_step11};
 use steps::detect_intent::detect_intent;
 use steps::hebbian::{hebbian_and_salience, print_step10};
 use steps::route_regions::{RouteResult, route_regions};
@@ -129,6 +130,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
     stage_at("hebbian + salience (Step 10)", &mut mark);
     print_step10(&step10, &hg, &policy);
+
+    // Step 11 — focus-radius decay. Walks outward from
+    // step10.reinforced via relations_by_element, decaying each
+    // non-reinforced relation reached. Default policy
+    // (focus_decay_radius=0 AND decay_rate=0) is a no-op gate.
+    let step11 = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
+    stage_at("focus-radius decay (Step 11)", &mut mark);
+    print_step11(&step11, &policy);
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;
