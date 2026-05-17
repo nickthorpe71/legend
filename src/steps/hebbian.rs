@@ -132,6 +132,88 @@ pub fn hebbian_and_salience(
     out
 }
 
+/// Hand-rolled debug print so the dev-time tick output shows what
+/// Step 10 actually wrote. Mirrors `print_step9`.
+pub fn print_step10(out: &Step10Output, hg: &Hypergraph, policy: &Policy) {
+    println!();
+    println!("hebbian + salience (Step 10)");
+    println!(
+        "  reinforced relations  {}  (activation bumps via Oja)",
+        out.reinforced.len(),
+    );
+    println!(
+        "  promoted to Asserted  {}  (Defeasible → Asserted)",
+        out.promoted.len(),
+    );
+    println!(
+        "  focus entries pushed  {}  (recent_focus depth: {})",
+        out.focus_pushed,
+        hg.recent_focus.len(),
+    );
+    if policy.hebbian_rate == 0.0 {
+        println!(
+            "  rate                  {:.3}  (no-op: stats.activation/salience untouched)",
+            policy.hebbian_rate,
+        );
+    } else {
+        println!("  rate                  {:.3}", policy.hebbian_rate);
+    }
+
+    if !out.promoted.is_empty() {
+        println!();
+        println!("  promoted relations:");
+        for &rid in &out.promoted {
+            let r = &hg.relations[rid.0 as usize];
+            // Lookup the subject Element's name for a readable row.
+            let subj = r
+                .attributes
+                .iter()
+                .find(|a| a.name == hg.subject_attr)
+                .and_then(|a| match a.value {
+                    Term::Element(e) => hg.elements[e.0 as usize].names.first().cloned(),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            println!(
+                "    R{:<5} subject={subj}  support_count={}",
+                rid.0, r.stats.support_count,
+            );
+        }
+    }
+
+    if !hg.recent_focus.is_empty() {
+        println!();
+        let preview = hg.recent_focus.iter().take(5);
+        println!("  recent_focus head (most recent first, up to 5):");
+        for entry in preview {
+            let el_name = hg.elements[entry.element.0 as usize]
+                .names
+                .first()
+                .cloned()
+                .unwrap_or_default();
+            let attr_name = entry
+                .attribute
+                .and_then(|a| hg.elements[a.0 as usize].names.first().cloned())
+                .unwrap_or_else(|| "?".to_string());
+            println!(
+                "    tick={:<3} {:<20} bound={:<10}",
+                entry.tick.0,
+                truncate(&el_name, 20),
+                attr_name,
+            );
+        }
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
 /// Push `RecentFocusEntry` records for this tick's focal elements.
 /// Returns the number of entries pushed.
 fn push_recent_focus(

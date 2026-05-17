@@ -20,6 +20,7 @@ use steps::adjust_policy::adjust_policy;
 use steps::apply_region_delta::{RegionDeltaApplied, apply_region_delta};
 use steps::build_relations::{build_relations, print_step8};
 use steps::detect_intent::detect_intent;
+use steps::hebbian::{hebbian_and_salience, print_step10};
 use steps::route_regions::{RouteResult, route_regions};
 use steps::run_extractors::{ExtractionOutput, run_extractors};
 use steps::supersede::{print_step9, supersede};
@@ -120,6 +121,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
     stage_at("supersede (Step 9)", &mut mark);
     print_step9(&step9, &hg, prior_elements_9, prior_relations_9);
+
+    // Step 10 — Hebbian + salience + promotion + recent_focus push.
+    // active_frame stays None until Step 4's frame inheritance lights
+    // up (§11.6); recent_focus entries record the current frame
+    // (None for now) so future ticks can see the binding context.
+    let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+    stage_at("hebbian + salience (Step 10)", &mut mark);
+    print_step10(&step10, &hg, &policy);
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;
