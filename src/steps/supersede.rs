@@ -16,7 +16,9 @@
 //! See `step_9_design.md` for the full spec.
 
 use crate::embed::embed_text;
-use crate::steps::build_relations::{infer_property_kind, mint_element, mint_relation};
+use crate::steps::build_relations::{
+    infer_property_kind, mint_element, mint_or_reuse_base_relation, mint_relation,
+};
 use crate::types::{
     Attribute, ElementId, Hypergraph, Polarity, Relation, RelationId, RelationStatus, Term,
 };
@@ -121,7 +123,7 @@ pub fn supersede(
         } else {
             RelationStatus::Defeasible
         };
-        let cache_id = mint_relation(
+        let cache_id = mint_or_reuse_base_relation(
             hg,
             vec![
                 Attribute {

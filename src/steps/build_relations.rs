@@ -94,7 +94,7 @@ pub fn build_relations(
         );
         let label_id = resolve_label_element(hg, &p.object_label, &mut result);
         let attr_id = resolve_attribute_name(hg, p.attribute_name, &mut result);
-        let rel_id = mint_relation(
+        let rel_id = mint_or_reuse_base_relation(
             hg,
             vec![
                 Attribute {
@@ -339,7 +339,7 @@ fn mint_pattern_relation(
         result,
     );
     let attr_id = resolve_attribute_name(hg, p.attribute_name, result);
-    mint_relation(
+    mint_or_reuse_base_relation(
         hg,
         vec![
             Attribute {
@@ -411,6 +411,87 @@ pub(crate) fn mint_relation(
     index_relation(hg, &r);
     hg.relations.push(r);
     id
+}
+
+/// Mint a base relation OR reuse an existing one with the same
+/// attribute-set shape. Cross-tick dedup: if the user says
+/// "Sarah called me" twice, the second tick reuses the existing
+/// `(Sarah, instance_of, person)` relation so `support_count`
+/// accumulates and the promotion gate (§11.11) can fire.
+///
+/// Equality check: same attribute count AND every (name, value)
+/// pair in `attributes` also appears in the candidate's attribute
+/// list. Order doesn't matter — same set = same claim.
+///
+/// On reuse: bumps `last_seen`, leaves `status` and `confidence`
+/// alone (Step 10 / Step 9 handle those). Status promotion via
+/// Step 10's gate is the right path to upgrade Defeasible →
+/// Asserted on re-encounter.
+///
+/// Use this for base relations (instance_of, n-ary events, binary
+/// pattern RE, novelty triples). DON'T use it for meta-relations
+/// (`source`, `derived_from`, `supersedes`, `intervened`) — each
+/// of those is a distinct provenance link that should mint fresh.
+pub(crate) fn mint_or_reuse_base_relation(
+    hg: &mut Hypergraph,
+    attributes: Vec<Attribute>,
+    status: RelationStatus,
+    confidence: f32,
+) -> RelationId {
+    if let Some(existing) = find_matching_relation(hg, &attributes) {
+        // Reuse path: bump last_seen so decay walks can age this
+        // relation correctly. Don't touch status or confidence —
+        // those belong to Step 9/10/promotion.
+        hg.relations[existing.0 as usize].stats.last_seen = hg.clock;
+        return existing;
+    }
+    mint_relation(hg, attributes, status, confidence)
+}
+
+/// Find a pre-existing relation whose attribute set matches
+/// `proposed` exactly. Lookup is anchored on the first Element-
+/// valued attribute target (typically the subject) via
+/// `relations_by_element` — O(relations on subject) per check,
+/// small in practice.
+fn find_matching_relation(hg: &Hypergraph, proposed: &[Attribute]) -> Option<RelationId> {
+    let anchor = proposed.iter().find_map(|a| match a.value {
+        Term::Element(e) => Some(e),
+        _ => None,
+    })?;
+    let candidates = hg.relations_by_element.get(&anchor)?;
+    for &rid in candidates {
+        let r = &hg.relations[rid.0 as usize];
+        if r.attributes.len() != proposed.len() {
+            continue;
+        }
+        if attributes_match(&r.attributes, proposed) {
+            return Some(rid);
+        }
+    }
+    None
+}
+
+/// Attribute-set equality: every (name, value) pair in `a` appears
+/// in `b`, and vice versa (lengths are pre-checked equal at the
+/// callsite). O(n²) but n is typically 2-5 so it's negligible.
+fn attributes_match(a: &[Attribute], b: &[Attribute]) -> bool {
+    for ax in a {
+        let matched = b
+            .iter()
+            .any(|bx| bx.name == ax.name && attr_value_eq(bx.value, ax.value));
+        if !matched {
+            return false;
+        }
+    }
+    true
+}
+
+fn attr_value_eq(a: Term, b: Term) -> bool {
+    match (a, b) {
+        (Term::Element(x), Term::Element(y)) => x == y,
+        (Term::Relation(x), Term::Relation(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// Apply §8 incremental index updates for one Relation. Mirrors the
@@ -988,7 +1069,7 @@ fn mint_novelty_relation(
         result,
     );
     let attr_id = resolve_attribute_name(hg, &nr.attribute_text, result);
-    mint_relation(
+    mint_or_reuse_base_relation(
         hg,
         vec![
             Attribute {
