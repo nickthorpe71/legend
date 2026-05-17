@@ -3,6 +3,7 @@ pub mod apply_region_delta;
 pub mod build_relations;
 pub mod coref;
 pub mod detect_intent;
+pub mod hebbian;
 pub mod novelty_relations;
 pub mod orthographic;
 pub mod relation_patterns;
