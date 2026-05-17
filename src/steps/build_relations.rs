@@ -448,11 +448,23 @@ pub(crate) fn mint_or_reuse_base_relation(
     mint_relation(hg, attributes, status, confidence)
 }
 
-/// Find a pre-existing relation whose attribute set matches
+/// Find a pre-existing **live** relation whose attribute set matches
 /// `proposed` exactly. Lookup is anchored on the first Element-
 /// valued attribute target (typically the subject) via
 /// `relations_by_element` — O(relations on subject) per check,
 /// small in practice.
+///
+/// "Live" = `Asserted | Entailed | Defeasible`. We deliberately
+/// skip `Superseded` and `Retracted`:
+/// - Superseded means Step 9 retired this state; reusing it would
+///   confuse "we asserted X now" with "X was true previously."
+///   Example: tick 1 sets `current_date=Tuesday`; tick 2 supersedes
+///   to Friday; tick 3 sets `current_date=Tuesday` again. Tick 3
+///   should mint a fresh Asserted relation (and Step 9 should
+///   supersede tick 2's current Friday cache) — not resurrect
+///   tick 1's already-superseded one.
+/// - Retracted means the relation was explicitly withdrawn; reusing
+///   would silently revive retracted state.
 fn find_matching_relation(hg: &Hypergraph, proposed: &[Attribute]) -> Option<RelationId> {
     let anchor = proposed.iter().find_map(|a| match a.value {
         Term::Element(e) => Some(e),
@@ -461,6 +473,12 @@ fn find_matching_relation(hg: &Hypergraph, proposed: &[Attribute]) -> Option<Rel
     let candidates = hg.relations_by_element.get(&anchor)?;
     for &rid in candidates {
         let r = &hg.relations[rid.0 as usize];
+        if matches!(
+            r.status,
+            RelationStatus::Superseded | RelationStatus::Retracted
+        ) {
+            continue;
+        }
         if r.attributes.len() != proposed.len() {
             continue;
         }

@@ -248,3 +248,77 @@ fn v0_pipeline_repeat_input_accumulates_support_count() {
         "after 3 identical ticks, some relation should have support_count ≥ 2; got max {max_support}",
     );
 }
+
+#[test]
+fn v0_dedup_skips_superseded_relations() {
+    // Regression: dedup must NOT reuse a Superseded relation.
+    // Tick 1: cache `current_date = Tuesday`. Tick 2: supersede to
+    // Friday (tick 1's cache flips to Superseded). Tick 3: cache
+    // back to Tuesday — should mint a FRESH Asserted relation, not
+    // resurrect tick 1's superseded one. Step 9 should then flip
+    // tick 2's Friday cache.
+    let policy = Policy::default();
+    let labels: &[&str] = &["event", "weekday"];
+    let mut hg = load_seed_graph();
+
+    let _ = run_tick(
+        &mut hg,
+        "The meeting moved from Monday to Tuesday.",
+        labels,
+        &policy,
+    );
+
+    // Snapshot: find tick 1's cache (the [subject: meeting,
+    // current_date: Tuesday] relation). It's the most recently
+    // minted Asserted cache mentioning `current_date`.
+    let current_date_attr = hg
+        .by_name
+        .get("current_date")
+        .and_then(|v| v.first().copied())
+        .expect("Step 9 should have minted current_date");
+    let tick1_cache = hg
+        .relations
+        .iter()
+        .rev()
+        .find(|r| {
+            r.status == RelationStatus::Asserted
+                && r.attributes.iter().any(|a| a.name == current_date_attr)
+        })
+        .map(|r| r.id)
+        .expect("tick 1 should have minted a current_date cache");
+
+    let _ = run_tick(
+        &mut hg,
+        "The meeting moved from Tuesday to Friday.",
+        labels,
+        &policy,
+    );
+
+    // Tick 1's cache should now be Superseded.
+    assert_eq!(
+        hg.relations[tick1_cache.0 as usize].status,
+        RelationStatus::Superseded,
+        "tick 1's cache should be Superseded after tick 2",
+    );
+    let relation_count_after_tick2 = hg.relations.len();
+
+    // Tick 3: same state as tick 1 — should NOT resurrect the
+    // Superseded relation. Should mint a fresh Asserted one.
+    let _ = run_tick(
+        &mut hg,
+        "The meeting moved from Friday to Tuesday.",
+        labels,
+        &policy,
+    );
+
+    assert!(
+        hg.relations.len() > relation_count_after_tick2,
+        "tick 3 must mint NEW relations, not reuse Superseded prior",
+    );
+    // Tick 1's cache is still Superseded (dedup didn't touch it).
+    assert_eq!(
+        hg.relations[tick1_cache.0 as usize].status,
+        RelationStatus::Superseded,
+        "Superseded prior must remain Superseded — dedup must skip it",
+    );
+}
