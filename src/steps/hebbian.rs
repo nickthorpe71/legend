@@ -26,7 +26,9 @@ use std::collections::HashSet;
 use crate::hebbian::bounded_hebbian_bump;
 use crate::steps::build_relations::{Step8Output, kind_of};
 use crate::steps::supersede::Step9Output;
-use crate::types::{Hypergraph, Policy, RelationId, RelationStatus, Term};
+use crate::types::{
+    ElementId, Hypergraph, Policy, RecentFocusEntry, RelationId, RelationStatus, Term,
+};
 
 /// Per-tick summary of what Step 10 actually did. Surfaces in the
 /// debug print and (for `promoted`) in the frame's downstream
@@ -64,6 +66,7 @@ pub fn hebbian_and_salience(
     hg: &mut Hypergraph,
     step8: &Step8Output,
     step9: &Step9Output,
+    active_frame: Option<ElementId>,
     policy: &Policy,
 ) -> Step10Output {
     let mut out = Step10Output::default();
@@ -116,7 +119,102 @@ pub fn hebbian_and_salience(
         }
     }
 
+    // Populate `recent_focus`. Step 6 coref and Step 4 frame
+    // inheritance read from this; the empty deque is why both run as
+    // stubs / no-ops today. Push one entry per focal (element,
+    // attribute) pair per tick; intra-tick dedup keeps a chatty
+    // tick (many relations with the same subject) from spamming
+    // the ring buffer. Source = Step 8 minted + Step 9 caches —
+    // meta-relations don't push (their `target` is a Relation,
+    // not an Element).
+    out.focus_pushed = push_recent_focus(hg, step8, step9, active_frame, policy);
+
     out
+}
+
+/// Push `RecentFocusEntry` records for this tick's focal elements.
+/// Returns the number of entries pushed.
+fn push_recent_focus(
+    hg: &mut Hypergraph,
+    step8: &Step8Output,
+    step9: &Step9Output,
+    active_frame: Option<ElementId>,
+    policy: &Policy,
+) -> u32 {
+    let subject_attr = hg.subject_attr;
+    let target_attr = hg.target_attr;
+    let tick = hg.clock;
+
+    // Collect (element, attribute) pairs, deduped intra-tick. We
+    // walk step8.minted_relations first then step9.cache_relations
+    // so step 8's mints take precedence when the same (element,
+    // attribute) pair would land twice.
+    let mut seen: HashSet<(ElementId, Option<ElementId>)> = HashSet::new();
+    let mut entries: Vec<RecentFocusEntry> = Vec::new();
+
+    let consider = |hg: &Hypergraph, rid: RelationId, seen: &mut _, entries: &mut Vec<_>| {
+        let r = &hg.relations[rid.0 as usize];
+        // Subject-bound entry: every relation with a subject slot.
+        if let Some(subj) = element_at_attribute(r, subject_attr) {
+            push_unique(seen, entries, subj, Some(subject_attr), active_frame, tick);
+        }
+        // N-ary events: also push the `target` as a focal element
+        // bound under target_attr. Distinguishes "it (focused as
+        // target)" from "it (focused as subject)" for coref later.
+        if let Some(tgt) = element_at_attribute(r, target_attr) {
+            push_unique(seen, entries, tgt, Some(target_attr), active_frame, tick);
+        }
+    };
+
+    for &rid in &step8.minted_relations {
+        consider(hg, rid, &mut seen, &mut entries);
+    }
+    for &rid in &step9.cache_relations {
+        consider(hg, rid, &mut seen, &mut entries);
+    }
+
+    // Push to the FRONT of the deque so the most recent tick's
+    // entries are at the head. Coref walks front-to-back.
+    let pushed = entries.len() as u32;
+    for entry in entries.into_iter().rev() {
+        hg.recent_focus.push_front(entry);
+    }
+    // Truncate to capacity from the back (oldest entries drop).
+    let cap = policy.recent_focus_capacity as usize;
+    while hg.recent_focus.len() > cap {
+        hg.recent_focus.pop_back();
+    }
+    pushed
+}
+
+fn push_unique(
+    seen: &mut HashSet<(ElementId, Option<ElementId>)>,
+    entries: &mut Vec<RecentFocusEntry>,
+    element: ElementId,
+    attribute: Option<ElementId>,
+    frame: Option<ElementId>,
+    tick: crate::types::Tick,
+) {
+    let key = (element, attribute);
+    if seen.insert(key) {
+        entries.push(RecentFocusEntry {
+            element,
+            attribute,
+            frame,
+            tick,
+        });
+    }
+}
+
+fn element_at_attribute(r: &crate::types::Relation, attr: ElementId) -> Option<ElementId> {
+    for a in &r.attributes {
+        if a.name == attr
+            && let Term::Element(e) = a.value
+        {
+            return Some(e);
+        }
+    }
+    None
 }
 
 /// Returns `true` iff Defeasible relation `R` clears all three
@@ -249,6 +347,7 @@ mod tests {
     use crate::steps::build_relations::build_relations;
     use crate::steps::run_extractors::run_extractors;
     use crate::steps::supersede::supersede;
+    use crate::types::Polarity;
 
     /// Run Steps 5/8/9 over `text` to produce realistic Step8 + Step9
     /// outputs; return the Hypergraph + both outputs so Step 10 tests
@@ -269,7 +368,7 @@ mod tests {
     fn reinforcement_set_includes_step8_minted() {
         let policy = Policy::default();
         let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert!(!out.reinforced.is_empty());
         for &rid in &step8.minted_relations {
             assert!(out.reinforced.contains(&rid));
@@ -285,7 +384,7 @@ mod tests {
             &policy,
         );
         assert!(!step9.cache_relations.is_empty(), "test prerequisite");
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         for &rid in &step9.cache_relations {
             assert!(out.reinforced.contains(&rid));
         }
@@ -302,7 +401,7 @@ mod tests {
         let labels: &[&str] = &["event", "weekday"];
         let (mut hg, step8_1, step9_1) =
             run_through_step9_with("The meeting moved from Monday to Tuesday.", labels, &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy);
 
         let text2 = "The meeting moved from Tuesday to Friday.";
         let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
@@ -312,7 +411,7 @@ mod tests {
             !step9_2.superseded.is_empty(),
             "test prerequisite: tick 2 should flip the prior",
         );
-        let out2 = hebbian_and_salience(&mut hg, &step8_2, &step9_2, &policy);
+        let out2 = hebbian_and_salience(&mut hg, &step8_2, &step9_2, None, &policy);
         for &flipped in &step9_2.superseded {
             assert!(
                 !out2.reinforced.contains(&flipped),
@@ -340,7 +439,7 @@ mod tests {
         // the reinforced list.
         let policy = Policy::default();
         let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         for &rid in &step8.minted_relations {
             assert_eq!(
                 hg.relations[rid.0 as usize].stats.activation, 0.0,
@@ -363,7 +462,7 @@ mod tests {
         assert_eq!(before, 0.0, "freshly minted relations start at 0");
 
         // First bump.
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         let after_one = hg.relations[pick.0 as usize].stats.activation;
         assert!(
             (after_one - 0.5).abs() < 1e-5,
@@ -371,7 +470,7 @@ mod tests {
         );
 
         // Second bump: bump(0.5, 0.5) = 0.75.
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         let after_two = hg.relations[pick.0 as usize].stats.activation;
         assert!(
             (after_two - 0.75).abs() < 1e-5,
@@ -414,7 +513,7 @@ mod tests {
             .expect("expected at least one instance_of weekday relation");
 
         let before = hg.relations[inst_rel.0 as usize].stats.salience;
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         let after = hg.relations[inst_rel.0 as usize].stats.salience;
         assert!(
             after > before,
@@ -440,7 +539,7 @@ mod tests {
         );
         assert!(!step9.cache_relations.is_empty(), "test prerequisite");
         let cache = step9.cache_relations[0];
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         let cache_sal = hg.relations[cache.0 as usize].stats.salience;
         assert!(
             cache_sal > 0.5,
@@ -456,11 +555,11 @@ mod tests {
         let pick = step8.minted_relations[0];
         // support_count starts at 0; bumps by 1 per Step 10 call.
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 0);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 1);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 2);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 3);
     }
 
@@ -497,8 +596,8 @@ mod tests {
 
         // First two reinforcements: support_count climbs to 2; gate
         // not yet cleared.
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
             RelationStatus::Defeasible,
@@ -506,7 +605,7 @@ mod tests {
         );
 
         // Third reinforcement clears support_count >= 3.
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
             RelationStatus::Asserted,
@@ -530,7 +629,7 @@ mod tests {
             &["event", "weekday"],
             &policy,
         );
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         // After one tick, support_count == 1; min is 5; nothing
         // should have promoted.
         assert!(
@@ -552,7 +651,7 @@ mod tests {
             &["event", "weekday"],
             &policy,
         );
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert!(
             out.promoted.is_empty(),
             "min_diversity=2 with diversity=0 should block promotion",
@@ -591,7 +690,7 @@ mod tests {
             None,
         );
         let step9_1 = supersede(&mut hg, &step8_1.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy);
 
         // Tick 2 supersedes tick 1's cache.
         let ext2 = run_extractors(
@@ -624,7 +723,7 @@ mod tests {
         let mut synthetic_step9 = step9_2.clone();
         synthetic_step9.superseded.clear();
         synthetic_step9.cache_relations.push(prior); // include in reinforcement set
-        let out = hebbian_and_salience(&mut hg, &step8_2, &synthetic_step9, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8_2, &synthetic_step9, None, &policy);
 
         assert!(
             !out.promoted.contains(&prior),
@@ -659,7 +758,7 @@ mod tests {
         let conf_before = hg.relations[target_rid.0 as usize].stats.confidence;
         assert!(conf_before < 0.9);
 
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
             RelationStatus::Asserted,
@@ -671,10 +770,178 @@ mod tests {
     }
 
     #[test]
+    fn recent_focus_populated_with_subject_entries() {
+        let policy = Policy::default();
+        let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
+        assert!(hg.recent_focus.is_empty(), "starts empty");
+
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        assert!(out.focus_pushed > 0, "expected focus entries pushed");
+        assert!(
+            !hg.recent_focus.is_empty(),
+            "recent_focus should have entries"
+        );
+
+        // Every minted relation's subject (and target for n-ary)
+        // should appear once in recent_focus for this tick.
+        let sarah_id = hg.by_name["Sarah"][0];
+        assert!(
+            hg.recent_focus
+                .iter()
+                .any(|e| e.element == sarah_id && e.attribute == Some(hg.subject_attr)),
+            "Sarah should be focused as subject",
+        );
+    }
+
+    #[test]
+    fn recent_focus_dedups_intra_tick() {
+        // Multiple relations on the same subject within one tick
+        // should produce ONE focus entry, not N.
+        let policy = Policy::default();
+        let (mut hg, step8, step9) =
+            run_through_step9("Nick lived in Brantford for 3 years.", &[], &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+
+        let nick_id = hg.by_name["Nick"][0];
+        let nick_subject_entries = hg
+            .recent_focus
+            .iter()
+            .filter(|e| e.element == nick_id && e.attribute == Some(hg.subject_attr))
+            .count();
+        assert_eq!(
+            nick_subject_entries, 1,
+            "expected exactly one (Nick, subject) entry; intra-tick dedup",
+        );
+    }
+
+    #[test]
+    fn recent_focus_pushes_target_for_nary_events() {
+        let policy = Policy::default();
+        let (mut hg, step8, step9) = run_through_step9(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+            &policy,
+        );
+
+        // Find the n-ary event's target value before running Step 10
+        // — pattern RE may tag "The meeting" (with article) rather
+        // than just "meeting", so we read the actual target Element
+        // off the relation instead of guessing the name.
+        let nary_target: ElementId = {
+            let from_attr = hg.by_name["from"]
+                .iter()
+                .copied()
+                .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+                .unwrap();
+            let to_attr = hg.by_name["to"]
+                .iter()
+                .copied()
+                .find(|id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+                .unwrap();
+            step8
+                .minted_relations
+                .iter()
+                .find_map(|rid| {
+                    let r = &hg.relations[rid.0 as usize];
+                    let has_from = r.attributes.iter().any(|a| a.name == from_attr);
+                    let has_to = r.attributes.iter().any(|a| a.name == to_attr);
+                    if !(has_from && has_to) {
+                        return None;
+                    }
+                    r.attributes.iter().find_map(|a| {
+                        if a.name == hg.target_attr {
+                            match a.value {
+                                Term::Element(e) => Some(e),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .expect("n-ary event with target slot must exist")
+        };
+
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+
+        let target_focus = hg
+            .recent_focus
+            .iter()
+            .filter(|e| e.element == nary_target && e.attribute == Some(hg.target_attr))
+            .count();
+        assert_eq!(
+            target_focus, 1,
+            "n-ary event's target should push exactly one target-bound focus entry",
+        );
+    }
+
+    #[test]
+    fn recent_focus_respects_capacity() {
+        let policy = Policy {
+            recent_focus_capacity: 3,
+            ..Default::default()
+        };
+        let mut hg = load_seed_graph();
+        let labels: &[&str] = &[];
+        for tick in 0..5 {
+            // Fresh sentence per tick keeps subjects distinct so
+            // dedup doesn't hide capacity overflow.
+            let text = format!("Person{tick} called me.");
+            let ext = run_extractors(&text, labels, &policy, &hg, &[]);
+            let s8 = build_relations(&text, &mut hg, &ext, &policy, None);
+            let s9 = supersede(&mut hg, &s8.minted_relations, &policy);
+            let _ = hebbian_and_salience(&mut hg, &s8, &s9, None, &policy);
+        }
+        assert!(
+            hg.recent_focus.len() <= 3,
+            "recent_focus must not exceed capacity; len={}",
+            hg.recent_focus.len(),
+        );
+    }
+
+    #[test]
+    fn recent_focus_front_is_most_recent() {
+        let policy = Policy::default();
+        let mut hg = load_seed_graph();
+
+        let text_a = "Alice called me.";
+        let ext_a = run_extractors(text_a, &[], &policy, &hg, &[]);
+        let s8a = build_relations(text_a, &mut hg, &ext_a, &policy, None);
+        let s9a = supersede(&mut hg, &s8a.minted_relations, &policy);
+        let _ = hebbian_and_salience(&mut hg, &s8a, &s9a, None, &policy);
+
+        let text_b = "Bob called me.";
+        let ext_b = run_extractors(text_b, &[], &policy, &hg, &[]);
+        let s8b = build_relations(text_b, &mut hg, &ext_b, &policy, None);
+        let s9b = supersede(&mut hg, &s8b.minted_relations, &policy);
+        let _ = hebbian_and_salience(&mut hg, &s8b, &s9b, None, &policy);
+
+        // Bob should appear ahead of Alice in the deque (most recent
+        // first). We look for the first subject-bound entry for each.
+        let bob_id = hg.by_name.get("Bob").and_then(|v| v.first().copied());
+        let alice_id = hg.by_name.get("Alice").and_then(|v| v.first().copied());
+        let (Some(bob), Some(alice)) = (bob_id, alice_id) else {
+            panic!("Bob and Alice should both be minted");
+        };
+        let pos_b = hg
+            .recent_focus
+            .iter()
+            .position(|e| e.element == bob && e.attribute == Some(hg.subject_attr));
+        let pos_a = hg
+            .recent_focus
+            .iter()
+            .position(|e| e.element == alice && e.attribute == Some(hg.subject_attr));
+        let (Some(pb), Some(pa)) = (pos_b, pos_a) else {
+            panic!("both should be in recent_focus");
+        };
+        assert!(pb < pa, "Bob (newer) should be ahead of Alice (older)");
+    }
+
+    #[test]
     fn salience_stays_at_zero_with_default_policy() {
         let policy = Policy::default();
         let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         for &rid in &step8.minted_relations {
             assert_eq!(
                 hg.relations[rid.0 as usize].stats.salience, 0.0,
@@ -693,7 +960,7 @@ mod tests {
         // 50 bumps at rate 0.9 from 0.0: x_{n+1} = x + 0.9 * (1 - x)
         // converges very fast. After ~5 iterations we're > 0.999.
         for _ in 0..50 {
-            let _ = hebbian_and_salience(&mut hg, &step8, &step9, &policy);
+            let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         }
         for &rid in &step8.minted_relations {
             let a = hg.relations[rid.0 as usize].stats.activation;
