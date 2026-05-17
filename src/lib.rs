@@ -21,6 +21,7 @@ use steps::apply_region_delta::{RegionDeltaApplied, apply_region_delta};
 use steps::build_relations::{build_relations, print_step8};
 use steps::decay::{focus_radius_decay, print_step11};
 use steps::detect_intent::detect_intent;
+use steps::frame::{assemble_frame, print_step12};
 use steps::hebbian::{hebbian_and_salience, print_step10};
 use steps::route_regions::{RouteResult, route_regions};
 use steps::run_extractors::{ExtractionOutput, run_extractors};
@@ -138,6 +139,26 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let step11 = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
     stage_at("focus-radius decay (Step 11)", &mut mark);
     print_step11(&step11, &policy);
+
+    // Step 12 — assemble the post-tick attention frame. Read-only
+    // over the Hypergraph. RRF over (dense activation rank +
+    // path-reinforced focus_success_count rank); status-filtered
+    // (Asserted/Entailed/Defeasible pass; Superseded/Retracted
+    // excluded). Maps Step 4's uncertainty signals into
+    // next_actions advisories.
+    let frame = assemble_frame(
+        &input_text,
+        &hg,
+        &intent,
+        None, // active_frame: None until Step 4 frame inheritance lands
+        &route,
+        &step8,
+        &step9,
+        &step10,
+        &policy,
+    );
+    stage_at("assemble frame (Step 12)", &mut mark);
+    print_step12(&frame, &hg);
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;

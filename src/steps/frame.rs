@@ -11,10 +11,18 @@
 //! Everything else gathers from per-tick buffers earlier steps
 //! populated as a side effect of their own work.
 //!
-//! See `step_12_design.md` for the spec; this is phase 2 (RRF
-//! helper) — phase 3 fills in the assembly body.
+//! See `step_12_design.md` for the spec.
 
-use crate::types::RelationId;
+use std::collections::HashSet;
+
+use crate::steps::build_relations::Step8Output;
+use crate::steps::hebbian::Step10Output;
+use crate::steps::route_regions::RouteResult;
+use crate::steps::supersede::Step9Output;
+use crate::types::{
+    AttentionAction, ConsciousAttentionFrame, Hypergraph, Intent, Policy, RelationActivation,
+    RelationId, RelationStatus, ReplayKind, Term, UncertaintySignal,
+};
 
 /// Reciprocal Rank Fusion constant per Cormack, Clarke & Buettcher,
 /// SIGIR 2009. Their paper-recommended default. Larger `k` softens
@@ -63,6 +71,292 @@ pub fn rrf_merge(ranked_lists: &[Vec<RelationId>], k: u32) -> Vec<(RelationId, f
             .then(a.0.0.cmp(&b.0.0))
     });
     merged
+}
+
+/// Assemble the tick's `ConsciousAttentionFrame`. Read-only over
+/// the Hypergraph — all structural mutation belongs to Steps 7-11.
+///
+/// - `focused_relations`: RRF over (dense activation rank +
+///   path-reinforced focus_success_count rank) of the
+///   reinforcement set, status-filtered (Asserted/Entailed/
+///   Defeasible pass; Superseded/Retracted excluded).
+/// - `supporting_claims`: for each focused R, the meta-relations
+///   pointing at R via `target` whose attribute list carries
+///   `derived_from` or `source`.
+/// - `history`: meta-relations pointing at R with `supersedes`,
+///   plus the Superseded relations they reference.
+/// - `next_actions`: maps the tick's UncertaintySignals to
+///   advisory replay/follow-up actions.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_frame(
+    input_text: &str,
+    hg: &Hypergraph,
+    intent: &Intent,
+    active_frame: Option<crate::types::ElementId>,
+    route: &RouteResult,
+    step8: &Step8Output,
+    step9: &Step9Output,
+    step10: &Step10Output,
+    _policy: &Policy,
+) -> ConsciousAttentionFrame {
+    // ── focused_relations ──────────────────────────────────────
+    // Two ranked lists feeding RRF: dense (by stats.activation
+    // descending) and path-reinforced (by stats.focus_success_count
+    // descending). Status filter applied before ranking so
+    // Superseded/Retracted never enter the RRF.
+    let live: Vec<RelationId> = step10
+        .reinforced
+        .iter()
+        .copied()
+        .filter(|rid| {
+            matches!(
+                hg.relations[rid.0 as usize].status,
+                RelationStatus::Asserted | RelationStatus::Entailed | RelationStatus::Defeasible,
+            )
+        })
+        .collect();
+
+    let mut dense: Vec<RelationId> = live.clone();
+    dense.sort_by(|a, b| {
+        let ax = hg.relations[a.0 as usize].stats.activation;
+        let bx = hg.relations[b.0 as usize].stats.activation;
+        bx.partial_cmp(&ax)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+
+    let mut path: Vec<RelationId> = live.clone();
+    path.sort_by(|a, b| {
+        let ax = hg.relations[a.0 as usize].stats.focus_success_count;
+        let bx = hg.relations[b.0 as usize].stats.focus_success_count;
+        bx.cmp(&ax).then(a.0.cmp(&b.0))
+    });
+
+    let merged = rrf_merge(&[dense, path], RRF_K);
+    let focused_relations: Vec<RelationActivation> = merged
+        .into_iter()
+        .map(|(rid, score)| RelationActivation {
+            relation: rid,
+            activation: score,
+            is_defeasible: hg.relations[rid.0 as usize].status == RelationStatus::Defeasible,
+        })
+        .collect();
+
+    // ── supporting_claims + history ─────────────────────────────
+    // Walk meta_relations_by_subject[R] for each focused R; filter
+    // by attribute name on each meta. Dedup the resulting flat lists.
+    let derived_from_attr = hg
+        .by_name
+        .get("derived_from")
+        .and_then(|v| v.first().copied());
+    let source_attr = hg.by_name.get("source").and_then(|v| v.first().copied());
+    let supersedes_attr = hg
+        .by_name
+        .get("supersedes")
+        .and_then(|v| v.first().copied());
+
+    let mut supporting_seen: HashSet<RelationId> = HashSet::new();
+    let mut supporting_claims: Vec<RelationId> = Vec::new();
+    let mut history_seen: HashSet<RelationId> = HashSet::new();
+    let mut history: Vec<RelationId> = Vec::new();
+
+    for ra in &focused_relations {
+        let Some(metas) = hg.meta_relations_by_subject.get(&ra.relation) else {
+            continue;
+        };
+        for &mid in metas {
+            let m = &hg.relations[mid.0 as usize];
+            let mut is_supporting = false;
+            let mut is_history = false;
+            let mut history_target: Option<RelationId> = None;
+            for attr in &m.attributes {
+                if derived_from_attr == Some(attr.name) || source_attr == Some(attr.name) {
+                    is_supporting = true;
+                }
+                if supersedes_attr == Some(attr.name) {
+                    is_history = true;
+                    if let Term::Relation(r_old) = attr.value {
+                        history_target = Some(r_old);
+                    }
+                }
+            }
+            if is_supporting && supporting_seen.insert(mid) {
+                supporting_claims.push(mid);
+            }
+            if is_history {
+                if history_seen.insert(mid) {
+                    history.push(mid);
+                }
+                if let Some(r_old) = history_target
+                    && history_seen.insert(r_old)
+                {
+                    history.push(r_old);
+                }
+            }
+        }
+    }
+
+    // ── next_actions ────────────────────────────────────────────
+    // Per §5 of step_12_design.md: uncertainty signals → advisory
+    // actions. Dedup so repeated DiffuseRouting / LowConfidence
+    // don't enqueue multiple identical replay jobs in one tick.
+    let mut next_actions: Vec<AttentionAction> = Vec::new();
+    let mut replay_emitted = false;
+    let mut coref_emitted = false;
+    let mut contradiction_emitted = false;
+    let uncertainty = route.uncertainty.clone();
+    for sig in &uncertainty {
+        match sig {
+            UncertaintySignal::DiffuseRouting | UncertaintySignal::LowConfidence => {
+                if !replay_emitted {
+                    next_actions.push(AttentionAction::EnqueueReplay {
+                        kind: ReplayKind::BackgroundSweep,
+                    });
+                    replay_emitted = true;
+                }
+            }
+            UncertaintySignal::AmbiguousCoref => {
+                if !coref_emitted {
+                    next_actions.push(AttentionAction::FollowUpQuery(
+                        "Could you clarify what the referenced entity is?".to_string(),
+                    ));
+                    coref_emitted = true;
+                }
+            }
+            UncertaintySignal::Contradiction => {
+                if !contradiction_emitted {
+                    next_actions.push(AttentionAction::FollowUpQuery(
+                        "The new claim conflicts with a prior one; which is correct?".to_string(),
+                    ));
+                    contradiction_emitted = true;
+                }
+            }
+            UncertaintySignal::UngroundedTime => {
+                // v0: no action. chrono parsing isn't wired; the
+                // caller may still surface this from the uncertainty
+                // field directly.
+            }
+        }
+    }
+
+    ConsciousAttentionFrame {
+        tick: hg.clock,
+        input_echo: input_text.to_string(),
+        intent: *intent,
+        active_frame,
+        active_regions: route.active_regions.clone(),
+        focused_relations,
+        supporting_claims,
+        history,
+        uncertainty,
+        durable_writes: step8.minted_elements.clone(),
+        superseded: step9.superseded.clone(),
+        next_actions,
+    }
+}
+
+/// Hand-rolled debug print so the dev-time tick output shows the
+/// frame the caller would see. Mirrors `print_step11`. Top-K is
+/// hardcoded to 5 — small enough to read at a glance.
+pub fn print_step12(frame: &ConsciousAttentionFrame, hg: &Hypergraph) {
+    println!();
+    println!("attention frame (Step 12)");
+    println!("  tick                  {}", frame.tick.0);
+    println!(
+        "  active_frame          {}",
+        frame
+            .active_frame
+            .map(|e| hg.elements[e.0 as usize]
+                .names
+                .first()
+                .cloned()
+                .unwrap_or_else(|| format!("?{}?", e.0)))
+            .unwrap_or_else(|| "None".to_string()),
+    );
+    println!("  active_regions        {}", frame.active_regions.len());
+    println!("  focused_relations     {}", frame.focused_relations.len());
+    println!("  supporting_claims     {}", frame.supporting_claims.len());
+    println!("  history               {}", frame.history.len());
+    println!("  uncertainty           {:?}", frame.uncertainty);
+    println!("  durable_writes        {}", frame.durable_writes.len());
+    println!("  superseded            {}", frame.superseded.len());
+    if !frame.next_actions.is_empty() {
+        println!("  next_actions          {}", frame.next_actions.len());
+        for action in &frame.next_actions {
+            match action {
+                AttentionAction::EnqueueReplay { kind } => {
+                    println!("    EnqueueReplay {{ kind: {kind:?} }}");
+                }
+                AttentionAction::FollowUpQuery(text) => {
+                    println!("    FollowUpQuery({text:?})");
+                }
+            }
+        }
+    }
+
+    if frame.focused_relations.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "  {:<6} {:<10} {:<12} {:<22} {:<14} {:<12}",
+        "id", "rrf_score", "status", "subject", "attr", "value",
+    );
+    println!(
+        "  {:-<6} {:-<10} {:-<12} {:-<22} {:-<14} {:-<12}",
+        "", "", "", "", "", ""
+    );
+    for ra in frame.focused_relations.iter().take(5) {
+        let r = &hg.relations[ra.relation.0 as usize];
+        let subj = r
+            .attributes
+            .iter()
+            .find(|a| a.name == hg.subject_attr)
+            .and_then(|a| match a.value {
+                Term::Element(e) => hg.elements[e.0 as usize].names.first().cloned(),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let (attr_name, val) = r
+            .attributes
+            .iter()
+            .find(|a| a.name != hg.subject_attr)
+            .map(|a| {
+                let an = hg.elements[a.name.0 as usize]
+                    .names
+                    .first()
+                    .cloned()
+                    .unwrap_or_default();
+                let v = match a.value {
+                    Term::Element(e) => hg.elements[e.0 as usize]
+                        .names
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                    Term::Relation(rid) => format!("R{}", rid.0),
+                };
+                (an, v)
+            })
+            .unwrap_or_default();
+        println!(
+            "  R{:<5} {:>9.5}  {:<12} {:<22} {:<14} {:<12}",
+            ra.relation.0,
+            ra.activation,
+            format!("{:?}", r.status),
+            truncate(&subj, 22),
+            truncate(&attr_name, 14),
+            truncate(&val, 12),
+        );
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +448,432 @@ mod tests {
         // Score of rid(10) should be 2/61; rid(11) should be 2/62.
         assert!((out[0].1 - 2.0 / 61.0).abs() < 1e-6);
         assert!((out[1].1 - 2.0 / 62.0).abs() < 1e-6);
+    }
+
+    // ── Phase 3 tests: assemble_frame body ──────────────────────
+
+    use crate::seed::load_seed_graph;
+    use crate::steps::build_relations::build_relations;
+    use crate::steps::hebbian::hebbian_and_salience;
+    use crate::steps::route_regions::RouteResult;
+    use crate::steps::run_extractors::run_extractors;
+    use crate::steps::supersede::supersede;
+    use crate::types::RegionDelta;
+
+    /// Build a minimal RouteResult for tests that don't actually
+    /// run Step 4. Empty active regions / no uncertainty.
+    fn empty_route() -> RouteResult {
+        RouteResult {
+            all_scores: Vec::new(),
+            active_regions: Vec::new(),
+            delta: RegionDelta::default(),
+            uncertainty: Vec::new(),
+        }
+    }
+
+    /// Drive Step 5 → 8 → 9 → 10 over a sentence, return everything
+    /// Step 12 needs. Steps 7 (apply_region_delta) and 11 (decay)
+    /// are skipped — they don't materially affect frame assembly.
+    fn run_through_step10(
+        text: &str,
+        labels: &[&str],
+        policy: &Policy,
+    ) -> (Hypergraph, Step8Output, Step9Output, Step10Output) {
+        let mut hg = load_seed_graph();
+        let ext = run_extractors(text, labels, policy, &hg, &[]);
+        let s8 = build_relations(text, &mut hg, &ext, policy, None);
+        let s9 = supersede(&mut hg, &s8.minted_relations, policy);
+        let s10 = hebbian_and_salience(&mut hg, &s8, &s9, None, policy);
+        (hg, s8, s9, s10)
+    }
+
+    #[test]
+    fn frame_gathers_durable_writes_from_step8() {
+        let policy = Policy::default();
+        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let route = empty_route();
+        let frame = assemble_frame(
+            "Sarah called me yesterday.",
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8,
+            &s9,
+            &s10,
+            &policy,
+        );
+        assert_eq!(frame.durable_writes, s8.minted_elements);
+        assert_eq!(frame.input_echo, "Sarah called me yesterday.");
+        assert_eq!(frame.tick, hg.clock);
+    }
+
+    #[test]
+    fn frame_focused_relations_status_filter() {
+        // Default policy yields some Defeasible relations (NER
+        // sub-threshold). All focused should be Asserted/Entailed
+        // /Defeasible — never Superseded/Retracted.
+        let policy = Policy::default();
+        let (hg, s8, s9, s10) = run_through_step10(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+            &policy,
+        );
+        let route = empty_route();
+        let frame = assemble_frame(
+            "The meeting moved from Tuesday to Friday.",
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8,
+            &s9,
+            &s10,
+            &policy,
+        );
+        assert!(!frame.focused_relations.is_empty());
+        for ra in &frame.focused_relations {
+            let r = &hg.relations[ra.relation.0 as usize];
+            assert!(
+                matches!(
+                    r.status,
+                    RelationStatus::Asserted
+                        | RelationStatus::Entailed
+                        | RelationStatus::Defeasible,
+                ),
+                "frame should never include status={:?}",
+                r.status,
+            );
+            // is_defeasible flag mirrors status.
+            assert_eq!(
+                ra.is_defeasible,
+                r.status == RelationStatus::Defeasible,
+                "is_defeasible flag drift",
+            );
+        }
+    }
+
+    #[test]
+    fn frame_focused_relations_score_descending() {
+        let policy = Policy::default();
+        let (hg, s8, s9, s10) = run_through_step10(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+            &policy,
+        );
+        let route = empty_route();
+        let frame = assemble_frame(
+            "The meeting moved from Tuesday to Friday.",
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8,
+            &s9,
+            &s10,
+            &policy,
+        );
+        for w in frame.focused_relations.windows(2) {
+            assert!(
+                w[0].activation >= w[1].activation,
+                "frame focused_relations not score-descending: {} < {}",
+                w[0].activation,
+                w[1].activation,
+            );
+        }
+    }
+
+    #[test]
+    fn frame_supporting_claims_walks_derived_from_meta() {
+        // Step 9 emits derived_from metas for every cache it mints.
+        // The frame's supporting_claims should pick them up.
+        let policy = Policy::default();
+        let (hg, s8, s9, s10) = run_through_step10(
+            "The meeting moved from Tuesday to Friday.",
+            &["event", "weekday"],
+            &policy,
+        );
+        assert!(
+            !s9.meta_relations.is_empty(),
+            "test prerequisite: Step 9 should have minted metas",
+        );
+        let route = empty_route();
+        let frame = assemble_frame(
+            "The meeting moved from Tuesday to Friday.",
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8,
+            &s9,
+            &s10,
+            &policy,
+        );
+        // At least one supporting_claim should exist (the
+        // derived_from meta on a cache relation Step 9 minted).
+        let derived_from_attr = hg.by_name["derived_from"][0];
+        let has_derived = frame.supporting_claims.iter().any(|&rid| {
+            hg.relations[rid.0 as usize]
+                .attributes
+                .iter()
+                .any(|a| a.name == derived_from_attr)
+        });
+        assert!(
+            has_derived,
+            "expected at least one derived_from supporting_claim; got {:?}",
+            frame.supporting_claims,
+        );
+    }
+
+    #[test]
+    fn frame_superseded_mirrors_step9_output() {
+        // Two ticks: first establishes a cache; second supersedes
+        // it. Frame from tick 2 should list the flipped prior.
+        let policy = Policy::default();
+        let mut hg = load_seed_graph();
+        let labels: &[&str] = &["event", "weekday"];
+
+        let text1 = "The meeting moved from Monday to Tuesday.";
+        let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
+        let s8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
+        let s9_1 = supersede(&mut hg, &s8_1.minted_relations, &policy);
+        let _ = hebbian_and_salience(&mut hg, &s8_1, &s9_1, None, &policy);
+
+        let text2 = "The meeting moved from Tuesday to Friday.";
+        let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
+        let s8_2 = build_relations(text2, &mut hg, &ext2, &policy, None);
+        let s9_2 = supersede(&mut hg, &s8_2.minted_relations, &policy);
+        let s10_2 = hebbian_and_salience(&mut hg, &s8_2, &s9_2, None, &policy);
+
+        let route = empty_route();
+        let frame = assemble_frame(
+            text2,
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8_2,
+            &s9_2,
+            &s10_2,
+            &policy,
+        );
+        assert_eq!(frame.superseded, s9_2.superseded);
+        assert!(
+            !frame.superseded.is_empty(),
+            "test prerequisite: tick 2 should supersede a prior",
+        );
+    }
+
+    #[test]
+    fn frame_next_actions_diffuse_routing_enqueues_replay() {
+        let policy = Policy::default();
+        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let mut route = empty_route();
+        route.uncertainty.push(UncertaintySignal::DiffuseRouting);
+        let frame = assemble_frame(
+            "Sarah called me yesterday.",
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8,
+            &s9,
+            &s10,
+            &policy,
+        );
+        let has_replay = frame.next_actions.iter().any(|a| {
+            matches!(
+                a,
+                AttentionAction::EnqueueReplay {
+                    kind: ReplayKind::BackgroundSweep,
+                },
+            )
+        });
+        assert!(has_replay, "DiffuseRouting should emit EnqueueReplay");
+    }
+
+    #[test]
+    fn frame_next_actions_dedupe_repeat_signals() {
+        let policy = Policy::default();
+        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let mut route = empty_route();
+        route.uncertainty.push(UncertaintySignal::DiffuseRouting);
+        route.uncertainty.push(UncertaintySignal::LowConfidence);
+        route.uncertainty.push(UncertaintySignal::DiffuseRouting);
+        let frame = assemble_frame(
+            "Sarah called me yesterday.",
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8,
+            &s9,
+            &s10,
+            &policy,
+        );
+        let replay_count = frame
+            .next_actions
+            .iter()
+            .filter(|a| matches!(a, AttentionAction::EnqueueReplay { .. }))
+            .count();
+        assert_eq!(replay_count, 1, "replay action should dedup");
+    }
+
+    #[test]
+    fn frame_next_actions_ambiguous_coref_emits_follow_up() {
+        let policy = Policy::default();
+        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let mut route = empty_route();
+        route.uncertainty.push(UncertaintySignal::AmbiguousCoref);
+        let frame = assemble_frame(
+            "Sarah called me yesterday.",
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8,
+            &s9,
+            &s10,
+            &policy,
+        );
+        let has_follow_up = frame
+            .next_actions
+            .iter()
+            .any(|a| matches!(a, AttentionAction::FollowUpQuery(_)));
+        assert!(has_follow_up);
+    }
+
+    #[test]
+    fn frame_ungrounded_time_no_action_emitted() {
+        let policy = Policy::default();
+        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let mut route = empty_route();
+        route.uncertainty.push(UncertaintySignal::UngroundedTime);
+        let frame = assemble_frame(
+            "Sarah called me yesterday.",
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8,
+            &s9,
+            &s10,
+            &policy,
+        );
+        // UngroundedTime is v0-no-action (chrono not wired); still
+        // appears in uncertainty so caller can surface it.
+        assert!(
+            frame
+                .uncertainty
+                .contains(&UncertaintySignal::UngroundedTime),
+        );
+        assert!(frame.next_actions.is_empty());
+    }
+
+    /// End-to-end two-tick integration: tick 1 mints a cache;
+    /// tick 2 supersedes it. Frame from tick 2 should surface:
+    ///   - new cache (Asserted) in focused_relations
+    ///   - prior cache id in superseded (mirrors Step 9)
+    ///   - prior cache id appears in history
+    ///   - derived_from meta in supporting_claims
+    ///
+    /// Exercises the full handoff from Steps 8/9/10 through Step 12.
+    #[test]
+    fn two_tick_integration_supersession_threads_through_frame() {
+        let policy = Policy::default();
+        let labels: &[&str] = &["event", "weekday"];
+        let mut hg = load_seed_graph();
+
+        // ── Tick 1 ─────────────────────────────────────────────────
+        let text1 = "The meeting moved from Monday to Tuesday.";
+        let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
+        let s8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
+        let s9_1 = supersede(&mut hg, &s8_1.minted_relations, &policy);
+        let _ = hebbian_and_salience(&mut hg, &s8_1, &s9_1, None, &policy);
+        // Tick 1 has no supersession (no priors exist yet).
+        assert!(s9_1.superseded.is_empty(), "tick 1 has no priors");
+        assert!(
+            !s9_1.cache_relations.is_empty(),
+            "tick 1 should mint a cache"
+        );
+        let prior_cache = *s9_1.cache_relations.first().unwrap();
+
+        // ── Tick 2 ─────────────────────────────────────────────────
+        let text2 = "The meeting moved from Tuesday to Friday.";
+        let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
+        let s8_2 = build_relations(text2, &mut hg, &ext2, &policy, None);
+        let s9_2 = supersede(&mut hg, &s8_2.minted_relations, &policy);
+        let s10_2 = hebbian_and_salience(&mut hg, &s8_2, &s9_2, None, &policy);
+        assert!(
+            s9_2.superseded.contains(&prior_cache),
+            "tick 2 should flip tick 1's cache",
+        );
+
+        let route = empty_route();
+        let frame = assemble_frame(
+            text2,
+            &hg,
+            &Intent::default(),
+            None,
+            &route,
+            &s8_2,
+            &s9_2,
+            &s10_2,
+            &policy,
+        );
+
+        // ── (a) frame.superseded mirrors Step 9. ───────────────────
+        assert_eq!(frame.superseded, s9_2.superseded);
+
+        // ── (b) new cache lands in focused_relations as Asserted. ─
+        let new_cache = *s9_2.cache_relations.first().unwrap();
+        let focused_ids: Vec<RelationId> = frame
+            .focused_relations
+            .iter()
+            .map(|ra| ra.relation)
+            .collect();
+        assert!(
+            focused_ids.contains(&new_cache),
+            "new cache should appear in focused_relations",
+        );
+        let new_cache_ra = frame
+            .focused_relations
+            .iter()
+            .find(|ra| ra.relation == new_cache)
+            .unwrap();
+        assert!(
+            !new_cache_ra.is_defeasible,
+            "new cache should land Asserted, not Defeasible",
+        );
+
+        // ── (c) prior cache id appears in history (via the
+        //        supersedes meta walked off the new cache). ────────
+        assert!(
+            frame.history.contains(&prior_cache),
+            "prior cache should be reachable through history; got {:?}",
+            frame.history,
+        );
+
+        // ── (d) at least one supporting_claim is a derived_from
+        //        meta pointing at the n-ary event Step 8 minted. ───
+        let derived_from_attr = hg.by_name["derived_from"][0];
+        let any_derived = frame.supporting_claims.iter().any(|&rid| {
+            hg.relations[rid.0 as usize]
+                .attributes
+                .iter()
+                .any(|a| a.name == derived_from_attr)
+        });
+        assert!(
+            any_derived,
+            "expected derived_from meta in supporting_claims; got {:?}",
+            frame.supporting_claims,
+        );
+
+        // ── (e) prior cache (Superseded) NOT in focused_relations. ─
+        assert!(
+            !focused_ids.contains(&prior_cache),
+            "Superseded prior should be excluded from focused_relations",
+        );
     }
 
     #[test]

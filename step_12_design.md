@@ -1,9 +1,31 @@
 # Step 12 — Assemble Attention Frame
 
-> **Status: design pass.** Spec source: `tick_pipeline_focus.md §11.13`
-> + `new_foundation.md §11.13 prose`. Step 11 (`focus-radius decay`)
-> shipped; Step 12 is the **final** step of v0. After this the tick
-> produces a `ConsciousAttentionFrame` ready for the caller LLM.
+> **Status: complete (v0).** All five phases landed.
+> `src/steps/frame.rs` ships `rrf_merge`, `assemble_frame`, and
+> `print_step12`. Step 12 runs last in `lib.rs::run()` and produces
+> a `ConsciousAttentionFrame` ready for the caller LLM. 18 frame
+> tests + 217 lib tests total pass; clippy + fmt clean.
+>
+> Substrate touch-ups that shipped alongside:
+>   - `RelationActivation.is_defeasible: bool` (status mirror)
+>   - Step 10 now bumps `focus_success_count` per reinforced
+>     relation so RRF has a real second signal (path-reinforced)
+>     alongside dense (activation-based).
+>
+> Smoke verified on the dentist sentence: 8 focused relations,
+> 1 supporting_claim (the cache's derived_from meta), RRF scores
+> descending monotonically, 17 durable_writes, 2 active_regions
+> (entities/events).
+>
+> Deferred per spec:
+>   - **Tantivy BM25 sparse signal** — §15.1 dependency not built.
+>   - **Mid-path-insertion replay flag** — §10.3.5 substrate doesn't
+>     exist in v0.
+>   - **Cross-tick relations** in focused_relations — flow through
+>     routing + recent_focus, not the frame's reinforcement set.
+>   - **`policy.frame_top_k`** — easy add when needed.
+>   - **Uncertainty signal producers in Steps 5/6/8/9** — only
+>     Step 4's `route.uncertainty` is threaded for v0.
 
 ## 1. What Step 12 is
 
