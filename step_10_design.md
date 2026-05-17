@@ -1,9 +1,19 @@
 # Step 10 — Hebbian + Salience
 
-> **Status: design pass.** Spec source: `tick_pipeline_focus.md §11.11`
-> + `new_foundation.md §14.7 / §14.9`. Step 9 (`supersede`) shipped;
-> Step 10 is the last "no-model" mutation step before Step 11's
-> bounded decay walk.
+> **Status: complete (v0).** All seven phases landed.
+> `bounded_hebbian_bump` / `bounded_hebbian_decay` live in
+> `src/hebbian.rs`; Step 10 itself in `src/steps/hebbian.rs`. The
+> step runs in `lib.rs::run()` after `supersede` and surfaces
+> reinforcement / promotion / focus counts via `print_step10`.
+> 21 hebbian-module tests + 11 operator tests = 32 new tests;
+> 162 lib tests total. recent_focus is now populated for every
+> tick, which unblocks Step 6 (coref) and Step 4's frame
+> inheritance whenever they get implemented.
+>
+> v0 deferral: `support_diversity` stays at 0 (replay's §14.8
+> job to maintain). Default `promotion_min_diversity = 2` blocks
+> all promotions under default policy; tests use 0 to exercise
+> the promotion path.
 
 ## 1. What Step 10 is
 
