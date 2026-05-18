@@ -8,6 +8,7 @@ pub mod frame;
 pub mod hebbian;
 pub mod novelty_relations;
 pub mod orthographic;
+pub mod print_util;
 pub mod relation_patterns;
 pub mod route_regions;
 pub mod run_extractors;

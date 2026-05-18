@@ -19,6 +19,7 @@ use crate::embed::embed_text;
 use crate::steps::build_relations::{
     infer_property_kind, mint_element, mint_or_reuse_base_relation, mint_relation,
 };
+use crate::steps::print_util::truncate;
 use crate::types::{
     Attribute, ElementId, Hypergraph, Polarity, Relation, RelationId, RelationStatus, Term,
 };
@@ -55,9 +56,9 @@ pub struct Step9Output {
 ///    attribute-name element.
 /// 4. Mints a binary cache relation
 ///    `[subject: target, current_<property>: to_value]`.
-///
-/// Phase 2 (this commit) stops here — prior-cache supersession and
-/// linking meta-relations land in phase 3.
+/// 5. Looks up live prior caches for the same (target, property)
+///    pair and flips them to `Superseded`.
+/// 6. Writes `derived_from` and `supersedes` linking meta-relations.
 pub fn supersede(
     hg: &mut Hypergraph,
     new_relations: &[RelationId],
@@ -287,15 +288,6 @@ pub fn print_step9(
                 .unwrap_or_default();
             println!("    R{:<5} subject={subj_name}", rid.0);
         }
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{cut}…")
     }
 }
 

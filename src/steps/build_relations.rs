@@ -15,8 +15,7 @@
 //! 5. Write a `source` meta-relation if the tick's source is `Some`.
 //! 6. Incrementally update all seven Step 8 indices.
 //!
-//! See `step_8_design.md` for the full spec; this is Phase 2 (binary
-//! relations only). Phase 3 adds n-ary event merging.
+//! See `step_8_design.md` for the full spec.
 
 use std::collections::HashMap;
 
@@ -24,6 +23,7 @@ use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
 use crate::steps::coref::CorefDecision;
 use crate::steps::novelty_relations::NoveltyRelation;
 use crate::steps::orthographic::OrthographicChunk;
+use crate::steps::print_util::truncate;
 use crate::steps::relation_patterns::RelationProposal;
 use crate::steps::run_extractors::ExtractionOutput;
 use crate::types::{
@@ -53,9 +53,10 @@ pub struct Step8Output {
 /// - `source` — the tick's source (§11.1). If `Some`, every minted
 ///   base relation gets a companion `(target: R, source: source)`.
 ///
-/// The current implementation handles binary `instance_of` and
-/// pattern-RE proposals. N-ary event merging lands in Phase 3;
-/// novelty branch mints land in Phase 4.
+/// Handles binary `instance_of` and pattern-RE proposals plus
+/// n-ary event merging and the novelty branch. Coref decisions
+/// (Step 5e output) short-circuit element resolution via §4a's
+/// `apply_coref_decisions`.
 pub fn build_relations(
     input_text: &str,
     hg: &mut Hypergraph,
@@ -1143,15 +1144,6 @@ pub fn print_step8(
         let el = &hg.elements[id.0 as usize];
         let name = el.names.first().map(|s| s.as_str()).unwrap_or("?");
         println!("  {:<6} {:<28} {:?}", id.0, truncate(name, 28), el.polarity);
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{cut}…")
     }
 }
 

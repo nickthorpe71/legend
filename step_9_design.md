@@ -54,17 +54,19 @@ just events. Step 9 filters internally for event-shaped relations
 ## 3. Identifying an event-shaped relation
 
 §11.10 defines event-shaped as "attribute list includes `target`,
-`property`, `from`, and `to`." Step 8's current n-ary output omits
-`property` (deferred in Phase 3), so v0 uses a weaker definition:
+`property`, `from`, and `to`." Step 8 ships all four (the `property`
+slot was moved upstream during v0), so the filter is:
 
 **An event relation has both `from` AND `to` attribute names.** The
 `subject` slot points at the event element; the `target` slot points
-at what changed; `from`/`to` carry the value transition.
+at what changed; the `property` slot carries the inferred kind label
+(date / time / amount / location / value); `from`/`to` carry the
+value transition.
 
-This matches what Step 8 actually mints today. When property
-inference moves back upstream (post-v0), Step 9's filter tightens
-to "`target` + `property` + `from` + `to`" without behavioral
-change — the looser filter is a superset of the stricter one.
+The from/to-only filter is deliberately loose: Step 9 still falls
+back to per-value inference (§4) when an event somehow lacks a
+property slot (defensive — pre-step8-property events from older
+code paths). The looser filter is a superset of the stricter one.
 
 ## 4. Property inference (Step-9-local)
 

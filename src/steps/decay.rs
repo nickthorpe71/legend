@@ -16,9 +16,7 @@
 //! - **Status untouched.** Decayed relations stay live; they're
 //!   just harder to retrieve via activation-weighted ranking.
 //!
-//! See `step_11_design.md` for the full spec; this is phase 1
-//! (skeleton + utility helpers). Phases 2-4 add the BFS walk
-//! + wiring + integration tests.
+//! See `step_11_design.md` for the full spec.
 
 use std::collections::{HashSet, VecDeque};
 

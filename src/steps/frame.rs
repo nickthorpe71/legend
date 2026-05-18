@@ -17,6 +17,7 @@ use std::collections::HashSet;
 
 use crate::steps::build_relations::Step8Output;
 use crate::steps::hebbian::Step10Output;
+use crate::steps::print_util::truncate;
 use crate::steps::route_regions::RouteResult;
 use crate::steps::supersede::Step9Output;
 use crate::types::{
@@ -347,15 +348,6 @@ pub fn print_step12(frame: &ConsciousAttentionFrame, hg: &Hypergraph) {
             truncate(&attr_name, 14),
             truncate(&val, 12),
         );
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{cut}…")
     }
 }
 

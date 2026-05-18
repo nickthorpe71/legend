@@ -8,10 +8,11 @@
 > merge, novelty branch, coref override, source meta, indices,
 > and an end-to-end dentist-sentence integration.
 >
-> Future work (post-v0): `property` slot inference in n-ary
-> events, span-level seed prototypes, cosine-dedup for spans
-> against `region_members`, Tantivy lexical index for
+> Post-v0 (deferred): span-level seed prototypes, cosine-dedup
+> for spans against `region_members`, Tantivy lexical index for
 > attribute-name resolution. See §13's "Out of scope" list.
+> (Property-slot inference moved upstream from Step 9 into Step 8's
+> `mint_event_relations` during v0 — events now self-describe.)
 
 ## 1. What Step 8 is
 

@@ -12,9 +12,7 @@
 //!    when the gate clears.
 //! 4. Push focal `RecentFocusEntry` records onto `recent_focus`.
 //!
-//! See `step_10_design.md` for the full spec; this is phase 2
-//! (skeleton + activation bumps). Salience, promotion, and
-//! `recent_focus` push land in phases 3-5.
+//! See `step_10_design.md` for the full spec.
 //!
 //! With v0 default `policy.hebbian_rate = 0.0`, every bump is a
 //! mathematical no-op — `support_count` still increments and
@@ -25,6 +23,7 @@ use std::collections::HashSet;
 
 use crate::hebbian::bounded_hebbian_bump;
 use crate::steps::build_relations::{Step8Output, kind_of};
+use crate::steps::print_util::truncate;
 use crate::steps::supersede::Step9Output;
 use crate::types::{
     ElementId, Hypergraph, Policy, RecentFocusEntry, RelationId, RelationStatus, Term,
@@ -40,10 +39,9 @@ pub struct Step10Output {
     /// list — the IDs are recorded but the math is a noop.
     pub reinforced: Vec<RelationId>,
     /// Relations that promoted from `Defeasible` to `Asserted`
-    /// this tick. Populated in phase 4.
+    /// this tick.
     pub promoted: Vec<RelationId>,
     /// `RecentFocusEntry` records pushed to `hg.recent_focus`.
-    /// Populated in phase 5.
     pub focus_pushed: u32,
 }
 
@@ -57,11 +55,13 @@ pub struct Step10Output {
 /// longer current state."
 ///
 /// For each relation in the reinforcement set: bump
-/// `stats.activation` via `bounded_hebbian_bump(activation,
-/// policy.hebbian_rate)`. With default policy this is a no-op.
-///
-/// Phase 3-5 will add salience, promotion, and recent_focus
-/// population at the same entry point.
+/// `stats.activation`, compute + bump `stats.salience` (intent-
+/// modulated), bump `stats.support_count` + `stats.focus_success_count`.
+/// Defeasible relations that clear `policy.promotion_min_count`
+/// AND `policy.promotion_min_diversity` AND have no live
+/// `supersedes` meta promote to `Asserted` (confidence lifted to
+/// `policy.default_conf`). Finally, push focal entries onto
+/// `recent_focus` for downstream coref / frame inheritance.
 pub fn hebbian_and_salience(
     hg: &mut Hypergraph,
     step8: &Step8Output,
@@ -211,15 +211,6 @@ pub fn print_step10(out: &Step10Output, hg: &Hypergraph, policy: &Policy) {
                 attr_name,
             );
         }
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{cut}…")
     }
 }
 
