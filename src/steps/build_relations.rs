@@ -761,26 +761,34 @@ fn mint_event_relations(
         span_cache,
         result,
     );
-    let from_text = &input_text[from_p.object_char_start..from_p.object_char_end];
-    let from_val_id = resolve_span(
-        hg,
-        input_text,
-        from_p.object_char_start,
-        from_p.object_char_end,
-        from_text,
-        span_cache,
-        result,
-    );
-    let to_text = &input_text[to_p.object_char_start..to_p.object_char_end];
-    let to_val_id = resolve_span(
-        hg,
-        input_text,
-        to_p.object_char_start,
-        to_p.object_char_end,
-        to_text,
-        span_cache,
-        result,
-    );
+    let from_val_id = if let Some(label) = from_p.synthetic_object_label {
+        resolve_label_element(hg, label, result)
+    } else {
+        let from_text = &input_text[from_p.object_char_start..from_p.object_char_end];
+        resolve_span(
+            hg,
+            input_text,
+            from_p.object_char_start,
+            from_p.object_char_end,
+            from_text,
+            span_cache,
+            result,
+        )
+    };
+    let to_val_id = if let Some(label) = to_p.synthetic_object_label {
+        resolve_label_element(hg, label, result)
+    } else {
+        let to_text = &input_text[to_p.object_char_start..to_p.object_char_end];
+        resolve_span(
+            hg,
+            input_text,
+            to_p.object_char_start,
+            to_p.object_char_end,
+            to_text,
+            span_cache,
+            result,
+        )
+    };
 
     // Event element — a fresh identity per merge. Name carries the
     // verb + tick + seq so it stays human-readable in dumps.

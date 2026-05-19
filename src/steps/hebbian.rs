@@ -721,11 +721,15 @@ mod tests {
     }
 
     #[test]
-    fn promotion_blocked_by_default_min_diversity() {
-        // Default policy has min_diversity=2 and v0 leaves diversity
-        // at 0 forever, so nothing ever promotes under defaults.
+    fn promotion_blocked_by_min_diversity_gate() {
+        // Replay will eventually flip `promotion_min_diversity` above 0
+        // and maintain `support_diversity`. Until then, asserting the
+        // gate works means setting `min_diversity` explicitly and
+        // confirming a 0-diversity relation can't clear it. (v0 default
+        // is 0 — disabled — so this is a forward-compat test.)
         let policy = Policy {
             promotion_min_count: 1, // even trivially low won't help
+            promotion_min_diversity: 2,
             ..Default::default()
         };
         let (mut hg, step8, step9) = run_through_step9(
@@ -736,7 +740,7 @@ mod tests {
         let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
         assert!(
             out.promoted.is_empty(),
-            "min_diversity=2 with diversity=0 should block promotion",
+            "min_diversity=2 with support_diversity=0 should block promotion",
         );
     }
 

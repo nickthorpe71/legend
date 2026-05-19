@@ -741,7 +741,11 @@ impl Default for Policy {
             midpath_reparent_gap: 0.10,
 
             promotion_min_count: 3,
-            promotion_min_diversity: 2,
+            // v0 leaves diversity at 0: `support_diversity` is replay's
+            // job (§14.7/§14.8) and v0 has no replay loop, so a non-zero
+            // gate would permanently block promotion. Replay flips this
+            // upward once it lands.
+            promotion_min_diversity: 0,
             promotion_window_ticks: 1000,
 
             concept_recognition_threshold: 3,
