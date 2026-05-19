@@ -651,17 +651,46 @@ pub(crate) fn kind_of(hg: &Hypergraph, value_id: ElementId) -> Option<String> {
 /// - both time → `"time"`
 /// - both quantity → `"amount"`
 /// - both place → `"location"`
+/// - both role → `"role"`
+/// - if `to`'s kind alone is one of the above → that label
+///   (handles change-verb singletons where `from` is the synthetic
+///   `unknown_prior` placeholder — Templates 5 and 6 of
+///   `relation_patterns.rs`)
 /// - else → `"value"` (generic fallback)
 pub fn infer_property_kind(hg: &Hypergraph, from_id: ElementId, to_id: ElementId) -> &'static str {
     let f = kind_of(hg, from_id);
     let t = kind_of(hg, to_id);
     let (f, t) = (f.as_deref(), t.as_deref());
-    match (f, t) {
-        (Some("weekday" | "month"), Some("weekday" | "month")) => "date",
-        (Some("time"), Some("time")) => "time",
-        (Some("quantity"), Some("quantity")) => "amount",
-        (Some("place"), Some("place")) => "location",
-        _ => "value",
+    if let Some(to_bucket) = bucket_of(t) {
+        // `to` carries a typed kind — that determines the property
+        // bucket regardless of `from`. Common case for both T1
+        // ("Bob moved from Boston to Austin") and T5/T6 ("Bob moved
+        // to Austin"; "Bob is now a staff engineer") where the
+        // `from` may be a synthetic placeholder.
+        //
+        // Cross-bucket pair (e.g., weekday → quantity) is
+        // suspicious — fall back to generic so it doesn't conflict
+        // with a clean single-type cache. Same-bucket pairs
+        // (month → weekday both → "date") still collapse cleanly.
+        return match (bucket_of(f), Some(to_bucket)) {
+            (Some(fb), Some(tb)) if fb != tb => "value",
+            _ => to_bucket,
+        };
+    }
+    "value"
+}
+
+/// Map a raw NER kind (or coarse type label) to its property-bucket
+/// name. `None` for unrecognized kinds — caller falls back to
+/// `"value"`.
+fn bucket_of(kind: Option<&str>) -> Option<&'static str> {
+    match kind? {
+        "weekday" | "month" => Some("date"),
+        "time" => Some("time"),
+        "quantity" => Some("amount"),
+        "place" => Some("location"),
+        "role" => Some("role"),
+        _ => None,
     }
 }
 

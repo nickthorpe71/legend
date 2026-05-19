@@ -111,6 +111,27 @@ pub fn supersede(
         // ── Prior-cache lookup ─────────────────────────────────────
         // Live priors get flipped only if the gate passed.
         let priors = collect_prior_caches(hg, frame.target, cache_attr_id);
+
+        if std::env::var("LEGEND_DEBUG_STEP9").is_ok() {
+            let target_name = hg.elements[frame.target.0 as usize]
+                .names
+                .first()
+                .cloned()
+                .unwrap_or_default();
+            let to_name = hg.elements[frame.to_value.0 as usize]
+                .names
+                .first()
+                .cloned()
+                .unwrap_or_default();
+            eprintln!(
+                "[step9] event={} target={target_name:?} cache_attr={cache_attr_label:?} \
+                 to={to_name:?} event_conf={event_conf:.3} thresh={:.3} gate={} priors={}",
+                event_id.0,
+                policy.supersession_threshold,
+                gate_passed,
+                priors.len(),
+            );
+        }
         if gate_passed {
             for &prior in &priors {
                 hg.relations[prior.0 as usize].status = RelationStatus::Superseded;

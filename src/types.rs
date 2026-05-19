@@ -768,7 +768,15 @@ impl Default for Policy {
             // calibration.
             default_conf: 1.0,
             salience_multiplier: 1.0,
-            supersession_threshold: 0.5,
+            // v0 has no replay loop to repair over-eager flips. Even so,
+            // 0.5 was over-conservative: the gate compounds with
+            // `default_conf`'s conviction multiplier (line 695) and with
+            // the per-tick `* (1 - PE)` modulation in §10.6, so events
+            // that should obviously supersede ("Bob moved to Austin"
+            // following a "Bob lives in Boston" cache) routinely sat
+            // below 0.5. 0.35 lets typical declarative change-events
+            // flip while still gating questions / hedges out.
+            supersession_threshold: 0.35,
 
             replay_cadence: ReplayCadence::default(),
         }

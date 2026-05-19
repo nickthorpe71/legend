@@ -68,7 +68,14 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationPropo
                     && connective_ij.len() < 32
                     && connective_jk.len() < 16
                 {
-                    let conf = 0.7_f32.min(spans[i].score.min(spans[j].score).min(spans[k].score));
+                    // The 3-span "X from A to B" surface is the high-
+                    // precision signal — span scores have already
+                    // cleared NER's threshold, so they're treated as
+                    // boolean here. Step 2's `default_conf` still
+                    // attenuates downstream when stamping
+                    // `stats.confidence`, which is how speaker
+                    // certainty enters the picture.
+                    let conf = 0.85;
                     let status = if conf >= 0.6 {
                         RelationStatus::Entailed
                     } else {
@@ -171,7 +178,8 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationPropo
             if !has_now {
                 continue;
             }
-            let conf = 0.6_f32.min(spans[i].score.min(spans[j].score));
+            // Same rationale as T1: the surface pattern is the signal.
+            let conf = 0.85;
             let status = if conf >= 0.55 {
                 RelationStatus::Entailed
             } else {
@@ -227,7 +235,8 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationPropo
             let Some(anchor) = match_change_verb(prefix) else {
                 continue;
             };
-            let conf = 0.65_f32.min(spans[i].score.min(spans[j].score));
+            // Same rationale as T1: the surface pattern is the signal.
+            let conf = 0.85;
             let status = if conf >= 0.6 {
                 RelationStatus::Entailed
             } else {

@@ -19,7 +19,20 @@ pub fn adjust_policy(intent: &Intent, base: &Policy) -> Policy {
     // conviction × (1 - curiosity) → speaker certainty separated from
     // "speaker is asking." A confident question still writes new
     // content low-confidence because the speaker isn't asserting it.
-    p.default_conf = base.default_conf * intent.conviction * (1.0 - 0.7 * intent.curiosity);
+    //
+    // The conviction term is floored at 0.4 so a moderately-tentative
+    // input (`conviction = 0.3`) keeps writes around `0.6 * base`
+    // instead of collapsing to `0.3 * base`. With the previous pure-
+    // multiplicative form, every downstream confidence gate
+    // (supersession_threshold, ner_assertion_threshold) compounded
+    // against `default_conf` so naturally-phrased change events
+    // routinely landed below the supersession bar. Keeping the
+    // curiosity coefficient soft (0.3 instead of 0.7) so questions
+    // still write less confidently than statements but don't black-
+    // hole.
+    let conviction_term = 0.4 + 0.6 * intent.conviction;
+    let curiosity_term = 1.0 - 0.3 * intent.curiosity;
+    p.default_conf = base.default_conf * conviction_term * curiosity_term;
 
     // DA + NE encoding boost: surprise and emotional intensity both
     // raise the per-tick salience multiplier additively.
