@@ -284,8 +284,7 @@ fn main() {
         let _ = apply_region_delta(&mut hg, &route.delta, &policy);
         let step8 = build_relations(turn.text, &mut hg, &extraction, &policy, Some(source_id));
         let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
-        let topical_seeds =
-            legend::steps::topical::topical_neighbors(&hg, &embedding, 32);
+        let topical_seeds = legend::steps::topical::topical_neighbors(&hg, &embedding, 32);
         let step10 = hebbian_and_salience(
             &mut hg,
             &step8,

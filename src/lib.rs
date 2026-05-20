@@ -1,3 +1,4 @@
+pub mod daemon;
 pub mod embed;
 pub mod hebbian;
 pub mod inference;
@@ -41,23 +42,49 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: legend <text>                          # run one tick\n\
-             legend git-merge-driver %O %A %B %P    # git invokes on .legend/*.lz4 conflict\n\
-             legend git-init                        # register the merge driver in this repo"
+            "usage: legend <text>                 # run one tick (auto-starts daemon)\n\
+             legend start                  # launch daemon in the background\n\
+             legend stop                   # ask the daemon to exit cleanly\n\
+             legend status                 # daemon pid, uptime, substrate sizes\n\
+             legend git-merge-driver …     # git invokes on .legend/*.lz4 conflict\n\
+             legend git-init               # register the merge driver in this repo\n\
+             \n\
+             env: LEGEND_STATE_DIR        directory holding memory.lz4 / lock / port file\n\
+                  LEGEND_DAEMON_TTL       daemon idle timeout in seconds (default 300)\n\
+                  LEGEND_RESET=1          first-tick path skips loading the snapshot"
         );
         return Ok(());
     }
 
-    // Subcommand dispatch. `git-merge-driver` is the verb git is told
-    // to invoke via `merge.legend.driver`; `git-init` is the one-time
-    // setup that registers it.
+    // Subcommand dispatch. Daemon verbs first, then git, then fall
+    // through to the tick path. `__daemon` is the private "run as
+    // the daemon process" verb; `start` wraps it with detached spawn.
     match args[1].as_str() {
+        "__daemon" => return daemon::serve(),
+        "start" => return daemon_start(),
+        "stop" => return daemon_stop(),
+        "status" => return daemon_status(),
         "git-merge-driver" => return git_merge_driver(&args[2..]),
         "git-init" => return git_init(),
         _ => {}
     }
 
     let input_text = args[1].clone();
+
+    // Default tick path goes through the daemon: auto-start if not
+    // running, send a `Tick` request, print the response summary.
+    //
+    // Opt out into the in-process verbose Step-1-through-12 pipeline
+    // below when:
+    //   - `LEGEND_INPROC=1` (dev inspection of every intermediate step)
+    //   - `LEGEND_RESET=1`  (the reset semantics are per-invocation
+    //     and only the in-process path implements them — a running
+    //     daemon already holds the substrate; resetting would require
+    //     stopping it, which is a separate user action)
+    if env::var_os("LEGEND_INPROC").is_none() && env::var_os("LEGEND_RESET").is_none() {
+        return tick_via_daemon(&input_text);
+    }
+
     let wall_clock = SystemTime::now();
     let timing = std::env::var("LEGEND_TIME").is_ok();
     let stage_at = |label: &str, mark: &mut SystemTime| {
@@ -207,15 +234,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     stage_at("assemble frame (Step 12)", &mut mark);
     print_step12(&frame, &hg);
 
-    // When `LEGEND_FRAME_JSON=1`, append a JSON dump of the full
-    // focused subgraph to stdout. Bench harnesses + downstream
-    // consumer LLMs that need every element / relation surface
-    // (not just `print_step12`'s top-5 preview) parse this section.
-    // Marker line lets the harness `tail` from a known anchor.
-    if env::var_os("LEGEND_FRAME_JSON").is_some() {
-        print_frame_json(&frame, &hg);
-    }
-
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;
     let md = render::render(&hg);
@@ -322,134 +340,148 @@ pub fn git_init() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// ─── Frame JSON dump (LEGEND_FRAME_JSON=1) ────────────────────────────────
+// ─── Daemon subcommand wrappers + client tick path ───────────────────────
 
-/// Print the full attention frame as JSON, sandwiched between
-/// marker lines so harnesses can locate it without fragile parsing
-/// of the human-readable output above. Includes every focused
-/// relation (not just `print_step12`'s top-5 preview) plus current_state,
-/// history, and supporting_claims. Hand-rolled JSON to avoid pulling
-/// `serde_json` into the runtime crate.
-fn print_frame_json(frame: &types::ConsciousAttentionFrame, hg: &Hypergraph) {
-    println!("--- LEGEND_FRAME_JSON_BEGIN ---");
-    print!("{{");
-    print!("\"tick\":{},", frame.tick.0);
-    print!("\"active_frame\":");
-    if let Some(eid) = frame.active_frame {
-        let name = hg.elements[eid.0 as usize]
-            .names
-            .first()
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        print!("\"{}\"", escape_json(name));
+/// `legend start`: spawn the daemon detached, wait for it to become
+/// reachable. Idempotent — if a daemon is already up, just reports
+/// status.
+fn daemon_start() -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(daemon::DaemonResponse::Status {
+        pid, uptime_secs, ..
+    }) = daemon::round_trip(&daemon::DaemonRequest::Status)
+    {
+        println!("daemon already running: pid {pid} ({uptime_secs}s uptime)");
+        return Ok(());
+    }
+    daemon::spawn_detached(std::time::Duration::from_secs(15))?;
+    let resp = daemon::round_trip(&daemon::DaemonRequest::Status)?;
+    if let daemon::DaemonResponse::Status { pid, .. } = resp {
+        println!("daemon started: pid {pid}");
+    }
+    Ok(())
+}
+
+/// `legend stop`: connect, send `Stop`, daemon exits and cleans up
+/// its lock + port file. Reports a friendly message if no daemon
+/// is running rather than an error.
+fn daemon_stop() -> Result<(), Box<dyn std::error::Error>> {
+    match daemon::round_trip(&daemon::DaemonRequest::Stop) {
+        Ok(daemon::DaemonResponse::Stopping) => {
+            println!("daemon stopping");
+            Ok(())
+        }
+        Ok(other) => Err(format!("unexpected response to Stop: {other:?}").into()),
+        Err(_) => {
+            println!("no daemon running");
+            Ok(())
+        }
+    }
+}
+
+/// `legend status`: print pid / uptime / tick count / substrate
+/// sizes if a daemon is running.
+fn daemon_status() -> Result<(), Box<dyn std::error::Error>> {
+    match daemon::round_trip(&daemon::DaemonRequest::Status) {
+        Ok(daemon::DaemonResponse::Status {
+            pid,
+            uptime_secs,
+            tick_count,
+            elements,
+            relations,
+        }) => {
+            println!(
+                "daemon  pid={pid}  uptime={uptime_secs}s  ticks={tick_count}  \
+                 elements={elements}  relations={relations}",
+            );
+            Ok(())
+        }
+        Ok(other) => Err(format!("unexpected status response: {other:?}").into()),
+        Err(_) => {
+            println!("no daemon running");
+            Ok(())
+        }
+    }
+}
+
+/// Auto-start-on-tick path. Connect to a running daemon (spawn one
+/// if missing), send `Tick { input }`, print a compact summary of
+/// the returned frame.
+fn tick_via_daemon(input: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = daemon::connect_or_start()?;
+    daemon::write_frame(
+        &mut stream,
+        &daemon::DaemonRequest::Tick {
+            input: input.to_string(),
+        },
+    )?;
+    let resp: daemon::DaemonResponse = daemon::read_frame(&mut stream)?;
+
+    match resp {
+        daemon::DaemonResponse::TickResult {
+            frame,
+            elements,
+            relations,
+        } => {
+            print_tick_summary(&frame, elements, relations);
+            Ok(())
+        }
+        daemon::DaemonResponse::Error { message } => Err(message.into()),
+        other => Err(format!("unexpected tick response: {other:?}").into()),
+    }
+}
+
+/// Compact one-screen render of what the daemon's Tick response
+/// carried. We can't pull element / attribute names without the
+/// substrate handy — but the daemon already populated the frame
+/// with everything the consumer LLM needs; the client just shows
+/// counts + a few key values.
+fn print_tick_summary(frame: &types::ConsciousAttentionFrame, elements: usize, relations: usize) {
+    println!(
+        "tick {} \"{}\"",
+        frame.tick.0,
+        truncate(&frame.input_echo, 60)
+    );
+    println!(
+        "  intent  conv={:.2}  pe={:.2}  arous={:.2}  curio={:.2}",
+        frame.intent.conviction,
+        frame.intent.prediction_error,
+        frame.intent.arousal,
+        frame.intent.curiosity,
+    );
+    println!(
+        "  substrate  elements={elements}  relations={relations}  active_regions={}",
+        frame.active_regions.len(),
+    );
+    println!(
+        "  frame  focused={}  supporting={}  history={}  current_state={}  uncertainty={:?}",
+        frame.focused_relations.len(),
+        frame.supporting_claims.len(),
+        frame.history.len(),
+        frame.current_state.len(),
+        frame.uncertainty,
+    );
+    if !frame.next_actions.is_empty() {
+        println!("  next_actions:");
+        for a in &frame.next_actions {
+            match a {
+                types::AttentionAction::EnqueueReplay { kind } => {
+                    println!("    EnqueueReplay {{ kind: {kind:?} }}");
+                }
+                types::AttentionAction::FollowUpQuery(t) => {
+                    println!("    FollowUpQuery({t:?})");
+                }
+            }
+        }
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
     } else {
-        print!("null");
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
     }
-    print!(",\"focused_relations\":[");
-    for (i, ra) in frame.focused_relations.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print_relation_json(hg, ra.relation, ra.activation, ra.is_defeasible);
-    }
-    print!("],\"current_state\":[");
-    for (i, rid) in frame.current_state.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print_relation_json(hg, *rid, 0.0, false);
-    }
-    print!("],\"history\":[");
-    for (i, rid) in frame.history.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print_relation_json(hg, *rid, 0.0, false);
-    }
-    print!("],\"supporting_claims\":[");
-    for (i, rid) in frame.supporting_claims.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print_relation_json(hg, *rid, 0.0, false);
-    }
-    print!("],\"uncertainty\":[");
-    for (i, sig) in frame.uncertainty.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!("\"{sig:?}\"");
-    }
-    println!("]}}");
-    println!("--- LEGEND_FRAME_JSON_END ---");
-}
-
-/// Emit a single relation as a JSON object. Captures subject, the
-/// other attribute slot(s), and status — enough for a downstream
-/// consumer to reason about the claim. Element values are surface
-/// names; relation values (meta-relations) are printed as `R<id>`.
-fn print_relation_json(
-    hg: &Hypergraph,
-    rid: types::RelationId,
-    activation: f32,
-    is_defeasible: bool,
-) {
-    let r = &hg.relations[rid.0 as usize];
-    print!("{{\"id\":{},", rid.0);
-    print!("\"status\":\"{:?}\",", r.status);
-    print!("\"activation\":{activation:.4},");
-    print!("\"is_defeasible\":{is_defeasible},");
-    let mut subject = String::new();
-    let mut attr_pairs: Vec<(String, String)> = Vec::new();
-    for a in &r.attributes {
-        let attr_name = hg.elements[a.name.0 as usize]
-            .names
-            .first()
-            .cloned()
-            .unwrap_or_default();
-        let val = match a.value {
-            types::Term::Element(eid) => hg.elements[eid.0 as usize]
-                .names
-                .first()
-                .cloned()
-                .unwrap_or_default(),
-            types::Term::Relation(rid) => format!("R{}", rid.0),
-        };
-        if a.name == hg.subject_attr {
-            subject = val.clone();
-        } else {
-            attr_pairs.push((attr_name, val));
-        }
-    }
-    print!("\"subject\":\"{}\",", escape_json(&subject));
-    print!("\"attrs\":[");
-    for (i, (k, v)) in attr_pairs.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!(
-            "{{\"name\":\"{}\",\"value\":\"{}\"}}",
-            escape_json(k),
-            escape_json(v),
-        );
-    }
-    print!("]}}");
-}
-
-fn escape_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 // ─── dev-time print helpers ───────────────────────────────────────────────

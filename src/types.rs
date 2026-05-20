@@ -486,7 +486,7 @@ pub struct MemoryStats {
 /// suggestions. The frame is a post-tick snapshot of the focused
 /// subgraph, not a pre-assembled answer — the calling LLM derives any
 /// natural-language response from the structural content.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ConsciousAttentionFrame {
     /// Which Hypergraph clock value produced this frame.
     pub tick: Tick,
@@ -857,7 +857,7 @@ pub struct RecentFocusEntry {
 /// conviction (cognitive), prediction_error (DA), arousal (NE),
 /// curiosity (retrieval vs assertion shape). Does NOT gate which
 /// steps run — only modulates how Steps 4/8/10/11 weight their work.
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Intent {
     /// Speaker certainty / commitment of the assertion. High =
     /// confident statements that should land as `Asserted` more
@@ -881,7 +881,7 @@ pub struct Intent {
 }
 
 /// One region that lit up during Step 4 routing.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct RegionActivation {
     /// The region anchor element.
     pub region: ElementId,
@@ -903,7 +903,7 @@ pub struct RegionActivation {
 /// `PartialEq` is derived for the idempotency test in `seed::tests` —
 /// rebuild_indices over identical inputs yields bit-identical stats
 /// because the arithmetic is deterministic in iteration order.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegionStats {
     /// Per-dimension mean of the prototype embeddings.
     pub mean: Vec<f32>,
@@ -973,7 +973,7 @@ pub struct NewRegion {
 /// `status == Defeasible` so callers can filter without an
 /// extra lookup; consumers typically present Defeasible relations
 /// with reduced weight or in a separate tray.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct RelationActivation {
     pub relation: RelationId,
     pub activation: f32,
@@ -987,7 +987,7 @@ pub struct RelationActivation {
 /// One detected uncertainty signal. The pipeline pushes these into a
 /// per-tick buffer as side effects of Steps 4, 5, 6, 8, and 9; Step 12
 /// collects them into the frame's `uncertainty` field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UncertaintySignal {
     /// Step 4: routing didn't converge — multiple regions matched
     /// equivalently, or none matched above `void_threshold`.
@@ -1015,7 +1015,7 @@ pub enum UncertaintySignal {
 /// An advisory action Step 12 emits in the frame's `next_actions`.
 /// The caller (typically the agent loop wrapping `tick()`) decides
 /// whether to act on each.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AttentionAction {
     /// Schedule a background replay sweep of the given kind. Doesn't
     /// run inline — the caller hands this off to the replay thread.
@@ -1028,7 +1028,7 @@ pub enum AttentionAction {
 
 /// What kind of background work to enqueue. Doc only names
 /// `BackgroundSweep` (the §14.7 decay sweep) — placeholder for now.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReplayKind {
     /// §14.7 decay sweep over everything outside the focus radius.
     BackgroundSweep,
