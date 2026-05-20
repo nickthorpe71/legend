@@ -402,6 +402,63 @@ fn relation_has_exact_value_attribute(hg: &Hypergraph, rid: RelationId) -> bool 
 /// Construct the per-tick reinforcement set. Deduplicates via a
 /// `HashSet` so meta-relations that appear in both step8 and step9
 /// (unlikely but defensive) don't get double-counted.
+/// Inherit the active frame for this tick from `recent_focus`.
+/// Returns the most-recently-focused element whose attribute slot
+/// was `subject` AND whose surface name isn't a closed-class
+/// pronoun, copula, or interrogative — those are speaker / question
+/// machinery, not the topical entity the conversation is about.
+/// Frame-shifting cues from the current input (which would override
+/// this) are §11.6 territory and not wired in v0; the inheritance
+/// path lights up first.
+///
+/// Returns `None` when `recent_focus` is empty (first tick) or
+/// when every subject-attributed entry is a pronoun / question
+/// word.
+///
+/// Call this BEFORE `hebbian_and_salience`'s push so the result
+/// reflects PRIOR ticks, not the current tick's about-to-be-pushed
+/// entries.
+pub fn derive_active_frame(hg: &Hypergraph) -> Option<ElementId> {
+    hg.recent_focus.iter().find_map(|entry| {
+        if entry.attribute != Some(hg.subject_attr) {
+            return None;
+        }
+        // Reject pronouns and question words — they're sentence
+        // machinery (subject of "I started a new project" or "What
+        // language is Polaris in?") rather than topical content.
+        let names = &hg.elements[entry.element.0 as usize].names;
+        for name in names {
+            if is_frame_unsuitable(&name.to_ascii_lowercase()) {
+                return None;
+            }
+        }
+        Some(entry.element)
+    })
+}
+
+/// Surface names that should NEVER win the active-frame slot — the
+/// conversation isn't "about" these even when they're the subject
+/// of an utterance.
+fn is_frame_unsuitable(lowered: &str) -> bool {
+    matches!(
+        lowered,
+        // First/second/third-person pronouns (subject + reflexive).
+        "i" | "i'm" | "me" | "my" | "myself"
+        | "you" | "your" | "yours"
+        | "we" | "us" | "our"
+        | "they" | "them" | "their"
+        | "he" | "him" | "his"
+        | "she" | "her" | "hers"
+        | "it" | "its"
+        // Interrogative pronouns / wh-words.
+        | "who" | "whom" | "whose"
+        | "what" | "which"
+        | "when" | "where" | "why" | "how"
+        // Demonstratives.
+        | "this" | "that" | "these" | "those"
+    )
+}
+
 /// Per-element cap on retrieved relations so a single high-degree
 /// element (e.g. a pronoun resolving to a frequently-mentioned
 /// entity) doesn't dominate the focus set. Replay later refines via

@@ -18,7 +18,7 @@ use legend::steps::build_relations::build_relations;
 use legend::steps::decay::focus_radius_decay;
 use legend::steps::detect_intent::detect_intent;
 use legend::steps::frame::assemble_frame;
-use legend::steps::hebbian::hebbian_and_salience;
+use legend::steps::hebbian::{derive_active_frame, hebbian_and_salience};
 use legend::steps::route_regions::route_regions;
 use legend::steps::run_extractors::run_extractors;
 use legend::steps::supersede::supersede;
@@ -274,15 +274,27 @@ fn main() {
         let embedding = legend::embed::embed_text(turn.text);
         let intent = detect_intent(turn.text, &embedding);
         let policy = adjust_policy(&intent, &hg.policy);
+        // Inherit the prior tick's focal subject as this tick's
+        // active frame. Computed before Step 10's push so the value
+        // reflects history, not this tick's about-to-land entries.
+        let active_frame = derive_active_frame(&hg);
         let route = route_regions(&embedding, &hg, &policy);
         let extraction = run_extractors(turn.text, &[], &policy, &hg, &route.active_regions);
         let _ = apply_region_delta(&mut hg, &route.delta, &policy);
         let step8 = build_relations(turn.text, &mut hg, &extraction, &policy, Some(source_id));
         let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
-        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, active_frame, &policy);
         let _step11 = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
         let frame = assemble_frame(
-            turn.text, &hg, &intent, None, &route, &step8, &step9, &step10, &policy,
+            turn.text,
+            &hg,
+            &intent,
+            active_frame,
+            &route,
+            &step8,
+            &step9,
+            &step10,
+            &policy,
         );
 
         print_turn(i + 1, turn, &frame, &hg, &step8, &step9);
@@ -359,11 +371,16 @@ fn print_turn(
         step9.superseded.len(),
         step9.meta_relations.len(),
     );
+    let active_frame_name = frame
+        .active_frame
+        .and_then(|eid| hg.elements[eid.0 as usize].names.first().cloned())
+        .unwrap_or_else(|| "None".to_string());
     println!(
-        "  frame: focused={} supporting={} history={} uncertainty={:?} next_actions={}",
+        "  frame: focused={} supporting={} history={} active_frame={:?} uncertainty={:?} next_actions={}",
         frame.focused_relations.len(),
         frame.supporting_claims.len(),
         frame.history.len(),
+        active_frame_name,
         frame.uncertainty,
         frame.next_actions.len(),
     );

@@ -22,7 +22,7 @@ use steps::build_relations::{build_relations, print_step8};
 use steps::decay::{focus_radius_decay, print_step11};
 use steps::detect_intent::detect_intent;
 use steps::frame::{assemble_frame, print_step12};
-use steps::hebbian::{hebbian_and_salience, print_step10};
+use steps::hebbian::{derive_active_frame, hebbian_and_salience, print_step10};
 use steps::route_regions::{RouteResult, route_regions};
 use steps::run_extractors::{ExtractionOutput, run_extractors};
 use steps::supersede::{print_step9, supersede};
@@ -90,6 +90,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     stage_at("adjust_policy", &mut mark);
     print_policy(&policy);
 
+    // Inherit the prior tick's focal subject as this tick's active
+    // frame. Derived from `recent_focus` before any of this tick's
+    // pushes land, so the value reflects history. None on the first
+    // tick of a session.
+    let active_frame = derive_active_frame(&hg);
+
     let route = route_regions(&embedding, &hg, &policy);
     stage_at("route_regions", &mut mark);
     print_routing(&hg, &policy, &route);
@@ -125,10 +131,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     print_step9(&step9, &hg, prior_elements_9, prior_relations_9);
 
     // Step 10 — Hebbian + salience + promotion + recent_focus push.
-    // active_frame stays None until Step 4's frame inheritance lights
-    // up (§11.6); recent_focus entries record the current frame
-    // (None for now) so future ticks can see the binding context.
-    let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+    // `active_frame` is inherited from prior `recent_focus` above
+    // (None on the very first tick). New entries record this frame
+    // so subsequent ticks can see the binding context.
+    let step10 = hebbian_and_salience(&mut hg, &step8, &step9, active_frame, &policy);
     stage_at("hebbian + salience (Step 10)", &mut mark);
     print_step10(&step10, &hg, &policy);
 
@@ -150,7 +156,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         &input_text,
         &hg,
         &intent,
-        None, // active_frame: None until Step 4 frame inheritance lands
+        active_frame,
         &route,
         &step8,
         &step9,
