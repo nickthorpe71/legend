@@ -250,3 +250,211 @@ fn git_merge_driver_rejects_seed_drift_loudly() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ─── Real git invocation ────────────────────────────────────────────
+//
+// The four subprocess tests above invoke `legend git-merge-driver`
+// directly with hand-crafted %O %A %B %P paths. They prove the merge
+// function and its CLI work. They do NOT prove that git actually
+// invokes the driver in response to a conflict on `.legend/memory.lz4`.
+//
+// These two tests run real `git merge` operations against a
+// purpose-built temp repo. If the `.gitattributes` rule, the
+// `merge.legend.driver` config, and our CLI dispatch all agree, git
+// auto-resolves the conflict and leaves a clean merge commit. If
+// anything is misconfigured, git falls back to a binary conflict
+// and the test fails.
+
+/// Run `git` in `dir` and assert it succeeds.
+fn run_git(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("git invocation");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Run `git` in `dir` and return the full output without asserting.
+fn run_git_output(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("git invocation")
+}
+
+/// Initialize a fresh repo with the merge driver wired up. Returns
+/// the repo dir. Caller is responsible for cleanup.
+fn init_repo_with_driver(label: &str) -> PathBuf {
+    let dir = temp_dir(label);
+    let bin = env!("CARGO_BIN_EXE_legend");
+
+    // `git init --initial-branch=main` instead of relying on the
+    // user's default-branch config (which may be `master`). Older git
+    // versions don't accept the flag — we set init.defaultBranch
+    // first as a fallback.
+    let _ = std::process::Command::new("git")
+        .current_dir(&dir)
+        .args(["init", "--initial-branch=main"])
+        .output();
+    // If `init --initial-branch` didn't actually create the repo (old
+    // git), fall back to plain init + branch rename. Idempotent.
+    if !dir.join(".git").exists() {
+        run_git(&dir, &["init"]);
+        // Tolerate "branch already exists" by ignoring exit code here.
+        let _ = run_git_output(&dir, &["branch", "-M", "main"]);
+    }
+
+    // Per-repo user identity (commits require it).
+    run_git(&dir, &["config", "user.email", "test@legend.dev"]);
+    run_git(&dir, &["config", "user.name", "Legend Test"]);
+    // Don't sign — this test runs in CI environments without keys.
+    run_git(&dir, &["config", "commit.gpgsign", "false"]);
+
+    // Register the merge driver. Same format the `legend git-init`
+    // command writes — duplicating here keeps the test self-contained
+    // (no dependency on having run `git-init` against this temp dir).
+    let driver_cmd = format!("{bin} git-merge-driver %O %A %B %P");
+    run_git(&dir, &["config", "merge.legend.driver", &driver_cmd]);
+
+    // Tell git to route `.legend/memory.lz4` through that driver.
+    let attrs = b".legend/memory.lz4 merge=legend\n";
+    fs::write(dir.join(".gitattributes"), attrs).expect("write .gitattributes");
+    fs::create_dir_all(dir.join(".legend")).expect("create .legend dir");
+
+    dir
+}
+
+#[test]
+fn real_git_merge_auto_resolves_memory_lz4_conflict() {
+    let dir = init_repo_with_driver("real_git_merge");
+    let snapshot = dir.join(".legend/memory.lz4");
+
+    // Commit 1 (main): the seed substrate. Both branches will diverge
+    // from this point.
+    persistence::save(&load_seed_graph(), &snapshot).expect("save seed snapshot");
+    run_git(&dir, &["add", ".gitattributes", ".legend/memory.lz4"]);
+    run_git(&dir, &["commit", "-m", "seed substrate"]);
+
+    // Branch `theirs`: add Beam to the substrate, commit.
+    run_git(&dir, &["checkout", "-b", "theirs"]);
+    let mut hg_theirs = persistence::load(&snapshot).expect("load on theirs");
+    tick(&mut hg_theirs, "Beam is a Go server.");
+    persistence::save(&hg_theirs, &snapshot).expect("save theirs");
+    run_git(&dir, &["commit", "-am", "theirs: Beam"]);
+
+    // Back to main: add Polaris instead, commit.
+    run_git(&dir, &["checkout", "main"]);
+    let mut hg_main = persistence::load(&snapshot).expect("load on main");
+    tick(&mut hg_main, "Polaris is written in Rust.");
+    persistence::save(&hg_main, &snapshot).expect("save main");
+    run_git(&dir, &["commit", "-am", "main: Polaris"]);
+
+    // Without the merge driver, this would CONFLICT on memory.lz4.
+    // With it, git invokes `legend git-merge-driver` to substrate-
+    // merge both sides. `--no-edit` skips the editor prompt for the
+    // merge commit message.
+    let output = run_git_output(&dir, &["merge", "--no-edit", "theirs"]);
+    assert!(
+        output.status.success(),
+        "git merge failed:\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // git emits "Auto-merging .legend/memory.lz4" when a driver runs;
+    // our driver echoes "[legend] merging memory.lz4" / "[legend]
+    // merged: …" to stderr. Confirm at least one of those landed.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stderr}{stdout}");
+    assert!(
+        combined.contains("[legend] merging") || combined.contains("[legend] merged:"),
+        "expected legend merge driver output; got stderr=\n{stderr}\nstdout=\n{stdout}",
+    );
+
+    // The merged snapshot must carry BOTH branches' contributions.
+    let merged = persistence::load(&snapshot).expect("load merged snapshot");
+    assert!(
+        merged.by_name.contains_key("Polaris"),
+        "merged graph missing Polaris (from main)"
+    );
+    assert!(
+        merged.by_name.contains_key("Beam"),
+        "merged graph missing Beam (from theirs)"
+    );
+
+    // Working tree should be clean (no unresolved conflicts).
+    let status = run_git_output(&dir, &["status", "--porcelain"]);
+    let porcelain = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        !porcelain.contains("UU "),
+        "unresolved conflict markers in git status:\n{porcelain}",
+    );
+
+    // There should be a real merge commit (two parents).
+    let parents = run_git_output(&dir, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+    let parent_line = String::from_utf8_lossy(&parents.stdout);
+    let parent_count = parent_line.split_whitespace().count() - 1; // first is HEAD
+    assert_eq!(
+        parent_count, 2,
+        "expected a merge commit with 2 parents; got {parent_count}",
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn real_git_merge_falls_back_to_conflict_when_driver_errors() {
+    // If the driver exits non-zero (e.g. seed drift), git should
+    // leave the file in a conflicted state — `git status` reports
+    // it as UU, exit code is non-zero. This verifies the error path
+    // doesn't silently corrupt the working tree.
+    let dir = init_repo_with_driver("driver_error");
+    let snapshot = dir.join(".legend/memory.lz4");
+
+    persistence::save(&load_seed_graph(), &snapshot).unwrap();
+    run_git(&dir, &["add", ".gitattributes", ".legend/memory.lz4"]);
+    run_git(&dir, &["commit", "-m", "base"]);
+
+    run_git(&dir, &["checkout", "-b", "drift"]);
+    // Replace theirs's snapshot with a tampered-fingerprint blob —
+    // the driver's persistence::load call will refuse it with
+    // PersistError::SeedDrift.
+    let mut tampered = Vec::new();
+    tampered.extend_from_slice(b"LEGEND01");
+    tampered.extend_from_slice(&1u32.to_le_bytes());
+    tampered.extend_from_slice(&[0xAB; 8]);
+    tampered.extend_from_slice(&[0u8; 32]);
+    fs::write(&snapshot, &tampered).unwrap();
+    run_git(&dir, &["commit", "-am", "drift: tampered"]);
+
+    run_git(&dir, &["checkout", "main"]);
+    let mut hg_main = persistence::load(&snapshot).unwrap();
+    tick(&mut hg_main, "Polaris is a project.");
+    persistence::save(&hg_main, &snapshot).unwrap();
+    run_git(&dir, &["commit", "-am", "main: Polaris"]);
+
+    let output = run_git_output(&dir, &["merge", "--no-edit", "drift"]);
+    // git reports non-zero when the driver fails — the merge is
+    // incomplete and the user must resolve manually (or abort).
+    assert!(
+        !output.status.success(),
+        "git merge should have failed when driver returned error",
+    );
+    // The driver's stderr should include the SeedDrift hint.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.to_lowercase().contains("seed") || stderr.to_lowercase().contains("drift"),
+        "expected SeedDrift mention in stderr; got:\n{stderr}",
+    );
+    // Abort so we don't leave the temp repo in a weird state.
+    let _ = run_git_output(&dir, &["merge", "--abort"]);
+
+    let _ = fs::remove_dir_all(&dir);
+}
