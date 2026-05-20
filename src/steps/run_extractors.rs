@@ -19,37 +19,16 @@
 //! allows the pattern fast-path while we get the rest of the
 //! pipeline online.
 
-use crate::inference::deberta::predict::{LabeledSpan, predict_entities};
+use crate::inference::deberta::predict::predict_entities;
 use crate::steps::coref::{CorefDecision, resolve_coref};
-use crate::steps::novelty_relations::{NoveltyRelation, extract_novelty_relations};
 use crate::steps::orthographic::{OrthographicChunk, extract_chunks, extract_proper_noun_runs};
-use crate::steps::relation_patterns::{RelationProposal, extract_relations};
-use crate::steps::temporal::{TemporalSpan, extract_temporal};
+use crate::steps::relation_patterns::{
+    ExtractionProposal, NoveltyRelation, RelationProposal, build_instance_of_proposals,
+    extract_relations, extract_surface_relations,
+};
+use crate::steps::temporal::extract_temporal;
 use crate::steps::void_filter::extract_content_tokens;
-use crate::types::{Hypergraph, Policy, RegionActivation, RelationStatus};
-
-/// One span-typing proposal. Maps to a single `(span, instance_of, K)`
-/// hypergraph relation. Sources are both NER and the temporal regex
-/// pass; the originating extractor is recorded in `provenance` for
-/// downstream dedup.
-#[derive(Debug, Clone)]
-pub struct ExtractionProposal {
-    pub subject_text: String,
-    pub subject_char_start: usize,
-    pub subject_char_end: usize,
-    pub attribute_name: &'static str,
-    pub object_label: String,
-    pub confidence: f32,
-    pub status: RelationStatus,
-    pub provenance: ProposalSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProposalSource {
-    Ner,
-    Temporal,
-    Pattern,
-}
+use crate::types::{Hypergraph, Policy, RegionActivation};
 
 /// Everything Step 5 contributes to a tick, split into two branches
 /// that always both run:
@@ -171,78 +150,34 @@ pub fn run_extractors(
 
     // 2. GLiNER2 NER pass.
     const RAW_THRESHOLD: f32 = 0.3;
-    let ner_spans: Vec<LabeledSpan> = predict_entities(input_text, &label_set, RAW_THRESHOLD);
+    let ner_spans = predict_entities(input_text, &label_set, RAW_THRESHOLD);
     stage("ner predict_entities");
 
     // 3. Temporal pass — pure regex, complements NER.
-    let temporal_spans: Vec<TemporalSpan> = extract_temporal(input_text);
+    let temporal_spans = extract_temporal(input_text);
     stage("temporal");
 
-    // 4. Build instance_of proposals. NER goes first; temporal spans
-    //    that overlap an existing NER span are dropped to avoid duplicate
-    //    typing.
-    let mut instance_of: Vec<ExtractionProposal> = Vec::new();
-    for s in &ner_spans {
-        let status = if s.score >= policy.ner_assertion_threshold {
-            RelationStatus::Entailed
-        } else {
-            RelationStatus::Defeasible
-        };
-        instance_of.push(ExtractionProposal {
-            subject_text: s.text.clone(),
-            subject_char_start: s.char_start,
-            subject_char_end: s.char_end,
-            attribute_name: "instance_of",
-            object_label: s.label.clone(),
-            confidence: s.score,
-            status,
-            provenance: ProposalSource::Ner,
-        });
-    }
-    for t in &temporal_spans {
-        if overlaps_any(t.char_start, t.char_end, &ner_spans) {
-            continue;
-        }
-        // Regex temporal hits are high-precision — give them an
-        // assertion-style confidence. Status is gated on the same
-        // threshold for uniformity.
-        let conf: f32 = 0.95;
-        let status = if conf >= policy.ner_assertion_threshold {
-            RelationStatus::Entailed
-        } else {
-            RelationStatus::Defeasible
-        };
-        instance_of.push(ExtractionProposal {
-            subject_text: t.text.clone(),
-            subject_char_start: t.char_start,
-            subject_char_end: t.char_end,
-            attribute_name: "instance_of",
-            object_label: t.kind.to_string(),
-            confidence: conf,
-            status,
-            provenance: ProposalSource::Temporal,
-        });
-    }
-    instance_of.sort_by_key(|p| (p.subject_char_start, p.subject_char_end));
+    // 4. Span-typing: `(span, instance_of, kind)` from both NER and
+    //    temporal. Overlap dedup handled inside the helper.
+    let instance_of = build_instance_of_proposals(&ner_spans, &temporal_spans, policy);
+    stage("span_typing");
 
-    // 5. Relation extraction over the NER spans (patterns only — see
-    //    module header for what's deferred).
+    // 5. NER-anchored RE templates ("X from A to B", "X at Y", etc.).
     let relations: Vec<RelationProposal> = extract_relations(input_text, &ner_spans);
     stage("relations");
 
     // 6. Coref. Reads `hg.recent_focus` (Step 10's output from
     //    prior ticks) plus this tick's NER spans to skip
-    //    already-typed entities. Gates decisions on
-    //    `policy.coref_threshold`. Emits empty on the first tick
+    //    already-typed entities. Emits empty on the first tick
     //    of a session (no recent_focus yet).
     let coref: Vec<CorefDecision> = resolve_coref(input_text, hg, &ner_spans, policy);
     stage("coref");
 
-    // 7. Novelty-branch pattern OpenIE — verb-shape morphology over
-    //    content tokens; produces candidate triples that are always
-    //    Defeasible. Step 8 merges with the known-branch proposals.
+    // 7. Surface-OpenIE: SVO + comma-appositive over the orthographic
+    //    chunks. Always Defeasible. Step 8 merges with known-branch
+    //    proposals.
     let novelty_relations: Vec<NoveltyRelation> =
-        extract_novelty_relations(input_text, &unconditional_chunks);
+        extract_surface_relations(input_text, &unconditional_chunks);
     stage("novelty_relations");
 
     ExtractionOutput {
@@ -285,15 +220,10 @@ fn build_label_set(hg: &Hypergraph, active_regions: &[RegionActivation]) -> Vec<
     seen.into_iter().collect()
 }
 
-fn overlaps_any(start: usize, end: usize, spans: &[LabeledSpan]) -> bool {
-    spans
-        .iter()
-        .any(|s| !(end <= s.char_start || start >= s.char_end))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::steps::relation_patterns::ProposalSource;
 
     fn default_policy() -> Policy {
         Policy {

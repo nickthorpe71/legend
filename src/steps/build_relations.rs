@@ -21,10 +21,9 @@ use std::collections::HashMap;
 
 use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
 use crate::steps::coref::CorefDecision;
-use crate::steps::novelty_relations::NoveltyRelation;
 use crate::steps::orthographic::OrthographicChunk;
 use crate::steps::print_util::truncate;
-use crate::steps::relation_patterns::RelationProposal;
+use crate::steps::relation_patterns::{NoveltyRelation, RelationProposal};
 use crate::steps::run_extractors::ExtractionOutput;
 use crate::types::{
     Attribute, Element, ElementId, Hypergraph, MemoryStats, Polarity, Relation, RelationId,
