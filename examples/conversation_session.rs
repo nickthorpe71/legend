@@ -376,10 +376,11 @@ fn print_turn(
         .and_then(|eid| hg.elements[eid.0 as usize].names.first().cloned())
         .unwrap_or_else(|| "None".to_string());
     println!(
-        "  frame: focused={} supporting={} history={} active_frame={:?} uncertainty={:?} next_actions={}",
+        "  frame: focused={} supporting={} history={} current_state={} active_frame={:?} uncertainty={:?} next_actions={}",
         frame.focused_relations.len(),
         frame.supporting_claims.len(),
         frame.history.len(),
+        frame.current_state.len(),
         active_frame_name,
         frame.uncertainty,
         frame.next_actions.len(),
@@ -404,6 +405,12 @@ fn print_turn(
     if !frame.history.is_empty() {
         println!("  history:");
         for &rid in frame.history.iter().take(4) {
+            print_relation(hg, rid, 0.0, false);
+        }
+    }
+    if !frame.current_state.is_empty() {
+        println!("  current_state:");
+        for &rid in frame.current_state.iter().take(6) {
             print_relation(hg, rid, 0.0, false);
         }
     }

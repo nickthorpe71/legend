@@ -268,6 +268,35 @@ pub fn assemble_frame(
         }
     }
 
+    // ── current_state ──────────────────────────────────────────
+    // For each element this tick referenced, gather every live
+    // `current_<property>` cache that mentions it. Dedup across
+    // elements (a cache that mentions multiple referenced entities
+    // shouldn't appear twice). Status filter mirrors
+    // `focused_relations`. Order follows `referenced_elements`
+    // (first-mention wins) so the consumer can scan in input order.
+    let mut current_state: Vec<RelationId> = Vec::new();
+    let mut cs_seen: HashSet<RelationId> = HashSet::new();
+    for &eid in &step8.referenced_elements {
+        let Some(rels) = hg.relations_by_element.get(&eid) else {
+            continue;
+        };
+        for &rid in rels {
+            if !cs_seen.contains(&rid)
+                && matches!(
+                    hg.relations[rid.0 as usize].status,
+                    RelationStatus::Asserted
+                        | RelationStatus::Entailed
+                        | RelationStatus::Defeasible,
+                )
+                && crate::steps::build_relations::is_cache_relation(hg, rid)
+            {
+                cs_seen.insert(rid);
+                current_state.push(rid);
+            }
+        }
+    }
+
     ConsciousAttentionFrame {
         tick: hg.clock,
         input_echo: input_text.to_string(),
@@ -280,6 +309,7 @@ pub fn assemble_frame(
         uncertainty,
         durable_writes: step8.minted_elements.clone(),
         superseded: step9.superseded.clone(),
+        current_state,
         next_actions,
     }
 }
@@ -309,6 +339,7 @@ pub fn print_step12(frame: &ConsciousAttentionFrame, hg: &Hypergraph) {
     println!("  uncertainty           {:?}", frame.uncertainty);
     println!("  durable_writes        {}", frame.durable_writes.len());
     println!("  superseded            {}", frame.superseded.len());
+    println!("  current_state         {}", frame.current_state.len());
     if !frame.next_actions.is_empty() {
         println!("  next_actions          {}", frame.next_actions.len());
         for action in &frame.next_actions {

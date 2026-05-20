@@ -521,6 +521,16 @@ pub struct ConsciousAttentionFrame {
     /// Recorded by Step 9. Same shortcut role as `durable_writes`.
     pub superseded: Vec<RelationId>,
 
+    /// Live `current_<property>` caches for entities this tick
+    /// referenced. The consumer LLM should treat these as the
+    /// substrate's *answer to "what's true now about X?"*. Overlaps
+    /// with `focused_relations` (caches are promoted there too), but
+    /// exists as a dedicated field so consumers don't have to scan
+    /// the focused list. Filtered to `Asserted` / `Entailed`
+    /// / `Defeasible`; ordered by `referenced_elements` order with
+    /// caches deduplicated.
+    pub current_state: Vec<RelationId>,
+
     /// Advisories the caller can act on after the frame returns.
     /// `EnqueueReplay { kind }` schedules a background sweep;
     /// `FollowUpQuery(text)` suggests the agent ask a clarifying
