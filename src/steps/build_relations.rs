@@ -38,6 +38,15 @@ use crate::types::{
 pub struct Step8Output {
     pub minted_elements: Vec<ElementId>,
     pub minted_relations: Vec<RelationId>,
+    /// Every element touched by Step 8 this tick — both newly minted
+    /// and resolved-by-reuse via `resolve_span` /
+    /// `resolve_label_element`. Deduped, order = first reference.
+    /// Step 10 walks this list to retrieve live relations involving
+    /// each element so the frame surfaces prior knowledge for query
+    /// ticks (otherwise `focused_relations` would only contain new
+    /// writes). Used as the retrieval seed in
+    /// `build_reinforcement_set`.
+    pub referenced_elements: Vec<ElementId>,
     /// New attribute-name elements minted this tick. Threshold
     /// signalling lives at the caller — Step 8 just counts.
     pub attr_names_minted: u32,
@@ -214,6 +223,7 @@ fn resolve_span(
     result: &mut Step8Output,
 ) -> ElementId {
     if let Some(&id) = span_cache.get(&(char_start, char_end)) {
+        push_referenced(result, id);
         return id;
     }
 
@@ -233,6 +243,7 @@ fn resolve_span(
         el.stats.access_count = el.stats.access_count.saturating_add(1);
         el.stats.last_seen = hg.clock;
         span_cache.insert((char_start, char_end), id);
+        push_referenced(result, id);
         return id;
     }
 
@@ -249,7 +260,17 @@ fn resolve_span(
     );
     span_cache.insert((char_start, char_end), id);
     result.minted_elements.push(id);
+    push_referenced(result, id);
     id
+}
+
+/// Push `id` onto `result.referenced_elements` unless it's already
+/// present. O(N) lookup, but N is bounded by spans-per-tick (~10s)
+/// so a HashSet would cost more than it saves.
+pub(crate) fn push_referenced(result: &mut Step8Output, id: ElementId) {
+    if !result.referenced_elements.contains(&id) {
+        result.referenced_elements.push(id);
+    }
 }
 
 /// Resolve a type-class label (e.g. `"person"`, `"weekday"`, `"event"`)
@@ -263,6 +284,7 @@ fn resolve_label_element(hg: &mut Hypergraph, label: &str, result: &mut Step8Out
         let el = &mut hg.elements[id.0 as usize];
         el.stats.access_count = el.stats.access_count.saturating_add(1);
         el.stats.last_seen = hg.clock;
+        push_referenced(result, id);
         return id;
     }
     let id = mint_element(
@@ -273,6 +295,7 @@ fn resolve_label_element(hg: &mut Hypergraph, label: &str, result: &mut Step8Out
         policy_default_conf_or_one(hg),
     );
     result.minted_elements.push(id);
+    push_referenced(result, id);
     id
 }
 
@@ -685,11 +708,12 @@ pub fn infer_property_kind(hg: &Hypergraph, from_id: ElementId, to_id: ElementId
 /// `"value"`.
 fn bucket_of(kind: Option<&str>) -> Option<&'static str> {
     match kind? {
-        "weekday" | "month" => Some("date"),
+        "weekday" | "month" | "year" => Some("date"),
         "time" => Some("time"),
         "quantity" => Some("amount"),
         "place" => Some("location"),
         "role" => Some("role"),
+        "language" | "software" => Some("tech"),
         _ => None,
     }
 }

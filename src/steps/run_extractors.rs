@@ -101,9 +101,13 @@ pub struct NoveltyExtractions {
 
 /// Seed entity kinds used as the NER label set when the caller doesn't
 /// supply a custom set. Mirrors §11.7's `(person, org, place, weekday,
-/// quantity, event, ...)` list.
+/// quantity, event, ...)` list, extended with categories that
+/// naturally-phrased prose mentions (months, years, languages, named
+/// software) so the pattern matcher in `relation_patterns.rs` has
+/// enough span coverage to fire on common change-event forms.
 pub const SEED_KINDS: &[&str] = &[
-    "person", "org", "place", "weekday", "quantity", "event", "role", "state", "time",
+    "person", "org", "place", "weekday", "month", "year", "quantity", "event", "role", "state",
+    "time", "language", "software",
 ];
 
 /// Run Step 5 on a single input.

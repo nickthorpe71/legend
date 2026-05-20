@@ -71,7 +71,7 @@ pub fn hebbian_and_salience(
 ) -> Step10Output {
     let mut out = Step10Output::default();
 
-    let reinforcement_set = build_reinforcement_set(step8, step9);
+    let reinforcement_set = build_reinforcement_set(step8, step9, hg);
     let supersession_derived: HashSet<RelationId> = step9
         .cache_relations
         .iter()
@@ -402,10 +402,22 @@ fn relation_has_exact_value_attribute(hg: &Hypergraph, rid: RelationId) -> bool 
 /// Construct the per-tick reinforcement set. Deduplicates via a
 /// `HashSet` so meta-relations that appear in both step8 and step9
 /// (unlikely but defensive) don't get double-counted.
-fn build_reinforcement_set(step8: &Step8Output, step9: &Step9Output) -> Vec<RelationId> {
+/// Per-element cap on retrieved relations so a single high-degree
+/// element (e.g. a pronoun resolving to a frequently-mentioned
+/// entity) doesn't dominate the focus set. Replay later refines via
+/// salience-weighted ranking; v0 takes the first K live ones in
+/// `relations_by_element` order.
+const RETRIEVE_CAP_PER_ELEMENT: usize = 12;
+
+fn build_reinforcement_set(
+    step8: &Step8Output,
+    step9: &Step9Output,
+    hg: &crate::types::Hypergraph,
+) -> Vec<RelationId> {
     let superseded: HashSet<RelationId> = step9.superseded.iter().copied().collect();
     let mut seen: HashSet<RelationId> = HashSet::new();
     let mut out = Vec::new();
+    // 1. New writes: Step 8 mints + Step 9 caches + Step 9 metas.
     for &rid in step8
         .minted_relations
         .iter()
@@ -417,6 +429,47 @@ fn build_reinforcement_set(step8: &Step8Output, step9: &Step9Output) -> Vec<Rela
         }
         if seen.insert(rid) {
             out.push(rid);
+        }
+    }
+    // 2. Retrieval: for every element referenced this tick, pull
+    //    live base-shape relations involving it. Without this, query
+    //    ticks ("What language is Polaris in?") produce a frame with
+    //    no recalled state — the consumer LLM sees only what this
+    //    tick wrote, not what the substrate already knows. Per-
+    //    element cap keeps the set bounded.
+    for &eid in &step8.referenced_elements {
+        let Some(candidates) = hg.relations_by_element.get(&eid) else {
+            continue;
+        };
+        let mut added_for_this_element = 0usize;
+        for &rid in candidates {
+            if added_for_this_element >= RETRIEVE_CAP_PER_ELEMENT {
+                break;
+            }
+            if superseded.contains(&rid) || seen.contains(&rid) {
+                continue;
+            }
+            let r = &hg.relations[rid.0 as usize];
+            // Status filter: live relations only.
+            if !matches!(
+                r.status,
+                crate::types::RelationStatus::Asserted
+                    | crate::types::RelationStatus::Entailed
+                    | crate::types::RelationStatus::Defeasible
+            ) {
+                continue;
+            }
+            // Skip meta-relations — those participate via the frame's
+            // `supporting_claims` / `history` walker, not the focus
+            // set. A meta-relation has `target` (not `subject`) as its
+            // anchoring slot.
+            let is_meta = !r.attributes.iter().any(|a| a.name == hg.subject_attr);
+            if is_meta {
+                continue;
+            }
+            seen.insert(rid);
+            out.push(rid);
+            added_for_this_element += 1;
         }
     }
     out
