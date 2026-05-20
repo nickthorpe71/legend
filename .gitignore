@@ -43,6 +43,10 @@ models/gliner2-fp32.bin
 # snapshot file `.legend/memory.lz4` IS committed per CLAUDE.md.
 .legend/memory.lz4.tmp.*
 
+# Daemon runtime artifacts. Per-process, must not be tracked.
+.legend/legend.lock
+.legend/legend.port
+
 # LongMemEval bench artifacts — dataset is 15 MB (download from
 # the LongMemEval project), verbose dumps are per-run scratch.
 benchmarks/longmemeval_oracle.json

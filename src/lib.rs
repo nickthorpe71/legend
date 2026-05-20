@@ -422,7 +422,18 @@ fn tick_via_daemon(input: &str) -> Result<(), Box<dyn std::error::Error>> {
             elements,
             relations,
         } => {
+            // The daemon persists the substrate *before* responding, so
+            // the snapshot on disk is fresh as of this tick. Loading it
+            // costs ~10–50ms for the typical session-size graph and is
+            // what lets us render relation IDs as `subj → attr → obj`
+            // text instead of bare counts. Skipped silently on load
+            // failure — the frame counts already printed are still
+            // useful as a "did the tick succeed" signal.
+            let hg = persistence::load(&persistence::default_path()).ok();
             print_tick_summary(&frame, elements, relations);
+            if let Some(hg) = hg.as_ref() {
+                print_frame_contents(&frame, hg);
+            }
             Ok(())
         }
         daemon::DaemonResponse::Error { message } => Err(message.into()),
@@ -430,11 +441,9 @@ fn tick_via_daemon(input: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Compact one-screen render of what the daemon's Tick response
-/// carried. We can't pull element / attribute names without the
-/// substrate handy — but the daemon already populated the frame
-/// with everything the consumer LLM needs; the client just shows
-/// counts + a few key values.
+/// Header block: intent, substrate sizes, frame bucket counts,
+/// uncertainty signals, next actions. Always renderable from the
+/// daemon response alone — no substrate needed.
 fn print_tick_summary(frame: &types::ConsciousAttentionFrame, elements: usize, relations: usize) {
     println!(
         "tick {} \"{}\"",
@@ -473,6 +482,75 @@ fn print_tick_summary(frame: &types::ConsciousAttentionFrame, elements: usize, r
             }
         }
     }
+}
+
+/// Per-relation render of every bucket the frame populated. Needs
+/// the substrate handy to resolve relation IDs into the element
+/// names that make the output readable.
+fn print_frame_contents(frame: &types::ConsciousAttentionFrame, hg: &Hypergraph) {
+    if !frame.focused_relations.is_empty() {
+        println!("  focused:");
+        for ra in &frame.focused_relations {
+            print_relation_line(hg, ra.relation, Some(ra.activation));
+        }
+    }
+    if !frame.current_state.is_empty() {
+        println!("  current_state:");
+        for &rid in &frame.current_state {
+            print_relation_line(hg, rid, None);
+        }
+    }
+    if !frame.supporting_claims.is_empty() {
+        println!("  supporting:");
+        for &rid in &frame.supporting_claims {
+            print_relation_line(hg, rid, None);
+        }
+    }
+    if !frame.history.is_empty() {
+        println!("  history:");
+        for &rid in &frame.history {
+            print_relation_line(hg, rid, None);
+        }
+    }
+}
+
+/// One-line render of a relation: subject → attribute → object plus
+/// status and (optionally) activation score. Subject / attribute /
+/// object are resolved from the relation's attribute list against
+/// the substrate; missing names degrade to `eN` ID strings rather
+/// than panic.
+fn print_relation_line(hg: &Hypergraph, rid: types::RelationId, activation: Option<f32>) {
+    let r = &hg.relations[rid.0 as usize];
+    let mut subject: Option<String> = None;
+    let mut other: Option<(String, String)> = None;
+    for attr in &r.attributes {
+        let name = element_name(hg, attr.name);
+        let value = match attr.value {
+            types::Term::Element(eid) => element_name(hg, eid),
+            types::Term::Relation(rid) => format!("→R{}", rid.0),
+        };
+        if attr.name == hg.subject_attr || attr.name == hg.target_attr {
+            subject = Some(value);
+        } else if other.is_none() {
+            other = Some((name, value));
+        }
+    }
+    let subject = subject.unwrap_or_else(|| "?".to_string());
+    let (attr_name, attr_value) = other.unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+    let act = activation
+        .map(|a| format!(" act={a:.3}"))
+        .unwrap_or_default();
+    println!(
+        "    R{:<5} [{:?}] conf={:.2}{act}  {subject} → {attr_name} → {attr_value}",
+        rid.0, r.status, r.stats.confidence,
+    );
+}
+
+fn element_name(hg: &Hypergraph, eid: types::ElementId) -> String {
+    hg.elements
+        .get(eid.0 as usize)
+        .and_then(|e| e.names.first().cloned())
+        .unwrap_or_else(|| format!("e{}", eid.0))
 }
 
 fn truncate(s: &str, max: usize) -> String {
