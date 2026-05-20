@@ -28,13 +28,16 @@
 //! - Sentences without a Phrase boundary: bound by the Phrase pass.
 
 use crate::steps::orthographic::{ChunkScale, OrthographicChunk};
-use crate::steps::relation_patterns::{DEFAULT_CONFIDENCE, NoveltyRelation};
+use crate::steps::relation_patterns::{
+    DEFAULT_SURFACE_CONFIDENCE, ObjectRef, PatternSource, RelationCandidate,
+};
+use crate::types::RelationStatus;
 
 /// Extract candidate SVO triples from a phrase + token chunk slice.
 ///
 /// `chunks` must contain both `Phrase`-scale and `Token`-scale entries
 /// for the same input; this function filters internally.
-pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<NoveltyRelation> {
+pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<RelationCandidate> {
     let mut out = Vec::new();
 
     for phrase in chunks.iter().filter(|c| c.scale == ChunkScale::Phrase) {
@@ -130,13 +133,18 @@ pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<Nove
                 continue;
             }
 
-            out.push(NoveltyRelation {
+            out.push(RelationCandidate {
+                source: PatternSource::Svo,
                 subject_char_start: subj_first_start,
                 subject_char_end: subj_last_end,
-                attribute_text: attr_text,
-                object_char_start: obj_first.char_start,
-                object_char_end: obj_last.char_end,
-                confidence: DEFAULT_CONFIDENCE,
+                attribute_name: attr_text,
+                object: ObjectRef::Span {
+                    char_start: obj_first.char_start,
+                    char_end: obj_last.char_end,
+                },
+                confidence: DEFAULT_SURFACE_CONFIDENCE,
+                status: RelationStatus::Defeasible,
+                event_anchor: None,
             });
         }
     }
@@ -381,6 +389,16 @@ mod tests {
         chunks
     }
 
+    fn obj_span(r: &RelationCandidate) -> (usize, usize) {
+        match r.object {
+            ObjectRef::Span {
+                char_start,
+                char_end,
+            } => (char_start, char_end),
+            ObjectRef::Label(_) => panic!("expected Span object, got Label"),
+        }
+    }
+
     #[test]
     fn irregular_verb_lexicon_is_sorted_and_dedup() {
         for pair in IRREGULAR_VERBS.windows(2) {
@@ -432,9 +450,9 @@ mod tests {
         let r = &rels[0];
         assert_eq!(&text[r.subject_char_start..r.subject_char_end], "I");
         assert!(
-            r.attribute_text.contains("got"),
+            r.attribute_name.contains("got"),
             "attribute should include `got`; got {:?}",
-            r.attribute_text
+            r.attribute_name
         );
     }
 
@@ -446,8 +464,9 @@ mod tests {
         assert_eq!(rels.len(), 1, "expected 1 triple, got {rels:?}");
         let r = &rels[0];
         assert_eq!(&text[r.subject_char_start..r.subject_char_end], "Sarah");
-        assert_eq!(r.attribute_text, "lives in");
-        assert_eq!(&text[r.object_char_start..r.object_char_end], "Paris");
+        assert_eq!(r.attribute_name, "lives in");
+        let (s, e) = obj_span(r);
+        assert_eq!(&text[s..e], "Paris");
     }
 
     #[test]
@@ -456,7 +475,7 @@ mod tests {
         let chunks = chunks_for(text);
         let rels = extract_svo_triples(text, &chunks);
         assert_eq!(rels.len(), 1, "expected 1 triple, got {rels:?}");
-        assert_eq!(rels[0].attribute_text, "works at");
+        assert_eq!(rels[0].attribute_name, "works at");
     }
 
     #[test]
@@ -472,16 +491,12 @@ mod tests {
                 "all triples should share Sarah as subject"
             );
         }
-        assert_eq!(rels[0].attribute_text, "works at");
-        assert_eq!(rels[1].attribute_text, "and lives in");
-        assert_eq!(
-            &text[rels[0].object_char_start..rels[0].object_char_end],
-            "Google"
-        );
-        assert_eq!(
-            &text[rels[1].object_char_start..rels[1].object_char_end],
-            "Paris"
-        );
+        assert_eq!(rels[0].attribute_name, "works at");
+        assert_eq!(rels[1].attribute_name, "and lives in");
+        let (s0, e0) = obj_span(&rels[0]);
+        let (s1, e1) = obj_span(&rels[1]);
+        assert_eq!(&text[s0..e0], "Google");
+        assert_eq!(&text[s1..e1], "Paris");
     }
 
     #[test]

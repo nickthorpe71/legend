@@ -1,66 +1,62 @@
-//! Step 5 of the tick pipeline — `run_extractors`. Runs four
-//! sub-extractors over the input text and returns a single
-//! `ExtractionOutput` for Step 8 (`build_relations`) to convert into
-//! hypergraph relations:
+//! Step 5 of the tick pipeline — `run_extractors`. Orchestrates the
+//! `relation_patterns/` extractors plus coref over the input text and
+//! returns an [`ExtractionOutput`] for Step 8 (`build_relations`) to
+//! convert into hypergraph relations.
 //!
-//! 1. **NER** (GLiNER2 INT8) — labels = seed kinds ∪ active-region
-//!    names. Emits `(span, instance_of, K)` proposals.
-//! 2. **Temporal** (pure-Rust regex over weekday / month / common
-//!    phrases). Emits the same `instance_of` shape as NER with kinds
-//!    `"weekday"`, `"month"`, `"time"`.
-//! 3. **Relation patterns** (§15.1 fast-path). Emits canonical
-//!    `(subj, attr, obj)` quads for templates like
-//!    `X from A to B`, `X with Y`, `X at Y`, `X's Y`.
-//! 4. **Heuristic coref** — stub that returns no decisions until
-//!    `recent_focus` is populated by Step 11.
+//! Every relation-shaped output is a
+//! [`crate::steps::relation_patterns::RelationCandidate`]; the buckets
+//! on `ExtractionOutput` exist to preserve Step 8's batch processing
+//! order (instance_of first, then NER-anchored RE with n-ary merge,
+//! then surface OpenIE).
 //!
-//! The GLiNER multi-task RE model and the `chrono-english`
-//! relative-phrase parser are deferred — the v0 doc explicitly
-//! allows the pattern fast-path while we get the rest of the
-//! pipeline online.
+//! Pattern families called:
+//!
+//! 1. **GLiNER NER + temporal regex → span-typing** —
+//!    [`crate::steps::relation_patterns::build_instance_of_proposals`].
+//! 2. **NER-anchored RE templates** —
+//!    [`crate::steps::relation_patterns::extract_relations`].
+//! 3. **Surface OpenIE (SVO + appositive)** —
+//!    [`crate::steps::relation_patterns::extract_surface_relations`].
+//!
+//! Coref runs alongside as a separate, non-relation output.
 
 use crate::inference::deberta::predict::predict_entities;
 use crate::steps::coref::{CorefDecision, resolve_coref};
 use crate::steps::orthographic::{OrthographicChunk, extract_chunks, extract_proper_noun_runs};
 use crate::steps::relation_patterns::{
-    ExtractionProposal, NoveltyRelation, RelationProposal, build_instance_of_proposals,
-    extract_relations, extract_surface_relations,
+    RelationCandidate, build_instance_of_proposals, extract_relations, extract_surface_relations,
 };
 use crate::steps::temporal::extract_temporal;
 use crate::steps::void_filter::extract_content_tokens;
 use crate::types::{Hypergraph, Policy, RegionActivation};
 
-/// Everything Step 5 contributes to a tick, split into two branches
-/// that always both run:
-///
-/// - **Known** — typed proposals (NER + temporal + pattern RE) plus
-///   coref decisions. Label-set bounded; high precision when the
-///   input fits known regions, silent when it doesn't.
-/// - **Novelty** — model-free, label-free surface chunks from the
-///   orthographic pass + void filter. Always produces output for
-///   non-empty input, regardless of whether anything labeled it.
-///
-/// Step 8 (when built) reconciles the two: typed proposals win when
-/// they cover a novelty chunk's span; uncovered novelty chunks mint
-/// Defeasible elements that mid-path insertion attaches to the
-/// closest existing region by their own embedding.
+/// Everything Step 5 contributes to a tick. Every relation-shaped
+/// proposal is a [`RelationCandidate`] regardless of source; the
+/// `known` vs `novelty` split is preserved only because Step 8 batch-
+/// preprocesses the NER-anchored proposals (event-merge) before
+/// minting, and processes the buckets in a known-first-novelty-second
+/// order.
 #[derive(Debug, Default)]
 pub struct ExtractionOutput {
     pub known: KnownExtractions,
     pub novelty: NoveltyExtractions,
 }
 
-/// Typed proposals + coref decisions. Slot into existing regions and
-/// attribute names.
+/// Known-branch candidates: span-typing + NER-anchored RE templates.
+/// All entries carry `ObjectRef::Label` (instance_of) or `ObjectRef::
+/// Span` (the n-ary `from`/`to` pairs) and may carry an
+/// `event_anchor` for n-ary merge.
 #[derive(Debug, Default)]
 pub struct KnownExtractions {
-    /// `(span, instance_of, kind)` proposals from NER and the temporal
-    /// regex pass.
-    pub instance_of: Vec<ExtractionProposal>,
-    /// `(subj, attr, obj)` quads from the pattern RE pass.
-    pub relations: Vec<RelationProposal>,
-    /// Pronoun / definite-description antecedent decisions. Currently
-    /// stubbed (no decisions until `recent_focus` is populated).
+    /// `(span, instance_of, kind)` candidates from NER + temporal.
+    /// Always carry `ObjectRef::Label`.
+    pub instance_of: Vec<RelationCandidate>,
+    /// `(subject, attr, object)` candidates from the NER-anchored RE
+    /// templates. May carry `event_anchor` for n-ary merge; may carry
+    /// `ObjectRef::Label("unknown_prior")` for the synthetic-from
+    /// half of "moved to Y" / "is now Y" patterns.
+    pub relations: Vec<RelationCandidate>,
+    /// Pronoun / definite-description antecedent decisions.
     pub coref: Vec<CorefDecision>,
 }
 
@@ -71,11 +67,9 @@ pub struct KnownExtractions {
 pub struct NoveltyExtractions {
     /// Phrase + Token chunks from Step 5a.
     pub chunks: Vec<OrthographicChunk>,
-    /// `(subject, attribute_text, object)` candidate triples from the
-    /// pattern OpenIE pass. No NER, no model — verb-shape morphology
-    /// over content tokens. Always Defeasible-bound; replay confirms
-    /// or prunes.
-    pub relations: Vec<NoveltyRelation>,
+    /// Surface-pattern (SVO + appositive) candidates. Always
+    /// `Defeasible`; replay confirms or prunes.
+    pub relations: Vec<RelationCandidate>,
 }
 
 /// Seed entity kinds used as the NER label set when the caller doesn't
@@ -163,7 +157,7 @@ pub fn run_extractors(
     stage("span_typing");
 
     // 5. NER-anchored RE templates ("X from A to B", "X at Y", etc.).
-    let relations: Vec<RelationProposal> = extract_relations(input_text, &ner_spans);
+    let relations: Vec<RelationCandidate> = extract_relations(input_text, &ner_spans);
     stage("relations");
 
     // 6. Coref. Reads `hg.recent_focus` (Step 10's output from
@@ -176,7 +170,7 @@ pub fn run_extractors(
     // 7. Surface-OpenIE: SVO + comma-appositive over the orthographic
     //    chunks. Always Defeasible. Step 8 merges with known-branch
     //    proposals.
-    let novelty_relations: Vec<NoveltyRelation> =
+    let novelty_relations: Vec<RelationCandidate> =
         extract_surface_relations(input_text, &unconditional_chunks);
     stage("novelty_relations");
 
@@ -223,7 +217,7 @@ fn build_label_set(hg: &Hypergraph, active_regions: &[RegionActivation]) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::steps::relation_patterns::ProposalSource;
+    use crate::steps::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
 
     fn default_policy() -> Policy {
         Policy {
@@ -236,53 +230,67 @@ mod tests {
         Hypergraph::default()
     }
 
+    fn subject_slice<'a>(c: &RelationCandidate, text: &'a str) -> &'a str {
+        &text[c.subject_char_start..c.subject_char_end]
+    }
+
+    fn object_label(c: &RelationCandidate) -> &str {
+        match &c.object {
+            ObjectRef::Label(l) => l.as_str(),
+            ObjectRef::Span { .. } => panic!("expected ObjectRef::Label, got Span"),
+        }
+    }
+
     #[test]
     fn run_extractors_finds_dentist_entities() {
         let policy = default_policy();
         let hg = empty_hg();
+        let text = "My dentist appointment with Dr. Rao changed from Tuesday to Friday.";
         let out = run_extractors(
-            "My dentist appointment with Dr. Rao changed from Tuesday to Friday.",
+            text,
             &["person", "event", "weekday", "role"],
             &policy,
             &hg,
             &[],
         );
-        let ner: Vec<&ExtractionProposal> = out
+        let ner: Vec<&RelationCandidate> = out
             .known
             .instance_of
             .iter()
-            .filter(|p| p.provenance == ProposalSource::Ner)
+            .filter(|p| p.source == PatternSource::NerSpanTyping)
             .collect();
         assert_eq!(ner.len(), 4);
-        assert_eq!(ner[0].subject_text, "My dentist appointment");
-        assert_eq!(ner[0].object_label, "event");
-        assert_eq!(ner[1].subject_text, "Dr. Rao");
-        assert_eq!(ner[1].object_label, "person");
-        assert_eq!(ner[2].object_label, "weekday");
-        assert_eq!(ner[3].object_label, "weekday");
+        assert_eq!(subject_slice(ner[0], text), "My dentist appointment");
+        assert_eq!(object_label(ner[0]), "event");
+        assert_eq!(subject_slice(ner[1], text), "Dr. Rao");
+        assert_eq!(object_label(ner[1]), "person");
+        assert_eq!(object_label(ner[2]), "weekday");
+        assert_eq!(object_label(ner[3]), "weekday");
 
         // Tuesday + Friday already covered by NER (label="weekday") so
         // the temporal pass shouldn't emit duplicates.
-        let temp: Vec<&ExtractionProposal> = out
+        let temp: Vec<&RelationCandidate> = out
             .known
             .instance_of
             .iter()
-            .filter(|p| p.provenance == ProposalSource::Temporal)
+            .filter(|p| p.source == PatternSource::TemporalSpanTyping)
             .collect();
         assert!(
             temp.is_empty(),
             "expected no temporal duplicates; got {:?}",
-            temp.iter().map(|p| &p.subject_text).collect::<Vec<_>>()
+            temp.iter()
+                .map(|p| subject_slice(p, text))
+                .collect::<Vec<_>>()
         );
 
         // Pattern RE: "appointment ... with Dr. Rao" + "changed from
         // Tuesday to Friday" → at least the from/to pair plus the
         // companion 'with' link should fire.
-        let attrs: Vec<&'static str> = out
+        let attrs: Vec<&str> = out
             .known
             .relations
             .iter()
-            .map(|r| r.attribute_name)
+            .map(|r| r.attribute_name.as_str())
             .collect();
         assert!(attrs.contains(&"from"), "missing 'from' rel: {attrs:?}");
         assert!(attrs.contains(&"to"), "missing 'to' rel: {attrs:?}");
@@ -295,19 +303,14 @@ mod tests {
         // should still pick up Tuesday + Friday on its own.
         let policy = default_policy();
         let hg = empty_hg();
-        let out = run_extractors(
-            "We met on Tuesday and again on Friday.",
-            &["person", "event"],
-            &policy,
-            &hg,
-            &[],
-        );
+        let text = "We met on Tuesday and again on Friday.";
+        let out = run_extractors(text, &["person", "event"], &policy, &hg, &[]);
         let temp_texts: Vec<&str> = out
             .known
             .instance_of
             .iter()
-            .filter(|p| p.provenance == ProposalSource::Temporal)
-            .map(|p| p.subject_text.as_str())
+            .filter(|p| p.source == PatternSource::TemporalSpanTyping)
+            .map(|p| subject_slice(p, text))
             .collect();
         assert_eq!(temp_texts, vec!["Tuesday", "Friday"]);
     }

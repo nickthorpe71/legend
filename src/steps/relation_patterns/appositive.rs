@@ -24,10 +24,13 @@
 //! - "Dell XPS 13, and my new smartphone" → no relation (coordinator)
 
 use crate::steps::orthographic::{ChunkScale, OrthographicChunk};
-use crate::steps::relation_patterns::{DEFAULT_CONFIDENCE, NoveltyRelation};
+use crate::steps::relation_patterns::{
+    DEFAULT_SURFACE_CONFIDENCE, ObjectRef, PatternSource, RelationCandidate,
+};
+use crate::types::RelationStatus;
 
 /// Extract appositive triples from a phrase + token chunk slice.
-pub fn extract_appositives(text: &str, chunks: &[OrthographicChunk]) -> Vec<NoveltyRelation> {
+pub fn extract_appositives(text: &str, chunks: &[OrthographicChunk]) -> Vec<RelationCandidate> {
     let mut out = Vec::new();
 
     let all_tokens: Vec<&OrthographicChunk> = chunks
@@ -48,13 +51,18 @@ pub fn extract_appositives(text: &str, chunks: &[OrthographicChunk]) -> Vec<Nove
                 let head = all_tokens[head_tok];
                 let proper_first = all_tokens[proper_run.0];
                 let proper_last = all_tokens[proper_run.1];
-                out.push(NoveltyRelation {
+                out.push(RelationCandidate {
+                    source: PatternSource::Appositive,
                     subject_char_start: proper_first.char_start,
                     subject_char_end: proper_last.char_end,
-                    attribute_text: "instance_of".to_string(),
-                    object_char_start: head.char_start,
-                    object_char_end: head.char_end,
-                    confidence: DEFAULT_CONFIDENCE,
+                    attribute_name: "instance_of".to_string(),
+                    object: ObjectRef::Span {
+                        char_start: head.char_start,
+                        char_end: head.char_end,
+                    },
+                    confidence: DEFAULT_SURFACE_CONFIDENCE,
+                    status: RelationStatus::Defeasible,
+                    event_anchor: None,
                 });
             }
         }
@@ -191,6 +199,16 @@ mod tests {
         chunks
     }
 
+    fn obj_text<'a>(r: &RelationCandidate, text: &'a str) -> &'a str {
+        match r.object {
+            ObjectRef::Span {
+                char_start,
+                char_end,
+            } => &text[char_start..char_end],
+            ObjectRef::Label(_) => panic!("expected Span object, got Label"),
+        }
+    }
+
     #[test]
     fn appositive_links_common_noun_to_proper_name() {
         let text = "I need a new laptop, Dell XPS 13";
@@ -198,9 +216,9 @@ mod tests {
         let rels = extract_appositives(text, &chunks);
         let r = rels
             .iter()
-            .find(|r| r.attribute_text == "instance_of")
+            .find(|r| r.attribute_name == "instance_of")
             .expect("expected an instance_of relation from the appositive");
-        assert_eq!(&text[r.object_char_start..r.object_char_end], "laptop");
+        assert_eq!(obj_text(r, text), "laptop");
         let subj = &text[r.subject_char_start..r.subject_char_end];
         assert!(
             subj == "Dell"
@@ -218,9 +236,9 @@ mod tests {
         let rels = extract_appositives(text, &chunks);
         let r = rels
             .iter()
-            .find(|r| r.attribute_text == "instance_of")
+            .find(|r| r.attribute_name == "instance_of")
             .expect("expected instance_of from reversed appositive");
-        assert_eq!(&text[r.object_char_start..r.object_char_end], "laptop");
+        assert_eq!(obj_text(r, text), "laptop");
     }
 
     #[test]
@@ -230,7 +248,7 @@ mod tests {
         let rels = extract_appositives(text, &chunks);
         for r in &rels {
             assert_ne!(
-                r.attribute_text, "instance_of",
+                r.attribute_name, "instance_of",
                 "list of common nouns should not produce instance_of: {r:?}"
             );
         }
@@ -242,15 +260,14 @@ mod tests {
         let chunks = chunks_for(text);
         let rels = extract_appositives(text, &chunks);
         let bad = rels.iter().find(|r| {
-            r.attribute_text == "instance_of"
+            r.attribute_name == "instance_of"
                 && &text[r.subject_char_start..r.subject_char_end] == "Dell XPS 13"
-                && &text[r.object_char_start..r.object_char_end] == "smartphone"
+                && obj_text(r, text) == "smartphone"
         });
         assert!(bad.is_none(), "should not pair across `and`; got {:?}", bad);
-        let good = rels.iter().find(|r| {
-            r.attribute_text == "instance_of"
-                && &text[r.object_char_start..r.object_char_end] == "smartphone"
-        });
+        let good = rels
+            .iter()
+            .find(|r| r.attribute_name == "instance_of" && obj_text(r, text) == "smartphone");
         assert!(
             good.is_some(),
             "legitimate (smartphone, Samsung Galaxy S22) pair should fire"
@@ -264,7 +281,7 @@ mod tests {
         let rels = extract_appositives(text, &chunks);
         for r in &rels {
             assert_ne!(
-                r.attribute_text, "instance_of",
+                r.attribute_name, "instance_of",
                 "list of proper names should not produce instance_of: {r:?}"
             );
         }

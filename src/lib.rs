@@ -672,19 +672,24 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
             "", "", "", "", ""
         );
         for p in &out.known.instance_of {
-            let truncated: String = if p.subject_text.chars().count() > 24 {
-                let cut: String = p.subject_text.chars().take(21).collect();
+            let subj_text = &input_text[p.subject_char_start..p.subject_char_end];
+            let truncated: String = if subj_text.chars().count() > 24 {
+                let cut: String = subj_text.chars().take(21).collect();
                 format!("{cut}…")
             } else {
-                p.subject_text.clone()
+                subj_text.to_string()
+            };
+            let label = match &p.object {
+                crate::steps::relation_patterns::ObjectRef::Label(l) => l.as_str(),
+                crate::steps::relation_patterns::ObjectRef::Span { .. } => "(span)",
             };
             println!(
                 "  {:<24} {:<14} {:>6.3}  {:<10} {:?}",
                 truncated,
-                p.object_label,
+                label,
                 p.confidence,
                 format!("{:?}", p.status),
-                p.provenance,
+                p.source,
             );
         }
     }
@@ -693,7 +698,13 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
         println!("  relations");
         for r in &out.known.relations {
             let subj = &input_text[r.subject_char_start..r.subject_char_end];
-            let obj = &input_text[r.object_char_start..r.object_char_end];
+            let obj = match &r.object {
+                crate::steps::relation_patterns::ObjectRef::Span {
+                    char_start,
+                    char_end,
+                } => input_text[*char_start..*char_end].to_string(),
+                crate::steps::relation_patterns::ObjectRef::Label(l) => format!("[{l}]"),
+            };
             println!(
                 "    ({subj}) {attr} ({obj})  conf={conf:.3}  {status:?}",
                 attr = r.attribute_name,
@@ -711,10 +722,16 @@ fn print_extraction(input_text: &str, out: &ExtractionOutput) {
         println!("  novelty.relations  {}", out.novelty.relations.len());
         for r in &out.novelty.relations {
             let subj = &input_text[r.subject_char_start..r.subject_char_end];
-            let obj = &input_text[r.object_char_start..r.object_char_end];
+            let obj = match &r.object {
+                crate::steps::relation_patterns::ObjectRef::Span {
+                    char_start,
+                    char_end,
+                } => input_text[*char_start..*char_end].to_string(),
+                crate::steps::relation_patterns::ObjectRef::Label(l) => format!("[{l}]"),
+            };
             println!(
                 "    ({subj}) [{attr}] ({obj})  conf={conf:.3}",
-                attr = r.attribute_text,
+                attr = r.attribute_name,
                 conf = r.confidence,
             );
         }

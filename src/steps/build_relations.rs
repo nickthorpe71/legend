@@ -23,7 +23,7 @@ use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
 use crate::steps::coref::CorefDecision;
 use crate::steps::orthographic::OrthographicChunk;
 use crate::steps::print_util::truncate;
-use crate::steps::relation_patterns::{NoveltyRelation, RelationProposal};
+use crate::steps::relation_patterns::{ObjectRef, RelationCandidate};
 use crate::steps::run_extractors::ExtractionOutput;
 use crate::types::{
     Attribute, Element, ElementId, Hypergraph, MemoryStats, Polarity, Relation, RelationId,
@@ -97,17 +97,26 @@ pub fn build_relations(
     // ── §6.1 — Binary instance_of proposals (NER + Temporal) ────────
     let mut base_rel_ids: Vec<RelationId> = Vec::new();
     for p in &out.known.instance_of {
+        let subj_text = &input_text[p.subject_char_start..p.subject_char_end];
         let subj_id = resolve_span(
             hg,
             input_text,
             p.subject_char_start,
             p.subject_char_end,
-            &p.subject_text,
+            subj_text,
             &mut span_cache,
             &mut result,
         );
-        let label_id = resolve_label_element(hg, &p.object_label, &mut result);
-        let attr_id = resolve_attribute_name(hg, p.attribute_name, &mut result);
+        let label = match &p.object {
+            ObjectRef::Label(l) => l.as_str(),
+            ObjectRef::Span { .. } => {
+                // Span-typing always emits Label objects. Defense-in-depth:
+                // skip anything else so a future mis-emit doesn't crash.
+                continue;
+            }
+        };
+        let label_id = resolve_label_element(hg, label, &mut result);
+        let attr_id = resolve_attribute_name(hg, &p.attribute_name, &mut result);
         let rel_id = mint_or_reuse_base_relation(
             hg,
             vec![
@@ -376,13 +385,12 @@ fn resolve_attribute_name(hg: &mut Hypergraph, label: &str, result: &mut Step8Ou
 fn mint_pattern_relation(
     hg: &mut Hypergraph,
     input_text: &str,
-    p: &RelationProposal,
+    p: &RelationCandidate,
     policy: &crate::types::Policy,
     span_cache: &mut HashMap<(usize, usize), ElementId>,
     result: &mut Step8Output,
 ) -> RelationId {
     let subj_text = &input_text[p.subject_char_start..p.subject_char_end];
-    let obj_text = &input_text[p.object_char_start..p.object_char_end];
     let subj_id = resolve_span(
         hg,
         input_text,
@@ -392,16 +400,8 @@ fn mint_pattern_relation(
         span_cache,
         result,
     );
-    let obj_id = resolve_span(
-        hg,
-        input_text,
-        p.object_char_start,
-        p.object_char_end,
-        obj_text,
-        span_cache,
-        result,
-    );
-    let attr_id = resolve_attribute_name(hg, p.attribute_name, result);
+    let obj_id = resolve_object(hg, input_text, &p.object, span_cache, result);
+    let attr_id = resolve_attribute_name(hg, &p.attribute_name, result);
     mint_or_reuse_base_relation(
         hg,
         vec![
@@ -417,6 +417,37 @@ fn mint_pattern_relation(
         p.status,
         confidence_for(p.confidence, policy),
     )
+}
+
+/// Resolve an [`ObjectRef`] to an `ElementId`. Span objects route
+/// through [`resolve_span`] (with the span-cache); Label objects
+/// route through [`resolve_label_element`] (seed-pack lookup +
+/// mint-if-missing).
+fn resolve_object(
+    hg: &mut Hypergraph,
+    input_text: &str,
+    object: &ObjectRef,
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+    result: &mut Step8Output,
+) -> ElementId {
+    match object {
+        ObjectRef::Span {
+            char_start,
+            char_end,
+        } => {
+            let obj_text = &input_text[*char_start..*char_end];
+            resolve_span(
+                hg,
+                input_text,
+                *char_start,
+                *char_end,
+                obj_text,
+                span_cache,
+                result,
+            )
+        }
+        ObjectRef::Label(label) => resolve_label_element(hg, label, result),
+    }
 }
 
 /// Mint a fresh Element + update `by_name`. Returns the new ID.
@@ -788,7 +819,7 @@ struct EventMergeGroup {
 /// emits at most one `from` and one `to` per `(subject, verb)` triple
 /// over a sliding window so collisions in practice are vanishingly
 /// rare.
-fn compute_event_merge_groups(relations: &[RelationProposal]) -> Vec<EventMergeGroup> {
+fn compute_event_merge_groups(relations: &[RelationCandidate]) -> Vec<EventMergeGroup> {
     use std::collections::HashMap;
     type Key = ((usize, usize), String);
     let mut from_idx: HashMap<Key, usize> = HashMap::new();
@@ -798,7 +829,7 @@ fn compute_event_merge_groups(relations: &[RelationProposal]) -> Vec<EventMergeG
             continue;
         };
         let key = ((p.subject_char_start, p.subject_char_end), anchor.clone());
-        match p.attribute_name {
+        match p.attribute_name.as_str() {
             "from" => {
                 from_idx.entry(key).or_insert(i);
             }
@@ -831,7 +862,7 @@ fn compute_event_merge_groups(relations: &[RelationProposal]) -> Vec<EventMergeG
 fn mint_event_relations(
     hg: &mut Hypergraph,
     input_text: &str,
-    relations: &[RelationProposal],
+    relations: &[RelationCandidate],
     g: &EventMergeGroup,
     seq: usize,
     policy: &crate::types::Policy,
@@ -853,34 +884,8 @@ fn mint_event_relations(
         span_cache,
         result,
     );
-    let from_val_id = if let Some(label) = from_p.synthetic_object_label {
-        resolve_label_element(hg, label, result)
-    } else {
-        let from_text = &input_text[from_p.object_char_start..from_p.object_char_end];
-        resolve_span(
-            hg,
-            input_text,
-            from_p.object_char_start,
-            from_p.object_char_end,
-            from_text,
-            span_cache,
-            result,
-        )
-    };
-    let to_val_id = if let Some(label) = to_p.synthetic_object_label {
-        resolve_label_element(hg, label, result)
-    } else {
-        let to_text = &input_text[to_p.object_char_start..to_p.object_char_end];
-        resolve_span(
-            hg,
-            input_text,
-            to_p.object_char_start,
-            to_p.object_char_end,
-            to_text,
-            span_cache,
-            result,
-        )
-    };
+    let from_val_id = resolve_object(hg, input_text, &from_p.object, span_cache, result);
+    let to_val_id = resolve_object(hg, input_text, &to_p.object, span_cache, result);
 
     // Event element — a fresh identity per merge. Name carries the
     // verb + tick + seq so it stays human-readable in dumps.
@@ -1162,13 +1167,12 @@ fn mint_novelty_chunks(
 fn mint_novelty_relation(
     hg: &mut Hypergraph,
     input_text: &str,
-    nr: &NoveltyRelation,
+    nr: &RelationCandidate,
     policy: &crate::types::Policy,
     span_cache: &mut HashMap<(usize, usize), ElementId>,
     result: &mut Step8Output,
 ) -> RelationId {
     let subj_text = &input_text[nr.subject_char_start..nr.subject_char_end];
-    let obj_text = &input_text[nr.object_char_start..nr.object_char_end];
     let subj_id = resolve_span(
         hg,
         input_text,
@@ -1178,16 +1182,8 @@ fn mint_novelty_relation(
         span_cache,
         result,
     );
-    let obj_id = resolve_span(
-        hg,
-        input_text,
-        nr.object_char_start,
-        nr.object_char_end,
-        obj_text,
-        span_cache,
-        result,
-    );
-    let attr_id = resolve_attribute_name(hg, &nr.attribute_text, result);
+    let obj_id = resolve_object(hg, input_text, &nr.object, span_cache, result);
+    let attr_id = resolve_attribute_name(hg, &nr.attribute_name, result);
     mint_or_reuse_base_relation(
         hg,
         vec![
@@ -1200,7 +1196,7 @@ fn mint_novelty_relation(
                 value: Term::Element(obj_id),
             },
         ],
-        RelationStatus::Defeasible,
+        nr.status,
         confidence_for(nr.confidence, policy),
     )
 }

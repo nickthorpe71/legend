@@ -2,56 +2,53 @@
 //! of the v0 doc). Operates on `LabeledSpan` output from Step 5's NER
 //! pass: for each pair of nearby spans, checks for canonical
 //! surface-form templates ("X from Y to Z", "X at Y", etc.) and emits
-//! a `RelationProposal` per match.
+//! a [`RelationCandidate`] per match.
 //!
 //! These templates are deliberately a small bootstrap set covering
 //! the seed-pack frames (frame, valid_from / valid_to, location).
 //! Real coverage grows through replay and warm-region labels; this
 //! module exists so v0 ships with a working RE path while we defer
 //! the GLiNER multi-task model.
+//!
+//! Some templates emit a synthetic `from` half pointing at the
+//! `unknown_prior` label (encoded as [`ObjectRef::Label`]) — see
+//! Template 5 and 6 for "moved to Y" / "is now Y" handling.
 
 use crate::inference::deberta::predict::LabeledSpan;
+use crate::steps::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
 use crate::types::RelationStatus;
 
-#[derive(Debug, Clone)]
-pub struct RelationProposal {
-    /// Subject span — references a NER-tagged entity.
-    pub subject_char_start: usize,
-    pub subject_char_end: usize,
-    /// Canonical seed attribute name: `"from"`, `"to"`, `"with"`,
-    /// `"at"`, `"property"`, etc.
-    pub attribute_name: &'static str,
-    /// Object span — references a different NER-tagged entity.
-    pub object_char_start: usize,
-    pub object_char_end: usize,
-    pub confidence: f32,
-    pub status: RelationStatus,
-    /// Surface verb that anchored this proposal, when the template
-    /// was verb-anchored (e.g. `"changed"` in "X changed from A to B").
-    /// `None` for non-verb templates (`with`, `at`, `'s`). Step 8's
-    /// n-ary merge pass groups by `(subject, event_anchor)` to
-    /// synthesize one event relation from co-occurring `from`/`to`
-    /// proposals.
-    pub event_anchor: Option<String>,
-    /// When `Some(label)`, the object isn't a span in `input_text` —
-    /// Step 8 resolves it via `resolve_label_element(label)` instead
-    /// of slicing `object_char_start..object_char_end`. Used for
-    /// change-verb singletons like "X moved to Y", where the `from`
-    /// slot is implicit and points at a synthetic `unknown_prior`
-    /// element so the proposal still pairs into an event-shaped
-    /// n-ary relation.
-    pub synthetic_object_label: Option<&'static str>,
+/// Build a NER-anchored candidate. Helper to keep the eight emit
+/// sites below readable.
+fn make(
+    subj: (usize, usize),
+    attr: &'static str,
+    object: ObjectRef,
+    conf: f32,
+    status: RelationStatus,
+    event_anchor: Option<String>,
+) -> RelationCandidate {
+    RelationCandidate {
+        source: PatternSource::NerAnchored,
+        subject_char_start: subj.0,
+        subject_char_end: subj.1,
+        attribute_name: attr.to_string(),
+        object,
+        confidence: conf,
+        status,
+        event_anchor,
+    }
 }
 
 /// Try every supported template against the available spans.
 /// `text` is the raw input (the templates inspect the
 /// inter-span connective words). Spans must be ordered by
 /// `char_start` ascending.
-pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationProposal> {
+pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationCandidate> {
     let mut spans = spans.to_vec();
     spans.sort_by_key(|s| s.char_start);
 
-    let mut out: Vec<RelationProposal> = Vec::new();
+    let mut out: Vec<RelationCandidate> = Vec::new();
 
     // Template 1: "X from A to B" — three-way binding of subject /
     // valid_from / valid_to. Iterates (from-value, to-value) pairs
@@ -129,28 +126,28 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationPropo
             } else {
                 RelationStatus::Defeasible
             };
-            out.push(RelationProposal {
-                subject_char_start: spans[subj_idx].char_start,
-                subject_char_end: spans[subj_idx].char_end,
-                attribute_name: "from",
-                object_char_start: spans[j].char_start,
-                object_char_end: spans[j].char_end,
-                confidence: conf,
+            out.push(make(
+                (spans[subj_idx].char_start, spans[subj_idx].char_end),
+                "from",
+                ObjectRef::Span {
+                    char_start: spans[j].char_start,
+                    char_end: spans[j].char_end,
+                },
+                conf,
                 status,
-                event_anchor: anchor.clone(),
-                synthetic_object_label: None,
-            });
-            out.push(RelationProposal {
-                subject_char_start: spans[subj_idx].char_start,
-                subject_char_end: spans[subj_idx].char_end,
-                attribute_name: "to",
-                object_char_start: spans[k].char_start,
-                object_char_end: spans[k].char_end,
-                confidence: conf,
+                anchor.clone(),
+            ));
+            out.push(make(
+                (spans[subj_idx].char_start, spans[subj_idx].char_end),
+                "to",
+                ObjectRef::Span {
+                    char_start: spans[k].char_start,
+                    char_end: spans[k].char_end,
+                },
+                conf,
                 status,
-                event_anchor: anchor,
-                synthetic_object_label: None,
-            });
+                anchor,
+            ));
         }
     }
 
@@ -177,17 +174,17 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationPropo
                     } else {
                         RelationStatus::Defeasible
                     };
-                    out.push(RelationProposal {
-                        subject_char_start: spans[i].char_start,
-                        subject_char_end: spans[i].char_end,
-                        attribute_name: attr,
-                        object_char_start: spans[j].char_start,
-                        object_char_end: spans[j].char_end,
-                        confidence: conf,
+                    out.push(make(
+                        (spans[i].char_start, spans[i].char_end),
+                        attr,
+                        ObjectRef::Span {
+                            char_start: spans[j].char_start,
+                            char_end: spans[j].char_end,
+                        },
+                        conf,
                         status,
-                        event_anchor: None,
-                        synthetic_object_label: None,
-                    });
+                        None,
+                    ));
                     break; // one template per pair max
                 }
             }
@@ -226,28 +223,25 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationPropo
             } else {
                 RelationStatus::Defeasible
             };
-            out.push(RelationProposal {
-                subject_char_start: spans[i].char_start,
-                subject_char_end: spans[i].char_end,
-                attribute_name: "from",
-                object_char_start: spans[i].char_start,
-                object_char_end: spans[i].char_end,
-                confidence: conf,
+            out.push(make(
+                (spans[i].char_start, spans[i].char_end),
+                "from",
+                ObjectRef::Label("unknown_prior".to_string()),
+                conf,
                 status,
-                event_anchor: Some("now".to_string()),
-                synthetic_object_label: Some("unknown_prior"),
-            });
-            out.push(RelationProposal {
-                subject_char_start: spans[i].char_start,
-                subject_char_end: spans[i].char_end,
-                attribute_name: "to",
-                object_char_start: spans[j].char_start,
-                object_char_end: spans[j].char_end,
-                confidence: conf,
+                Some("now".to_string()),
+            ));
+            out.push(make(
+                (spans[i].char_start, spans[i].char_end),
+                "to",
+                ObjectRef::Span {
+                    char_start: spans[j].char_start,
+                    char_end: spans[j].char_end,
+                },
+                conf,
                 status,
-                event_anchor: Some("now".to_string()),
-                synthetic_object_label: None,
-            });
+                Some("now".to_string()),
+            ));
         }
     }
 
@@ -286,28 +280,25 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationPropo
             // Synthetic `from`: points at the canonical `unknown_prior`
             // label. Carries identical anchor + subject_span so the
             // merge groups it with the overt `to` below.
-            out.push(RelationProposal {
-                subject_char_start: spans[i].char_start,
-                subject_char_end: spans[i].char_end,
-                attribute_name: "from",
-                object_char_start: spans[i].char_start,
-                object_char_end: spans[i].char_end,
-                confidence: conf,
+            out.push(make(
+                (spans[i].char_start, spans[i].char_end),
+                "from",
+                ObjectRef::Label("unknown_prior".to_string()),
+                conf,
                 status,
-                event_anchor: Some(anchor.clone()),
-                synthetic_object_label: Some("unknown_prior"),
-            });
-            out.push(RelationProposal {
-                subject_char_start: spans[i].char_start,
-                subject_char_end: spans[i].char_end,
-                attribute_name: "to",
-                object_char_start: spans[j].char_start,
-                object_char_end: spans[j].char_end,
-                confidence: conf,
+                Some(anchor.clone()),
+            ));
+            out.push(make(
+                (spans[i].char_start, spans[i].char_end),
+                "to",
+                ObjectRef::Span {
+                    char_start: spans[j].char_start,
+                    char_end: spans[j].char_end,
+                },
+                conf,
                 status,
-                event_anchor: Some(anchor),
-                synthetic_object_label: None,
-            });
+                Some(anchor),
+            ));
         }
     }
 
@@ -474,8 +465,16 @@ mod tests {
             .expect("to proposal missing");
         assert_eq!(from.event_anchor.as_deref(), Some("moved"));
         assert_eq!(to.event_anchor.as_deref(), Some("moved"));
-        assert_eq!(from.synthetic_object_label, Some("unknown_prior"));
-        assert_eq!(to.synthetic_object_label, None);
+        assert!(
+            matches!(&from.object, ObjectRef::Label(s) if s == "unknown_prior"),
+            "synthetic from should carry the unknown_prior label, got {:?}",
+            from.object
+        );
+        assert!(
+            matches!(&to.object, ObjectRef::Span { .. }),
+            "to should carry a span, got {:?}",
+            to.object
+        );
     }
 
     #[test]
@@ -515,7 +514,10 @@ mod tests {
             .expect("to proposal missing");
         assert_eq!(from.event_anchor.as_deref(), Some("now"));
         assert_eq!(to.event_anchor.as_deref(), Some("now"));
-        assert_eq!(from.synthetic_object_label, Some("unknown_prior"));
+        assert!(
+            matches!(&from.object, ObjectRef::Label(s) if s == "unknown_prior"),
+            "synthetic from should carry the unknown_prior label"
+        );
     }
 
     #[test]
@@ -564,10 +566,15 @@ mod tests {
             span(39, 45, "weekday", 0.95, "Friday"),
         ];
         let rels = extract_relations(text, &spans);
-        // Exactly two: from(Tuesday) + to(Friday). No synthetic from.
+        // Exactly two: from(Tuesday) + to(Friday). No synthetic from
+        // (which would carry an ObjectRef::Label, not a Span).
         assert_eq!(rels.len(), 2);
         for r in &rels {
-            assert!(r.synthetic_object_label.is_none());
+            assert!(
+                matches!(r.object, ObjectRef::Span { .. }),
+                "expected Span object for all triples; got {:?}",
+                r.object
+            );
         }
     }
 }

@@ -17,29 +17,9 @@
 //! first.
 
 use crate::inference::deberta::predict::LabeledSpan;
+use crate::steps::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
 use crate::steps::temporal::TemporalSpan;
 use crate::types::{Policy, RelationStatus};
-
-/// One span-typing proposal. Maps to a single `(span, instance_of, K)`
-/// hypergraph relation.
-#[derive(Debug, Clone)]
-pub struct ExtractionProposal {
-    pub subject_text: String,
-    pub subject_char_start: usize,
-    pub subject_char_end: usize,
-    pub attribute_name: &'static str,
-    pub object_label: String,
-    pub confidence: f32,
-    pub status: RelationStatus,
-    pub provenance: ProposalSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProposalSource {
-    Ner,
-    Temporal,
-    Pattern,
-}
 
 /// Build span-typing proposals from NER spans + temporal regex spans.
 /// Temporal spans that overlap any NER span are dropped.
@@ -47,8 +27,8 @@ pub fn build_instance_of_proposals(
     ner_spans: &[LabeledSpan],
     temporal_spans: &[TemporalSpan],
     policy: &Policy,
-) -> Vec<ExtractionProposal> {
-    let mut out: Vec<ExtractionProposal> = Vec::new();
+) -> Vec<RelationCandidate> {
+    let mut out: Vec<RelationCandidate> = Vec::new();
 
     for s in ner_spans {
         let status = if s.score >= policy.ner_assertion_threshold {
@@ -56,15 +36,15 @@ pub fn build_instance_of_proposals(
         } else {
             RelationStatus::Defeasible
         };
-        out.push(ExtractionProposal {
-            subject_text: s.text.clone(),
+        out.push(RelationCandidate {
+            source: PatternSource::NerSpanTyping,
             subject_char_start: s.char_start,
             subject_char_end: s.char_end,
-            attribute_name: "instance_of",
-            object_label: s.label.clone(),
+            attribute_name: "instance_of".to_string(),
+            object: ObjectRef::Label(s.label.clone()),
             confidence: s.score,
             status,
-            provenance: ProposalSource::Ner,
+            event_anchor: None,
         });
     }
 
@@ -78,15 +58,15 @@ pub fn build_instance_of_proposals(
         } else {
             RelationStatus::Defeasible
         };
-        out.push(ExtractionProposal {
-            subject_text: t.text.clone(),
+        out.push(RelationCandidate {
+            source: PatternSource::TemporalSpanTyping,
             subject_char_start: t.char_start,
             subject_char_end: t.char_end,
-            attribute_name: "instance_of",
-            object_label: t.kind.to_string(),
+            attribute_name: "instance_of".to_string(),
+            object: ObjectRef::Label(t.kind.to_string()),
             confidence: conf,
             status,
-            provenance: ProposalSource::Temporal,
+            event_anchor: None,
         });
     }
 
