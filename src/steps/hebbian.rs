@@ -68,10 +68,11 @@ pub fn hebbian_and_salience(
     step9: &Step9Output,
     active_frame: Option<ElementId>,
     policy: &Policy,
+    extra_seeds: &[ElementId],
 ) -> Step10Output {
     let mut out = Step10Output::default();
 
-    let reinforcement_set = build_reinforcement_set(step8, step9, hg);
+    let reinforcement_set = build_reinforcement_set(step8, step9, hg, extra_seeds);
     let supersession_derived: HashSet<RelationId> = step9
         .cache_relations
         .iter()
@@ -470,6 +471,7 @@ fn build_reinforcement_set(
     step8: &Step8Output,
     step9: &Step9Output,
     hg: &crate::types::Hypergraph,
+    extra_seeds: &[ElementId],
 ) -> Vec<RelationId> {
     let superseded: HashSet<RelationId> = step9.superseded.iter().copied().collect();
     let mut seen: HashSet<RelationId> = HashSet::new();
@@ -488,13 +490,24 @@ fn build_reinforcement_set(
             out.push(rid);
         }
     }
-    // 2. Retrieval: for every element referenced this tick, pull
-    //    live base-shape relations involving it. Without this, query
-    //    ticks ("What language is Polaris in?") produce a frame with
-    //    no recalled state — the consumer LLM sees only what this
-    //    tick wrote, not what the substrate already knows. Per-
-    //    element cap keeps the set bounded.
-    for &eid in &step8.referenced_elements {
+    // 2. Retrieval seeds = name-mentioned elements (step8.referenced)
+    //    plus topical-similarity neighbors the caller passes in
+    //    (typically `steps::topical::topical_neighbors`). The union
+    //    lets queries surface haystack content that doesn't share
+    //    surface tokens with the query — e.g. "what was the first
+    //    issue with my car?" pulling in a GPS-system relation
+    //    because its embedding sits close to the question's.
+    //    Dedup is automatic via the `seen` set below.
+    let referenced_then_topical = step8
+        .referenced_elements
+        .iter()
+        .chain(extra_seeds.iter())
+        .copied();
+    let mut seen_seeds: HashSet<ElementId> = HashSet::new();
+    for eid in referenced_then_topical {
+        if !seen_seeds.insert(eid) {
+            continue;
+        }
         let Some(candidates) = hg.relations_by_element.get(&eid) else {
             continue;
         };
@@ -580,7 +593,7 @@ mod tests {
     fn reinforcement_set_includes_step8_minted() {
         let policy = Policy::default();
         let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert!(!out.reinforced.is_empty());
         for &rid in &step8.minted_relations {
             assert!(out.reinforced.contains(&rid));
@@ -596,7 +609,7 @@ mod tests {
             &policy,
         );
         assert!(!step9.cache_relations.is_empty(), "test prerequisite");
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         for &rid in &step9.cache_relations {
             assert!(out.reinforced.contains(&rid));
         }
@@ -613,7 +626,7 @@ mod tests {
         let labels: &[&str] = &["event", "weekday"];
         let (mut hg, step8_1, step9_1) =
             run_through_step9_with("The meeting moved from Monday to Tuesday.", labels, &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy, &[]);
 
         let text2 = "The meeting moved from Tuesday to Friday.";
         let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
@@ -623,7 +636,7 @@ mod tests {
             !step9_2.superseded.is_empty(),
             "test prerequisite: tick 2 should flip the prior",
         );
-        let out2 = hebbian_and_salience(&mut hg, &step8_2, &step9_2, None, &policy);
+        let out2 = hebbian_and_salience(&mut hg, &step8_2, &step9_2, None, &policy, &[]);
         for &flipped in &step9_2.superseded {
             assert!(
                 !out2.reinforced.contains(&flipped),
@@ -651,7 +664,7 @@ mod tests {
         // the reinforced list.
         let policy = Policy::default();
         let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         for &rid in &step8.minted_relations {
             assert_eq!(
                 hg.relations[rid.0 as usize].stats.activation, 0.0,
@@ -674,7 +687,7 @@ mod tests {
         assert_eq!(before, 0.0, "freshly minted relations start at 0");
 
         // First bump.
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         let after_one = hg.relations[pick.0 as usize].stats.activation;
         assert!(
             (after_one - 0.5).abs() < 1e-5,
@@ -682,7 +695,7 @@ mod tests {
         );
 
         // Second bump: bump(0.5, 0.5) = 0.75.
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         let after_two = hg.relations[pick.0 as usize].stats.activation;
         assert!(
             (after_two - 0.75).abs() < 1e-5,
@@ -725,7 +738,7 @@ mod tests {
             .expect("expected at least one instance_of weekday relation");
 
         let before = hg.relations[inst_rel.0 as usize].stats.salience;
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         let after = hg.relations[inst_rel.0 as usize].stats.salience;
         assert!(
             after > before,
@@ -751,7 +764,7 @@ mod tests {
         );
         assert!(!step9.cache_relations.is_empty(), "test prerequisite");
         let cache = step9.cache_relations[0];
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         let cache_sal = hg.relations[cache.0 as usize].stats.salience;
         assert!(
             cache_sal > 0.5,
@@ -767,11 +780,11 @@ mod tests {
         let pick = step8.minted_relations[0];
         // support_count starts at 0; bumps by 1 per Step 10 call.
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 0);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 1);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 2);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 3);
     }
 
@@ -808,8 +821,8 @@ mod tests {
 
         // First two reinforcements: support_count climbs to 2; gate
         // not yet cleared.
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
             RelationStatus::Defeasible,
@@ -817,7 +830,7 @@ mod tests {
         );
 
         // Third reinforcement clears support_count >= 3.
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
             RelationStatus::Asserted,
@@ -841,7 +854,7 @@ mod tests {
             &["event", "weekday"],
             &policy,
         );
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         // After one tick, support_count == 1; min is 5; nothing
         // should have promoted.
         assert!(
@@ -867,7 +880,7 @@ mod tests {
             &["event", "weekday"],
             &policy,
         );
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert!(
             out.promoted.is_empty(),
             "min_diversity=2 with support_diversity=0 should block promotion",
@@ -906,7 +919,7 @@ mod tests {
             None,
         );
         let step9_1 = supersede(&mut hg, &step8_1.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy, &[]);
 
         // Tick 2 supersedes tick 1's cache.
         let ext2 = run_extractors(
@@ -939,7 +952,7 @@ mod tests {
         let mut synthetic_step9 = step9_2.clone();
         synthetic_step9.superseded.clear();
         synthetic_step9.cache_relations.push(prior); // include in reinforcement set
-        let out = hebbian_and_salience(&mut hg, &step8_2, &synthetic_step9, None, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8_2, &synthetic_step9, None, &policy, &[]);
 
         assert!(
             !out.promoted.contains(&prior),
@@ -974,7 +987,7 @@ mod tests {
         let conf_before = hg.relations[target_rid.0 as usize].stats.confidence;
         assert!(conf_before < 0.9);
 
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
             RelationStatus::Asserted,
@@ -991,7 +1004,7 @@ mod tests {
         let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
         assert!(hg.recent_focus.is_empty(), "starts empty");
 
-        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert!(out.focus_pushed > 0, "expected focus entries pushed");
         assert!(
             !hg.recent_focus.is_empty(),
@@ -1016,7 +1029,7 @@ mod tests {
         let policy = Policy::default();
         let (mut hg, step8, step9) =
             run_through_step9("Nick lived in Brantford for 3 years.", &[], &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
 
         let nick_id = hg.by_name["Nick"][0];
         let nick_subject_entries = hg
@@ -1078,7 +1091,7 @@ mod tests {
                 .expect("n-ary event with target slot must exist")
         };
 
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
 
         let target_focus = hg
             .recent_focus
@@ -1106,7 +1119,7 @@ mod tests {
             let ext = run_extractors(&text, labels, &policy, &hg, &[]);
             let s8 = build_relations(&text, &mut hg, &ext, &policy, None);
             let s9 = supersede(&mut hg, &s8.minted_relations, &policy);
-            let _ = hebbian_and_salience(&mut hg, &s8, &s9, None, &policy);
+            let _ = hebbian_and_salience(&mut hg, &s8, &s9, None, &policy, &[]);
         }
         assert!(
             hg.recent_focus.len() <= 3,
@@ -1124,13 +1137,13 @@ mod tests {
         let ext_a = run_extractors(text_a, &[], &policy, &hg, &[]);
         let s8a = build_relations(text_a, &mut hg, &ext_a, &policy, None);
         let s9a = supersede(&mut hg, &s8a.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg, &s8a, &s9a, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &s8a, &s9a, None, &policy, &[]);
 
         let text_b = "Bob called me.";
         let ext_b = run_extractors(text_b, &[], &policy, &hg, &[]);
         let s8b = build_relations(text_b, &mut hg, &ext_b, &policy, None);
         let s9b = supersede(&mut hg, &s8b.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg, &s8b, &s9b, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &s8b, &s9b, None, &policy, &[]);
 
         // Bob should appear ahead of Alice in the deque (most recent
         // first). We look for the first subject-bound entry for each.
@@ -1178,7 +1191,7 @@ mod tests {
         let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
         let step8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
         let step9_1 = supersede(&mut hg, &step8_1.minted_relations, &policy);
-        let out1 = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy);
+        let out1 = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy, &[]);
 
         assert!(!out1.reinforced.is_empty());
         assert!(out1.focus_pushed >= 1, "tick 1 should push focus entries");
@@ -1200,7 +1213,7 @@ mod tests {
         let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
         let step8_2 = build_relations(text2, &mut hg, &ext2, &policy, None);
         let step9_2 = supersede(&mut hg, &step8_2.minted_relations, &policy);
-        let out2 = hebbian_and_salience(&mut hg, &step8_2, &step9_2, None, &policy);
+        let out2 = hebbian_and_salience(&mut hg, &step8_2, &step9_2, None, &policy, &[]);
 
         // Find the same Sarah-instance-of relation in step8_2 — Step 8
         // dedups Sarah to the same Element, but mints a fresh
@@ -1234,7 +1247,7 @@ mod tests {
         let ext_a = run_extractors(dentist_text, labels2, &policy, &hg2, &[]);
         let s8_a = build_relations(dentist_text, &mut hg2, &ext_a, &policy, None);
         let s9_a = supersede(&mut hg2, &s8_a.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg2, &s8_a, &s9_a, None, &policy);
+        let _ = hebbian_and_salience(&mut hg2, &s8_a, &s9_a, None, &policy, &[]);
 
         let instance_of_attr = hg2.by_name["instance_of"][0];
         let defeasible_iotuple = s8_a
@@ -1260,7 +1273,7 @@ mod tests {
         // promotion verification we directly bump support_count by
         // re-running Step 10 on the SAME step8/step9 outputs. That
         // simulates "the same evidence arriving again."
-        let out_promo = hebbian_and_salience(&mut hg2, &s8_a, &s9_a, None, &policy);
+        let out_promo = hebbian_and_salience(&mut hg2, &s8_a, &s9_a, None, &policy, &[]);
         assert_eq!(
             hg2.relations[defeasible_iotuple.0 as usize].status,
             RelationStatus::Asserted,
@@ -1273,7 +1286,7 @@ mod tests {
     fn salience_stays_at_zero_with_default_policy() {
         let policy = Policy::default();
         let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         for &rid in &step8.minted_relations {
             assert_eq!(
                 hg.relations[rid.0 as usize].stats.salience, 0.0,
@@ -1292,7 +1305,7 @@ mod tests {
         // 50 bumps at rate 0.9 from 0.0: x_{n+1} = x + 0.9 * (1 - x)
         // converges very fast. After ~5 iterations we're > 0.999.
         for _ in 0..50 {
-            let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+            let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         }
         for &rid in &step8.minted_relations {
             let a = hg.relations[rid.0 as usize].stats.activation;

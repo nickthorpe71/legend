@@ -681,7 +681,7 @@ mod tests {
         let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
         let step8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
         let step9_1 = supersede(&mut hg, &step8_1.minted_relations, &policy);
-        let step10_1 = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy);
+        let step10_1 = hebbian_and_salience(&mut hg, &step8_1, &step9_1, None, &policy, &[]);
 
         // Snapshot every reinforced relation's activation before decay.
         let reinforced_before: Vec<(RelationId, f32)> = step10_1
@@ -754,7 +754,7 @@ mod tests {
         let ext = run_extractors(text, &[], &policy, &hg, &[]);
         let step8 = build_relations(text, &mut hg, &ext, &policy, None);
         let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
-        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         let out = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
         assert_eq!(out.elements_walked, 0);
         assert_eq!(out.relations_decayed, 0);

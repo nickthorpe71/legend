@@ -171,7 +171,7 @@ fn main() {
         let _ = apply_region_delta(&mut hg, &route.delta, &policy);
         let step8 = build_relations(input_text, &mut hg, &extraction, &policy, Some(source_id));
         let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
-        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy);
+        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         let _step11 = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
         let frame = assemble_frame(
             input_text, &hg, &intent, None, &route, &step8, &step9, &step10, &policy,

@@ -14,4 +14,5 @@ pub mod route_regions;
 pub mod run_extractors;
 pub mod supersede;
 pub mod temporal;
+pub mod topical;
 pub mod void_filter;

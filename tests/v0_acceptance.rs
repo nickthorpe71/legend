@@ -56,7 +56,7 @@ fn run_tick(
     let ext = run_extractors(text, labels, policy, hg, &[]);
     let step8 = build_relations(text, hg, &ext, policy, None);
     let step9 = supersede(hg, &step8.minted_relations, policy);
-    let step10 = hebbian_and_salience(hg, &step8, &step9, None, policy);
+    let step10 = hebbian_and_salience(hg, &step8, &step9, None, policy, &[]);
     let _ = focus_radius_decay(hg, &step10.reinforced, policy);
     // Empty route for the v0 acceptance test — we exercise Steps 5-12
     // here. Step 4 has its own tests; the frame's active_regions is

@@ -42,3 +42,9 @@ models/gliner2-fp32.bin
 # Atomic-write tempfiles from `src/persistence.rs`. The actual
 # snapshot file `.legend/memory.lz4` IS committed per CLAUDE.md.
 .legend/memory.lz4.tmp.*
+
+# LongMemEval bench artifacts — dataset is 15 MB (download from
+# the LongMemEval project), verbose dumps are per-run scratch.
+benchmarks/longmemeval_oracle.json
+benchmarks/last_run_verbose.json
+benchmarks/venv/

@@ -534,7 +534,7 @@ mod tests {
         let ext = run_extractors(text, labels, policy, &hg, &[]);
         let s8 = build_relations(text, &mut hg, &ext, policy, None);
         let s9 = supersede(&mut hg, &s8.minted_relations, policy);
-        let s10 = hebbian_and_salience(&mut hg, &s8, &s9, None, policy);
+        let s10 = hebbian_and_salience(&mut hg, &s8, &s9, None, policy, &[]);
         (hg, s8, s9, s10)
     }
 
@@ -700,13 +700,13 @@ mod tests {
         let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
         let s8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
         let s9_1 = supersede(&mut hg, &s8_1.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg, &s8_1, &s9_1, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &s8_1, &s9_1, None, &policy, &[]);
 
         let text2 = "The meeting moved from Tuesday to Friday.";
         let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
         let s8_2 = build_relations(text2, &mut hg, &ext2, &policy, None);
         let s9_2 = supersede(&mut hg, &s8_2.minted_relations, &policy);
-        let s10_2 = hebbian_and_salience(&mut hg, &s8_2, &s9_2, None, &policy);
+        let s10_2 = hebbian_and_salience(&mut hg, &s8_2, &s9_2, None, &policy, &[]);
 
         let route = empty_route();
         let frame = assemble_frame(
@@ -858,7 +858,7 @@ mod tests {
         let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
         let s8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
         let s9_1 = supersede(&mut hg, &s8_1.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg, &s8_1, &s9_1, None, &policy);
+        let _ = hebbian_and_salience(&mut hg, &s8_1, &s9_1, None, &policy, &[]);
         // Tick 1 has no supersession (no priors exist yet).
         assert!(s9_1.superseded.is_empty(), "tick 1 has no priors");
         assert!(
@@ -872,7 +872,7 @@ mod tests {
         let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
         let s8_2 = build_relations(text2, &mut hg, &ext2, &policy, None);
         let s9_2 = supersede(&mut hg, &s8_2.minted_relations, &policy);
-        let s10_2 = hebbian_and_salience(&mut hg, &s8_2, &s9_2, None, &policy);
+        let s10_2 = hebbian_and_salience(&mut hg, &s8_2, &s9_2, None, &policy, &[]);
         assert!(
             s9_2.superseded.contains(&prior_cache),
             "tick 2 should flip tick 1's cache",

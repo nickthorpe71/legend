@@ -284,7 +284,16 @@ fn main() {
         let _ = apply_region_delta(&mut hg, &route.delta, &policy);
         let step8 = build_relations(turn.text, &mut hg, &extraction, &policy, Some(source_id));
         let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
-        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, active_frame, &policy);
+        let topical_seeds =
+            legend::steps::topical::topical_neighbors(&hg, &embedding, 32);
+        let step10 = hebbian_and_salience(
+            &mut hg,
+            &step8,
+            &step9,
+            active_frame,
+            &policy,
+            &topical_seeds,
+        );
         let _step11 = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
         let frame = assemble_frame(
             turn.text,

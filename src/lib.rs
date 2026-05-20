@@ -159,7 +159,23 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `active_frame` is inherited from prior `recent_focus` above
     // (None on the very first tick). New entries record this frame
     // so subsequent ticks can see the binding context.
-    let step10 = hebbian_and_salience(&mut hg, &step8, &step9, active_frame, &policy);
+    //
+    // `topical_seeds` is the top-K cosine-similar Signal elements
+    // to this tick's input embedding. Adding them to the retrieval
+    // set means the frame surfaces semantically related context
+    // even when the input doesn't mention those entities by name —
+    // critical for queries like "what was the first issue with my
+    // car?" where the relevant content was about a "GPS system"
+    // and shares no NER-tagged surface tokens with the query.
+    let topical_seeds = steps::topical::topical_neighbors(&hg, &embedding, 32);
+    let step10 = hebbian_and_salience(
+        &mut hg,
+        &step8,
+        &step9,
+        active_frame,
+        &policy,
+        &topical_seeds,
+    );
     stage_at("hebbian + salience (Step 10)", &mut mark);
     print_step10(&step10, &hg, &policy);
 
@@ -190,6 +206,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     stage_at("assemble frame (Step 12)", &mut mark);
     print_step12(&frame, &hg);
+
+    // When `LEGEND_FRAME_JSON=1`, append a JSON dump of the full
+    // focused subgraph to stdout. Bench harnesses + downstream
+    // consumer LLMs that need every element / relation surface
+    // (not just `print_step12`'s top-5 preview) parse this section.
+    // Marker line lets the harness `tail` from a known anchor.
+    if env::var_os("LEGEND_FRAME_JSON").is_some() {
+        print_frame_json(&frame, &hg);
+    }
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;
@@ -295,6 +320,136 @@ pub fn git_init() -> Result<(), Box<dyn std::error::Error>> {
         "\nTo confirm: `git config --local merge.legend.driver` should print:\n  {driver_cmd}"
     );
     Ok(())
+}
+
+// ─── Frame JSON dump (LEGEND_FRAME_JSON=1) ────────────────────────────────
+
+/// Print the full attention frame as JSON, sandwiched between
+/// marker lines so harnesses can locate it without fragile parsing
+/// of the human-readable output above. Includes every focused
+/// relation (not just `print_step12`'s top-5 preview) plus current_state,
+/// history, and supporting_claims. Hand-rolled JSON to avoid pulling
+/// `serde_json` into the runtime crate.
+fn print_frame_json(frame: &types::ConsciousAttentionFrame, hg: &Hypergraph) {
+    println!("--- LEGEND_FRAME_JSON_BEGIN ---");
+    print!("{{");
+    print!("\"tick\":{},", frame.tick.0);
+    print!("\"active_frame\":");
+    if let Some(eid) = frame.active_frame {
+        let name = hg.elements[eid.0 as usize]
+            .names
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        print!("\"{}\"", escape_json(name));
+    } else {
+        print!("null");
+    }
+    print!(",\"focused_relations\":[");
+    for (i, ra) in frame.focused_relations.iter().enumerate() {
+        if i > 0 {
+            print!(",");
+        }
+        print_relation_json(hg, ra.relation, ra.activation, ra.is_defeasible);
+    }
+    print!("],\"current_state\":[");
+    for (i, rid) in frame.current_state.iter().enumerate() {
+        if i > 0 {
+            print!(",");
+        }
+        print_relation_json(hg, *rid, 0.0, false);
+    }
+    print!("],\"history\":[");
+    for (i, rid) in frame.history.iter().enumerate() {
+        if i > 0 {
+            print!(",");
+        }
+        print_relation_json(hg, *rid, 0.0, false);
+    }
+    print!("],\"supporting_claims\":[");
+    for (i, rid) in frame.supporting_claims.iter().enumerate() {
+        if i > 0 {
+            print!(",");
+        }
+        print_relation_json(hg, *rid, 0.0, false);
+    }
+    print!("],\"uncertainty\":[");
+    for (i, sig) in frame.uncertainty.iter().enumerate() {
+        if i > 0 {
+            print!(",");
+        }
+        print!("\"{sig:?}\"");
+    }
+    println!("]}}");
+    println!("--- LEGEND_FRAME_JSON_END ---");
+}
+
+/// Emit a single relation as a JSON object. Captures subject, the
+/// other attribute slot(s), and status — enough for a downstream
+/// consumer to reason about the claim. Element values are surface
+/// names; relation values (meta-relations) are printed as `R<id>`.
+fn print_relation_json(
+    hg: &Hypergraph,
+    rid: types::RelationId,
+    activation: f32,
+    is_defeasible: bool,
+) {
+    let r = &hg.relations[rid.0 as usize];
+    print!("{{\"id\":{},", rid.0);
+    print!("\"status\":\"{:?}\",", r.status);
+    print!("\"activation\":{activation:.4},");
+    print!("\"is_defeasible\":{is_defeasible},");
+    let mut subject = String::new();
+    let mut attr_pairs: Vec<(String, String)> = Vec::new();
+    for a in &r.attributes {
+        let attr_name = hg.elements[a.name.0 as usize]
+            .names
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let val = match a.value {
+            types::Term::Element(eid) => hg.elements[eid.0 as usize]
+                .names
+                .first()
+                .cloned()
+                .unwrap_or_default(),
+            types::Term::Relation(rid) => format!("R{}", rid.0),
+        };
+        if a.name == hg.subject_attr {
+            subject = val.clone();
+        } else {
+            attr_pairs.push((attr_name, val));
+        }
+    }
+    print!("\"subject\":\"{}\",", escape_json(&subject));
+    print!("\"attrs\":[");
+    for (i, (k, v)) in attr_pairs.iter().enumerate() {
+        if i > 0 {
+            print!(",");
+        }
+        print!(
+            "{{\"name\":\"{}\",\"value\":\"{}\"}}",
+            escape_json(k),
+            escape_json(v),
+        );
+    }
+    print!("]}}");
+}
+
+fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ─── dev-time print helpers ───────────────────────────────────────────────

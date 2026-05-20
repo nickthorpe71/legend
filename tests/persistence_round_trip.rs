@@ -22,7 +22,7 @@ fn run_tick(hg: &mut Hypergraph, text: &str, policy: &Policy) {
     let ext = run_extractors(text, &[], policy, hg, &[]);
     let step8 = build_relations(text, hg, &ext, policy, None);
     let step9 = supersede(hg, &step8.minted_relations, policy);
-    let step10 = hebbian_and_salience(hg, &step8, &step9, None, policy);
+    let step10 = hebbian_and_salience(hg, &step8, &step9, None, policy, &[]);
     let _ = focus_radius_decay(hg, &step10.reinforced, policy);
 }
 
