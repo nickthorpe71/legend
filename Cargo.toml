@@ -51,12 +51,19 @@ memmap2 = "0.9"
 # Binary serde for the pre-parsed GLiNER tokenizer. MessagePack
 # instead of bincode 1.x because Tokenizer's internal serializer
 # emits unbounded sequences that bincode rejects. Skipping the
-# 8MB tokenizer.json JSON parse on every cold start.
+# 8MB tokenizer.json JSON parse on every cold start. Also used by
+# `src/persistence.rs` to encode the Hypergraph snapshot.
 rmp-serde = "1"
+# Derives for `Hypergraph` and every type reachable from it, so the
+# substrate can survive process restarts via `src/persistence.rs`.
+serde = { version = "1", features = ["derive"] }
+# Pure-Rust LZ4 (no C deps). Compresses the rmp-serde snapshot — the
+# bulk is element embeddings (Vec<f32> × 384 each), which LZ4 packs
+# down by ~30-40%.
+lz4_flex = "0.11"
 
 [dev-dependencies]
 criterion = "0.5"
-serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 # tract-onnx is build-time-only: it's used by
 # `examples/extract_weights.rs` to read the ONNX file once and dump

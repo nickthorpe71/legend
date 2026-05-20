@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Identity & time
 // ─────────────────────────────────────────────────────────────────────────────
@@ -9,18 +11,20 @@ use std::collections::HashMap;
 /// (`last_seen`, `last_accessed`), and as the unit for decay / promotion
 /// windows (e.g. `promotion_window_ticks`). Not wall-clock time —
 /// real-world timestamps live on `Input.wall_clock`.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default, Serialize, Deserialize,
+)]
 pub struct Tick(pub u64);
 
 /// Local handle into `Hypergraph.elements`. Newtype around `u32` so the
 /// compiler refuses to mix it with `RelationId` or any other index. Not
 /// globally unique — when cross-store sync arrives, a separate stable
 /// identifier (e.g. `Ulid`) will sit alongside this on each Element.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub struct ElementId(pub u32);
 
 /// Local handle into `Hypergraph.relations`. Same pattern as `ElementId`.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub struct RelationId(pub u32);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,7 +34,12 @@ pub struct RelationId(pub u32);
 /// The world model. Elements are bare identities; Relations are claims
 /// between them. The hot path reads from this alone; the WAL is for
 /// crash recovery between checkpoints.
-#[derive(Debug)]
+///
+/// Serialized directly for persistence (`src/persistence.rs`). The 12
+/// derived index fields below are `#[serde(skip)]` — they regenerate
+/// from `elements + relations` via `seed::rebuild_indices` after
+/// deserialize.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Hypergraph {
     /// Concrete entities — concepts, surface forms, attribute-name elements,
     /// region anchors, typed leaf values ("Tuesday", "6 pounds", "Berlin").
@@ -75,6 +84,7 @@ pub struct Hypergraph {
     /// legitimately resolves to both a coding-region element and a
     /// philosophy-region element — disambiguation happens via region
     /// routing, not here).
+    #[serde(skip)]
     pub by_name: HashMap<String, Vec<ElementId>>,
 
     /// DAG-descent topology read by Step 4 region routing. For each
@@ -82,6 +92,7 @@ pub struct Hypergraph {
     /// `parent_region` attribute points at `R`). Derived from
     /// `parent_region` relations on every load; the relation graph is
     /// authoritative.
+    #[serde(skip)]
     pub region_children: HashMap<ElementId, Vec<ElementId>>,
 
     /// Inverse of `region_children` — for each region `R`, the list of
@@ -89,6 +100,7 @@ pub struct Hypergraph {
     /// from each `parent_region` relation's `stats.confidence`).
     /// Multi-parent attachment is allowed (§10.2); regions can sit
     /// under multiple parents with different weights.
+    #[serde(skip)]
     pub region_parents: HashMap<ElementId, Vec<(ElementId, f32)>>,
 
     /// For each region `R`, the prototype Elements attached via
@@ -97,6 +109,7 @@ pub struct Hypergraph {
     /// inline `embedding`. v0 day zero ships one prototype per seeded
     /// region (built from the YAML `descriptor`); replay grows or merges
     /// the set per §10.4 / §14.8.
+    #[serde(skip)]
     pub region_prototypes: HashMap<ElementId, Vec<ElementId>>,
 
     /// For each region `R`, the per-dimension mean + variance of its
@@ -106,6 +119,7 @@ pub struct Hypergraph {
     /// max-cosine when many-prototype data is available. With a single
     /// prototype `var` collapses to all-zeros — Step 4 mixes a
     /// variance prior at use time to keep the score well-defined.
+    #[serde(skip)]
     pub region_stats: HashMap<ElementId, RegionStats>,
 
     // ── Step 8 relation indices ────────────────────────────────────────
@@ -118,34 +132,40 @@ pub struct Hypergraph {
     /// the value of any of their attributes. Drives "what does the
     /// graph claim about E?" lookups (Step 9's supersession search,
     /// Step 12's focus walk).
+    #[serde(skip)]
     pub relations_by_element: HashMap<ElementId, Vec<RelationId>>,
 
     /// For each attribute-name Element `A`, the list of Relations that
     /// use `A` as one of their attribute names. Drives label-set
     /// resolution and Step 9's filtering ("relations with a `property`
     /// attribute").
+    #[serde(skip)]
     pub relations_by_attribute_name: HashMap<ElementId, Vec<RelationId>>,
 
     /// For each Relation `R`, the list of meta-relations whose
     /// `target` attribute points at `R`. Chain walks (supersession,
     /// derivation) go through here.
+    #[serde(skip)]
     pub meta_relations_by_subject: HashMap<RelationId, Vec<RelationId>>,
 
     /// For each Relation `R`, the list of meta-relations whose
     /// non-`target` attribute slot references `R` via `Term::Relation`.
     /// The inverse of `meta_relations_by_subject` — lets a relation
     /// find which meta-relations name it as their object.
+    #[serde(skip)]
     pub meta_relations_by_object: HashMap<RelationId, Vec<RelationId>>,
 
     /// Per `(attribute_name, value)` pair, the count of base relations
     /// that bind that pair. Cheap recognition signal: "how many
     /// relations say X is an instance_of person?" without scanning
     /// `relations`.
+    #[serde(skip)]
     pub attribute_value_counts: HashMap<(ElementId, ElementId), u32>,
 
     /// Per ordered pair of attribute names co-occurring on the same
     /// relation's attribute list, the count of relations exhibiting
     /// that co-occurrence. Drives §3.4 frame recognition.
+    #[serde(skip)]
     pub attribute_co_counts: HashMap<(ElementId, ElementId), u32>,
 
     /// Per `(relation, attribute_name)`, presence flag: does relation
@@ -156,6 +176,7 @@ pub struct Hypergraph {
     /// non-`target` sibling attribute on that relation gets marked
     /// present on `R`. Lets Step 9 / Step 10 ask
     /// "does this event have an `intervened` meta?" in O(1).
+    #[serde(skip)]
     pub meta_relation_presence: HashMap<(RelationId, ElementId), bool>,
 
     // ── Anchor IDs ─────────────────────────────────────────────────────
@@ -252,7 +273,7 @@ impl Default for Hypergraph {
 /// A bare identity in the world. Region topology, typed values, and
 /// attribute names are all just Elements — discrimination happens via
 /// the relations that mention them, not via a type tag on this struct.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Element {
     /// Stable handle within this Hypergraph.
     pub id: ElementId,
@@ -298,7 +319,7 @@ pub struct Element {
 /// defaults to `Signal`. Not to be confused with routing-VOID, where
 /// `unrouted_count` counts branches that failed to clear
 /// `leaf_vigilance` regardless of element polarity.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Polarity {
     /// Carries content the downstream pipeline should propagate.
     /// Default for newly minted elements.
@@ -315,7 +336,7 @@ pub enum Polarity {
 /// relations (frame, source, supersession) are ordinary Relations whose
 /// attribute list includes `Term::Relation(target)` pointing at the
 /// relation they modify.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Relation {
     /// Stable handle.
     pub id: RelationId,
@@ -345,7 +366,7 @@ pub struct Relation {
 /// One named slot in a relation. The slot name is an Element (so the
 /// vocabulary of attribute names is itself part of the graph), the
 /// value is whatever fills it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Attribute {
     /// Element naming this slot (e.g. the element whose canonical name
     /// is `"SUBJECT"`, `"ACTOR"`, `"TARGET"`, `"target"` for meta-rels).
@@ -361,7 +382,7 @@ pub struct Attribute {
 /// another Relation. No third "literal" variant — typed leaf values
 /// like "Tuesday" are themselves Elements whose surface form lives in
 /// `names` and whose semantics are parsed on comparison.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Term {
     /// Concrete filler.
     Element(ElementId),
@@ -372,7 +393,7 @@ pub enum Term {
 }
 
 /// The lifecycle state of a Relation's claim on truth.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelationStatus {
     /// Confirmed. In the active belief set; eligible for focus.
     Asserted,
@@ -399,7 +420,7 @@ pub enum RelationStatus {
 /// Dynamic memory state attached to every Element and Relation. Same
 /// shape on both because memory dynamics (activation, decay, salience)
 /// are uniform across substrate primitives.
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct MemoryStats {
     /// Current tick's spreading-activation level. Recomputed each tick
     /// during the focus walk; not durable across ticks (decays via
@@ -551,7 +572,7 @@ pub type ClaimRef = RelationId;
 /// rest state; Step 2 produces a per-tick adjusted Policy from it
 /// (using the intent from Step 1) that Steps 4–12 see. Tick-internal
 /// subroutines read `&Policy`; only PFC writes the rest state.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Policy {
     // ── Region routing ────────────────────────────────────────────────
     /// Cosine threshold below which routing stops descending into a
@@ -797,7 +818,7 @@ impl Default for Policy {
 /// never enumerates the variants — single placeholder for now. Expand
 /// when the replay subsystem (§14.7 background sweep + downstream)
 /// gets concrete.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub enum ReplayCadence {
     #[default]
     Default,
@@ -810,7 +831,7 @@ pub enum ReplayCadence {
 /// One entry in `Hypergraph.recent_focus`. Step 4 walks this ring
 /// looking for an active frame to inherit when the input doesn't
 /// establish one of its own.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct RecentFocusEntry {
     /// The focal element — what was attended to.
     pub element: ElementId,

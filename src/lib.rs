@@ -4,6 +4,7 @@ pub mod inference;
 pub mod intent_classifiers;
 pub mod lexical_features;
 pub mod math;
+pub mod persistence;
 pub mod render;
 pub mod seed;
 pub mod steps;
@@ -16,6 +17,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use seed::load_seed_graph;
+use std::env;
 use steps::adjust_policy::adjust_policy;
 use steps::apply_region_delta::{RegionDeltaApplied, apply_region_delta};
 use steps::build_relations::{build_relations, print_step8};
@@ -74,8 +76,17 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let mut hg = load_seed_graph();
-    stage_at("load_seed_graph", &mut mark);
+    // Load from disk if a snapshot exists, else fall back to the
+    // seed binary and persist on the way out. `LEGEND_RESET=1` forces
+    // a fresh load from seed (useful for tests and for wiping a
+    // corrupted snapshot without `rm`-ing the file).
+    let snapshot_path = persistence::default_path();
+    let mut hg = if env::var_os("LEGEND_RESET").is_some() {
+        load_seed_graph()
+    } else {
+        persistence::load_or_seed(&snapshot_path)?
+    };
+    stage_at("load_or_seed", &mut mark);
     print_seed_graph(&hg);
 
     let embedding = embed::embed_text(&input_text);
@@ -175,6 +186,17 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         "graph dump          wrote {} ({} bytes)",
         dump_path.display(),
         md.len()
+    );
+
+    // Persist substrate so the next invocation continues from here.
+    // Only on the success path — any earlier `?` short-circuits past
+    // this point so a failed tick doesn't overwrite a clean snapshot.
+    persistence::save(&hg, &snapshot_path)?;
+    let snapshot_bytes = fs::metadata(&snapshot_path).map(|m| m.len()).unwrap_or(0);
+    println!(
+        "persisted           {} ({} bytes)",
+        snapshot_path.display(),
+        snapshot_bytes,
     );
 
     Ok(())

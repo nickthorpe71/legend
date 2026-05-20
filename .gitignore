@@ -38,3 +38,7 @@ models/gliner2-fp32.bin
 
 # Claude Code local state — local-only, never check in.
 .claude/
+
+# Atomic-write tempfiles from `src/persistence.rs`. The actual
+# snapshot file `.legend/memory.lz4` IS committed per CLAUDE.md.
+.legend/memory.lz4.tmp.*
