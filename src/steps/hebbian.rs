@@ -474,6 +474,19 @@ fn build_reinforcement_set(
             if is_meta {
                 continue;
             }
+            // Skip substrate-scaffolding relations: `parent_region`
+            // and `prototype` are how the seed pack stitches the
+            // region DAG together; they don't represent knowledge the
+            // consumer LLM should see in `focused_relations`. Without
+            // this filter, retrieving relations for common nouns
+            // ("time", "language") pulls in 5-10 seed-shape rows that
+            // crowd out the actual user content.
+            if r.attributes
+                .iter()
+                .any(|a| a.name == hg.parent_region_attr || a.name == hg.prototype_attr)
+            {
+                continue;
+            }
             seen.insert(rid);
             out.push(rid);
             added_for_this_element += 1;
