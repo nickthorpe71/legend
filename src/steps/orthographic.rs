@@ -111,6 +111,105 @@ pub fn extract_chunks(text: &str) -> Vec<OrthographicChunk> {
     out
 }
 
+/// Emit Phrase chunks for runs of 2+ adjacent Title-Case (and
+/// digit-continuation) tokens. Captures multi-word proper nouns
+/// like "Samsung Galaxy S22", "Best Buy", "Dell XPS 13", "Hindu
+/// Festival" that would otherwise split into per-token chunks and
+/// lose entity identity. Without this, the substrate ends up with
+/// `Samsung`, `Galaxy`, `S22` as three unrelated single-token
+/// elements; with it, `Samsung Galaxy S22` lands as one.
+///
+/// Rules:
+/// - A run-starting token must begin with an uppercase A-Z AND
+///   contain ≥2 alphanumeric chars (excludes the one-letter
+///   pronoun "I" from anchoring runs).
+/// - A continuation token must EITHER start with an uppercase A-Z
+///   (another Title-Case word) OR be all ASCII digits (model
+///   numbers like "13" after "Dell XPS").
+/// - Tokens are separated by exactly one ASCII space. Punctuation,
+///   newlines, or multi-space breaks end the run.
+/// - The run text is the verbatim slice from first-token start
+///   to last-token end. Sentence-initial runs are allowed:
+///   "Samsung Galaxy S22 is mine" should still produce the run.
+///
+/// Same dedupe pattern as `extract_chunks` — exact-text repeats
+/// emit only once per input.
+pub fn extract_proper_noun_runs(text: &str) -> Vec<OrthographicChunk> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if !ch.is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let token_start = i;
+        let mut j = i;
+        while j < bytes.len() && (bytes[j].is_ascii_alphanumeric()) {
+            j += 1;
+        }
+        let token = &text[token_start..j];
+        let token_first = token.as_bytes()[0];
+        let title = token_first.is_ascii_uppercase();
+        // Run-starter must be ≥2 chars — excludes lone-"I" anchors.
+        if !title || token.len() < 2 {
+            i = j;
+            continue;
+        }
+
+        // Walk forward gathering continuation tokens.
+        let mut run_end = j;
+        let mut count = 1usize;
+        let mut k = j;
+        while k < bytes.len() && bytes[k] == b' ' {
+            // exactly one space
+            let next_start = k + 1;
+            if next_start >= bytes.len() {
+                break;
+            }
+            let next_first = bytes[next_start];
+            // Continuation must start with uppercase letter OR be all digits.
+            let is_title = next_first.is_ascii_uppercase();
+            let is_digit = next_first.is_ascii_digit();
+            if !is_title && !is_digit {
+                break;
+            }
+            // Scan next token.
+            let mut m = next_start;
+            while m < bytes.len() && bytes[m].is_ascii_alphanumeric() {
+                m += 1;
+            }
+            // Reject all-lowercase continuations (defensive — first char already filtered).
+            // Accept if all-digit OR starts uppercase.
+            let next_tok = &text[next_start..m];
+            let all_digit = next_tok.bytes().all(|b| b.is_ascii_digit());
+            if !is_title && !all_digit {
+                break;
+            }
+            run_end = m;
+            count += 1;
+            k = m;
+        }
+        if count >= 2 {
+            let run_text = text[token_start..run_end].to_string();
+            if seen.insert(run_text.clone()) {
+                out.push(OrthographicChunk {
+                    text: run_text,
+                    char_start: token_start,
+                    char_end: run_end,
+                    scale: ChunkScale::Phrase,
+                });
+            }
+            i = k;
+        } else {
+            i = j;
+        }
+    }
+    out
+}
+
 /// Walk the input once, edge-strip every whitespace-and-slash atom,
 /// keep every surviving token (no dedup, no rejection of repeats).
 pub(crate) fn collect_raw_tokens(text: &str) -> Vec<RawToken> {
@@ -258,6 +357,99 @@ mod tests {
     fn empty_input_no_chunks() {
         assert!(extract_chunks("").is_empty());
         assert!(extract_chunks("   ").is_empty());
+    }
+
+    // ── Multi-word proper-noun runs ──────────────────────────────
+
+    fn run_texts(text: &str) -> Vec<String> {
+        extract_proper_noun_runs(text)
+            .into_iter()
+            .map(|c| c.text)
+            .collect()
+    }
+
+    #[test]
+    fn proper_noun_run_captures_brand_with_model_number() {
+        // Q4 case: "Samsung Galaxy S22" should be one chunk.
+        let runs = run_texts("I bought a Samsung Galaxy S22 yesterday.");
+        assert!(
+            runs.contains(&"Samsung Galaxy S22".to_string()),
+            "expected `Samsung Galaxy S22` in {runs:?}"
+        );
+    }
+
+    #[test]
+    fn proper_noun_run_captures_two_word_brand() {
+        let runs = run_texts("I went to the Best Buy on the corner.");
+        assert!(
+            runs.contains(&"Best Buy".to_string()),
+            "expected `Best Buy` in {runs:?}"
+        );
+    }
+
+    #[test]
+    fn proper_noun_run_captures_brand_plus_trailing_digits() {
+        let runs = run_texts("My laptop is a Dell XPS 13.");
+        assert!(
+            runs.contains(&"Dell XPS 13".to_string()),
+            "expected `Dell XPS 13` in {runs:?}"
+        );
+    }
+
+    #[test]
+    fn proper_noun_run_excludes_lone_i_pronoun() {
+        // "I" is a 1-char Title-Case pronoun that must not anchor
+        // a run. Without the ≥2-char filter, "I" + next cap word
+        // would form a spurious run.
+        let runs = run_texts("I went home. Samsung is great.");
+        // Allowed: no runs (Samsung is solo).
+        assert!(runs.is_empty(), "got unexpected runs: {runs:?}");
+    }
+
+    #[test]
+    fn proper_noun_run_skips_single_capital_word() {
+        // "I visited Hawaii" — `Hawaii` is solo Title-Case. Not a
+        // multi-word run; the existing token chunker handles solos.
+        let runs = run_texts("I visited Hawaii.");
+        assert!(runs.is_empty(), "single-word capital should not emit a run");
+    }
+
+    #[test]
+    fn proper_noun_run_handles_multiple_runs_per_sentence() {
+        let runs = run_texts("I bought a Samsung Galaxy S22 from Best Buy.");
+        assert!(
+            runs.contains(&"Samsung Galaxy S22".to_string()),
+            "got {runs:?}"
+        );
+        assert!(runs.contains(&"Best Buy".to_string()), "got {runs:?}");
+    }
+
+    #[test]
+    fn proper_noun_run_deduplicates_repeats() {
+        let runs = run_texts("Best Buy is great. The other Best Buy too.");
+        let cnt = runs.iter().filter(|r| *r == "Best Buy").count();
+        assert_eq!(cnt, 1, "repeats should dedup; got {runs:?}");
+    }
+
+    #[test]
+    fn proper_noun_run_captures_run_at_sentence_start() {
+        // After the sentence-initial exclusion was dropped, runs
+        // that happen to start a sentence are still captured.
+        let runs = run_texts("Samsung Galaxy S22 is mine.");
+        assert!(
+            runs.contains(&"Samsung Galaxy S22".to_string()),
+            "got {runs:?}"
+        );
+    }
+
+    #[test]
+    fn proper_noun_run_stops_at_lowercase() {
+        // "Samsung Galaxy" then lowercase `phones` breaks the run.
+        let runs = run_texts("I love Samsung Galaxy phones in general.");
+        assert!(
+            runs.iter().any(|r| r == "Samsung Galaxy"),
+            "expected `Samsung Galaxy` in {runs:?}"
+        );
     }
 
     #[test]

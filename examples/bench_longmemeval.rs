@@ -110,9 +110,20 @@ fn load_dataset() -> std::io::Result<Vec<Question>> {
     Ok(serde_json::from_str(&raw).expect("dataset is well-formed JSON"))
 }
 
-/// Words ≥4 chars from `answer`, lowercased + de-stopword'd. Plus
-/// uppercase acronyms (≥2 alpha chars, all-upper) — those are
-/// usually the salient proper-noun terms even if short.
+/// Extract substantive search terms from the expected answer. Three
+/// classes of token survive:
+///
+/// 1. Long alpha tokens (≥4 lowercase chars after destop, not in the
+///    stopword list). Catches "samsung", "webinar", "tomatoes".
+/// 2. Uppercase-acronym tokens (≥2 alpha chars, all-upper). Catches
+///    "GPS", "USA", "NATO".
+/// 3. Mixed alphanumeric tokens with at least one digit (≥2 chars).
+///    Catches "S22", "XPS13", "iOS16" — product/model names that
+///    failed the earlier ≥4-char rule.
+///
+/// The 3rd class is the one that fixed the Q4 false-negative on
+/// Samsung Galaxy S22: previously "S22" was 3 chars and not all-
+/// alpha, so it dropped out of the expected-term set entirely.
 fn key_terms(answer: &str) -> Vec<String> {
     let stop = [
         "the", "and", "for", "with", "that", "this", "from", "have", "had", "has", "was", "were",
@@ -129,13 +140,20 @@ fn key_terms(answer: &str) -> Vec<String> {
         if stop.contains(&lower.as_str()) {
             continue;
         }
-        if raw.chars().all(|c| c.is_ascii_uppercase())
-            && raw.len() >= 2
-            && raw.chars().all(|c| c.is_alphabetic())
-        {
+        let has_digit = raw.chars().any(|c| c.is_ascii_digit());
+        let all_upper_alpha =
+            raw.chars().all(|c| c.is_ascii_uppercase()) && raw.chars().all(|c| c.is_alphabetic());
+        // Class 2: uppercase acronyms (≥2 alpha chars).
+        if all_upper_alpha && raw.len() >= 2 {
             out.push(lower);
             continue;
         }
+        // Class 3: mixed alphanumeric with at least one digit (≥2 chars).
+        if has_digit && raw.len() >= 2 {
+            out.push(lower);
+            continue;
+        }
+        // Class 1: long alpha tokens.
         if lower.len() >= 4 {
             out.push(lower);
         }

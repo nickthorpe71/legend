@@ -22,7 +22,7 @@
 use crate::inference::deberta::predict::{LabeledSpan, predict_entities};
 use crate::steps::coref::{CorefDecision, resolve_coref};
 use crate::steps::novelty_relations::{NoveltyRelation, extract_novelty_relations};
-use crate::steps::orthographic::{OrthographicChunk, extract_chunks};
+use crate::steps::orthographic::{OrthographicChunk, extract_chunks, extract_proper_noun_runs};
 use crate::steps::relation_patterns::{RelationProposal, extract_relations};
 use crate::steps::temporal::{TemporalSpan, extract_temporal};
 use crate::steps::void_filter::extract_content_tokens;
@@ -148,6 +148,11 @@ pub fn run_extractors(
     //    resolves to a `Polarity::Void` element (closed-class
     //    grammatical region — determiners, adpositions, etc.).
     let mut unconditional_chunks = extract_chunks(input_text);
+    // Multi-word proper-noun runs ("Samsung Galaxy S22", "Best Buy",
+    // "Dell XPS 13"). Without these, adjacent Title-Case tokens
+    // would split into per-word elements that lose entity identity
+    // — `Samsung`, `Galaxy`, `S22` as three unrelated singletons.
+    unconditional_chunks.extend(extract_proper_noun_runs(input_text));
     unconditional_chunks.extend(extract_content_tokens(input_text, hg));
     unconditional_chunks.sort_by_key(|c| (c.char_start, c.char_end));
     stage("orthographic chunks");
