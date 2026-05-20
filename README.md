@@ -42,6 +42,30 @@ external files at runtime:
 #   region children of GENESIS  15
 ```
 
+## Persistence + git merge driver
+
+The substrate is saved to `./.legend/memory.lz4` after every tick and
+loaded at the top of the next run, so memory carries forward across
+process restarts. To skip the load for a single run:
+
+```bash
+LEGEND_RESET=1 ./target/release/legend "..."
+```
+
+`.legend/memory.lz4` is committed alongside source. When two branches
+both mutate it, git can't text-merge a binary file — register the
+substrate-aware merge driver in a fresh clone:
+
+```bash
+./target/release/legend git-init
+```
+
+That writes `git config --local merge.legend.driver` and adds the
+`.gitattributes` rule. After it, `git merge` reconciles `.legend/memory.lz4`
+automatically: elements unify by `(name, polarity)`, relations dedup
+after id-remap, and conflicting statuses resolve as Retracted >
+Superseded > Asserted > Entailed > Defeasible.
+
 ## Tests / benchmarks
 
 ```bash

@@ -4,6 +4,7 @@ pub mod inference;
 pub mod intent_classifiers;
 pub mod lexical_features;
 pub mod math;
+pub mod merge;
 pub mod persistence;
 pub mod render;
 pub mod seed;
@@ -39,8 +40,21 @@ pub const MAX_INPUT_TOKENS: usize = 480;
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: legend <text>");
+        eprintln!(
+            "usage: legend <text>                          # run one tick\n\
+             legend git-merge-driver %O %A %B %P    # git invokes on .legend/*.lz4 conflict\n\
+             legend git-init                        # register the merge driver in this repo"
+        );
         return Ok(());
+    }
+
+    // Subcommand dispatch. `git-merge-driver` is the verb git is told
+    // to invoke via `merge.legend.driver`; `git-init` is the one-time
+    // setup that registers it.
+    match args[1].as_str() {
+        "git-merge-driver" => return git_merge_driver(&args[2..]),
+        "git-init" => return git_init(),
+        _ => {}
     }
 
     let input_text = args[1].clone();
@@ -199,6 +213,87 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         snapshot_bytes,
     );
 
+    Ok(())
+}
+
+// ─── git-merge-driver entry point ─────────────────────────────────────────
+
+/// Invoked by git when `.legend/memory.lz4` has merge conflicts.
+/// Args (per git's merge-driver contract): `%O %A %B [%P]` —
+/// ancestor, ours, theirs, and (optionally) the path it's resolving.
+///
+/// We don't use %O (the ancestor) in v0 — the merge is symmetric
+/// union with conflict-resolution rules baked in, not a 3-way diff.
+/// `%P` is purely informational; we accept and ignore it.
+///
+/// Writes the merged result to `%A` (ours's path) and exits 0 on
+/// success — git treats non-zero as "conflict not resolved" and
+/// leaves the user to resolve manually.
+pub fn git_merge_driver(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() < 3 {
+        return Err("usage: legend git-merge-driver %O %A %B [%P]\n\
+             %O=ancestor, %A=ours, %B=theirs, %P=path (optional)"
+            .into());
+    }
+    let _ancestor_path = &args[0];
+    let ours_path = std::path::Path::new(&args[1]);
+    let theirs_path = std::path::Path::new(&args[2]);
+    let filename = args.get(3).map(|s| s.as_str()).unwrap_or("memory.lz4");
+
+    eprintln!("[legend] merging {filename}");
+    let mut ours = persistence::load(ours_path)?;
+    let theirs = persistence::load(theirs_path)?;
+    let stats = merge::merge_hypergraphs(&mut ours, &theirs)?;
+    persistence::save(&ours, ours_path)?;
+    eprintln!(
+        "[legend] merged: +{} elements, ={} unified, +{} relations, ={} merged, +{} recent_focus",
+        stats.elements_added,
+        stats.elements_unified,
+        stats.relations_added,
+        stats.relations_merged,
+        stats.recent_focus_added,
+    );
+    Ok(())
+}
+
+/// Configure the running git repo to use Legend's merge driver
+/// for `.legend/memory.lz4` conflicts. Writes:
+///   - `git config --local merge.legend.driver "<this-binary> git-merge-driver %O %A %B %P"`
+///   - `.gitattributes` line `.legend/memory.lz4 merge=legend`
+///
+/// Idempotent: re-running it overwrites the existing config entries
+/// rather than duplicating them.
+pub fn git_init() -> Result<(), Box<dyn std::error::Error>> {
+    let exe = std::env::current_exe()?;
+    let driver_cmd = format!("{} git-merge-driver %O %A %B %P", exe.display());
+    let status = std::process::Command::new("git")
+        .args(["config", "--local", "merge.legend.driver", &driver_cmd])
+        .status()?;
+    if !status.success() {
+        return Err("git config --local failed; are you inside a git repo?".into());
+    }
+    println!("✓ registered merge.legend.driver = {driver_cmd}");
+
+    // .gitattributes — append the rule if not already present.
+    let attrs_path = std::path::Path::new(".gitattributes");
+    let existing = fs::read_to_string(attrs_path).unwrap_or_default();
+    let rule = ".legend/memory.lz4 merge=legend";
+    if !existing.lines().any(|l| l.trim() == rule) {
+        let mut out = existing;
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(rule);
+        out.push('\n');
+        fs::write(attrs_path, out)?;
+        println!("✓ added `{rule}` to .gitattributes");
+    } else {
+        println!("✓ .gitattributes already has `{rule}`");
+    }
+
+    println!(
+        "\nTo confirm: `git config --local merge.legend.driver` should print:\n  {driver_cmd}"
+    );
     Ok(())
 }
 

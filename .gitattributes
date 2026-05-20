@@ -1,1 +1,8 @@
 models/gliner2-int8.bin filter=lfs diff=lfs merge=lfs -text
+
+# Legend hypergraph snapshot — invoke `legend git-merge-driver` to
+# substrate-merge two branches' state instead of failing with a
+# binary conflict. The driver is registered via
+# `git config --local merge.legend.driver`; run `legend git-init`
+# to set it up in a fresh clone.
+.legend/memory.lz4 merge=legend
