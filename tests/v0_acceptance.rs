@@ -356,3 +356,55 @@ fn v0_dedup_skips_superseded_relations() {
         "Superseded prior must remain Superseded — dedup must skip it",
     );
 }
+
+#[test]
+fn v0_pronoun_coref_rebinds_to_recent_focus_subject() {
+    // Two-tick test of the closed-class pronoun path. Tick 1 mints
+    // "Sarah" as a person and pushes her onto `recent_focus`. Tick 2
+    // says "She emailed me." — the pronoun "She" should rebind to
+    // Sarah via Step 6 coref + Step 8's `apply_coref_decisions`. The
+    // assertion: no fresh element gets minted for "She"; instead,
+    // Sarah's access_count bumps.
+    let policy = Policy::default();
+    let labels: &[&str] = &["person"];
+    let mut hg = load_seed_graph();
+
+    // Tick 1: establish Sarah as the focal subject.
+    let _ = run_tick(&mut hg, "Sarah waved at the meeting.", labels, &policy);
+    let sarah_ids = hg
+        .by_name
+        .get("Sarah")
+        .cloned()
+        .expect("tick 1 should mint Sarah element");
+    assert_eq!(
+        sarah_ids.len(),
+        1,
+        "tick 1 should mint exactly one Sarah element"
+    );
+    let sarah_id = sarah_ids[0];
+    let sarah_access_before = hg.elements[sarah_id.0 as usize].stats.access_count;
+
+    // Tick 2: pronoun "She" — should NOT mint a fresh element. Coref
+    // rebinds the span to Sarah and the NER instance_of proposal for
+    // "She" gets short-circuited via the span cache.
+    let element_count_after_tick1 = hg.elements.len();
+    let _ = run_tick(&mut hg, "She emailed me.", labels, &policy);
+
+    // No element named "She" should appear in by_name.
+    assert!(
+        !hg.by_name.contains_key("She"),
+        "pronoun 'She' must not mint as a separate element after coref"
+    );
+    // Sarah's access count bumped (rebinding folded a mention).
+    let sarah_access_after = hg.elements[sarah_id.0 as usize].stats.access_count;
+    assert!(
+        sarah_access_after > sarah_access_before,
+        "Sarah's access_count should bump when 'She' rebinds to her: \
+         before={sarah_access_before} after={sarah_access_after}",
+    );
+    // Pipeline doesn't crash; substrate continued to grow.
+    assert!(
+        hg.elements.len() >= element_count_after_tick1,
+        "element count should not regress"
+    );
+}

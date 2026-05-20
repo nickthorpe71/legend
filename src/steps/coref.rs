@@ -160,11 +160,16 @@ pub fn detect_ambiguous_spans(
     }
 
     for (idx, &(s, e, tok)) in tokens.iter().enumerate() {
-        if overlaps_ner(s, e, ner_spans) {
-            continue;
-        }
         let lower = tok.to_ascii_lowercase();
-        // Pronoun detection.
+        // Pronoun detection runs BEFORE the NER-overlap check.
+        // Pronouns are closed-class so the surface-form match is
+        // more reliable than NER's zero-shot label (GLiNER routinely
+        // mistags pronouns as `org` / `person` with low confidence).
+        // Step 8's `apply_coref_decisions` runs first and rebinds the
+        // pronoun's char range to the antecedent; downstream
+        // `resolve_span` calls — including the ones driven by NER
+        // proposals — short-circuit on the span cache, so the NER
+        // proposal for "It" silently retargets at the antecedent.
         if PRONOUNS.contains(&lower.as_str()) {
             out.push(AmbiguousSpan {
                 text: tok.to_string(),
@@ -172,6 +177,9 @@ pub fn detect_ambiguous_spans(
                 char_end: e,
                 kind: AmbiguousKind::Pronoun,
             });
+            continue;
+        }
+        if overlaps_ner(s, e, ner_spans) {
             continue;
         }
         // Definite description: `the <head>` where `head` is the
@@ -552,9 +560,15 @@ mod tests {
     }
 
     #[test]
-    fn skips_pronoun_that_overlaps_ner_span() {
-        // Synthetic NER span covering the pronoun → coref should
-        // skip it (NER already gave it an identity).
+    fn pronoun_detection_overrides_ner_label() {
+        // NER zero-shot routinely mistags pronouns as `org` / `person`
+        // with low confidence; the surface-form pronoun list is more
+        // reliable. So even when an NER span covers the pronoun, the
+        // pronoun should still be detected — Step 8's
+        // `apply_coref_decisions` will rebind it to the antecedent
+        // if coref fires, and the NER proposal's `resolve_span` will
+        // hit the rebound span cache. This is intentional: pronouns
+        // are closed-class.
         let hg = load_seed_graph();
         let ner = vec![LabeledSpan {
             char_start: 0,
@@ -564,7 +578,9 @@ mod tests {
             score: 0.99,
         }];
         let spans = detect_ambiguous_spans("She left.", &hg, &ner);
-        assert!(spans.is_empty());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "She");
+        assert_eq!(spans[0].kind, AmbiguousKind::Pronoun);
     }
 
     #[test]
