@@ -50,6 +50,11 @@ pub struct Step8Output {
     /// New attribute-name elements minted this tick. Threshold
     /// signalling lives at the caller — Step 8 just counts.
     pub attr_names_minted: u32,
+    /// Per-tick uncertainty signals raised by Step 8. `LowConfidence`
+    /// fires when any minted base relation lands `Defeasible` —
+    /// extraction was below `ner_assertion_threshold`. The frame
+    /// merges these into its `uncertainty` field.
+    pub uncertainty: Vec<crate::types::UncertaintySignal>,
 }
 
 /// Build relations + events for one tick.
@@ -204,6 +209,20 @@ pub fn build_relations(
             );
             result.minted_relations.push(meta_id);
         }
+    }
+
+    // ── Uncertainty: LowConfidence ──────────────────────────────────
+    // Any minted base relation that landed `Defeasible` came from a
+    // sub-threshold extraction — surface that so Step 12's frame can
+    // forward `LowConfidence` to the consumer. Single dedup'd signal
+    // per tick; the consumer doesn't need the count, just the flag.
+    if base_rel_ids
+        .iter()
+        .any(|&rid| hg.relations[rid.0 as usize].status == RelationStatus::Defeasible)
+    {
+        result
+            .uncertainty
+            .push(crate::types::UncertaintySignal::LowConfidence);
     }
 
     result

@@ -42,6 +42,11 @@ pub struct Step9Output {
     /// (typically `current_<property>` siblings). Lets the caller
     /// fold these into the tick-wide observability total.
     pub attr_names_minted: u32,
+    /// Per-tick uncertainty signals raised by Step 9. `Contradiction`
+    /// fires when an event's supersession gate fails but live priors
+    /// exist with a different `to`-value — the new claim conflicts
+    /// with what we already have, and neither side dominates.
+    pub uncertainty: Vec<crate::types::UncertaintySignal>,
 }
 
 /// Run Step 9 over the relations Step 8 minted this tick.
@@ -111,6 +116,21 @@ pub fn supersede(
         // ── Prior-cache lookup ─────────────────────────────────────
         // Live priors get flipped only if the gate passed.
         let priors = collect_prior_caches(hg, frame.target, cache_attr_id);
+
+        // ── Uncertainty: Contradiction ─────────────────────────────
+        // Gate failed AND a live prior carries a different to-value
+        // than this event proposes. Neither claim dominates — frame
+        // surfaces `Contradiction` so the consumer can ask for
+        // clarification. (`derived_from` still fires below for the
+        // audit trail; the new cache lands Defeasible.)
+        if !gate_passed
+            && priors.iter().any(|&pid| {
+                cache_value_for_attr(hg, pid, cache_attr_id).is_some_and(|v| v != frame.to_value)
+            })
+        {
+            out.uncertainty
+                .push(crate::types::UncertaintySignal::Contradiction);
+        }
 
         if std::env::var("LEGEND_DEBUG_STEP9").is_ok() {
             let target_name = hg.elements[frame.target.0 as usize]
@@ -373,6 +393,27 @@ fn collect_prior_caches(
         }
     }
     out
+}
+
+/// Lookup the to-value element bound to `cache_attr` on a cache
+/// relation. Returns `None` if the relation doesn't carry that
+/// attribute or the value isn't an Element (defensive — caches
+/// always do, but the helper is reused for the Contradiction check
+/// and shouldn't panic on weird shapes).
+fn cache_value_for_attr(
+    hg: &Hypergraph,
+    cache_rid: RelationId,
+    cache_attr: ElementId,
+) -> Option<ElementId> {
+    let r = &hg.relations[cache_rid.0 as usize];
+    for attr in &r.attributes {
+        if attr.name == cache_attr
+            && let Term::Element(e) = attr.value
+        {
+            return Some(e);
+        }
+    }
+    None
 }
 
 /// Slots extracted from an event-shaped Relation. Step 9 needs all

@@ -205,7 +205,22 @@ pub fn assemble_frame(
     let mut replay_emitted = false;
     let mut coref_emitted = false;
     let mut contradiction_emitted = false;
-    let uncertainty = route.uncertainty.clone();
+    // Merge uncertainty signals from every step that raises them.
+    // Step 4 (route) raises DiffuseRouting; Step 8 raises
+    // LowConfidence on Defeasible mints; Step 9 raises Contradiction
+    // on gate-failed events with conflicting priors. Dedup by kind
+    // so the consumer doesn't see N copies of the same flag.
+    let mut uncertainty: Vec<UncertaintySignal> = Vec::new();
+    for sig in route
+        .uncertainty
+        .iter()
+        .chain(step8.uncertainty.iter())
+        .chain(step9.uncertainty.iter())
+    {
+        if !uncertainty.contains(sig) {
+            uncertainty.push(*sig);
+        }
+    }
     for sig in &uncertainty {
         match sig {
             UncertaintySignal::DiffuseRouting | UncertaintySignal::LowConfidence => {
@@ -738,7 +753,13 @@ mod tests {
     #[test]
     fn frame_ungrounded_time_no_action_emitted() {
         let policy = Policy::default();
-        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let (hg, mut s8, mut s9, s10) =
+            run_through_step10("Sarah called me yesterday.", &[], &policy);
+        // Real Step 8/9 may raise their own LowConfidence /
+        // Contradiction signals on this input. Clear them so the
+        // test isolates the UngroundedTime-alone behavior.
+        s8.uncertainty.clear();
+        s9.uncertainty.clear();
         let mut route = empty_route();
         route.uncertainty.push(UncertaintySignal::UngroundedTime);
         let frame = assemble_frame(
