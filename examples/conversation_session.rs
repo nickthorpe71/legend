@@ -107,13 +107,14 @@ const DIALOG: &[Turn] = &[
     },
     // ── Block 3: Updates (supersession test) ──
     Turn {
-        // Subject-first phrasing so the T1 pattern picks Polaris as
-        // the event target. "I switched Polaris from … to …" had the
-        // agent first; pattern matched (I, Rust, Go) instead of
-        // (Polaris, Rust, Go) and the cache went into the wrong
-        // subject's bucket — turn 9 then found no prior to flip.
-        // First event in this chain, so no history yet.
-        text: "Polaris switched from Rust to Go.",
+        // Agent-verb-patient form: "I" is the grammatical subject
+        // but the EVENT target is Polaris (the patient whose state
+        // is changing). The T1 verb-anchor logic in
+        // `relation_patterns.rs` walks backward from " from " and
+        // picks the latest NER span ending before it, which lands
+        // on Polaris (not I). First event in this chain → no
+        // history yet.
+        text: "I switched Polaris from Rust to Go.",
         kind: Kind::Update,
         must_focus: &["polaris", "go"],
         expect_history: false,

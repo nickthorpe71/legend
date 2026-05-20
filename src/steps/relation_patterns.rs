@@ -54,62 +54,103 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationPropo
     let mut out: Vec<RelationProposal> = Vec::new();
 
     // Template 1: "X from A to B" — three-way binding of subject /
-    // valid_from / valid_to. Matches the rescheduling case from §13
-    // Tick 1.
-    for i in 0..spans.len() {
-        for j in (i + 1)..spans.len() {
-            for k in (j + 1)..spans.len() {
-                let between_ij = &text[spans[i].char_end..spans[j].char_start];
-                let between_jk = &text[spans[j].char_end..spans[k].char_start];
-                let connective_ij = between_ij.to_ascii_lowercase();
-                let connective_jk = between_jk.to_ascii_lowercase();
-                if connective_ij.contains(" from ")
-                    && connective_jk.contains(" to ")
-                    && connective_ij.len() < 32
-                    && connective_jk.len() < 16
-                {
-                    // The 3-span "X from A to B" surface is the high-
-                    // precision signal — span scores have already
-                    // cleared NER's threshold, so they're treated as
-                    // boolean here. Step 2's `default_conf` still
-                    // attenuates downstream when stamping
-                    // `stats.confidence`, which is how speaker
-                    // certainty enters the picture.
-                    let conf = 0.85;
-                    let status = if conf >= 0.6 {
-                        RelationStatus::Entailed
-                    } else {
-                        RelationStatus::Defeasible
-                    };
-                    // Verb-anchor extraction: everything in `between_ij`
-                    // up to (not including) " from ", trimmed. Empty
-                    // → no anchor (the "from" sat directly after the
-                    // subject, e.g. "appointment from Tuesday").
-                    let anchor = anchor_before(between_ij, " from ");
-                    out.push(RelationProposal {
-                        subject_char_start: spans[i].char_start,
-                        subject_char_end: spans[i].char_end,
-                        attribute_name: "from",
-                        object_char_start: spans[j].char_start,
-                        object_char_end: spans[j].char_end,
-                        confidence: conf,
-                        status,
-                        event_anchor: anchor.clone(),
-                        synthetic_object_label: None,
-                    });
-                    out.push(RelationProposal {
-                        subject_char_start: spans[i].char_start,
-                        subject_char_end: spans[i].char_end,
-                        attribute_name: "to",
-                        object_char_start: spans[k].char_start,
-                        object_char_end: spans[k].char_end,
-                        confidence: conf,
-                        status,
-                        event_anchor: anchor,
-                        synthetic_object_label: None,
-                    });
-                }
+    // valid_from / valid_to. Iterates (from-value, to-value) pairs
+    // and looks BACKWARD for the subject + verb anchor. This is the
+    // important shape: when the input is "I switched Polaris from
+    // Rust to Go" the event target is Polaris, not "I" — picking
+    // the latest NER span before " from " (rather than an earlier
+    // agent token) is what makes that work. For the simpler form
+    // "My appointment changed from Tuesday to Friday" the same
+    // backward walk lands on the appointment.
+    let mut handled_to_pairs: std::collections::HashSet<(usize, usize)> =
+        std::collections::HashSet::new();
+    for j in 0..spans.len() {
+        for k in (j + 1)..spans.len() {
+            let between_jk = &text[spans[j].char_end..spans[k].char_start];
+            let lower_jk = between_jk.to_ascii_lowercase();
+            if !lower_jk.contains(" to ") || lower_jk.len() >= 16 {
+                continue;
             }
+            // " from " must appear in the text PRECEDING span_j.
+            // Use the last occurrence (closest to span_j) so chained
+            // "from … from … to …" doesn't bind to a stale "from".
+            let pre = text[..spans[j].char_start].to_ascii_lowercase();
+            let Some(from_byte_pos) = pre.rfind(" from ") else {
+                continue;
+            };
+            // Reject if " from " ends inside span_j (means span_j is
+            // wholly inside the connective, not after it).
+            if from_byte_pos + 6 > spans[j].char_start {
+                continue;
+            }
+            // Subject = latest NER span ending at or before " from ".
+            let subject_idx = spans
+                .iter()
+                .enumerate()
+                .filter(|(idx, s)| *idx < j && s.char_end <= from_byte_pos)
+                .max_by_key(|(_, s)| s.char_end)
+                .map(|(idx, _)| idx);
+            let Some(subj_idx) = subject_idx else {
+                continue;
+            };
+            // Connective-length cap mirrors the prior T1 implementation:
+            // anchor + " from " < 32 chars to keep the binding local.
+            let pre_anchor_len = from_byte_pos - spans[subj_idx].char_end;
+            if pre_anchor_len >= 26 {
+                continue;
+            }
+            // Verb anchor: prefer text between subject and " from "
+            // (the "subject verb from-to" shape). If empty, fall back
+            // to text BEFORE subject (the "agent verb subject from-to"
+            // shape, where the verb sits before its patient).
+            let anchor_after = text[spans[subj_idx].char_end..from_byte_pos].trim();
+            let anchor: Option<String> = if !anchor_after.is_empty() {
+                Some(anchor_after.to_string())
+            } else if subj_idx > 0 {
+                let anchor_before_subj =
+                    text[spans[subj_idx - 1].char_end..spans[subj_idx].char_start].trim();
+                if !anchor_before_subj.is_empty() {
+                    Some(anchor_before_subj.to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            // Dedup: a single (from-value, to-value) pair should only
+            // emit one event, even if the input has structures that
+            // would let multiple subjects bind.
+            if !handled_to_pairs.insert((j, k)) {
+                continue;
+            }
+            let conf = 0.85;
+            let status = if conf >= 0.6 {
+                RelationStatus::Entailed
+            } else {
+                RelationStatus::Defeasible
+            };
+            out.push(RelationProposal {
+                subject_char_start: spans[subj_idx].char_start,
+                subject_char_end: spans[subj_idx].char_end,
+                attribute_name: "from",
+                object_char_start: spans[j].char_start,
+                object_char_end: spans[j].char_end,
+                confidence: conf,
+                status,
+                event_anchor: anchor.clone(),
+                synthetic_object_label: None,
+            });
+            out.push(RelationProposal {
+                subject_char_start: spans[subj_idx].char_start,
+                subject_char_end: spans[subj_idx].char_end,
+                attribute_name: "to",
+                object_char_start: spans[k].char_start,
+                object_char_end: spans[k].char_end,
+                confidence: conf,
+                status,
+                event_anchor: anchor,
+                synthetic_object_label: None,
+            });
         }
     }
 
@@ -347,20 +388,6 @@ fn strip_aux(p: &str) -> String {
     p.trim().to_string()
 }
 
-/// Pull a verb-style anchor from the inter-span text. Given e.g.
-/// `" changed from "` and the needle `" from "`, returns
-/// `Some("changed")`. Returns `None` if the prefix is empty or
-/// reduces to whitespace after trimming.
-fn anchor_before(between: &str, needle: &str) -> Option<String> {
-    let lower = between.to_ascii_lowercase();
-    let cut = lower.find(needle)?;
-    let prefix = between[..cut].trim();
-    if prefix.is_empty() {
-        return None;
-    }
-    Some(prefix.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +516,40 @@ mod tests {
         assert_eq!(from.event_anchor.as_deref(), Some("now"));
         assert_eq!(to.event_anchor.as_deref(), Some("now"));
         assert_eq!(from.synthetic_object_label, Some("unknown_prior"));
+    }
+
+    #[test]
+    fn from_to_picks_patient_when_agent_precedes_verb() {
+        // "I switched Polaris from Rust to Go." — agent ("I") is the
+        // grammatical subject, but the EVENT target is Polaris (the
+        // patient — whose state changed). The from-to pattern should
+        // land on Polaris with anchor "switched", not on "I" with
+        // anchor "switched Polaris" (the previous bug).
+        let text = "I switched Polaris from Rust to Go.";
+        let spans = vec![
+            span(0, 1, "person", 0.85, "I"),
+            span(11, 18, "software", 0.9, "Polaris"),
+            span(24, 28, "language", 0.85, "Rust"),
+            span(32, 34, "language", 0.85, "Go"),
+        ];
+        let rels = extract_relations(text, &spans);
+        let from = rels
+            .iter()
+            .find(|r| r.attribute_name == "from")
+            .expect("from proposal missing");
+        let to = rels
+            .iter()
+            .find(|r| r.attribute_name == "to")
+            .expect("to proposal missing");
+        assert_eq!(
+            from.subject_char_start, 11,
+            "subject must be Polaris, not I"
+        );
+        assert_eq!(from.subject_char_end, 18);
+        assert_eq!(to.subject_char_start, 11);
+        assert_eq!(to.subject_char_end, 18);
+        assert_eq!(from.event_anchor.as_deref(), Some("switched"));
+        assert_eq!(to.event_anchor.as_deref(), Some("switched"));
     }
 
     #[test]
