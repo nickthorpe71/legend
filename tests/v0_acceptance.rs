@@ -22,7 +22,26 @@ use legend::steps::frame::assemble_frame;
 use legend::steps::hebbian::hebbian_and_salience;
 use legend::steps::run_extractors::run_extractors;
 use legend::steps::supersede::supersede;
-use legend::types::{Hypergraph, Intent, Policy, RelationStatus};
+use legend::types::{Hypergraph, Intent, Policy, RelationId, RelationStatus};
+
+/// Mirror of `crate::steps::build_relations::is_cache_relation`
+/// (which is `pub(crate)`). Returns true iff `rid`'s attribute
+/// list carries an attribute whose surface name starts with
+/// `"current_"` — i.e. it's a Step 9 cache.
+fn is_current_cache(hg: &Hypergraph, rid: RelationId) -> bool {
+    let r = &hg.relations[rid.0 as usize];
+    for attr in &r.attributes {
+        if attr.name == hg.subject_attr || attr.name == hg.target_attr {
+            continue;
+        }
+        if let Some(name) = hg.elements[attr.name.0 as usize].names.first()
+            && name.starts_with("current_")
+        {
+            return true;
+        }
+    }
+    false
+}
 
 /// Run Steps 5 → 12 against `text`, returning the assembled frame.
 /// Steps 1-4 + 7 are exercised individually elsewhere; this driver
@@ -137,14 +156,29 @@ fn v0_pipeline_two_tick_acceptance() {
         assert_eq!(ra.is_defeasible, s == RelationStatus::Defeasible);
     }
 
-    // ── Contract 5: RRF scores monotonically descending. ──────────
+    // ── Contract 5: RRF scores monotonically descending within
+    //                each cache/non-cache partition. Cache relations
+    //                are bumped to the top of `focused_relations` so
+    //                the whole vec is not strictly score-descending,
+    //                but each group individually is. ────────────────
+    let mut in_cache_group = true;
     for w in frame2.focused_relations.windows(2) {
-        assert!(
-            w[0].activation >= w[1].activation,
-            "focused_relations not RRF-sorted: {} < {}",
-            w[0].activation,
-            w[1].activation,
-        );
+        let a_cache = is_current_cache(&hg, w[0].relation);
+        let b_cache = is_current_cache(&hg, w[1].relation);
+        if a_cache && !b_cache {
+            in_cache_group = false;
+            continue; // transition between groups; score relation doesn't apply
+        }
+        // Same group → must be score-descending.
+        if a_cache == b_cache {
+            assert!(
+                w[0].activation >= w[1].activation,
+                "focused_relations not RRF-sorted within {} group: {} < {}",
+                if in_cache_group { "cache" } else { "non-cache" },
+                w[0].activation,
+                w[1].activation,
+            );
+        }
     }
 
     // ── Contract 6: prior cache lands in history, not focused. ────

@@ -292,6 +292,27 @@ pub(crate) fn push_referenced(result: &mut Step8Output, id: ElementId) {
     }
 }
 
+/// True iff `rid` is a cache relation — minted by Step 9 with a
+/// `current_<property>` attribute name. These represent the
+/// substrate's current belief for a `(target, property)` bucket and
+/// should outrank stale binary assertions in the frame. Walks the
+/// relation's attributes looking for any attribute whose surface
+/// name starts with `"current_"`. O(attrs_per_relation).
+pub(crate) fn is_cache_relation(hg: &Hypergraph, rid: RelationId) -> bool {
+    let r = &hg.relations[rid.0 as usize];
+    for attr in &r.attributes {
+        if attr.name == hg.subject_attr || attr.name == hg.target_attr {
+            continue;
+        }
+        if let Some(name) = hg.elements[attr.name.0 as usize].names.first()
+            && name.starts_with("current_")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Resolve a type-class label (e.g. `"person"`, `"weekday"`, `"event"`)
 /// to an `ElementId`. Mints a fresh element if no match exists.
 /// Distinct from `resolve_span` because labels don't have char offsets

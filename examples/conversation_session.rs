@@ -369,8 +369,8 @@ fn print_turn(
     );
 
     if !frame.focused_relations.is_empty() {
-        println!("  focused (top 6):");
-        for ra in frame.focused_relations.iter().take(6) {
+        println!("  focused (top 10):");
+        for ra in frame.focused_relations.iter().take(10) {
             print_relation(hg, ra.relation, ra.activation, ra.is_defeasible);
         }
     }

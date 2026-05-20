@@ -441,8 +441,15 @@ fn build_reinforcement_set(
         let Some(candidates) = hg.relations_by_element.get(&eid) else {
             continue;
         };
+        // Order candidates with cache relations first so the per-
+        // element cap doesn't drop the current-state cache in favor
+        // of older bystander relations. Stable so the secondary
+        // order (insertion) is preserved within each group.
+        let mut ordered: Vec<RelationId> = candidates.clone();
+        ordered
+            .sort_by_key(|&rid| !crate::steps::build_relations::is_cache_relation(hg, rid) as u8);
         let mut added_for_this_element = 0usize;
-        for &rid in candidates {
+        for rid in ordered {
             if added_for_this_element >= RETRIEVE_CAP_PER_ELEMENT {
                 break;
             }

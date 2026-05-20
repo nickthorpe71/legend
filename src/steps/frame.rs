@@ -134,7 +134,7 @@ pub fn assemble_frame(
     });
 
     let merged = rrf_merge(&[dense, path], RRF_K);
-    let focused_relations: Vec<RelationActivation> = merged
+    let mut focused_relations: Vec<RelationActivation> = merged
         .into_iter()
         .map(|(rid, score)| RelationActivation {
             relation: rid,
@@ -142,6 +142,19 @@ pub fn assemble_frame(
             is_defeasible: hg.relations[rid.0 as usize].status == RelationStatus::Defeasible,
         })
         .collect();
+
+    // Promote cache relations (current_<property> attribute names)
+    // to the top of the focus list. They represent the substrate's
+    // current belief for a `(target, property)` bucket and should
+    // outrank stale binary assertions in the same domain — without
+    // this, a query like "what language is Polaris in?" surfaces
+    // the original Rust assertion above the live "current_tech=Go"
+    // cache because hebbian_rate defaults to 0 in v0, so
+    // `stats.activation` never accumulates and the dense ranker
+    // falls back to relation-id order (older wins). Stable sort
+    // preserves RRF order within each group.
+    focused_relations
+        .sort_by_key(|ra| !crate::steps::build_relations::is_cache_relation(hg, ra.relation) as u8);
 
     // ── supporting_claims + history ─────────────────────────────
     // Walk meta_relations_by_subject[R] for each focused R; filter
@@ -561,7 +574,11 @@ mod tests {
     }
 
     #[test]
-    fn frame_focused_relations_score_descending() {
+    fn frame_focused_relations_score_descending_within_groups() {
+        // Caches are promoted to the top of `focused_relations` so the
+        // whole vec is not strictly score-descending — but the cache
+        // group and the non-cache group are each individually
+        // score-descending. Check both partitions.
         let policy = Policy::default();
         let (hg, s8, s9, s10) = run_through_step10(
             "The meeting moved from Tuesday to Friday.",
@@ -580,13 +597,21 @@ mod tests {
             &s10,
             &policy,
         );
-        for w in frame.focused_relations.windows(2) {
-            assert!(
-                w[0].activation >= w[1].activation,
-                "frame focused_relations not score-descending: {} < {}",
-                w[0].activation,
-                w[1].activation,
-            );
+        let is_cache = |rid| crate::steps::build_relations::is_cache_relation(&hg, rid);
+        let (caches, non_caches): (Vec<&RelationActivation>, Vec<&RelationActivation>) = frame
+            .focused_relations
+            .iter()
+            .partition(|ra| is_cache(ra.relation));
+        // Caches come first in the focused_relations vec.
+        let cache_count = caches.len();
+        for ra in frame.focused_relations.iter().take(cache_count) {
+            assert!(is_cache(ra.relation));
+        }
+        for w in caches.windows(2) {
+            assert!(w[0].activation >= w[1].activation);
+        }
+        for w in non_caches.windows(2) {
+            assert!(w[0].activation >= w[1].activation);
         }
     }
 
