@@ -115,17 +115,42 @@ pub fn extract_novelty_relations(
             continue;
         }
 
-        // Subject is sticky across verbs in the same phrase: content
-        // tokens before the first verb-shape token. Preserves
-        // coordination ("Sarah works at X and lives in Y" → both
-        // attach to Sarah).
+        // Subject preference order:
+        //
+        //  1. If the raw input between the phrase's start and the
+        //     first content token contains a personal pronoun
+        //     ("I", "He", "She", "They", ...), use that as the
+        //     subject. Pronouns are seeded as Void elements (so
+        //     they don't pollute retrieval) and therefore filtered
+        //     out by `extract_content_tokens` — but they're the
+        //     natural syntactic subject. Adverbial modifiers
+        //     ("recently", "really") between the pronoun and the
+        //     verb should NOT win the subject slot.
+        //  2. Otherwise, fall back to the sticky-content-token
+        //     rule: subject = content tokens before the first
+        //     verb-shape token. Preserves coordination
+        //     ("Sarah works at X and lives in Y" → both Sarah).
+        //  3. If neither yields anything (phrase starts with verb
+        //     and no pronoun precedes), skip.
         let subj_end_idx = verb_idxs[0];
-        if subj_end_idx == 0 {
-            // Phrase starts with a verb (no subject available). Skip.
-            continue;
-        }
-        let subj_first = tokens[0];
-        let subj_last = tokens[subj_end_idx - 1];
+        let preamble_end = tokens
+            .first()
+            .map(|t| t.char_start)
+            .unwrap_or(phrase.char_end);
+        let pronoun = find_pronoun_subject(text, phrase.char_start, preamble_end);
+        let (subj_first_start, subj_last_end, subj_pronoun_end) =
+            if let Some((p_start, p_end)) = pronoun {
+                (p_start, p_end, Some(p_end))
+            } else if subj_end_idx == 0 {
+                // No content subject either — skip.
+                continue;
+            } else {
+                (
+                    tokens[0].char_start,
+                    tokens[subj_end_idx - 1].char_end,
+                    None,
+                )
+            };
 
         for (k, &vi) in verb_idxs.iter().enumerate() {
             // Object = content tokens after this verb, up to but not
@@ -148,16 +173,24 @@ pub fn extract_novelty_relations(
             // before this verb — that's the subject's tail for k=0
             // and the *previous object's* tail for k>0. Using
             // subj_last for k>0 would swallow the previous object
-            // into the attribute text.
-            let prev_tail_end = tokens[vi - 1].char_end;
+            // into the attribute text. When the subject is a
+            // synthesized pronoun, anchor the attribute span at the
+            // pronoun's end so adverbial modifiers between the
+            // pronoun and verb ("recently" in "I recently got X")
+            // land in the attribute text instead of dangling.
+            let prev_tail_end = if k == 0 {
+                subj_pronoun_end.unwrap_or(subj_last_end)
+            } else {
+                tokens[vi - 1].char_end
+            };
             let attr_text = text[prev_tail_end..obj_first.char_start].trim().to_string();
             if attr_text.is_empty() {
                 continue;
             }
 
             out.push(NoveltyRelation {
-                subject_char_start: subj_first.char_start,
-                subject_char_end: subj_last.char_end,
+                subject_char_start: subj_first_start,
+                subject_char_end: subj_last_end,
                 attribute_text: attr_text,
                 object_char_start: obj_first.char_start,
                 object_char_end: obj_last.char_end,
@@ -169,9 +202,216 @@ pub fn extract_novelty_relations(
     out
 }
 
+/// Closed-class personal pronouns that can anchor a clause as
+/// subject. We look for these in the raw input when the content-
+/// token list starts with a verb — pronouns are seeded as Void
+/// elements (filtered out of content tokens) but remain valid
+/// syntactic subjects.
+const SUBJECT_PRONOUNS: &[&str] = &["he", "i", "it", "she", "they", "we", "you"];
+
+/// Search `text[start..end]` for a sentence-initial pronoun subject.
+/// Returns the pronoun's `(char_start, char_end)` byte offsets in
+/// the original text. Returns `None` if the preamble carries no
+/// pronoun. Case-insensitive — `"I went"` and `"i went"` both work.
+fn find_pronoun_subject(text: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    let slice = &text[start..end];
+    // Tokenize on whitespace; check each token against the pronoun
+    // set. Stops at the first match. Strips edge punctuation so
+    // `"I,"` still matches `"i"`.
+    let mut cursor = 0usize;
+    for raw in slice.split(|c: char| c.is_whitespace()) {
+        let trimmed = raw.trim_matches(|c: char| !c.is_alphanumeric());
+        if !trimmed.is_empty() && SUBJECT_PRONOUNS.contains(&trimmed.to_ascii_lowercase().as_str())
+        {
+            let tok_offset = slice[cursor..].find(trimmed)?;
+            let tok_start = start + cursor + tok_offset;
+            let tok_end = tok_start + trimmed.len();
+            return Some((tok_start, tok_end));
+        }
+        cursor += raw.len() + 1; // +1 for the whitespace we split on
+    }
+    None
+}
+
+/// High-frequency irregular verbs that the suffix-only detector
+/// misses. Past, present, and base forms of the 100-ish most common
+/// English verbs that don't end in `-ed`/`-ing`/`-en`/`-s`. Hand-
+/// curated from Zipf-frequency lists; favors verbs that change a
+/// substrate's view of the world (acquire/transfer/move/state)
+/// over modal auxiliaries (might, could) which don't head their
+/// own clauses well in our (sticky-subject, verb-segmented) parse.
+///
+/// Sorted; case-insensitive membership test runs in O(log N).
+/// Length kept under 200 entries so the binary-search probe is
+/// cheap on every Token chunk.
+const IRREGULAR_VERBS: &[&str] = &[
+    "am",
+    "are",
+    "ate",
+    "be",
+    "been",
+    "began",
+    "begin",
+    "bit",
+    "bite",
+    "blew",
+    "bore",
+    "born",
+    "bought",
+    "break",
+    "broke",
+    "broken",
+    "brought",
+    "build",
+    "built",
+    "came",
+    "caught",
+    "choose",
+    "chose",
+    "chosen",
+    "come",
+    "cost",
+    "cut",
+    "did",
+    "do",
+    "does",
+    "done",
+    "drank",
+    "drew",
+    "drove",
+    "eat",
+    "feel",
+    "fell",
+    "felt",
+    "find",
+    "flew",
+    "fly",
+    "forgave",
+    "forget",
+    "forgive",
+    "forgot",
+    "fought",
+    "found",
+    "froze",
+    "frozen",
+    "gave",
+    "get",
+    "give",
+    "go",
+    "goes",
+    "gone",
+    "got",
+    "grew",
+    "grow",
+    "had",
+    "has",
+    "have",
+    "hear",
+    "heard",
+    "held",
+    "hid",
+    "hidden",
+    "hide",
+    "hit",
+    "hold",
+    "is",
+    "kept",
+    "knew",
+    "know",
+    "laid",
+    "lay",
+    "leave",
+    "left",
+    "lend",
+    "lent",
+    "let",
+    "lit",
+    "lost",
+    "made",
+    "make",
+    "mean",
+    "meant",
+    "paid",
+    "pay",
+    "put",
+    "quit",
+    "ran",
+    "rang",
+    "read",
+    "ride",
+    "ring",
+    "rise",
+    "rode",
+    "rose",
+    "run",
+    "said",
+    "sang",
+    "sank",
+    "sat",
+    "saw",
+    "say",
+    "see",
+    "sell",
+    "send",
+    "sent",
+    "set",
+    "shine",
+    "shone",
+    "shoot",
+    "shot",
+    "shrank",
+    "shut",
+    "sing",
+    "sink",
+    "slept",
+    "sold",
+    "speak",
+    "spend",
+    "spent",
+    "spoke",
+    "stand",
+    "stole",
+    "stolen",
+    "stood",
+    "swam",
+    "swear",
+    "swim",
+    "swore",
+    "take",
+    "taught",
+    "tear",
+    "tell",
+    "thought",
+    "threw",
+    "throw",
+    "told",
+    "took",
+    "tore",
+    "torn",
+    "understand",
+    "understood",
+    "was",
+    "wear",
+    "went",
+    "were",
+    "won",
+    "wore",
+    "worn",
+    "wrote",
+];
+
+/// True if `token` is in the irregular-verb lexicon (case-insensitive).
+/// `is_verb_shape` calls this first so common base/past-tense
+/// irregulars get caught alongside the suffix-rule cases.
+fn is_irregular_verb(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    IRREGULAR_VERBS.binary_search(&lower.as_str()).is_ok()
+}
+
 /// True if `token`'s surface form has a verb-shape morphology cue:
 /// ends in `-ed`, `-ing`, or `-en`, or — for lowercase tokens only —
 /// ends in `-s` (excluding plural-noun shapes `-ss`, `-us`).
+/// Also catches high-frequency irregular verbs via the lexicon.
 ///
 /// The lowercase guard on the `-s` rule rejects proper nouns like
 /// `Paris` / `James` / `Sales` that would otherwise dominate as
@@ -179,9 +419,12 @@ pub fn extract_novelty_relations(
 /// caught via the unconditional `-ed`/`-ing`/`-en` rules.
 ///
 /// Imperfect on purpose. False positives ("kids", "series") and
-/// false negatives ("ran", "saw", "gave", sentence-initial "Lives")
+/// remaining false negatives (rare irregulars not in the lexicon)
 /// are accepted; replay confirms or prunes.
 fn is_verb_shape(token: &str) -> bool {
+    if is_irregular_verb(token) {
+        return true;
+    }
     if token.chars().count() < 3 {
         return false;
     }
@@ -213,6 +456,78 @@ mod tests {
         chunks.extend(extract_content_tokens(text, &hg));
         chunks.sort_by_key(|c| (c.char_start, c.char_end));
         chunks
+    }
+
+    #[test]
+    fn irregular_verb_lexicon_is_sorted_and_dedup() {
+        // `is_irregular_verb` uses binary_search which assumes the
+        // slice is sorted. Catch any out-of-order edit at test time.
+        for pair in IRREGULAR_VERBS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "lexicon not sorted: {:?} should sort before {:?}",
+                pair[0],
+                pair[1],
+            );
+        }
+    }
+
+    #[test]
+    fn irregular_verbs_are_detected_as_verb_shape() {
+        // Past-tense irregulars that the suffix-only rule missed:
+        // got, ran, saw, ate, took, made, gave, came, went, said,
+        // had, was, were, bought, brought, taught, sent, kept.
+        for v in [
+            "got", "ran", "saw", "ate", "took", "made", "gave", "came", "went", "said", "had",
+            "was", "were", "bought", "brought", "taught", "sent", "kept",
+        ] {
+            assert!(
+                is_verb_shape(v),
+                "`{v}` should be detected as a verb (irregular lexicon hit)"
+            );
+        }
+    }
+
+    #[test]
+    fn capitalized_irregular_verbs_still_detected() {
+        // Sentence-initial "Got" / "Ran" / "Bought" should still
+        // hit via the lexicon (case-insensitive).
+        for v in ["Got", "Ran", "Bought", "WAS"] {
+            assert!(is_verb_shape(v), "`{v}` (capitalized) should be detected");
+        }
+    }
+
+    #[test]
+    fn non_verbs_still_not_detected() {
+        // Sanity: random nouns / adjectives we did NOT add to the
+        // lexicon stay out. (Plurals like `cars` still hit the -s
+        // rule, and `red` hits the -ed rule — both are pre-existing
+        // imperfect behavior, accepted.)
+        for w in ["the", "very", "big", "house", "phone"] {
+            assert!(!is_verb_shape(w), "`{w}` shouldn't be a verb");
+        }
+    }
+
+    #[test]
+    fn got_phrase_forms_a_relation() {
+        // The Q4 case: "I got a Samsung Galaxy S22 on February 20th"
+        // previously yielded no novelty triple because "got" isn't
+        // suffix-shaped. With the lexicon, it should.
+        let text = "I got a Samsung Galaxy S22 from Best Buy on February 20th";
+        let chunks = chunks_for(text);
+        let rels = extract_novelty_relations(text, &chunks);
+        assert!(
+            !rels.is_empty(),
+            "expected ≥1 triple from `I got a Samsung Galaxy S22 …`, got 0"
+        );
+        // Subject should be the leading "I"; first verb is `got`.
+        let r = &rels[0];
+        assert_eq!(&text[r.subject_char_start..r.subject_char_end], "I");
+        assert!(
+            r.attribute_text.contains("got"),
+            "attribute should include `got`; got {:?}",
+            r.attribute_text
+        );
     }
 
     #[test]
@@ -341,8 +656,14 @@ mod tests {
         assert!(!is_verb_shape("glass")); // -ss
         assert!(!is_verb_shape("focus")); // -us
 
-        // Too short
-        assert!(!is_verb_shape("is"));
+        // `is` is in the irregular-verb lexicon (it's a copula),
+        // so it now counts as a verb-shape token. Note: it'll
+        // never actually reach this check via the novelty pass
+        // because `is` is seeded as a Void element and gets
+        // filtered out by `extract_content_tokens`.
+        assert!(is_verb_shape("is"));
+        // `in` is a preposition, not a verb, and not in the
+        // lexicon — stays excluded.
         assert!(!is_verb_shape("in"));
     }
 }

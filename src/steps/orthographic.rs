@@ -242,7 +242,14 @@ pub(crate) fn collect_raw_tokens(text: &str) -> Vec<RawToken> {
 
 fn accept_raw(candidate: &str, char_start: usize, out: &mut Vec<RawToken>) {
     let (s, lead, _trail) = strip_edges(candidate);
-    if s.chars().count() < 2 {
+    // Accept any non-empty token containing at least one alphanumeric
+    // char. The earlier ≥2-char rule was excluding legitimate single-
+    // letter tokens — primarily the pronoun "I", which heads roughly
+    // a quarter of all English clauses. The void filter (run as a
+    // separate pass) catches the closed-class single letters like
+    // "a" / "o" / "u" via the seed pack, so we don't need a length
+    // floor here.
+    if s.is_empty() {
         return;
     }
     if !has_letter_or_digit(s) {
