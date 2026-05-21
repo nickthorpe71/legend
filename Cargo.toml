@@ -69,10 +69,10 @@ fs2 = "0.4"
 [dev-dependencies]
 criterion = "0.5"
 serde_yaml = "0.9"
-# JSON reader for the LongMemEval dataset only. The dataset ships as
-# JSON (provided by the upstream benchmark project). All Legend-
-# internal serialization stays on rmp-serde (MessagePack); this dep
-# is dev-only and never reachable from the runtime crate.
+# JSON reader for external benchmark datasets that ship as JSON
+# (e.g. MemoryAgentBench). All Legend-internal serialization stays on
+# rmp-serde (MessagePack); this dep is dev-only and never reachable
+# from the runtime crate.
 serde_json = "1"
 # tract-onnx is build-time-only: it's used by
 # `examples/extract_weights.rs` to read the ONNX file once and dump
