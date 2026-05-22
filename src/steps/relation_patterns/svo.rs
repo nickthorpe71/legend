@@ -56,9 +56,8 @@ pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<Rela
         .into_iter()
         .map(|c| (c.char_start, c.char_end))
         .collect();
-    let in_pn_run = |start: usize, end: usize| -> bool {
-        pn_runs.iter().any(|&(s, e)| s <= start && end <= e)
-    };
+    let in_pn_run =
+        |start: usize, end: usize| -> bool { pn_runs.iter().any(|&(s, e)| s <= start && end <= e) };
 
     for phrase in chunks.iter().filter(|c| c.scale == ChunkScale::Phrase) {
         // Skip phrases that are themselves a proper-noun run —

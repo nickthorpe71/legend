@@ -168,9 +168,7 @@ struct Row {
 fn load_row(path: &Path, target_source: &str) -> std::io::Result<Row> {
     let file = File::open(path)?;
     let reader = SerializedFileReader::new(file).map_err(std::io::Error::other)?;
-    let iter = reader
-        .get_row_iter(None)
-        .map_err(std::io::Error::other)?;
+    let iter = reader.get_row_iter(None).map_err(std::io::Error::other)?;
 
     for record in iter {
         let record = record.map_err(std::io::Error::other)?;
@@ -382,10 +380,7 @@ fn gold_in_substrate(snapshot_path: &Path, golds: &[String]) -> std::io::Result<
 
 // ─── Daemon plumbing (mirrors the deleted LongMemEval harness) ─────
 
-fn spawn_daemon(
-    workspace: &Path,
-    bin: &Path,
-) -> std::io::Result<std::process::Child> {
+fn spawn_daemon(workspace: &Path, bin: &Path) -> std::io::Result<std::process::Child> {
     Command::new(bin)
         .arg("__daemon")
         .env("LEGEND_STATE_DIR", workspace.join(".legend"))

@@ -107,12 +107,7 @@ fn run_variant(variant: &str, min_hits: u32, max_substrate_only: u32, max_absent
     );
 
     let output = Command::new(&bin)
-        .args([
-            "--variant",
-            variant,
-            "--questions",
-            &QUESTIONS.to_string(),
-        ])
+        .args(["--variant", variant, "--questions", &QUESTIONS.to_string()])
         .output()
         .expect("failed to spawn bench harness");
 
@@ -130,7 +125,12 @@ fn run_variant(variant: &str, min_hits: u32, max_substrate_only: u32, max_absent
     let summary = stdout
         .lines()
         .find(|l| l.starts_with("summary:"))
-        .unwrap_or_else(|| panic!("no `summary:` line in harness output:\n{}", tail(&stdout, 40)));
+        .unwrap_or_else(|| {
+            panic!(
+                "no `summary:` line in harness output:\n{}",
+                tail(&stdout, 40)
+            )
+        });
 
     let parsed = parse_summary(summary)
         .unwrap_or_else(|| panic!("could not parse summary line: {summary:?}"));

@@ -126,7 +126,10 @@ pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame, hg: &Hypergr
     let total_chars = raw.len();
     let total_tokens = raw.split(" | ").count();
 
-    let _ = writeln!(out, "flat frame ({total_chars} chars, {total_tokens} tokens):");
+    let _ = writeln!(
+        out,
+        "flat frame ({total_chars} chars, {total_tokens} tokens):"
+    );
 
     // ── input ──────────────────────────────────────────────────
     let _ = writeln!(out, "─ input");
@@ -146,9 +149,12 @@ pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame, hg: &Hypergr
     // dedupe. Emit (rid, pairs, range) tuples to feed the bucket-
     // section formatter so dedupe and offset-tracking stay in
     // one place.
+    // (relation, key=value pairs, start token idx, end token idx)
+    type BucketRow = (RelationId, Vec<(String, String)>, usize, usize);
+
     let mut seen: HashSet<RelationId> = HashSet::new();
     let mut emit_bucket = |label: &str, rids: &[RelationId], idx: &mut usize, out: &mut String| {
-        let mut shown: Vec<(RelationId, Vec<(String, String)>, usize, usize)> = Vec::new();
+        let mut shown: Vec<BucketRow> = Vec::new();
         let mut dup_count = 0usize;
         for &rid in rids {
             if !seen.insert(rid) {
@@ -188,11 +194,20 @@ pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame, hg: &Hypergr
         }
     };
 
-    let focused: Vec<RelationId> = frame.focused_relations.iter().map(|ra| ra.relation).collect();
+    let focused: Vec<RelationId> = frame
+        .focused_relations
+        .iter()
+        .map(|ra| ra.relation)
+        .collect();
     emit_bucket("focused_relations", &focused, &mut idx, &mut out);
     emit_bucket("current_state", &frame.current_state, &mut idx, &mut out);
     emit_bucket("history", &frame.history, &mut idx, &mut out);
-    emit_bucket("supporting_claims", &frame.supporting_claims, &mut idx, &mut out);
+    emit_bucket(
+        "supporting_claims",
+        &frame.supporting_claims,
+        &mut idx,
+        &mut out,
+    );
 
     out
 }
