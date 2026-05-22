@@ -42,12 +42,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: legend <text>                 # run one tick (auto-starts daemon)\n\
+            "usage: legend [--verbose|-v] <text>  # run one tick (auto-starts daemon)\n\
              legend start                  # launch daemon in the background\n\
              legend stop                   # ask the daemon to exit cleanly\n\
              legend status                 # daemon pid, uptime, substrate sizes\n\
              legend git-merge-driver …     # git invokes on .legend/*.lz4 conflict\n\
              legend git-init               # register the merge driver in this repo\n\
+             \n\
+             --verbose / -v               also dump the bench-scored flat-frame view\n\
              \n\
              env: LEGEND_STATE_DIR        directory holding memory.lz4 / lock / port file\n\
                   LEGEND_DAEMON_TTL       daemon idle timeout in seconds (default 300)\n\
@@ -69,7 +71,25 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
 
-    let input_text = args[1].clone();
+    // Tick path: scan remaining args for the input text + flags.
+    // First non-flag arg wins as the input; `--verbose` / `-v` can
+    // appear anywhere.
+    let mut verbose = false;
+    let mut input_text: Option<String> = None;
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--verbose" | "-v" => verbose = true,
+            s if input_text.is_none() => input_text = Some(s.to_string()),
+            _ => {} // ignore trailing positional args
+        }
+    }
+    let input_text = match input_text {
+        Some(t) => t,
+        None => {
+            eprintln!("usage: legend [--verbose|-v] <text>");
+            return Ok(());
+        }
+    };
 
     // Default tick path goes through the daemon: auto-start if not
     // running, send a `Tick` request, print the response summary.
@@ -82,7 +102,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     //     daemon already holds the substrate; resetting would require
     //     stopping it, which is a separate user action)
     if env::var_os("LEGEND_INPROC").is_none() && env::var_os("LEGEND_RESET").is_none() {
-        return tick_via_daemon(&input_text);
+        return tick_via_daemon(&input_text, verbose);
     }
 
     let wall_clock = SystemTime::now();
@@ -233,6 +253,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     stage_at("assemble frame (Step 12)", &mut mark);
     print_step12(&frame, &hg);
+    if verbose {
+        print_flat_frame(&frame, &hg);
+    }
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;
@@ -405,8 +428,10 @@ fn daemon_status() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Auto-start-on-tick path. Connect to a running daemon (spawn one
 /// if missing), send `Tick { input }`, print a compact summary of
-/// the returned frame.
-fn tick_via_daemon(input: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// the returned frame. When `verbose`, also dump the bench-scored
+/// flat-frame string at the end so the CLI shows exactly what a
+/// downstream verbalizer (or the SubEM bench) would consume.
+fn tick_via_daemon(input: &str, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = daemon::connect_or_start()?;
     daemon::write_frame(
         &mut stream,
@@ -433,12 +458,24 @@ fn tick_via_daemon(input: &str) -> Result<(), Box<dyn std::error::Error>> {
             print_tick_summary(&frame, elements, relations);
             if let Some(hg) = hg.as_ref() {
                 print_frame_contents(&frame, hg);
+                if verbose {
+                    print_flat_frame(&frame, hg);
+                }
             }
             Ok(())
         }
         daemon::DaemonResponse::Error { message } => Err(message.into()),
         other => Err(format!("unexpected tick response: {other:?}").into()),
     }
+}
+
+/// Dump the bench-equivalent flat-frame view after the structured
+/// render. Same content the bench harness scores SubEM against and
+/// the eventual LLM verbalizer will consume — formatted with section
+/// headers + per-relation grouping so a human can actually read it.
+fn print_flat_frame(frame: &types::ConsciousAttentionFrame, hg: &Hypergraph) {
+    println!();
+    print!("{}", render::render_flat_frame_annotated(frame, hg));
 }
 
 /// Header block: intent, substrate sizes, frame bucket counts,

@@ -270,11 +270,20 @@ pub fn assemble_frame(
 
     // ── current_state ──────────────────────────────────────────
     // For each element this tick referenced, gather every live
-    // `current_<property>` cache that mentions it. Dedup across
-    // elements (a cache that mentions multiple referenced entities
-    // shouldn't appear twice). Status filter mirrors
-    // `focused_relations`. Order follows `referenced_elements`
-    // (first-mention wins) so the consumer can scan in input order.
+    // relation that mentions it (cache or not). Status filter
+    // mirrors `focused_relations` — Superseded/Retracted excluded,
+    // so the conflict-resolution supersede chain already keeps the
+    // latest fact and culls the older one. Order follows
+    // `referenced_elements` (first-mention wins) so the consumer
+    // can scan in input order.
+    //
+    // The previous version gated this on `is_cache_relation` —
+    // surfacing only `current_<property>` caches — which silently
+    // dropped the underlying assertions when no cache had been
+    // minted for a `(subject, attribute)` bucket. On benchmarks
+    // like MemoryAgentBench FactConsolidation, that gate was the
+    // dominant frame-miss cause: the substrate had the answer but
+    // the frame did not surface it.
     let mut current_state: Vec<RelationId> = Vec::new();
     let mut cs_seen: HashSet<RelationId> = HashSet::new();
     for &eid in &step8.referenced_elements {
@@ -289,7 +298,6 @@ pub fn assemble_frame(
                         | RelationStatus::Entailed
                         | RelationStatus::Defeasible,
                 )
-                && crate::steps::build_relations::is_cache_relation(hg, rid)
             {
                 cs_seen.insert(rid);
                 current_state.push(rid);

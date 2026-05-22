@@ -12,9 +12,190 @@
 //! diffs cleanly between snapshots. Past ~200 nodes mermaid breaks
 //! down — at that point swap in the HTML viewer (planned).
 
-use crate::types::{ElementId, Hypergraph, RelationStatus, Term};
+use crate::types::{
+    ConsciousAttentionFrame, ElementId, Hypergraph, RelationId, RelationStatus, Term,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
+
+/// Flatten a `ConsciousAttentionFrame` into a single pipe-joined
+/// string of element names — the same view the bench harness scores
+/// against. Walks `active_frame`, `focused_relations`, `current_state`,
+/// `history`, and `supporting_claims` in that order, resolving each
+/// relation's attribute names and values through the substrate to
+/// human-readable text. Relation-valued attributes degrade to `R<id>`
+/// rather than recursing.
+///
+/// Relations that appear in multiple buckets (e.g. a `current_state`
+/// entry that is also in `focused_relations`) are emitted once,
+/// first-bucket-wins. The ordering above is the priority — appearing
+/// in `focused_relations` keeps the entry there, and the relation is
+/// skipped when re-encountered later.
+///
+/// Useful when you want to see exactly what the substrate surfaces
+/// for a query — the same string a downstream LLM verbalizer (or
+/// SubEM bench scorer) would consume. For a human-readable variant
+/// with section headers and per-relation grouping, see
+/// [`render_flat_frame_annotated`].
+pub fn flatten_attention_frame(frame: &ConsciousAttentionFrame, hg: &Hypergraph) -> String {
+    let mut parts: Vec<String> = vec![frame.input_echo.clone()];
+    if let Some(eid) = frame.active_frame
+        && let Some(n) = hg.elements[eid.0 as usize].names.first()
+    {
+        parts.push(n.clone());
+    }
+    let mut seen: HashSet<RelationId> = HashSet::new();
+    let mut push_rel = |rid: RelationId, parts: &mut Vec<String>| {
+        if !seen.insert(rid) {
+            return;
+        }
+        let r = &hg.relations[rid.0 as usize];
+        for a in &r.attributes {
+            if let Some(an) = hg.elements[a.name.0 as usize].names.first() {
+                parts.push(an.clone());
+            }
+            match a.value {
+                Term::Element(eid) => {
+                    if let Some(n) = hg.elements[eid.0 as usize].names.first() {
+                        parts.push(n.clone());
+                    }
+                }
+                Term::Relation(rid) => parts.push(format!("R{}", rid.0)),
+            }
+        }
+    };
+    for ra in &frame.focused_relations {
+        push_rel(ra.relation, &mut parts);
+    }
+    for rid in &frame.current_state {
+        push_rel(*rid, &mut parts);
+    }
+    for rid in &frame.history {
+        push_rel(*rid, &mut parts);
+    }
+    for rid in &frame.supporting_claims {
+        push_rel(*rid, &mut parts);
+    }
+    parts.join(" | ")
+}
+
+/// Human-readable variant of [`flatten_attention_frame`]. Same content,
+/// same walk order, same first-bucket-wins dedupe — but with section
+/// headers and per-relation grouping so a human can see what's in
+/// each part of the focused subgraph. Index ranges are kept aligned
+/// with the raw flat string so you can correlate "this line is at
+/// positions \[N..M\]".
+///
+/// Output shape:
+///
+/// ```text
+/// flat frame (NNN chars, K tokens):
+/// ─ input
+///   [0] "<query text>"
+/// ─ active_frame
+///   [1] <element name>
+/// ─ focused_relations  (N entries)
+///   R621  subject=March 15th  instance_of=month                  [2..5]
+///   R632  subject=I  to make=sure I wait outside                 [6..9]
+/// ─ current_state  (N entries, M already shown above)
+///   …
+/// ─ history       (empty)
+/// ─ supporting_claims  (empty)
+/// ```
+pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame, hg: &Hypergraph) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let mut idx: usize = 0;
+
+    // Helper: resolve an element ID to its first name, or `e<id>`
+    // if the element has no name (defensive — shouldn't happen for
+    // anything that made it into a focused frame).
+    let ename = |eid: ElementId| -> String {
+        hg.elements[eid.0 as usize]
+            .names
+            .first()
+            .cloned()
+            .unwrap_or_else(|| format!("e{}", eid.0))
+    };
+
+    // First compute headline length+token counts from the raw flat
+    // string so we don't lie about size after grouping changes
+    // presentation.
+    let raw = flatten_attention_frame(frame, hg);
+    let total_chars = raw.len();
+    let total_tokens = raw.split(" | ").count();
+
+    let _ = writeln!(out, "flat frame ({total_chars} chars, {total_tokens} tokens):");
+
+    // ── input ──────────────────────────────────────────────────
+    let _ = writeln!(out, "─ input");
+    let _ = writeln!(out, "  [{idx}] {:?}", frame.input_echo);
+    idx += 1;
+
+    // ── active_frame ───────────────────────────────────────────
+    if let Some(eid) = frame.active_frame {
+        let _ = writeln!(out, "─ active_frame");
+        let _ = writeln!(out, "  [{idx}] {}", ename(eid));
+        idx += 1;
+    } else {
+        let _ = writeln!(out, "─ active_frame  (none)");
+    }
+
+    // For each bucket: walk relations with first-bucket-wins
+    // dedupe. Emit (rid, pairs, range) tuples to feed the bucket-
+    // section formatter so dedupe and offset-tracking stay in
+    // one place.
+    let mut seen: HashSet<RelationId> = HashSet::new();
+    let mut emit_bucket = |label: &str, rids: &[RelationId], idx: &mut usize, out: &mut String| {
+        let mut shown: Vec<(RelationId, Vec<(String, String)>, usize, usize)> = Vec::new();
+        let mut dup_count = 0usize;
+        for &rid in rids {
+            if !seen.insert(rid) {
+                dup_count += 1;
+                continue;
+            }
+            let r = &hg.relations[rid.0 as usize];
+            let mut pairs = Vec::with_capacity(r.attributes.len());
+            let start = *idx;
+            for a in &r.attributes {
+                let name = ename(a.name);
+                let value = match a.value {
+                    Term::Element(eid) => ename(eid),
+                    Term::Relation(rid) => format!("R{}", rid.0),
+                };
+                pairs.push((name, value));
+                *idx += 2;
+            }
+            let end = idx.saturating_sub(1);
+            shown.push((rid, pairs, start, end));
+        }
+
+        // Header line.
+        let _ = match (shown.len(), dup_count) {
+            (0, 0) => writeln!(out, "─ {label}  (empty)"),
+            (0, n) => writeln!(out, "─ {label}  ({n} already shown above)"),
+            (n, 0) => writeln!(out, "─ {label}  ({n})"),
+            (n, d) => writeln!(out, "─ {label}  ({n} new, {d} already shown above)"),
+        };
+        for (rid, pairs, start, end) in shown {
+            let pair_str = pairs
+                .iter()
+                .map(|(n, v)| format!("{n}={v}"))
+                .collect::<Vec<_>>()
+                .join("  ");
+            let _ = writeln!(out, "  R{:<5} {pair_str}    [{start}..{end}]", rid.0);
+        }
+    };
+
+    let focused: Vec<RelationId> = frame.focused_relations.iter().map(|ra| ra.relation).collect();
+    emit_bucket("focused_relations", &focused, &mut idx, &mut out);
+    emit_bucket("current_state", &frame.current_state, &mut idx, &mut out);
+    emit_bucket("history", &frame.history, &mut idx, &mut out);
+    emit_bucket("supporting_claims", &frame.supporting_claims, &mut idx, &mut out);
+
+    out
+}
 
 /// Render the full markdown report for `hg`. Pure string assembly —
 /// no I/O. Callable from anywhere with a `&Hypergraph`.

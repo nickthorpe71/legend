@@ -40,7 +40,33 @@ use crate::types::RelationStatus;
 pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<RelationCandidate> {
     let mut out = Vec::new();
 
+    // Multi-word proper-noun runs ("British Broadcasting Corporation",
+    // "Lockheed Martin", "Engineering News"). Tokens inside these are
+    // entity tokens — even if their surface form ends in -ed/-ing/-en
+    // they're not verbs. We use these ranges to:
+    //   1. Skip iterating a proper-noun-run as if it were a clause —
+    //      otherwise "British Broadcasting Corporation" gets parsed
+    //      as `(British) — Broadcasting → (Corporation)` because
+    //      "Broadcasting" matches the -ing verb suffix.
+    //   2. Exclude such tokens from being verb candidates within
+    //      a containing clause phrase — otherwise "X is employed by
+    //      British Broadcasting Corporation" splits the object span
+    //      at "Broadcasting".
+    let pn_runs: Vec<(usize, usize)> = crate::steps::orthographic::extract_proper_noun_runs(text)
+        .into_iter()
+        .map(|c| (c.char_start, c.char_end))
+        .collect();
+    let in_pn_run = |start: usize, end: usize| -> bool {
+        pn_runs.iter().any(|&(s, e)| s <= start && end <= e)
+    };
+
     for phrase in chunks.iter().filter(|c| c.scale == ChunkScale::Phrase) {
+        // Skip phrases that are themselves a proper-noun run —
+        // those are entities, not clauses.
+        if in_pn_run(phrase.char_start, phrase.char_end) {
+            continue;
+        }
+
         let tokens: Vec<&OrthographicChunk> = chunks
             .iter()
             .filter(|c| {
@@ -57,7 +83,7 @@ pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<Rela
         let verb_idxs: Vec<usize> = tokens
             .iter()
             .enumerate()
-            .filter(|(_, t)| is_verb_shape(&t.text))
+            .filter(|(_, t)| is_verb_shape(&t.text) && !in_pn_run(t.char_start, t.char_end))
             .map(|(i, _)| i)
             .collect();
 
