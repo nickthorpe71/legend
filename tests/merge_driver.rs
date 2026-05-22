@@ -317,9 +317,9 @@ fn init_repo_with_driver(label: &str) -> PathBuf {
     // Don't sign — this test runs in CI environments without keys.
     run_git(&dir, &["config", "commit.gpgsign", "false"]);
 
-    // Register the merge driver. Same format the `legend git-init`
+    // Register the merge driver. Same format the `legend init`
     // command writes — duplicating here keeps the test self-contained
-    // (no dependency on having run `git-init` against this temp dir).
+    // (no dependency on having run `init` against this temp dir).
     let driver_cmd = format!("{bin} git-merge-driver %O %A %B %P");
     run_git(&dir, &["config", "merge.legend.driver", &driver_cmd]);
 

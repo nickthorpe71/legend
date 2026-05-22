@@ -57,7 +57,7 @@ both mutate it, git can't text-merge a binary file — register the
 substrate-aware merge driver in a fresh clone:
 
 ```bash
-./target/release/legend git-init
+./target/release/legend init
 ```
 
 That writes `git config --local merge.legend.driver` and adds the

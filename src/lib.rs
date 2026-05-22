@@ -42,54 +42,34 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: legend [--verbose|-v] <text>  # run one tick (auto-starts daemon)\n\
+            "usage: legend <text>           # run one tick (auto-starts daemon)\n\
              legend start                  # launch daemon in the background\n\
              legend stop                   # ask the daemon to exit cleanly\n\
              legend status                 # daemon pid, uptime, substrate sizes\n\
-             legend git-merge-driver …     # git invokes on .legend/*.lz4 conflict\n\
-             legend git-init               # register the merge driver in this repo\n\
-             \n\
-             --verbose / -v               also dump the bench-scored flat-frame view\n\
-             \n\
-             env: LEGEND_STATE_DIR        directory holding memory.lz4 / lock / port file\n\
-                  LEGEND_DAEMON_TTL       daemon idle timeout in seconds (default 300)\n\
-                  LEGEND_RESET=1          first-tick path skips loading the snapshot"
+             legend init                   # set up this repo for legend (merge driver, …)"
         );
         return Ok(());
     }
 
-    // Subcommand dispatch. Daemon verbs first, then git, then fall
+    // Subcommand dispatch. Daemon verbs first, then init, then fall
     // through to the tick path. `__daemon` is the private "run as
     // the daemon process" verb; `start` wraps it with detached spawn.
+    // `git-merge-driver` is invoked by git itself (registered via
+    // `legend init`); users never type it.
     match args[1].as_str() {
         "__daemon" => return daemon::serve(),
         "start" => return daemon_start(),
         "stop" => return daemon_stop(),
         "status" => return daemon_status(),
         "git-merge-driver" => return git_merge_driver(&args[2..]),
-        "git-init" => return git_init(),
+        "init" => return init(),
         _ => {}
     }
 
-    // Tick path: scan remaining args for the input text + flags.
-    // First non-flag arg wins as the input; `--verbose` / `-v` can
-    // appear anywhere.
-    let mut verbose = false;
-    let mut input_text: Option<String> = None;
-    for arg in args.iter().skip(1) {
-        match arg.as_str() {
-            "--verbose" | "-v" => verbose = true,
-            s if input_text.is_none() => input_text = Some(s.to_string()),
-            _ => {} // ignore trailing positional args
-        }
-    }
-    let input_text = match input_text {
-        Some(t) => t,
-        None => {
-            eprintln!("usage: legend [--verbose|-v] <text>");
-            return Ok(());
-        }
-    };
+    // Tick path: first positional arg is the input text; trailing
+    // positional args are ignored. `args.len() >= 2` is guaranteed
+    // by the usage-banner short-circuit above.
+    let input_text = args[1].clone();
 
     // Default tick path goes through the daemon: auto-start if not
     // running, send a `Tick` request, print the response summary.
@@ -102,7 +82,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     //     daemon already holds the substrate; resetting would require
     //     stopping it, which is a separate user action)
     if env::var_os("LEGEND_INPROC").is_none() && env::var_os("LEGEND_RESET").is_none() {
-        return tick_via_daemon(&input_text, verbose);
+        return tick_via_daemon(&input_text);
     }
 
     let wall_clock = SystemTime::now();
@@ -253,9 +233,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     stage_at("assemble frame (Step 12)", &mut mark);
     print_step12(&frame, &hg);
-    if verbose {
-        print_flat_frame(&frame, &hg);
-    }
+    print_flat_frame(&frame, &hg);
 
     let dump_path = Path::new("inspect/last_run.md");
     fs::create_dir_all(dump_path.parent().unwrap())?;
@@ -322,14 +300,20 @@ pub fn git_merge_driver(args: &[String]) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// Configure the running git repo to use Legend's merge driver
-/// for `.legend/memory.lz4` conflicts. Writes:
+/// Set up the current git repo to use Legend. Today this only
+/// registers the substrate-aware merge driver for `.legend/memory.lz4`
+/// conflicts; future work will also drop the cmp/agent files (CLAUDE.md
+/// integration, agent harness configs) into the repo.
+///
+/// Each setup step is idempotent — re-running is safe.
+pub fn init() -> Result<(), Box<dyn std::error::Error>> {
+    init_merge_driver()
+}
+
+/// Register Legend's merge driver for `.legend/memory.lz4`. Writes:
 ///   - `git config --local merge.legend.driver "<this-binary> git-merge-driver %O %A %B %P"`
 ///   - `.gitattributes` line `.legend/memory.lz4 merge=legend`
-///
-/// Idempotent: re-running it overwrites the existing config entries
-/// rather than duplicating them.
-pub fn git_init() -> Result<(), Box<dyn std::error::Error>> {
+fn init_merge_driver() -> Result<(), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
     let driver_cmd = format!("{} git-merge-driver %O %A %B %P", exe.display());
     let status = std::process::Command::new("git")
@@ -340,7 +324,6 @@ pub fn git_init() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("✓ registered merge.legend.driver = {driver_cmd}");
 
-    // .gitattributes — append the rule if not already present.
     let attrs_path = std::path::Path::new(".gitattributes");
     let existing = fs::read_to_string(attrs_path).unwrap_or_default();
     let rule = ".legend/memory.lz4 merge=legend";
@@ -356,10 +339,6 @@ pub fn git_init() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("✓ .gitattributes already has `{rule}`");
     }
-
-    println!(
-        "\nTo confirm: `git config --local merge.legend.driver` should print:\n  {driver_cmd}"
-    );
     Ok(())
 }
 
@@ -427,11 +406,11 @@ fn daemon_status() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Auto-start-on-tick path. Connect to a running daemon (spawn one
-/// if missing), send `Tick { input }`, print a compact summary of
-/// the returned frame. When `verbose`, also dump the bench-scored
-/// flat-frame string at the end so the CLI shows exactly what a
-/// downstream verbalizer (or the SubEM bench) would consume.
-fn tick_via_daemon(input: &str, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
+/// if missing), send `Tick { input }`, print the returned frame —
+/// compact summary, structured frame contents, and the bench-scored
+/// flat-frame view (the same string a downstream verbalizer or the
+/// SubEM bench consumes).
+fn tick_via_daemon(input: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = daemon::connect_or_start()?;
     daemon::write_frame(
         &mut stream,
@@ -458,9 +437,7 @@ fn tick_via_daemon(input: &str, verbose: bool) -> Result<(), Box<dyn std::error:
             print_tick_summary(&frame, elements, relations);
             if let Some(hg) = hg.as_ref() {
                 print_frame_contents(&frame, hg);
-                if verbose {
-                    print_flat_frame(&frame, hg);
-                }
+                print_flat_frame(&frame, hg);
             }
             Ok(())
         }
