@@ -286,25 +286,24 @@ fn main() {
         );
         let top_k = 3.min(f.focused_relations.len());
         for ra in f.focused_relations.iter().take(top_k) {
-            let r = &hg.relations[ra.relation.0 as usize];
+            let r = &ra.relation;
             let subj = r
                 .attributes
                 .iter()
-                .find(|a| a.name == hg.subject_attr)
-                .and_then(|a| match a.value {
-                    legend::types::Term::Element(e) => {
-                        hg.elements[e.0 as usize].names.first().cloned()
-                    }
+                .find(|a| a.name.name == "subject")
+                .and_then(|a| match &a.value {
+                    legend::types::ResolvedTerm::Element(e) => Some(e.name.clone()),
                     _ => None,
                 })
                 .unwrap_or_default();
+            let defeasible = r.status == RelationStatus::Defeasible;
             println!(
                 "      R{:<5} {:<22} act={:.3}  status={:?}  defeasible={}",
-                ra.relation.0,
+                r.id.0,
                 truncate(&subj, 22),
                 ra.activation,
                 r.status,
-                ra.is_defeasible,
+                defeasible,
             );
         }
     }

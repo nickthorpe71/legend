@@ -133,18 +133,19 @@ fn v0_pipeline_two_tick_acceptance() {
     );
 
     // ── Contract 3: superseded relations flipped to Superseded. ───
-    for &rid in &frame2.superseded {
+    for r in &frame2.superseded {
         assert_eq!(
-            hg.relations[rid.0 as usize].status,
+            r.status,
             RelationStatus::Superseded,
-            "superseded relation {rid:?} should carry Superseded status",
+            "superseded relation {:?} should carry Superseded status",
+            r.id,
         );
     }
 
     // ── Contract 4: status filter — no Superseded/Retracted in
     //                focused_relations. ──────────────────────────────
     for ra in &frame2.focused_relations {
-        let s = hg.relations[ra.relation.0 as usize].status;
+        let s = ra.relation.status;
         assert!(
             matches!(
                 s,
@@ -152,8 +153,6 @@ fn v0_pipeline_two_tick_acceptance() {
             ),
             "frame must never include status={s:?}",
         );
-        // is_defeasible mirrors status.
-        assert_eq!(ra.is_defeasible, s == RelationStatus::Defeasible);
     }
 
     // ── Contract 5: RRF scores monotonically descending within
@@ -163,8 +162,8 @@ fn v0_pipeline_two_tick_acceptance() {
     //                but each group individually is. ────────────────
     let mut in_cache_group = true;
     for w in frame2.focused_relations.windows(2) {
-        let a_cache = is_current_cache(&hg, w[0].relation);
-        let b_cache = is_current_cache(&hg, w[1].relation);
+        let a_cache = is_current_cache(&hg, w[0].relation.id);
+        let b_cache = is_current_cache(&hg, w[1].relation.id);
         if a_cache && !b_cache {
             in_cache_group = false;
             continue; // transition between groups; score relation doesn't apply
@@ -185,28 +184,30 @@ fn v0_pipeline_two_tick_acceptance() {
     let focused_ids: std::collections::HashSet<_> = frame2
         .focused_relations
         .iter()
-        .map(|ra| ra.relation)
+        .map(|ra| ra.relation.id)
         .collect();
-    for &prior in &frame2.superseded {
+    let history_ids: std::collections::HashSet<_> =
+        frame2.history.iter().map(|r| r.id).collect();
+    for prior in &frame2.superseded {
         assert!(
-            !focused_ids.contains(&prior),
-            "Superseded {prior:?} must NOT be in focused_relations",
+            !focused_ids.contains(&prior.id),
+            "Superseded {:?} must NOT be in focused_relations",
+            prior.id,
         );
         assert!(
-            frame2.history.contains(&prior),
-            "Superseded {prior:?} should land in frame.history",
+            history_ids.contains(&prior.id),
+            "Superseded {:?} should land in frame.history",
+            prior.id,
         );
     }
 
     // ── Contract 7: derived_from meta-relations populate
     //                supporting_claims. ───────────────────────────────
     let derived_from_attr = hg.by_name["derived_from"][0];
-    let any_derived = frame2.supporting_claims.iter().any(|&rid| {
-        hg.relations[rid.0 as usize]
-            .attributes
-            .iter()
-            .any(|a| a.name == derived_from_attr)
-    });
+    let any_derived = frame2
+        .supporting_claims
+        .iter()
+        .any(|r| r.attributes.iter().any(|a| a.name.id == derived_from_attr));
     assert!(
         any_derived,
         "tick 2's cache should carry a derived_from supporting_claim",
@@ -225,7 +226,8 @@ fn v0_pipeline_two_tick_acceptance() {
     //                must appear in relations_by_element with the
     //                relation present in their bucket. ──────────────
     for ra in &frame2.focused_relations {
-        let r = &hg.relations[ra.relation.0 as usize];
+        let rid = ra.relation.id;
+        let r = &hg.relations[rid.0 as usize];
         for attr in &r.attributes {
             if let legend::types::Term::Element(e) = attr.value {
                 let bucket = hg
@@ -233,9 +235,8 @@ fn v0_pipeline_two_tick_acceptance() {
                     .get(&e)
                     .unwrap_or_else(|| panic!("element {e:?} missing from index"));
                 assert!(
-                    bucket.contains(&ra.relation),
-                    "relations_by_element[{e:?}] should contain {:?}",
-                    ra.relation,
+                    bucket.contains(&rid),
+                    "relations_by_element[{e:?}] should contain {rid:?}",
                 );
             }
         }

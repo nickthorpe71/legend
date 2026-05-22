@@ -501,11 +501,12 @@ pub struct ConsciousAttentionFrame {
     /// The active frame at the time this tick ran. `None` when no frame
     /// is active and the input doesn't establish one. Inherited from
     /// `recent_focus` or set by a frame-shifting cue in Step 4.
-    pub active_frame: Option<ElementId>,
+    pub active_frame: Option<ResolvedElement>,
 
     /// Regions that lit up during routing. Union of per-window
-    /// `route_regions(...)` results from Step 4.
-    pub active_regions: Vec<RegionActivation>,
+    /// `route_regions(...)` results from Step 4. Denormalized for the
+    /// frame; internal pipeline still uses `RegionActivation`.
+    pub active_regions: Vec<ActiveRegion>,
 
     /// The focused-relations ranked list, fused via RRF (Reciprocal
     /// Rank Fusion) over Dense (path-reinforced focus set), Sparse
@@ -519,12 +520,12 @@ pub struct ConsciousAttentionFrame {
     /// For each focused R: meta-relations of `derived_from` / `source`
     /// type, walked via `meta_relations_by_subject` index. Lets the
     /// caller see *why* each focused relation is in the frame.
-    pub supporting_claims: Vec<ClaimRef>,
+    pub supporting_claims: Vec<ResolvedRelation>,
 
     /// For each focused R: the supersession chain. Walked via
     /// `meta_relations_by_subject` filtered to `supersedes` attributes.
     /// Includes Superseded relations excluded from `focused_relations`.
-    pub history: Vec<ClaimRef>,
+    pub history: Vec<ResolvedRelation>,
 
     /// Per-tick uncertainty signals pushed by Steps 4, 5, 6, 8, 9.
     /// Step 12 collects from a per-tick buffer and surfaces them so the
@@ -532,15 +533,15 @@ pub struct ConsciousAttentionFrame {
     /// coreference, low-confidence extraction, or detected contradictions.
     pub uncertainty: Vec<UncertaintySignal>,
 
-    /// ElementIds minted during this tick. Recorded by Steps 7 and 8
+    /// Elements minted during this tick. Recorded by Steps 7 and 8
     /// into a per-tick write buffer. Overlaps with `focused_relations`
     /// in ID space — exists as a flat-list shortcut for "what did this
     /// tick change?" inspection.
-    pub durable_writes: Vec<ElementId>,
+    pub durable_writes: Vec<ResolvedElement>,
 
-    /// RelationIds whose status flipped to Superseded this tick.
+    /// Relations whose status flipped to Superseded this tick.
     /// Recorded by Step 9. Same shortcut role as `durable_writes`.
-    pub superseded: Vec<RelationId>,
+    pub superseded: Vec<ResolvedRelation>,
 
     /// Live `current_<property>` caches for entities this tick
     /// referenced. The consumer LLM should treat these as the
@@ -550,7 +551,7 @@ pub struct ConsciousAttentionFrame {
     /// the focused list. Filtered to `Asserted` / `Entailed`
     /// / `Defeasible`; ordered by `referenced_elements` order with
     /// caches deduplicated.
-    pub current_state: Vec<RelationId>,
+    pub current_state: Vec<ResolvedRelation>,
 
     /// Advisories the caller can act on after the frame returns.
     /// `EnqueueReplay { kind }` schedules a background sweep;
@@ -559,10 +560,67 @@ pub struct ConsciousAttentionFrame {
     pub next_actions: Vec<AttentionAction>,
 }
 
-/// Type alias used in the frame for clarity — these are RelationIds
-/// being treated as references to specific *claims*, not as plain
-/// graph handles. Same compiler representation; just naming.
-pub type ClaimRef = RelationId;
+// ─────────────────────────────────────────────────────────────────────────────
+// Resolved frame primitives — denormalized snapshots for consumers
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The frame is the entire observable surface of a tick (§docs/frame-as-surface.md).
+// Every consumer reads only the frame; no consumer reaches behind it into
+// `Hypergraph`. These types carry the canonical name (and, for relations,
+// the full attribute snapshot + status + confidence) inline so a consumer
+// can render, score, or transmit the frame without substrate access.
+//
+// Denormalization happens once during frame assembly (Step 12); it's
+// library work, not consumer work.
+
+/// An element with its canonical name attached. The id is preserved so
+/// downstream code that wants to correlate frame entries with substrate
+/// state (tests, dev tools) can still do so — but consumers shouldn't
+/// need it for ordinary use.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolvedElement {
+    pub id: ElementId,
+    pub name: String,
+}
+
+/// A relation slot's value, denormalized. `Element` carries the resolved
+/// element name; `Relation` keeps the bare id because relation-valued
+/// attributes (meta-relations) are expanded in their own buckets, not
+/// inlined recursively (that risks exponential blowup on cycles).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ResolvedTerm {
+    Element(ResolvedElement),
+    Relation(RelationId),
+}
+
+/// One slot of a relation, denormalized: the slot name (an Element)
+/// and the value resolved.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolvedAttribute {
+    pub name: ResolvedElement,
+    pub value: ResolvedTerm,
+}
+
+/// A relation snapshot: id, every attribute resolved, plus status and
+/// confidence so consumers can filter / weight without a separate
+/// lookup.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolvedRelation {
+    pub id: RelationId,
+    pub attributes: Vec<ResolvedAttribute>,
+    pub status: RelationStatus,
+    pub confidence: f32,
+}
+
+/// One region that lit up during routing, as exposed on the frame.
+/// Mirrors the internal pipeline's `RegionActivation` but carries the
+/// resolved name. Kept separate so the internal Step 4 → Step 5 path
+/// doesn't pay the name-resolution cost on every routing decision.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActiveRegion {
+    pub region: ResolvedElement,
+    pub activation: f32,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Policy — tuning knobs every pipeline step reads
@@ -969,15 +1027,14 @@ pub struct NewRegion {
 /// One relation in the frame's ranked focus list. `activation`
 /// carries the Step 12 RRF-fused score (NOT the raw
 /// `stats.activation` post-decay — those drive the RRF input
-/// ranking, not the output). `is_defeasible` mirrors
-/// `status == Defeasible` so callers can filter without an
-/// extra lookup; consumers typically present Defeasible relations
-/// with reduced weight or in a separate tray.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+/// ranking, not the output). `relation` is denormalized: id +
+/// resolved attributes + status + confidence inline, so consumers
+/// can render or filter without substrate access (e.g. for
+/// `is_defeasible`: `ra.relation.status == RelationStatus::Defeasible`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RelationActivation {
-    pub relation: RelationId,
+    pub relation: ResolvedRelation,
     pub activation: f32,
-    pub is_defeasible: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

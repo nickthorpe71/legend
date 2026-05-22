@@ -331,15 +331,14 @@ struct FlatBundle {
     annotated: String,
 }
 
-fn flatten_frame_with_substrate(
-    frame: &ConsciousAttentionFrame,
-    snapshot_path: &Path,
-) -> std::io::Result<FlatBundle> {
-    let hg = legend::persistence::load(snapshot_path).map_err(std::io::Error::other)?;
-    Ok(FlatBundle {
-        raw: legend::render::flatten_attention_frame(frame, &hg),
-        annotated: legend::render::render_flat_frame_annotated(frame, &hg),
-    })
+/// Render both views (raw for scoring, annotated for verbose dumps)
+/// from the frame alone. The frame is self-contained
+/// (§docs/frame-as-surface.md), so no substrate read here.
+fn flatten_frame(frame: &ConsciousAttentionFrame) -> FlatBundle {
+    FlatBundle {
+        raw: legend::render::flatten_attention_frame(frame),
+        annotated: legend::render::render_flat_frame_annotated(frame),
+    }
 }
 
 /// SubEM: case-insensitive substring of any gold answer in the
@@ -411,7 +410,7 @@ fn with_state_dir<T>(workspace: &Path, f: impl FnOnce() -> T) -> T {
     f()
 }
 
-fn send_tick(input: &str) -> std::io::Result<(ConsciousAttentionFrame, usize, usize)> {
+fn send_tick(input: &str) -> std::io::Result<ConsciousAttentionFrame> {
     let mut stream = daemon::try_connect()?;
     daemon::write_frame(
         &mut stream,
@@ -421,12 +420,25 @@ fn send_tick(input: &str) -> std::io::Result<(ConsciousAttentionFrame, usize, us
     )?;
     let resp: daemon::DaemonResponse = daemon::read_frame(&mut stream)?;
     match resp {
-        daemon::DaemonResponse::TickResult {
-            frame,
-            elements,
-            relations,
-        } => Ok((*frame, elements, relations)),
+        daemon::DaemonResponse::Frame(frame) => Ok(*frame),
         daemon::DaemonResponse::Error { message } => Err(std::io::Error::other(message)),
+        other => Err(std::io::Error::other(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+/// Snapshot substrate sizes — useful for bench summary lines that want
+/// to report "substrate grew from X to Y elements over this run."
+/// Separate round-trip because substrate size is not on the frame.
+fn fetch_substrate_sizes() -> std::io::Result<(usize, usize)> {
+    let mut stream = daemon::try_connect()?;
+    daemon::write_frame(&mut stream, &daemon::DaemonRequest::Status)?;
+    let resp: daemon::DaemonResponse = daemon::read_frame(&mut stream)?;
+    match resp {
+        daemon::DaemonResponse::Status {
+            elements, relations, ..
+        } => Ok((elements, relations)),
         other => Err(std::io::Error::other(format!(
             "unexpected response: {other:?}"
         ))),
@@ -545,10 +557,11 @@ fn main() -> std::io::Result<()> {
             let q = &row.questions[qi];
             let golds = row.answers.get(qi).cloned().unwrap_or_default();
             let t1 = Instant::now();
-            let (frame, elements, relations) = send_tick(q)
+            let frame = send_tick(q)
                 .map_err(|e| std::io::Error::other(format!("query tick failed: {e}")))?;
             let query_secs = t1.elapsed().as_secs_f64();
-            let bundle = flatten_frame_with_substrate(&frame, &snapshot_path)?;
+            let (elements, relations) = fetch_substrate_sizes().unwrap_or((0, 0));
+            let bundle = flatten_frame(&frame);
             let hit = subem_hit(&bundle.raw, &golds);
             let substrate_only = if hit.is_none() {
                 gold_in_substrate(&snapshot_path, &golds)?

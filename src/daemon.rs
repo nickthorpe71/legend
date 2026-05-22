@@ -59,15 +59,11 @@ pub enum DaemonRequest {
 /// the other variants.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum DaemonResponse {
-    /// Successful tick. `frame` is the full Step 12 output, not the
-    /// truncated `print_step12` preview. `elements` and `relations`
-    /// snapshot the substrate sizes post-tick so the client can
-    /// surface growth without a separate Status round-trip.
-    TickResult {
-        frame: Box<ConsciousAttentionFrame>,
-        elements: usize,
-        relations: usize,
-    },
+    /// Successful tick. The frame is the entire observable surface
+    /// (§docs/frame-as-surface.md) — it ships denormalized so the
+    /// client renders without `Hypergraph` access. Substrate-size
+    /// counts move to `Status` for consumers that want them.
+    Frame(Box<ConsciousAttentionFrame>),
     /// Daemon acknowledged `Stop` and is exiting.
     Stopping,
     Status {
@@ -259,11 +255,7 @@ fn handle_one(
     };
     let resp = match req {
         DaemonRequest::Tick { input } => match tick(hg, &input, snapshot_path) {
-            Ok(frame) => DaemonResponse::TickResult {
-                frame: Box::new(frame),
-                elements: hg.elements.len(),
-                relations: hg.relations.len(),
-            },
+            Ok(frame) => DaemonResponse::Frame(Box::new(frame)),
             Err(e) => DaemonResponse::Error {
                 message: format!("tick failed: {e}"),
             },

@@ -22,7 +22,7 @@ use legend::steps::hebbian::{derive_active_frame, hebbian_and_salience};
 use legend::steps::route_regions::route_regions;
 use legend::steps::run_extractors::run_extractors;
 use legend::steps::supersede::supersede;
-use legend::types::{AttentionAction, ConsciousAttentionFrame, Hypergraph, Term};
+use legend::types::{AttentionAction, ConsciousAttentionFrame};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -306,8 +306,8 @@ fn main() {
             &policy,
         );
 
-        print_turn(i + 1, turn, &frame, &hg, &step8, &step9);
-        check_turn(i + 1, turn, &frame, &hg, &mut failures);
+        print_turn(i + 1, turn, &frame, &step8, &step9);
+        check_turn(i + 1, turn, &frame, &mut failures);
 
         frames.push(frame);
     }
@@ -356,7 +356,6 @@ fn print_turn(
     n: usize,
     turn: &Turn,
     frame: &ConsciousAttentionFrame,
-    hg: &Hypergraph,
     step8: &legend::steps::build_relations::Step8Output,
     step9: &legend::steps::supersede::Step9Output,
 ) {
@@ -382,7 +381,8 @@ fn print_turn(
     );
     let active_frame_name = frame
         .active_frame
-        .and_then(|eid| hg.elements[eid.0 as usize].names.first().cloned())
+        .as_ref()
+        .map(|e| e.name.clone())
         .unwrap_or_else(|| "None".to_string());
     println!(
         "  frame: focused={} supporting={} history={} current_state={} active_frame={:?} uncertainty={:?} next_actions={}",
@@ -402,25 +402,26 @@ fn print_turn(
             frame.focused_relations.len()
         );
         for ra in frame.focused_relations.iter().take(show) {
-            print_relation(hg, ra.relation, ra.activation, ra.is_defeasible);
+            let defeasible = ra.relation.status == legend::types::RelationStatus::Defeasible;
+            print_relation(&ra.relation, ra.activation, defeasible);
         }
     }
     if !frame.supporting_claims.is_empty() {
         println!("  supporting (top 3):");
-        for &rid in frame.supporting_claims.iter().take(3) {
-            print_relation(hg, rid, 0.0, false);
+        for r in frame.supporting_claims.iter().take(3) {
+            print_relation(r, 0.0, false);
         }
     }
     if !frame.history.is_empty() {
         println!("  history:");
-        for &rid in frame.history.iter().take(4) {
-            print_relation(hg, rid, 0.0, false);
+        for r in frame.history.iter().take(4) {
+            print_relation(r, 0.0, false);
         }
     }
     if !frame.current_state.is_empty() {
         println!("  current_state:");
-        for &rid in frame.current_state.iter().take(6) {
-            print_relation(hg, rid, 0.0, false);
+        for r in frame.current_state.iter().take(6) {
+            print_relation(r, 0.0, false);
         }
     }
     if !frame.next_actions.is_empty() {
@@ -435,10 +436,9 @@ fn print_turn(
     println!();
 }
 
-fn print_relation(hg: &Hypergraph, rid: legend::types::RelationId, score: f32, defeasible: bool) {
-    let r = &hg.relations[rid.0 as usize];
-    let subj = relation_subject_name(hg, rid).unwrap_or_else(|| "?".to_string());
-    let (attr, val) = relation_other_slot(hg, rid).unwrap_or_default();
+fn print_relation(r: &legend::types::ResolvedRelation, score: f32, defeasible: bool) {
+    let subj = relation_subject_name(r).unwrap_or_else(|| "?".to_string());
+    let (attr, val) = relation_other_slot(r).unwrap_or_default();
     let score_str = if score > 0.0 {
         format!(" act={score:.4}")
     } else {
@@ -447,7 +447,7 @@ fn print_relation(hg: &Hypergraph, rid: legend::types::RelationId, score: f32, d
     let def_str = if defeasible { " [Def]" } else { "" };
     println!(
         "    R{:<5} {:<14} {:<22} → {:<14} {:?}{score_str}{def_str}",
-        rid.0,
+        r.id.0,
         truncate(&subj, 14),
         truncate(&attr, 22),
         truncate(&val, 14),
@@ -455,48 +455,34 @@ fn print_relation(hg: &Hypergraph, rid: legend::types::RelationId, score: f32, d
     );
 }
 
-fn relation_subject_name(hg: &Hypergraph, rid: legend::types::RelationId) -> Option<String> {
-    let r = &hg.relations[rid.0 as usize];
+fn is_subject_attr(name: &str) -> bool {
+    name == "subject" || name == "target"
+}
+
+fn relation_subject_name(r: &legend::types::ResolvedRelation) -> Option<String> {
     for attr in &r.attributes {
-        if attr.name == hg.subject_attr {
-            return match attr.value {
-                Term::Element(e) => hg.elements[e.0 as usize].names.first().cloned(),
-                Term::Relation(rid) => Some(format!("R{}", rid.0)),
-            };
+        if !is_subject_attr(&attr.name.name) {
+            continue;
         }
-        if attr.name == hg.target_attr {
-            return match attr.value {
-                Term::Element(e) => hg.elements[e.0 as usize].names.first().cloned(),
-                Term::Relation(rid) => Some(format!("→R{}", rid.0)),
-            };
-        }
+        let arrow = if attr.name.name == "target" { "→" } else { "" };
+        return match &attr.value {
+            legend::types::ResolvedTerm::Element(e) => Some(format!("{arrow}{}", e.name)),
+            legend::types::ResolvedTerm::Relation(rid) => Some(format!("{arrow}R{}", rid.0)),
+        };
     }
     None
 }
 
-fn relation_other_slot(
-    hg: &Hypergraph,
-    rid: legend::types::RelationId,
-) -> Option<(String, String)> {
-    let r = &hg.relations[rid.0 as usize];
+fn relation_other_slot(r: &legend::types::ResolvedRelation) -> Option<(String, String)> {
     for attr in &r.attributes {
-        if attr.name == hg.subject_attr || attr.name == hg.target_attr {
+        if is_subject_attr(&attr.name.name) {
             continue;
         }
-        let attr_name = hg.elements[attr.name.0 as usize]
-            .names
-            .first()
-            .cloned()
-            .unwrap_or_default();
-        let val = match attr.value {
-            Term::Element(e) => hg.elements[e.0 as usize]
-                .names
-                .first()
-                .cloned()
-                .unwrap_or_default(),
-            Term::Relation(rid) => format!("R{}", rid.0),
+        let val = match &attr.value {
+            legend::types::ResolvedTerm::Element(e) => e.name.clone(),
+            legend::types::ResolvedTerm::Relation(rid) => format!("R{}", rid.0),
         };
-        return Some((attr_name, val));
+        return Some((attr.name.name.clone(), val));
     }
     None
 }
@@ -505,18 +491,15 @@ fn check_turn(
     n: usize,
     turn: &Turn,
     frame: &ConsciousAttentionFrame,
-    hg: &Hypergraph,
     failures: &mut Vec<String>,
 ) {
     for needle in turn.must_focus {
         let lower = needle.to_ascii_lowercase();
         let hit = frame.focused_relations.iter().any(|ra| {
-            let r = &hg.relations[ra.relation.0 as usize];
-            r.attributes.iter().any(|a| match a.value {
-                Term::Element(e) => hg.elements[e.0 as usize]
-                    .names
-                    .iter()
-                    .any(|n| n.to_ascii_lowercase().contains(&lower)),
+            ra.relation.attributes.iter().any(|a| match &a.value {
+                legend::types::ResolvedTerm::Element(e) => {
+                    e.name.to_ascii_lowercase().contains(&lower)
+                }
                 _ => false,
             })
         });

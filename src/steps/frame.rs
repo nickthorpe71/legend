@@ -17,13 +17,55 @@ use std::collections::HashSet;
 
 use crate::steps::build_relations::Step8Output;
 use crate::steps::hebbian::Step10Output;
-use crate::steps::print_util::truncate;
 use crate::steps::route_regions::RouteResult;
 use crate::steps::supersede::Step9Output;
 use crate::types::{
-    AttentionAction, ConsciousAttentionFrame, Hypergraph, Intent, Policy, RelationActivation,
-    RelationId, RelationStatus, ReplayKind, Term, UncertaintySignal,
+    ActiveRegion, AttentionAction, ConsciousAttentionFrame, ElementId, Hypergraph, Intent, Policy,
+    RegionActivation, RelationActivation, RelationId, RelationStatus, ReplayKind, ResolvedAttribute,
+    ResolvedElement, ResolvedRelation, ResolvedTerm, Term, UncertaintySignal,
 };
+
+// ─── Denormalization helpers ──────────────────────────────────────────
+//
+// The frame is the entire observable surface (§docs/frame-as-surface.md).
+// Every ID-bearing field on it is resolved to a name (+ relation
+// metadata) before the frame leaves Step 12. The hot path that benefits
+// from these is `focused_relations` → `ResolvedRelation`; the rest
+// reuse the same helpers.
+
+fn resolve_element(hg: &Hypergraph, eid: ElementId) -> ResolvedElement {
+    let name = hg
+        .elements
+        .get(eid.0 as usize)
+        .and_then(|e| e.names.first().cloned())
+        .unwrap_or_else(|| format!("e{}", eid.0));
+    ResolvedElement { id: eid, name }
+}
+
+fn resolve_term(hg: &Hypergraph, term: Term) -> ResolvedTerm {
+    match term {
+        Term::Element(eid) => ResolvedTerm::Element(resolve_element(hg, eid)),
+        Term::Relation(rid) => ResolvedTerm::Relation(rid),
+    }
+}
+
+fn resolve_relation(hg: &Hypergraph, rid: RelationId) -> ResolvedRelation {
+    let r = &hg.relations[rid.0 as usize];
+    let attributes = r
+        .attributes
+        .iter()
+        .map(|a| ResolvedAttribute {
+            name: resolve_element(hg, a.name),
+            value: resolve_term(hg, a.value),
+        })
+        .collect();
+    ResolvedRelation {
+        id: rid,
+        attributes,
+        status: r.status,
+        confidence: r.stats.confidence,
+    }
+}
 
 /// Reciprocal Rank Fusion constant per Cormack, Clarke & Buettcher,
 /// SIGIR 2009. Their paper-recommended default. Larger `k` softens
@@ -137,9 +179,8 @@ pub fn assemble_frame(
     let mut focused_relations: Vec<RelationActivation> = merged
         .into_iter()
         .map(|(rid, score)| RelationActivation {
-            relation: rid,
+            relation: resolve_relation(hg, rid),
             activation: score,
-            is_defeasible: hg.relations[rid.0 as usize].status == RelationStatus::Defeasible,
         })
         .collect();
 
@@ -153,8 +194,9 @@ pub fn assemble_frame(
     // `stats.activation` never accumulates and the dense ranker
     // falls back to relation-id order (older wins). Stable sort
     // preserves RRF order within each group.
-    focused_relations
-        .sort_by_key(|ra| !crate::steps::build_relations::is_cache_relation(hg, ra.relation) as u8);
+    focused_relations.sort_by_key(|ra| {
+        !crate::steps::build_relations::is_cache_relation(hg, ra.relation.id) as u8
+    });
 
     // ── supporting_claims + history ─────────────────────────────
     // Walk meta_relations_by_subject[R] for each focused R; filter
@@ -175,7 +217,7 @@ pub fn assemble_frame(
     let mut history: Vec<RelationId> = Vec::new();
 
     for ra in &focused_relations {
-        let Some(metas) = hg.meta_relations_by_subject.get(&ra.relation) else {
+        let Some(metas) = hg.meta_relations_by_subject.get(&ra.relation.id) else {
             continue;
         };
         for &mid in metas {
@@ -305,116 +347,49 @@ pub fn assemble_frame(
         }
     }
 
+    // ── Denormalization pass ────────────────────────────────────
+    // Every ID still in flight gets resolved so the frame leaves
+    // Step 12 self-contained (§docs/frame-as-surface.md).
+    let active_frame_resolved = active_frame.map(|eid| resolve_element(hg, eid));
+    let active_regions_resolved: Vec<ActiveRegion> = route
+        .active_regions
+        .iter()
+        .map(|ra: &RegionActivation| ActiveRegion {
+            region: resolve_element(hg, ra.region),
+            activation: ra.activation,
+        })
+        .collect();
+    let supporting_claims_resolved: Vec<ResolvedRelation> =
+        supporting_claims.iter().map(|&rid| resolve_relation(hg, rid)).collect();
+    let history_resolved: Vec<ResolvedRelation> =
+        history.iter().map(|&rid| resolve_relation(hg, rid)).collect();
+    let durable_writes_resolved: Vec<ResolvedElement> = step8
+        .minted_elements
+        .iter()
+        .map(|&eid| resolve_element(hg, eid))
+        .collect();
+    let superseded_resolved: Vec<ResolvedRelation> = step9
+        .superseded
+        .iter()
+        .map(|&rid| resolve_relation(hg, rid))
+        .collect();
+    let current_state_resolved: Vec<ResolvedRelation> =
+        current_state.iter().map(|&rid| resolve_relation(hg, rid)).collect();
+
     ConsciousAttentionFrame {
         tick: hg.clock,
         input_echo: input_text.to_string(),
         intent: *intent,
-        active_frame,
-        active_regions: route.active_regions.clone(),
+        active_frame: active_frame_resolved,
+        active_regions: active_regions_resolved,
         focused_relations,
-        supporting_claims,
-        history,
+        supporting_claims: supporting_claims_resolved,
+        history: history_resolved,
         uncertainty,
-        durable_writes: step8.minted_elements.clone(),
-        superseded: step9.superseded.clone(),
-        current_state,
+        durable_writes: durable_writes_resolved,
+        superseded: superseded_resolved,
+        current_state: current_state_resolved,
         next_actions,
-    }
-}
-
-/// Hand-rolled debug print so the dev-time tick output shows the
-/// frame the caller would see. Mirrors `print_step11`. Top-K is
-/// hardcoded to 5 — small enough to read at a glance.
-pub fn print_step12(frame: &ConsciousAttentionFrame, hg: &Hypergraph) {
-    println!();
-    println!("attention frame (Step 12)");
-    println!("  tick                  {}", frame.tick.0);
-    println!(
-        "  active_frame          {}",
-        frame
-            .active_frame
-            .map(|e| hg.elements[e.0 as usize]
-                .names
-                .first()
-                .cloned()
-                .unwrap_or_else(|| format!("?{}?", e.0)))
-            .unwrap_or_else(|| "None".to_string()),
-    );
-    println!("  active_regions        {}", frame.active_regions.len());
-    println!("  focused_relations     {}", frame.focused_relations.len());
-    println!("  supporting_claims     {}", frame.supporting_claims.len());
-    println!("  history               {}", frame.history.len());
-    println!("  uncertainty           {:?}", frame.uncertainty);
-    println!("  durable_writes        {}", frame.durable_writes.len());
-    println!("  superseded            {}", frame.superseded.len());
-    println!("  current_state         {}", frame.current_state.len());
-    if !frame.next_actions.is_empty() {
-        println!("  next_actions          {}", frame.next_actions.len());
-        for action in &frame.next_actions {
-            match action {
-                AttentionAction::EnqueueReplay { kind } => {
-                    println!("    EnqueueReplay {{ kind: {kind:?} }}");
-                }
-                AttentionAction::FollowUpQuery(text) => {
-                    println!("    FollowUpQuery({text:?})");
-                }
-            }
-        }
-    }
-
-    if frame.focused_relations.is_empty() {
-        return;
-    }
-    println!();
-    println!(
-        "  {:<6} {:<10} {:<12} {:<22} {:<14} {:<12}",
-        "id", "rrf_score", "status", "subject", "attr", "value",
-    );
-    println!(
-        "  {:-<6} {:-<10} {:-<12} {:-<22} {:-<14} {:-<12}",
-        "", "", "", "", "", ""
-    );
-    for ra in frame.focused_relations.iter().take(5) {
-        let r = &hg.relations[ra.relation.0 as usize];
-        let subj = r
-            .attributes
-            .iter()
-            .find(|a| a.name == hg.subject_attr)
-            .and_then(|a| match a.value {
-                Term::Element(e) => hg.elements[e.0 as usize].names.first().cloned(),
-                _ => None,
-            })
-            .unwrap_or_default();
-        let (attr_name, val) = r
-            .attributes
-            .iter()
-            .find(|a| a.name != hg.subject_attr)
-            .map(|a| {
-                let an = hg.elements[a.name.0 as usize]
-                    .names
-                    .first()
-                    .cloned()
-                    .unwrap_or_default();
-                let v = match a.value {
-                    Term::Element(e) => hg.elements[e.0 as usize]
-                        .names
-                        .first()
-                        .cloned()
-                        .unwrap_or_default(),
-                    Term::Relation(rid) => format!("R{}", rid.0),
-                };
-                (an, v)
-            })
-            .unwrap_or_default();
-        println!(
-            "  R{:<5} {:>9.5}  {:<12} {:<22} {:<14} {:<12}",
-            ra.relation.0,
-            ra.activation,
-            format!("{:?}", r.status),
-            truncate(&subj, 22),
-            truncate(&attr_name, 14),
-            truncate(&val, 12),
-        );
     }
 }
 
@@ -562,7 +537,8 @@ mod tests {
             &s10,
             &policy,
         );
-        assert_eq!(frame.durable_writes, s8.minted_elements);
+        let durable_ids: Vec<_> = frame.durable_writes.iter().map(|e| e.id).collect();
+        assert_eq!(durable_ids, s8.minted_elements);
         assert_eq!(frame.input_echo, "Sarah called me yesterday.");
         assert_eq!(frame.tick, hg.clock);
     }
@@ -592,22 +568,15 @@ mod tests {
         );
         assert!(!frame.focused_relations.is_empty());
         for ra in &frame.focused_relations {
-            let r = &hg.relations[ra.relation.0 as usize];
             assert!(
                 matches!(
-                    r.status,
+                    ra.relation.status,
                     RelationStatus::Asserted
                         | RelationStatus::Entailed
                         | RelationStatus::Defeasible,
                 ),
                 "frame should never include status={:?}",
-                r.status,
-            );
-            // is_defeasible flag mirrors status.
-            assert_eq!(
-                ra.is_defeasible,
-                r.status == RelationStatus::Defeasible,
-                "is_defeasible flag drift",
+                ra.relation.status,
             );
         }
     }
@@ -640,11 +609,11 @@ mod tests {
         let (caches, non_caches): (Vec<&RelationActivation>, Vec<&RelationActivation>) = frame
             .focused_relations
             .iter()
-            .partition(|ra| is_cache(ra.relation));
+            .partition(|ra| is_cache(ra.relation.id));
         // Caches come first in the focused_relations vec.
         let cache_count = caches.len();
         for ra in frame.focused_relations.iter().take(cache_count) {
-            assert!(is_cache(ra.relation));
+            assert!(is_cache(ra.relation.id));
         }
         for w in caches.windows(2) {
             assert!(w[0].activation >= w[1].activation);
@@ -683,12 +652,10 @@ mod tests {
         // At least one supporting_claim should exist (the
         // derived_from meta on a cache relation Step 9 minted).
         let derived_from_attr = hg.by_name["derived_from"][0];
-        let has_derived = frame.supporting_claims.iter().any(|&rid| {
-            hg.relations[rid.0 as usize]
-                .attributes
-                .iter()
-                .any(|a| a.name == derived_from_attr)
-        });
+        let has_derived = frame
+            .supporting_claims
+            .iter()
+            .any(|r| r.attributes.iter().any(|a| a.name.id == derived_from_attr));
         assert!(
             has_derived,
             "expected at least one derived_from supporting_claim; got {:?}",
@@ -728,7 +695,8 @@ mod tests {
             &s10_2,
             &policy,
         );
-        assert_eq!(frame.superseded, s9_2.superseded);
+        let superseded_ids: Vec<_> = frame.superseded.iter().map(|r| r.id).collect();
+        assert_eq!(superseded_ids, s9_2.superseded);
         assert!(
             !frame.superseded.is_empty(),
             "test prerequisite: tick 2 should supersede a prior",
@@ -900,14 +868,15 @@ mod tests {
         );
 
         // ── (a) frame.superseded mirrors Step 9. ───────────────────
-        assert_eq!(frame.superseded, s9_2.superseded);
+        let superseded_ids: Vec<_> = frame.superseded.iter().map(|r| r.id).collect();
+        assert_eq!(superseded_ids, s9_2.superseded);
 
         // ── (b) new cache lands in focused_relations as Asserted. ─
         let new_cache = *s9_2.cache_relations.first().unwrap();
         let focused_ids: Vec<RelationId> = frame
             .focused_relations
             .iter()
-            .map(|ra| ra.relation)
+            .map(|ra| ra.relation.id)
             .collect();
         assert!(
             focused_ids.contains(&new_cache),
@@ -916,17 +885,18 @@ mod tests {
         let new_cache_ra = frame
             .focused_relations
             .iter()
-            .find(|ra| ra.relation == new_cache)
+            .find(|ra| ra.relation.id == new_cache)
             .unwrap();
-        assert!(
-            !new_cache_ra.is_defeasible,
+        assert_ne!(
+            new_cache_ra.relation.status,
+            RelationStatus::Defeasible,
             "new cache should land Asserted, not Defeasible",
         );
 
         // ── (c) prior cache id appears in history (via the
         //        supersedes meta walked off the new cache). ────────
         assert!(
-            frame.history.contains(&prior_cache),
+            frame.history.iter().any(|r| r.id == prior_cache),
             "prior cache should be reachable through history; got {:?}",
             frame.history,
         );
@@ -934,12 +904,10 @@ mod tests {
         // ── (d) at least one supporting_claim is a derived_from
         //        meta pointing at the n-ary event Step 8 minted. ───
         let derived_from_attr = hg.by_name["derived_from"][0];
-        let any_derived = frame.supporting_claims.iter().any(|&rid| {
-            hg.relations[rid.0 as usize]
-                .attributes
-                .iter()
-                .any(|a| a.name == derived_from_attr)
-        });
+        let any_derived = frame
+            .supporting_claims
+            .iter()
+            .any(|r| r.attributes.iter().any(|a| a.name.id == derived_from_attr));
         assert!(
             any_derived,
             "expected derived_from meta in supporting_claims; got {:?}",

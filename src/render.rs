@@ -13,7 +13,8 @@
 //! down — at that point swap in the HTML viewer (planned).
 
 use crate::types::{
-    ConsciousAttentionFrame, ElementId, Hypergraph, RelationId, RelationStatus, Term,
+    ConsciousAttentionFrame, ElementId, Hypergraph, RelationId, RelationStatus, ResolvedRelation,
+    ResolvedTerm, Term,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
@@ -37,44 +38,35 @@ use std::fmt::Write as FmtWrite;
 /// SubEM bench scorer) would consume. For a human-readable variant
 /// with section headers and per-relation grouping, see
 /// [`render_flat_frame_annotated`].
-pub fn flatten_attention_frame(frame: &ConsciousAttentionFrame, hg: &Hypergraph) -> String {
+pub fn flatten_attention_frame(frame: &ConsciousAttentionFrame) -> String {
     let mut parts: Vec<String> = vec![frame.input_echo.clone()];
-    if let Some(eid) = frame.active_frame
-        && let Some(n) = hg.elements[eid.0 as usize].names.first()
-    {
-        parts.push(n.clone());
+    if let Some(e) = &frame.active_frame {
+        parts.push(e.name.clone());
     }
     let mut seen: HashSet<RelationId> = HashSet::new();
-    let mut push_rel = |rid: RelationId, parts: &mut Vec<String>| {
-        if !seen.insert(rid) {
+    let mut push_rel = |r: &ResolvedRelation, parts: &mut Vec<String>| {
+        if !seen.insert(r.id) {
             return;
         }
-        let r = &hg.relations[rid.0 as usize];
         for a in &r.attributes {
-            if let Some(an) = hg.elements[a.name.0 as usize].names.first() {
-                parts.push(an.clone());
-            }
-            match a.value {
-                Term::Element(eid) => {
-                    if let Some(n) = hg.elements[eid.0 as usize].names.first() {
-                        parts.push(n.clone());
-                    }
-                }
-                Term::Relation(rid) => parts.push(format!("R{}", rid.0)),
+            parts.push(a.name.name.clone());
+            match &a.value {
+                ResolvedTerm::Element(e) => parts.push(e.name.clone()),
+                ResolvedTerm::Relation(rid) => parts.push(format!("R{}", rid.0)),
             }
         }
     };
     for ra in &frame.focused_relations {
-        push_rel(ra.relation, &mut parts);
+        push_rel(&ra.relation, &mut parts);
     }
-    for rid in &frame.current_state {
-        push_rel(*rid, &mut parts);
+    for r in &frame.current_state {
+        push_rel(r, &mut parts);
     }
-    for rid in &frame.history {
-        push_rel(*rid, &mut parts);
+    for r in &frame.history {
+        push_rel(r, &mut parts);
     }
-    for rid in &frame.supporting_claims {
-        push_rel(*rid, &mut parts);
+    for r in &frame.supporting_claims {
+        push_rel(r, &mut parts);
     }
     parts.join(" | ")
 }
@@ -102,27 +94,16 @@ pub fn flatten_attention_frame(frame: &ConsciousAttentionFrame, hg: &Hypergraph)
 /// ─ history       (empty)
 /// ─ supporting_claims  (empty)
 /// ```
-pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame, hg: &Hypergraph) -> String {
+pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
     let mut idx: usize = 0;
 
-    // Helper: resolve an element ID to its first name, or `e<id>`
-    // if the element has no name (defensive — shouldn't happen for
-    // anything that made it into a focused frame).
-    let ename = |eid: ElementId| -> String {
-        hg.elements[eid.0 as usize]
-            .names
-            .first()
-            .cloned()
-            .unwrap_or_else(|| format!("e{}", eid.0))
-    };
-
     // First compute headline length+token counts from the raw flat
     // string so we don't lie about size after grouping changes
     // presentation.
-    let raw = flatten_attention_frame(frame, hg);
+    let raw = flatten_attention_frame(frame);
     let total_chars = raw.len();
     let total_tokens = raw.split(" | ").count();
 
@@ -137,9 +118,9 @@ pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame, hg: &Hypergr
     idx += 1;
 
     // ── active_frame ───────────────────────────────────────────
-    if let Some(eid) = frame.active_frame {
+    if let Some(e) = &frame.active_frame {
         let _ = writeln!(out, "─ active_frame");
-        let _ = writeln!(out, "  [{idx}] {}", ename(eid));
+        let _ = writeln!(out, "  [{idx}] {}", e.name);
         idx += 1;
     } else {
         let _ = writeln!(out, "─ active_frame  (none)");
@@ -153,51 +134,50 @@ pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame, hg: &Hypergr
     type BucketRow = (RelationId, Vec<(String, String)>, usize, usize);
 
     let mut seen: HashSet<RelationId> = HashSet::new();
-    let mut emit_bucket = |label: &str, rids: &[RelationId], idx: &mut usize, out: &mut String| {
-        let mut shown: Vec<BucketRow> = Vec::new();
-        let mut dup_count = 0usize;
-        for &rid in rids {
-            if !seen.insert(rid) {
-                dup_count += 1;
-                continue;
+    let mut emit_bucket =
+        |label: &str, rels: &[ResolvedRelation], idx: &mut usize, out: &mut String| {
+            let mut shown: Vec<BucketRow> = Vec::new();
+            let mut dup_count = 0usize;
+            for r in rels {
+                if !seen.insert(r.id) {
+                    dup_count += 1;
+                    continue;
+                }
+                let mut pairs = Vec::with_capacity(r.attributes.len());
+                let start = *idx;
+                for a in &r.attributes {
+                    let value = match &a.value {
+                        ResolvedTerm::Element(e) => e.name.clone(),
+                        ResolvedTerm::Relation(rid) => format!("R{}", rid.0),
+                    };
+                    pairs.push((a.name.name.clone(), value));
+                    *idx += 2;
+                }
+                let end = idx.saturating_sub(1);
+                shown.push((r.id, pairs, start, end));
             }
-            let r = &hg.relations[rid.0 as usize];
-            let mut pairs = Vec::with_capacity(r.attributes.len());
-            let start = *idx;
-            for a in &r.attributes {
-                let name = ename(a.name);
-                let value = match a.value {
-                    Term::Element(eid) => ename(eid),
-                    Term::Relation(rid) => format!("R{}", rid.0),
-                };
-                pairs.push((name, value));
-                *idx += 2;
-            }
-            let end = idx.saturating_sub(1);
-            shown.push((rid, pairs, start, end));
-        }
 
-        // Header line.
-        let _ = match (shown.len(), dup_count) {
-            (0, 0) => writeln!(out, "─ {label}  (empty)"),
-            (0, n) => writeln!(out, "─ {label}  ({n} already shown above)"),
-            (n, 0) => writeln!(out, "─ {label}  ({n})"),
-            (n, d) => writeln!(out, "─ {label}  ({n} new, {d} already shown above)"),
+            // Header line.
+            let _ = match (shown.len(), dup_count) {
+                (0, 0) => writeln!(out, "─ {label}  (empty)"),
+                (0, n) => writeln!(out, "─ {label}  ({n} already shown above)"),
+                (n, 0) => writeln!(out, "─ {label}  ({n})"),
+                (n, d) => writeln!(out, "─ {label}  ({n} new, {d} already shown above)"),
+            };
+            for (rid, pairs, start, end) in shown {
+                let pair_str = pairs
+                    .iter()
+                    .map(|(n, v)| format!("{n}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                let _ = writeln!(out, "  R{:<5} {pair_str}    [{start}..{end}]", rid.0);
+            }
         };
-        for (rid, pairs, start, end) in shown {
-            let pair_str = pairs
-                .iter()
-                .map(|(n, v)| format!("{n}={v}"))
-                .collect::<Vec<_>>()
-                .join("  ");
-            let _ = writeln!(out, "  R{:<5} {pair_str}    [{start}..{end}]", rid.0);
-        }
-    };
 
-    let focused: Vec<RelationId> = frame
+    let focused: Vec<ResolvedRelation> = frame
         .focused_relations
         .iter()
-        .map(|ra| ra.relation)
+        .map(|ra| ra.relation.clone())
         .collect();
     emit_bucket("focused_relations", &focused, &mut idx, &mut out);
     emit_bucket("current_state", &frame.current_state, &mut idx, &mut out);
@@ -210,6 +190,134 @@ pub fn render_flat_frame_annotated(frame: &ConsciousAttentionFrame, hg: &Hypergr
     );
 
     out
+}
+
+/// Compact header for a tick — input echo, intent vector, bucket
+/// counts, uncertainty signals, next actions. Frame-only.
+pub fn render_tick_summary(frame: &ConsciousAttentionFrame) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "tick {} \"{}\"",
+        frame.tick.0,
+        truncate(&frame.input_echo, 60),
+    );
+    let _ = writeln!(
+        out,
+        "  intent  conv={:.2}  pe={:.2}  arous={:.2}  curio={:.2}",
+        frame.intent.conviction,
+        frame.intent.prediction_error,
+        frame.intent.arousal,
+        frame.intent.curiosity,
+    );
+    let _ = writeln!(
+        out,
+        "  frame  active_regions={}  focused={}  supporting={}  history={}  current_state={}  uncertainty={:?}",
+        frame.active_regions.len(),
+        frame.focused_relations.len(),
+        frame.supporting_claims.len(),
+        frame.history.len(),
+        frame.current_state.len(),
+        frame.uncertainty,
+    );
+    if !frame.next_actions.is_empty() {
+        let _ = writeln!(out, "  next_actions:");
+        for a in &frame.next_actions {
+            match a {
+                crate::types::AttentionAction::EnqueueReplay { kind } => {
+                    let _ = writeln!(out, "    EnqueueReplay {{ kind: {kind:?} }}");
+                }
+                crate::types::AttentionAction::FollowUpQuery(t) => {
+                    let _ = writeln!(out, "    FollowUpQuery({t:?})");
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Per-relation render of every bucket the frame populated.
+/// Frame-only — names + status + confidence live on each
+/// `ResolvedRelation`.
+pub fn render_frame_contents(frame: &ConsciousAttentionFrame) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    if !frame.focused_relations.is_empty() {
+        let _ = writeln!(out, "  focused:");
+        for ra in &frame.focused_relations {
+            let _ = writeln!(out, "{}", render_relation_line(&ra.relation, Some(ra.activation)));
+        }
+    }
+    if !frame.current_state.is_empty() {
+        let _ = writeln!(out, "  current_state:");
+        for r in &frame.current_state {
+            let _ = writeln!(out, "{}", render_relation_line(r, None));
+        }
+    }
+    if !frame.supporting_claims.is_empty() {
+        let _ = writeln!(out, "  supporting:");
+        for r in &frame.supporting_claims {
+            let _ = writeln!(out, "{}", render_relation_line(r, None));
+        }
+    }
+    if !frame.history.is_empty() {
+        let _ = writeln!(out, "  history:");
+        for r in &frame.history {
+            let _ = writeln!(out, "{}", render_relation_line(r, None));
+        }
+    }
+    out
+}
+
+/// One-line render of a resolved relation: subject → attribute → object
+/// plus status and (optionally) activation score. The attribute named
+/// `"subject"` or `"target"` is treated as the subject slot.
+fn render_relation_line(r: &ResolvedRelation, activation: Option<f32>) -> String {
+    let is_subject = |attr_name: &str| attr_name == "subject" || attr_name == "target";
+    let mut subject: Option<String> = None;
+    let mut other: Option<(String, String)> = None;
+    for attr in &r.attributes {
+        let value = match &attr.value {
+            ResolvedTerm::Element(e) => e.name.clone(),
+            ResolvedTerm::Relation(rid) => format!("→R{}", rid.0),
+        };
+        if is_subject(&attr.name.name) {
+            subject = Some(value);
+        } else if other.is_none() {
+            other = Some((attr.name.name.clone(), value));
+        }
+    }
+    let subject = subject.unwrap_or_else(|| "?".to_string());
+    let (attr_name, attr_value) = other.unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+    let act = activation
+        .map(|a| format!(" act={a:.3}"))
+        .unwrap_or_default();
+    format!(
+        "    R{:<5} [{:?}] conf={:.2}{act}  {subject} → {attr_name} → {attr_value}",
+        r.id.0, r.status, r.confidence,
+    )
+}
+
+/// The full tick output a consumer sees: header summary, structured
+/// per-bucket render, then the bench-scored flat-frame view. One
+/// pure function over the frame; no `Hypergraph` parameter.
+pub fn render_frame(frame: &ConsciousAttentionFrame) -> String {
+    let mut out = String::new();
+    out.push_str(&render_tick_summary(frame));
+    out.push_str(&render_frame_contents(frame));
+    out.push('\n');
+    out.push_str(&render_flat_frame_annotated(frame));
+    out
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
 }
 
 /// Render the full markdown report for `hg`. Pure string assembly —
