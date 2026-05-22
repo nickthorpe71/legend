@@ -78,24 +78,6 @@ serde_json = "1"
 # `examples/bench_memoryagentbench_fc.rs` reads the file once at the
 # start of a run and never touches it at runtime.
 parquet = "58.3.0"
-# Pure-Rust ML framework for running the small instruct LLM that
-# verbalizes Legend's focused frame into a natural-language answer.
-# CPU-only — no CUDA / Metal features pulled in. Dev-only because the
-# verbalizer is currently only used by the bench harness; if a CLI-
-# facing verbalize path lands later, promote to regular deps.
-candle-core = { version = "0.10", default-features = false }
-candle-nn = { version = "0.10", default-features = false }
-candle-transformers = { version = "0.10", default-features = false }
-# anyhow is dev-only, used by the verbalizer smoke test and bench
-# wiring for ergonomic error contexts when a model load / forward
-# pass / tokenizer call fails. The runtime crate stays on std-only
-# error types.
-anyhow = "1"
-# Note: model weights are fetched via `curl` rather than a Rust HF
-# client. Both hf-hub 0.3.x and 1.0.0-rc fail on HF's relative-URL
-# redirect behavior (returns `location: /api/resolve-cache/...` on
-# the 307; the libs don't resolve it against the request host).
-# curl handles relative redirects correctly out of the box.
 # tract-onnx is build-time-only: it's used by
 # `examples/extract_weights.rs` to read the ONNX file once and dump
 # fp32 weights into `models/minilm-fp32.bin`. The runtime library

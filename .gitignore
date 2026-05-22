@@ -52,10 +52,3 @@ models/gliner2-fp32.bin
 benchmarks/longmemeval_oracle.json
 benchmarks/last_run_verbose.json
 benchmarks/venv/
-
-# Verbalizer LLM weights (~720 MB for SmolLM2-360M-Instruct,
-# similar for other small instruct LMs). Downloaded on first run
-# of `examples/verbalize_smoke.rs` or `bench_memoryagentbench_fc
-# --use-llm` via curl from HuggingFace; cached under
-# `benchmarks/models/<repo-name>/`.
-benchmarks/models/

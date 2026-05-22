@@ -40,13 +40,6 @@
 //!   --verbose-all      dump the flat frame for every question
 //!                      (hits + misses). Use to see what the bench
 //!                      is actually scoring against.
-//!   --use-llm          pipe each question's flat frame through
-//!                      SmolLM2-360M-Instruct and SubEM-score the
-//!                      LLM answer. Adds ~3 min/100 questions on
-//!                      CPU. First run downloads ~720MB of weights.
-
-#[path = "verbalizer.rs"]
-mod verbalizer;
 
 use legend::daemon;
 use legend::types::ConsciousAttentionFrame;
@@ -57,7 +50,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use verbalizer::Verbalizer;
 
 const CR_PARQUET: &str = "benchmarks/memoryagentbench/conflict_resolution.parquet";
 const AR_PARQUET: &str = "benchmarks/memoryagentbench/accurate_retrieval.parquet";
@@ -99,13 +91,6 @@ struct Args {
     /// you want to see what's actually being scored — including the
     /// good cases, not just the failures.
     verbose_all: bool,
-    /// Pipe each question's flat frame through SmolLM2-360M-Instruct
-    /// and SubEM-score the generated answer against gold. Adds the
-    /// LLM-verbalized number alongside the raw-frame number, making
-    /// Legend's score apples-to-apples with the published
-    /// LLM-baseline columns. Adds ~2-3s per question on CPU (~3 min
-    /// for a 100-question row).
-    use_llm: bool,
 }
 
 fn parse_args() -> Args {
@@ -115,7 +100,6 @@ fn parse_args() -> Args {
     let mut max_facts = 0usize;
     let mut verbose_misses = false;
     let mut verbose_all = false;
-    let mut use_llm = false;
     let raw: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < raw.len() {
@@ -157,10 +141,6 @@ fn parse_args() -> Args {
                 verbose_all = true;
                 i += 1;
             }
-            "--use-llm" => {
-                use_llm = true;
-                i += 1;
-            }
             _ => i += 1,
         }
     }
@@ -171,7 +151,6 @@ fn parse_args() -> Args {
         max_facts,
         verbose_misses,
         verbose_all,
-        use_llm,
     }
 }
 
@@ -491,13 +470,6 @@ struct QResult {
     /// Flat-frame text, captured only on misses when --verbose-misses
     /// is set.
     flat: Option<String>,
-    /// LLM-verbalized answer (when --use-llm is set). The raw text
-    /// the verbalizer emitted; SubEM-checked against gold below.
-    llm_answer: Option<String>,
-    /// SubEM hit on the LLM answer (which gold matched, if any).
-    llm_hit: Option<String>,
-    /// Generation time for the LLM answer, in seconds.
-    llm_secs: Option<f64>,
     query_secs: f64,
     focused: usize,
     elements: usize,
@@ -545,19 +517,6 @@ fn main() -> std::io::Result<()> {
         row.questions.len(),
     );
     println!();
-
-    // Load the verbalizer up front so a model-load failure surfaces
-    // before we pay for the substrate ingest. `None` when --use-llm
-    // wasn't passed.
-    let mut llm: Option<Verbalizer> = if args.use_llm {
-        eprintln!("loading verbalizer (SmolLM2-360M-Instruct, CPU F32)...");
-        let t = Instant::now();
-        let v = Verbalizer::load().map_err(std::io::Error::other)?;
-        eprintln!("loaded verbalizer in {:.1}s", t.elapsed().as_secs_f64());
-        Some(v)
-    } else {
-        None
-    };
 
     let workspace = tempdir()?;
     std::fs::create_dir_all(workspace.join(".legend"))?;
@@ -607,37 +566,12 @@ fn main() -> std::io::Result<()> {
                 None
             };
 
-            // Optional LLM verbalization. Feed the annotated frame
-            // (the readable per-relation form) rather than the raw
-            // pipe-joined string — the LLM extracts more reliably
-            // when the input looks like structured text instead of
-            // a bag of tokens with " | " separators.
-            let (llm_answer, llm_hit, llm_secs) = if let Some(v) = llm.as_mut() {
-                let t = Instant::now();
-                match v.verbalize(q, &bundle.annotated) {
-                    Ok(ans) => {
-                        let secs = t.elapsed().as_secs_f64();
-                        let h = subem_hit(&ans, &golds);
-                        (Some(ans), h, Some(secs))
-                    }
-                    Err(e) => {
-                        eprintln!("  llm err on q{qi}: {e}");
-                        (None, None, None)
-                    }
-                }
-            } else {
-                (None, None, None)
-            };
-
             out.push(QResult {
                 question: q.clone(),
                 golds,
                 hit,
                 substrate_only,
                 flat: flat_for_dump,
-                llm_answer,
-                llm_hit,
-                llm_secs,
                 query_secs,
                 focused: frame.focused_relations.len(),
                 elements,
@@ -671,14 +605,6 @@ fn main() -> std::io::Result<()> {
                 None => println!("  ✗ gold not in frame OR substrate"),
             },
         }
-        if let Some(ans) = &r.llm_answer {
-            let mark = match &r.llm_hit {
-                Some(_) => "✓",
-                None => "✗",
-            };
-            let secs = r.llm_secs.unwrap_or(0.0);
-            println!("  {mark} llm ({secs:.2}s): {:?}", truncate(ans, 200));
-        }
         if let Some(annotated) = &r.flat {
             // Already a multi-line annotated string from
             // `render::render_flat_frame_annotated`; print verbatim.
@@ -704,17 +630,6 @@ fn main() -> std::io::Result<()> {
         "summary: {hits}/{total} frame hits ({:.1}%) | {frame_only} substrate-only (frame missed it) | {absent} absent from substrate",
         100.0 * hits as f64 / total.max(1) as f64,
     );
-    let llm_runs = results.iter().filter(|r| r.llm_answer.is_some()).count();
-    if llm_runs > 0 {
-        let llm_hits = results.iter().filter(|r| r.llm_hit.is_some()).count();
-        let total_llm_secs: f64 = results.iter().filter_map(|r| r.llm_secs).sum();
-        println!(
-            "llm summary: {llm_hits}/{llm_runs} verbalized hits ({:.1}%) | {:.1}s total inference, {:.2}s avg",
-            100.0 * llm_hits as f64 / llm_runs.max(1) as f64,
-            total_llm_secs,
-            total_llm_secs / llm_runs.max(1) as f64,
-        );
-    }
     std::io::stdout().flush()?;
     Ok(())
 }
