@@ -116,8 +116,9 @@ pub fn build_relations(
             }
         };
         let label_id = resolve_label_element(hg, label, &mut result);
-        let attr_id = resolve_attribute_name(hg, &p.attribute_name, &mut result);
-        let rel_id = mint_or_reuse_base_relation(
+        let attr_ctx = pattern_attr_context(input_text, p);
+        let attr_id = resolve_attribute_name(hg, &p.attribute_name, attr_ctx, policy, &mut result);
+        let Some(rel_id) = mint_or_reuse_base_relation(
             hg,
             vec![
                 Attribute {
@@ -131,7 +132,12 @@ pub fn build_relations(
             ],
             p.status,
             confidence_for(p.confidence, policy),
-        );
+        ) else {
+            // Self-referential triple (e.g. `language → instance_of →
+            // language`). Skip silently — the extractor's tag and the
+            // surface span just happened to collide.
+            continue;
+        };
         base_rel_ids.push(rel_id);
         result.minted_relations.push(rel_id);
     }
@@ -152,7 +158,12 @@ pub fn build_relations(
         if subsumed.contains(&idx) {
             continue;
         }
-        let rel_id = mint_pattern_relation(hg, input_text, p, policy, &mut span_cache, &mut result);
+        let Some(rel_id) =
+            mint_pattern_relation(hg, input_text, p, policy, &mut span_cache, &mut result)
+        else {
+            // Self-referential extraction; drop.
+            continue;
+        };
         base_rel_ids.push(rel_id);
         result.minted_relations.push(rel_id);
     }
@@ -187,8 +198,12 @@ pub fn build_relations(
         &mut result,
     );
     for nr in &out.novelty.relations {
-        let rel_id =
-            mint_novelty_relation(hg, input_text, nr, policy, &mut span_cache, &mut result);
+        let Some(rel_id) =
+            mint_novelty_relation(hg, input_text, nr, policy, &mut span_cache, &mut result)
+        else {
+            // Self-referential novelty extraction; drop.
+            continue;
+        };
         base_rel_ids.push(rel_id);
         result.minted_relations.push(rel_id);
     }
@@ -321,6 +336,48 @@ pub(crate) fn is_cache_relation(hg: &Hypergraph, rid: RelationId) -> bool {
     false
 }
 
+/// True iff `rid` is a seed-graph structural relation — an
+/// `instance_of` pin from a region/frame anchor element to its
+/// class element (e.g. `tasks → instance_of → region_class`,
+/// `meta → instance_of → reference_frame_class`). These exist to
+/// make the routing tree work; they're load-bearing in the
+/// substrate but uniformly high-confidence noise in the frame.
+/// Filtered out of `focused_relations` and `current_state` in
+/// Step 12.
+pub(crate) fn is_structural_relation(hg: &Hypergraph, rid: RelationId) -> bool {
+    let r = &hg.relations[rid.0 as usize];
+    // Pin to class anchors: `instance_of` → region_class /
+    // reference_frame_class. Seed scaffolding for routing topology.
+    let instance_of_attr = hg.by_name.get("instance_of").and_then(|v| v.first().copied());
+    if let Some(instance_of_attr) = instance_of_attr {
+        for attr in &r.attributes {
+            if attr.name != instance_of_attr {
+                continue;
+            }
+            if let crate::types::Term::Element(eid) = attr.value
+                && (eid == hg.region_class || eid == hg.reference_frame_class)
+            {
+                return true;
+            }
+        }
+    }
+    // Region-topology relations: `(R, prototype, P)`,
+    // `(R_a, parent_region, R_b)`, `(R_a, lateral_region, R_b)`,
+    // `(E, member_of, R)`. Same kind of scaffolding — they exist to
+    // wire the routing tree, not as content the consumer should see.
+    for attr in &r.attributes {
+        if attr.name == hg.prototype_attr || attr.name == hg.parent_region_attr {
+            return true;
+        }
+        if let Some(name) = hg.elements[attr.name.0 as usize].names.first()
+            && matches!(name.as_str(), "lateral_region" | "member_of")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Resolve a type-class label (e.g. `"person"`, `"weekday"`, `"event"`)
 /// to an `ElementId`. Mints a fresh element if no match exists.
 /// Distinct from `resolve_span` because labels don't have char offsets
@@ -347,22 +404,41 @@ fn resolve_label_element(hg: &mut Hypergraph, label: &str, result: &mut Step8Out
     id
 }
 
-/// Resolve an attribute-name surface form (e.g. `"instance_of"`,
-/// `"from"`) to its attribute-name Element. Exact-name today; cosine
-/// dedup (§5 step 2) is deferred — synonym normalization isn't urgent
-/// because pattern RE emits canonical names already seeded, and NER's
-/// auto-emitted `instance_of` matches the seeded `ATTR_INSTANCE_OF`.
+/// Layered predicate consolidation: resolve a surface predicate form
+/// (e.g. `"instance_of"`, `"from"`, `"using"`) to an attribute-name
+/// Element via four cascading layers:
 ///
-/// On miss, mints a new attribute-name element and bumps
-/// `attr_names_minted`. Caller is responsible for deciding whether
-/// the relation should land `Defeasible` because of the mint.
-fn resolve_attribute_name(hg: &mut Hypergraph, label: &str, result: &mut Step8Output) -> ElementId {
+/// 1. **Exact-name lookup** in `hg.by_name`. Prefers Signal-polarity
+///    candidates over Void (so `"with"` and `"at"` bind to their
+///    attribute-name siblings, not their adposition members).
+/// 2. **Typed-relation lexicon** — surface verbs and prepositional
+///    phrases mapped to canonical seed predicates. `"uses"` →
+///    `"with"`, `"lives in"` → `"at"`, etc. Closed-class linguistic
+///    primitive (same status as the SVO irregular-verb lexicon).
+/// 3. **Embedding-knn over predicate centroids** (only when `context`
+///    is provided). The novel predicate's contextualized span vector
+///    is compared cosine-wise against existing attribute-name
+///    Signal-polarity elements; ≥ `policy.attribute_name_dedup_threshold`
+///    → reuse the top hit. Per `new_foundation_v0_core.md:820-836`.
+/// 4. **Mint** a fresh attribute-name element. Embedding: the
+///    contextualized span vector from this observation when
+///    `context` is provided, else the bare-token embedding
+///    (legacy fallback for canonical-name minters that don't carry
+///    a char range).
+///
+/// `context` is `(input_text, attr_char_start, attr_char_end)`. SVO
+/// populates it; canonical-name emitters pass `None`.
+fn resolve_attribute_name(
+    hg: &mut Hypergraph,
+    label: &str,
+    context: Option<(&str, usize, usize)>,
+    policy: &crate::types::Policy,
+    result: &mut Step8Output,
+) -> ElementId {
+    // ── Layer 1: exact-name lookup ─────────────────────────────────
     if let Some(ids) = hg.by_name.get(label)
         && let Some(&id) = ids.first()
     {
-        // Prefer a Signal hit over a Void hit — `with` and `at` exist
-        // as both Signal attribute-name elements and Void adposition
-        // members; the Signal sibling is the right binding here.
         for candidate in ids {
             if hg.elements[candidate.0 as usize].polarity == Polarity::Signal {
                 return *candidate;
@@ -370,16 +446,117 @@ fn resolve_attribute_name(hg: &mut Hypergraph, label: &str, result: &mut Step8Ou
         }
         return id;
     }
+
+    // ── Layer 2: typed-relation lexicon ────────────────────────────
+    if let Some(canonical) = typed_relation_lookup(label)
+        && let Some(ids) = hg.by_name.get(canonical)
+    {
+        for candidate in ids {
+            if hg.elements[candidate.0 as usize].polarity == Polarity::Signal {
+                return *candidate;
+            }
+        }
+    }
+
+    // ── Layer 3: embedding-knn over predicate centroids ────────────
+    let contextualized: Option<Vec<f32>> = context.and_then(|(text, s, e)| {
+        crate::embed::embed_span_in_context(text, s, e)
+    });
+    if let Some(ref query_vec) = contextualized
+        && let Some(neighbor) = knn_attribute_name(hg, query_vec, policy.attribute_name_dedup_threshold)
+    {
+        return neighbor;
+    }
+
+    // ── Layer 4: mint ──────────────────────────────────────────────
+    // Prefer the contextualized embedding when we have it; fall back
+    // to the bare-token embedding for canonical-name minters.
+    let embedding = contextualized.unwrap_or_else(|| embed_text(label));
     let id = mint_element(
         hg,
         vec![label.to_string()],
-        embed_text(label),
+        embedding,
         Polarity::Signal,
         policy_default_conf_or_one(hg),
     );
     result.minted_elements.push(id);
     result.attr_names_minted = result.attr_names_minted.saturating_add(1);
     id
+}
+
+/// Build the `(input_text, attr_start, attr_end)` context tuple
+/// `resolve_attribute_name` uses to contextualize a predicate's
+/// embedding. Returns `None` when the candidate's emitter didn't
+/// populate a char range (canonical-name patterns like NER-anchored
+/// templates and span-typing).
+fn pattern_attr_context<'a>(
+    input_text: &'a str,
+    p: &RelationCandidate,
+) -> Option<(&'a str, usize, usize)> {
+    match (p.attribute_char_start, p.attribute_char_end) {
+        (Some(s), Some(e)) if e <= input_text.len() && s < e => Some((input_text, s, e)),
+        _ => None,
+    }
+}
+
+/// Closed-class mapping from common verb/preposition surface forms to
+/// canonical seed predicate names. Layer (2) of
+/// [`resolve_attribute_name`]. Entries are case-insensitive on lookup.
+///
+/// Curated for the predicates SVO most commonly produces (binding-
+/// shaped verbs like "use/has/with" and locative-shaped verbs like
+/// "lives in"/"works at"). Add entries as benches surface predicates
+/// that should consolidate but currently mint fresh elements.
+fn typed_relation_lookup(label: &str) -> Option<&'static str> {
+    let lower = label.to_ascii_lowercase();
+    match lower.as_str() {
+        // Instrumental / co-participant.
+        "uses" | "using" | "use" | "used" => Some("with"),
+        "has" | "have" | "had" | "owns" | "with" => Some("with"),
+        // Locative.
+        "lives in" | "located at" | "located in" | "in" => Some("at"),
+        "works at" | "works in" | "at" => Some("at"),
+        // Origin / destination.
+        "came from" | "originally from" => Some("from"),
+        "went to" | "moved to" | "transferred to" | "switched to" => Some("to"),
+        // Taxonomic.
+        "is a" | "is an" | "is" | "are" | "instance of" => Some("instance_of"),
+        _ => None,
+    }
+}
+
+/// Find the highest-cosine Signal-polarity attribute-name element
+/// whose embedding cosines ≥ `threshold` against `query`. Returns
+/// `None` if no element clears the threshold. The "attribute-name
+/// element" universe is bounded by `hg.relations_by_attribute_name`
+/// — the index already keys on every attribute-name element that's
+/// been used in a relation, so this is the natural enumeration.
+fn knn_attribute_name(
+    hg: &Hypergraph,
+    query: &[f32],
+    threshold: f32,
+) -> Option<ElementId> {
+    let mut best: Option<(ElementId, f32)> = None;
+    for &eid in hg.relations_by_attribute_name.keys() {
+        let el = &hg.elements[eid.0 as usize];
+        if el.polarity != Polarity::Signal {
+            continue;
+        }
+        let cos = cosine_unit(query, &el.embedding);
+        if cos >= threshold && best.is_none_or(|(_, b)| cos > b) {
+            best = Some((eid, cos));
+        }
+    }
+    best.map(|(eid, _)| eid)
+}
+
+/// Cosine similarity assuming both inputs are L2-normalized (the
+/// substrate's embedding contract). Reduces to a dot product.
+fn cosine_unit(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 fn mint_pattern_relation(
@@ -389,7 +566,7 @@ fn mint_pattern_relation(
     policy: &crate::types::Policy,
     span_cache: &mut HashMap<(usize, usize), ElementId>,
     result: &mut Step8Output,
-) -> RelationId {
+) -> Option<RelationId> {
     let subj_text = &input_text[p.subject_char_start..p.subject_char_end];
     let subj_id = resolve_span(
         hg,
@@ -401,7 +578,8 @@ fn mint_pattern_relation(
         result,
     );
     let obj_id = resolve_object(hg, input_text, &p.object, span_cache, result);
-    let attr_id = resolve_attribute_name(hg, &p.attribute_name, result);
+    let attr_ctx = pattern_attr_context(input_text, p);
+    let attr_id = resolve_attribute_name(hg, &p.attribute_name, attr_ctx, policy, result);
     mint_or_reuse_base_relation(
         hg,
         vec![
@@ -531,15 +709,50 @@ pub(crate) fn mint_or_reuse_base_relation(
     attributes: Vec<Attribute>,
     status: RelationStatus,
     confidence: f32,
-) -> RelationId {
+) -> Option<RelationId> {
+    if is_self_referential(hg, &attributes) {
+        return None;
+    }
     if let Some(existing) = find_matching_relation(hg, &attributes) {
         // Reuse path: bump last_seen so decay walks can age this
         // relation correctly. Don't touch status or confidence —
-        // those belong to Step 9/10/promotion.
-        hg.relations[existing.0 as usize].stats.last_seen = hg.clock;
-        return existing;
+        // those belong to Step 9/10/promotion. support_count tracks
+        // independent re-extractions (this branch is the canonical
+        // re-extraction event); Step 10's spreading activation
+        // bumps `focus_success_count` instead.
+        let r = &mut hg.relations[existing.0 as usize];
+        r.stats.last_seen = hg.clock;
+        r.stats.support_count = r.stats.support_count.saturating_add(1);
+        return Some(existing);
     }
-    mint_relation(hg, attributes, status, confidence)
+    Some(mint_relation(hg, attributes, status, confidence))
+}
+
+/// True iff `attributes` describes a self-referential relation: the
+/// subject element appears as the value of one of the non-subject
+/// attribute slots. Catches degenerate extractions like
+/// `language → instance_of → language` that the NER+span_typing
+/// pipeline emits when a noun's surface form happens to match its
+/// type label. Meta-relations (subject role bound on `target_attr`
+/// with a `Term::Relation` value) are never self-referential under
+/// this rule and pass through.
+fn is_self_referential(hg: &Hypergraph, attributes: &[Attribute]) -> bool {
+    let subj = attributes
+        .iter()
+        .find(|a| a.name == hg.subject_attr)
+        .and_then(|a| match a.value {
+            Term::Element(eid) => Some(eid),
+            _ => None,
+        });
+    let Some(subj_eid) = subj else {
+        return false;
+    };
+    attributes.iter().any(|a| {
+        if a.name == hg.subject_attr {
+            return false;
+        }
+        matches!(a.value, Term::Element(eid) if eid == subj_eid)
+    })
 }
 
 /// Find a pre-existing **live** relation whose attribute set matches
@@ -905,7 +1118,7 @@ fn mint_event_relations(
     // canonical kind is seeded.
     let kind_label = event_kind_for(&g.anchor);
     let kind_id = resolve_label_element(hg, kind_label, result);
-    let instance_of_attr = resolve_attribute_name(hg, "instance_of", result);
+    let instance_of_attr = resolve_attribute_name(hg, "instance_of", None, policy, result);
     let typing_id = mint_relation(
         hg,
         vec![
@@ -930,9 +1143,9 @@ fn mint_event_relations(
     // re-walking value Elements' `instance_of` relations. Falls back
     // to the generic "value" kind when the values aren't typed.
     let target_attr = hg.target_attr;
-    let from_attr = resolve_attribute_name(hg, "from", result);
-    let to_attr = resolve_attribute_name(hg, "to", result);
-    let property_attr = resolve_attribute_name(hg, "property", result);
+    let from_attr = resolve_attribute_name(hg, "from", None, policy, result);
+    let to_attr = resolve_attribute_name(hg, "to", None, policy, result);
+    let property_attr = resolve_attribute_name(hg, "property", None, policy, result);
     let property_kind_label = infer_property_kind(hg, from_val_id, to_val_id);
     let property_kind_id = resolve_label_element(hg, property_kind_label, result);
     let nary_conf = confidence_for(from_p.confidence.min(to_p.confidence), policy);
@@ -975,7 +1188,7 @@ fn mint_event_relations(
     // value points at an Element capturing the verb itself, so future
     // ticks recognizing the same verb reuse the element.
     if is_intervention_verb(&g.anchor) {
-        let intervened_attr = resolve_attribute_name(hg, "intervened", result);
+        let intervened_attr = resolve_attribute_name(hg, "intervened", None, policy, result);
         let verb_id = resolve_label_element(hg, &g.anchor, result);
         let meta_id = mint_relation(
             hg,
@@ -1171,7 +1384,7 @@ fn mint_novelty_relation(
     policy: &crate::types::Policy,
     span_cache: &mut HashMap<(usize, usize), ElementId>,
     result: &mut Step8Output,
-) -> RelationId {
+) -> Option<RelationId> {
     let subj_text = &input_text[nr.subject_char_start..nr.subject_char_end];
     let subj_id = resolve_span(
         hg,
@@ -1183,7 +1396,8 @@ fn mint_novelty_relation(
         result,
     );
     let obj_id = resolve_object(hg, input_text, &nr.object, span_cache, result);
-    let attr_id = resolve_attribute_name(hg, &nr.attribute_name, result);
+    let attr_ctx = pattern_attr_context(input_text, nr);
+    let attr_id = resolve_attribute_name(hg, &nr.attribute_name, attr_ctx, policy, result);
     mint_or_reuse_base_relation(
         hg,
         vec![
@@ -1260,6 +1474,32 @@ mod tests {
         let out = run_extractors(text, labels, &policy, &hg, &[]);
         let step8 = build_relations(text, &mut hg, &out, &policy, None);
         (hg, step8)
+    }
+
+    #[test]
+    fn typed_relation_lookup_maps_common_verbs() {
+        assert_eq!(typed_relation_lookup("uses"), Some("with"));
+        assert_eq!(typed_relation_lookup("Using"), Some("with"));
+        assert_eq!(typed_relation_lookup("lives in"), Some("at"));
+        assert_eq!(typed_relation_lookup("works at"), Some("at"));
+        assert_eq!(typed_relation_lookup("is a"), Some("instance_of"));
+        assert_eq!(typed_relation_lookup("nonsense verb"), None);
+    }
+
+    #[test]
+    fn resolve_attribute_name_dedups_via_typed_lexicon() {
+        // "uses" should resolve to the seeded `with` attribute element,
+        // not mint a new "uses" element.
+        let mut hg = load_seed_graph();
+        let policy = Policy::default();
+        let mut result = Step8Output::default();
+        let with_id = hg.by_name["with"].iter()
+            .copied()
+            .find(|&id| hg.elements[id.0 as usize].polarity == Polarity::Signal)
+            .expect("seed should have a Signal-polarity `with`");
+        let resolved = resolve_attribute_name(&mut hg, "uses", None, &policy, &mut result);
+        assert_eq!(resolved, with_id, "`uses` should typed-lexicon-dedup to seed `with`");
+        assert_eq!(result.attr_names_minted, 0, "lexicon hit should not mint");
     }
 
     #[test]

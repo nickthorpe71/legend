@@ -47,7 +47,7 @@ fn tick(hg: &mut Hypergraph, text: &str) {
     let embedding = legend::embed::embed_text(text);
     let intent = detect_intent(text, &embedding);
     let policy = adjust_policy(&intent, &hg.policy);
-    let active_frame = derive_active_frame(hg);
+    let active_frame = derive_active_frame(hg, &intent, &policy);
     let ext = run_extractors(text, &[], &policy, hg, &[]);
     let step8 = build_relations(text, hg, &ext, &policy, None);
     let step9 = supersede(hg, &step8.minted_relations, &policy);
@@ -396,7 +396,11 @@ fn active_frame_inherits_across_session_boundary() {
     tick(&mut hg, "Polaris is a Rust project.");
     tick(&mut hg, "Polaris has fuzzy search.");
 
-    let pre_active = derive_active_frame(&hg);
+    // Default Intent/Policy — this test exercises the recent_focus
+    // path, not query-intent or recency edges.
+    let intent = legend::types::Intent::default();
+    let policy = hg.policy.clone();
+    let pre_active = derive_active_frame(&hg, &intent, &policy);
     assert!(
         pre_active.is_some(),
         "after two ticks about Polaris, derive_active_frame should pick a subject"
@@ -408,7 +412,7 @@ fn active_frame_inherits_across_session_boundary() {
         .unwrap_or_default();
 
     let hg2 = save_drop_load(hg, &path);
-    let post_active = derive_active_frame(&hg2);
+    let post_active = derive_active_frame(&hg2, &intent, &policy);
     let post_active_name = post_active.map(|id| {
         hg2.elements[id.0 as usize]
             .names

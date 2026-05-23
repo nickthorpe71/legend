@@ -34,11 +34,12 @@ PUBLIC SURFACE         fn tick(&mut Hypergraph, Input,
                        — source is a sibling parameter, not on Input
 
 PROCESS MODEL          single binary; daemon mode (`legend start`) or
-                       one-shot per-invocation (`legend "..."`); same
-                       tick code path either way. Lock-enforced single-
-                       writer invariant via fcntl flock on
-                       ~/.legend/legend.lock; mode discovery via
-                       ~/.legend/legend.sock.                        (§10.1)
+                       in-process (`LEGEND_INPROC=1 legend "..."`);
+                       same tick code path either way. Lock-enforced
+                       single-writer invariant via flock on
+                       .legend/legend.lock; daemon listens on TCP
+                       loopback, port discovered via .legend/legend.port.
+                                                                       (§10.1)
 
 PHASES                 Step 0     WAL (Write-Ahead Log) append
                                   (durability I/O)
@@ -1284,55 +1285,64 @@ without an explicit recovery plan.
 
 ### 10.1 Process Model
 
-Single binary, two execution modes sharing the same `tick()` code
-path and the same WAL/snapshot files:
+Single binary, two execution modes sharing the same tick code path
+and the same on-disk snapshot:
 
 ```text
-legend "..."           one-shot OR thin client to the daemon
-                       (mode auto-inferred from socket presence).
-legend start           start a daemon; pays cold-start once.
-legend stop            graceful daemon shutdown.
-legend status          daemon up? lock held? WAL size?
-legend checkpoint      force snapshot compaction.
+legend "..."                 run one tick (auto-starts the daemon
+                             on first call; subsequent calls are
+                             thin TCP clients).
+legend start                 launch daemon in the background.
+legend stop                  graceful daemon shutdown.
+legend status                pid, uptime, tick count, substrate sizes.
+legend init                  register the git merge driver for this repo.
+LEGEND_INPROC=1 legend "..." run Step 1–12 in-process, verbose dump
+                             of every intermediate (no daemon).
+LEGEND_RESET=1 legend "..."  skip on-disk snapshot, load fresh from
+                             seed (in-process only).
 ```
 
-**Mode resolution.** `legend "..."` first tries to connect to
-`~/.legend/legend.sock` (or `$XDG_RUNTIME_DIR/legend.sock`). On
-success → CLI (Command-Line Interface)-client mode (request goes
-over the socket). On
-failure → fall through to one-shot: acquire
-`~/.legend/legend.lock` via fcntl flock (block-with-2 s timeout,
-retry the socket connect once mid-fallback for daemon-mid-restart),
-load snapshot + replay WAL, run `tick()`, append to WAL, release.
+**Mode resolution.** `legend "..."` reads `.legend/legend.port` (a
+short ASCII `"<pid>:<port>\n"` file written by the daemon at
+startup) and connects to TCP loopback on that port. If the port
+file is missing, or the connect fails, the CLI auto-spawns
+`legend start` in the background, polls until the port file
+appears, then retries. The in-process path
+(`LEGEND_INPROC=1` / `LEGEND_RESET=1`) bypasses the daemon
+entirely and runs `tick()` directly in the calling process.
 
-**Concurrency invariant.** Exactly one writer mutates the hypergraph
-at any moment. The daemon holds the lock for its lifetime; one-shot
-ticks acquire it briefly, and two simultaneous one-shot calls
-serialize on it. A stale socket (ECONNREFUSED) gets deleted by the
-CLI as it falls through to one-shot mode; a stale lock needs no
-handling because fcntl flock is kernel-managed and released on
-holder death.
+**Concurrency invariant.** Exactly one writer mutates the
+hypergraph at any moment. The daemon holds a `fs2` exclusive flock
+on `.legend/legend.lock` for its lifetime. Two daemons cannot race;
+the second loses the flock and exits quietly. In-process invocations
+acquire the same lock briefly while writing the snapshot. fcntl-
+backed flock is kernel-managed and released on holder death, so no
+PID-file heartbeat or stale-lock detection is needed.
+
+**Transport.** The daemon listens on `127.0.0.1:<port>` and writes
+the chosen port to `.legend/legend.port`. Wire format is
+length-prefixed MessagePack (`[u32 LE length][rmp-serde payload]`),
+the same codec the snapshot uses — no JSON anywhere. TTL is 5
+minutes idle by default (override with `LEGEND_DAEMON_TTL=<secs>`);
+clean shutdown deletes the port file.
 
 **Cost picture.**
 
 ```text
-                       daemon (CLI-client)    one-shot
+                       daemon (TCP client)    in-process (LEGEND_INPROC=1)
 snapshot deserialize   0 (in memory)          ~50–200 ms
 index rebuild          0                      ~10–30 ms
-INT8 BERT weight load  0                      ~50–150 ms  (mmap + page-in;
-                                                            no model compile)
-embedder warm-up       0                      ~5–10 ms
+INT8 weight load       0                      ~50–150 ms  (MiniLM + GLiNER)
 tick (§11.0)           ~80–230 ms             ~80–230 ms
-IPC (Inter-Process            ~1 ms                  ~5–10 ms
-  Communication) / lock
+IPC                    ~1 ms                  0
 total wall-clock       ~80–230 ms             ~200–600 ms
 ```
 
-One-shot is ~2–3× slower than the daemon path but is a real tick
-with the same correctness and durability guarantees. Run
-`legend start` for sustained workloads; reserve `legend "..."` for
-ad-hoc ticks. (Numbers are estimates pending §11.0 calibration on
-real workloads.)
+In-process is ~2–3× slower than the daemon path but exercises the
+same tick code with the same persistence guarantees. Run
+`legend start` for sustained workloads; reserve `LEGEND_INPROC=1`
+for verbose-debug runs and tests. (Numbers are estimates pending
+§11.0 calibration on real workloads.)
 
 ---
 

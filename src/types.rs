@@ -754,6 +754,35 @@ pub struct Policy {
     /// Capacity of `Hypergraph.recent_focus`.
     pub recent_focus_capacity: u32,
 
+    /// Maximum tick distance from `hg.clock` for a `recent_focus`
+    /// entry to still be eligible to win the active_frame slot.
+    /// Entries older than this are stale (likely from a different
+    /// conversational episode) and skipped. Default: 8.
+    pub active_frame_max_age_ticks: u32,
+
+    /// Promotion gate: a Defeasible relation can't promote to
+    /// Asserted until its primary attribute-name element has been
+    /// around for at least this many ticks. Prevents brand-new
+    /// predicate mints from crystallizing extraction noise before the
+    /// predicate itself has been validated by use. Seed predicates
+    /// have `created_at = 0` so the gate is a no-op for them.
+    /// Default: 5.
+    pub attribute_name_maturity_ticks: u32,
+
+    /// `derive_active_frame` returns `None` when intent is query-shaped
+    /// (curiosity above this AND conviction below the conviction
+    /// threshold) — a query inherits no topical anchor, since the
+    /// speaker is asking *about* something rather than continuing a
+    /// thread. Default: 0.6.
+    pub query_curiosity_threshold: f32,
+
+    /// Companion to `query_curiosity_threshold` — intent must ALSO have
+    /// conviction below this for the input to count as query-shaped.
+    /// Statements that happen to ask a follow-up ("So I think we should
+    /// just use Rust, right?") have high curiosity AND high conviction
+    /// and should NOT clear active_frame. Default: 0.4.
+    pub query_conviction_threshold: f32,
+
     /// Minimum focus-success count for a relation to be eligible for
     /// replay reinforcement.
     pub replay_focus_floor: u32,
@@ -845,6 +874,10 @@ impl Default for Policy {
             hebbian_rate: 0.0,
             focus_decay_radius: 0,
             recent_focus_capacity: 64,
+            active_frame_max_age_ticks: 8,
+            attribute_name_maturity_ticks: 5,
+            query_curiosity_threshold: 0.6,
+            query_conviction_threshold: 0.4,
             replay_focus_floor: 3,
 
             ner_assertion_threshold: 0.7,

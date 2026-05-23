@@ -278,7 +278,7 @@ fn main() {
         // Inherit the prior tick's focal subject as this tick's
         // active frame. Computed before Step 10's push so the value
         // reflects history, not this tick's about-to-land entries.
-        let active_frame = derive_active_frame(&hg);
+        let active_frame = derive_active_frame(&hg, &intent, &policy);
         let route = route_regions(&embedding, &hg, &policy);
         let extraction = run_extractors(turn.text, &[], &policy, &hg, &route.active_regions);
         let _ = apply_region_delta(&mut hg, &route.delta, &policy);

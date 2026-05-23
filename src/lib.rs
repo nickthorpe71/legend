@@ -38,6 +38,15 @@ use types::{ElementId, Hypergraph, Intent, Policy};
 /// tick boundary — the caller chunks long inputs into multiple ticks.
 pub const MAX_INPUT_TOKENS: usize = 480;
 
+/// Advance the substrate clock by one. Call once at the top of every
+/// tick driver — before any step reads `hg.clock` — so the freshly-
+/// minted relations carry the new tick number on `created_at` and
+/// `stats.last_seen`, and `recent_focus` entries get a tick stamp
+/// downstream code can use for recency gating.
+pub fn advance_clock(hg: &mut types::Hypergraph) {
+    hg.clock = types::Tick(hg.clock.0 + 1);
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -128,6 +137,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         persistence::load_or_seed(&snapshot_path)?
     };
     stage_at("load_or_seed", &mut mark);
+    advance_clock(&mut hg);
     print_seed_graph(&hg);
 
     let embedding = embed::embed_text(&input_text);
@@ -146,7 +156,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // frame. Derived from `recent_focus` before any of this tick's
     // pushes land, so the value reflects history. None on the first
     // tick of a session.
-    let active_frame = derive_active_frame(&hg);
+    let active_frame = derive_active_frame(&hg, &intent, &policy);
 
     let route = route_regions(&embedding, &hg, &policy);
     stage_at("route_regions", &mut mark);

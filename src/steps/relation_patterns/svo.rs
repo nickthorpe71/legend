@@ -153,16 +153,25 @@ pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<Rela
             } else {
                 tokens[vi - 1].char_end
             };
-            let attr_text = text[prev_tail_end..obj_first.char_start].trim().to_string();
-            if attr_text.is_empty() {
+            let raw_attr_slice = text[prev_tail_end..obj_first.char_start].trim();
+            // Compute the trimmed slice's char range *within the input
+            // text* so Step 8 can contextualize the predicate. `.trim()`
+            // returns a sub-slice; find its bounds via pointer math.
+            let raw_attr_full = &text[prev_tail_end..obj_first.char_start];
+            let leading_ws = raw_attr_full.len() - raw_attr_full.trim_start().len();
+            let attr_start = prev_tail_end + leading_ws;
+            let attr_end = attr_start + raw_attr_slice.len();
+            let Some(attr_text) = normalize_predicate(raw_attr_slice) else {
                 continue;
-            }
+            };
 
             out.push(RelationCandidate {
                 source: PatternSource::Svo,
                 subject_char_start: subj_first_start,
                 subject_char_end: subj_last_end,
                 attribute_name: attr_text,
+                attribute_char_start: Some(attr_start),
+                attribute_char_end: Some(attr_end),
                 object: ObjectRef::Span {
                     char_start: obj_first.char_start,
                     char_end: obj_last.char_end,
@@ -175,6 +184,62 @@ pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<Rela
     }
 
     out
+}
+
+/// Strip syntactic dross off a raw SVO attribute-text candidate so the
+/// resulting predicate is closer to its lexical head. Returns `None`
+/// when the normalized form is empty (the whole candidate was
+/// function words and should be dropped).
+///
+/// Closed-class lists below are linguistic primitives (articles,
+/// coordinating conjunctions, copular forms) — same status as
+/// `IRREGULAR_VERBS` and `SUBJECT_PRONOUNS` in this module.
+///
+/// Strips:
+/// - leading articles and coordinating conjunctions ("the", "a", "an",
+///   "and", "but", "or"),
+/// - trailing copulas ("is", "be", "are", "was", "were", "am"),
+/// - trailing articles (same set as leading).
+///
+/// Idempotent across multiple passes — keeps stripping as long as the
+/// edge tokens match.
+fn normalize_predicate(raw: &str) -> Option<String> {
+    const LEADING_FUNCTION_WORDS: &[&str] = &["the", "a", "an", "and", "but", "or"];
+    const TRAILING_COPULAS: &[&str] = &["is", "be", "are", "was", "were", "am"];
+    const TRAILING_ARTICLES: &[&str] = &["the", "a", "an"];
+
+    let mut tokens: Vec<&str> = raw.split_whitespace().collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        while let Some(&first) = tokens.first() {
+            if LEADING_FUNCTION_WORDS
+                .iter()
+                .any(|w| w.eq_ignore_ascii_case(first))
+            {
+                tokens.remove(0);
+                changed = true;
+            } else {
+                break;
+            }
+        }
+        while let Some(&last) = tokens.last() {
+            if TRAILING_COPULAS
+                .iter()
+                .chain(TRAILING_ARTICLES.iter())
+                .any(|w| w.eq_ignore_ascii_case(last))
+            {
+                tokens.pop();
+                changed = true;
+            } else {
+                break;
+            }
+        }
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(tokens.join(" "))
 }
 
 /// Closed-class personal pronouns that can anchor a clause as
@@ -517,7 +582,9 @@ mod tests {
             );
         }
         assert_eq!(rels[0].attribute_name, "works at");
-        assert_eq!(rels[1].attribute_name, "and lives in");
+        // Leading "and" is stripped by `normalize_predicate` so the
+        // coordinated predicate looks like its non-coordinated form.
+        assert_eq!(rels[1].attribute_name, "lives in");
         let (s0, e0) = obj_span(&rels[0]);
         let (s1, e1) = obj_span(&rels[1]);
         assert_eq!(&text[s0..e0], "Google");
@@ -580,5 +647,43 @@ mod tests {
         assert!(!is_verb_shape("focus"));
         assert!(is_verb_shape("is"));
         assert!(!is_verb_shape("in"));
+    }
+
+    #[test]
+    fn normalize_predicate_strips_leading_function_words() {
+        assert_eq!(normalize_predicate("and lives in").as_deref(), Some("lives in"));
+        assert_eq!(normalize_predicate("the meeting").as_deref(), Some("meeting"));
+        assert_eq!(normalize_predicate("or works at").as_deref(), Some("works at"));
+    }
+
+    #[test]
+    fn normalize_predicate_strips_trailing_copulas() {
+        assert_eq!(normalize_predicate("using is").as_deref(), Some("using"));
+        assert_eq!(normalize_predicate("to be").as_deref(), Some("to"));
+        assert_eq!(normalize_predicate("was").as_deref(), None);
+    }
+
+    #[test]
+    fn normalize_predicate_strips_trailing_articles() {
+        assert_eq!(normalize_predicate("changed the").as_deref(), Some("changed"));
+        assert_eq!(normalize_predicate("about a").as_deref(), Some("about"));
+    }
+
+    #[test]
+    fn normalize_predicate_keeps_clean_predicates_unchanged() {
+        assert_eq!(normalize_predicate("lives in").as_deref(), Some("lives in"));
+        assert_eq!(normalize_predicate("works at").as_deref(), Some("works at"));
+        assert_eq!(normalize_predicate("is now").as_deref(), Some("is now"));
+    }
+
+    #[test]
+    fn normalize_predicate_drops_pure_function_word_runs() {
+        assert_eq!(normalize_predicate("and the").as_deref(), None);
+        assert_eq!(normalize_predicate("").as_deref(), None);
+    }
+
+    #[test]
+    fn normalize_predicate_case_insensitive_strips() {
+        assert_eq!(normalize_predicate("And Lives In").as_deref(), Some("Lives In"));
     }
 }

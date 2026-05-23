@@ -43,6 +43,13 @@ pub struct Step10Output {
     pub promoted: Vec<RelationId>,
     /// `RecentFocusEntry` records pushed to `hg.recent_focus`.
     pub focus_pushed: u32,
+    /// Topically-similar elements the tick pulled in via
+    /// `topical_neighbors` (e.g. "we" surfacing on a query that
+    /// doesn't name it explicitly). Threaded through here so Step 12
+    /// can walk their relations into `current_state` — without this,
+    /// query inputs miss live caches keyed by entities they reference
+    /// implicitly.
+    pub topical_seeds: Vec<ElementId>,
 }
 
 /// Run Step 10 over the relations Steps 8 and 9 minted this tick.
@@ -73,6 +80,7 @@ pub fn hebbian_and_salience(
     let mut out = Step10Output::default();
 
     let reinforcement_set = build_reinforcement_set(step8, step9, hg, extra_seeds);
+    out.topical_seeds = extra_seeds.to_vec();
     let supersession_derived: HashSet<RelationId> = step9
         .cache_relations
         .iter()
@@ -97,10 +105,13 @@ pub fn hebbian_and_salience(
             (bump * policy.hebbian_rate).clamp(0.0, 1.0),
         );
 
-        // support_count bumps every tick the relation is reinforced.
-        // Per §11.11, support_diversity tracks topologically
-        // independent sources — replay's job; stays at 0 for v0.
-        r.stats.support_count = r.stats.support_count.saturating_add(1);
+        // support_count is bumped only on actual re-extraction
+        // (see `mint_or_reuse_base_relation`'s reuse path). Spreading
+        // activation is captured by `focus_success_count` below; using
+        // it for support_count would let stale Defeasible relations
+        // promote whenever a future tick mentions any of their
+        // elements, which is the wrong semantic for "this fact has
+        // been independently re-established."
 
         // focus_success_count tracks "this relation landed in a
         // successful focus path this tick." Step 12's RRF uses it as
@@ -320,6 +331,24 @@ fn check_promotion(hg: &Hypergraph, rid: RelationId, policy: &Policy) -> bool {
     if has_live_supersedes_meta(hg, rid) {
         return false;
     }
+    // Attribute-name maturity gate: a relation can't promote until
+    // its primary (non-subject) attribute-name element has been
+    // around for at least `attribute_name_maturity_ticks`. Brand-new
+    // predicate mints haven't had time to be validated; promoting them
+    // freezes extraction noise. Seed predicates have created_at=0
+    // so this gate is a no-op for them.
+    let primary_attr = r
+        .attributes
+        .iter()
+        .find(|a| a.name != hg.subject_attr)
+        .map(|a| a.name);
+    if let Some(attr_eid) = primary_attr {
+        let attr = &hg.elements[attr_eid.0 as usize];
+        let age = hg.clock.0.saturating_sub(attr.created_at.0);
+        if age < policy.attribute_name_maturity_ticks as u64 {
+            return false;
+        }
+    }
     true
 }
 
@@ -408,20 +437,56 @@ fn relation_has_exact_value_attribute(hg: &Hypergraph, rid: RelationId) -> bool 
 /// was `subject` AND whose surface name isn't a closed-class
 /// pronoun, copula, or interrogative — those are speaker / question
 /// machinery, not the topical entity the conversation is about.
+///
+/// Two further gates on top of the prior subject-only / pronoun
+/// filter:
+///
+/// 1. **Recency.** An entry pushed more than
+///    `policy.active_frame_max_age_ticks` ago is stale by
+///    construction (likely from a different conversational episode)
+///    and skipped. Requires `hg.clock` to advance per tick — see
+///    [`crate::advance_clock`].
+///
+/// 2. **Query intent.** When `intent` reads as a query (curiosity
+///    above `policy.query_curiosity_threshold` AND conviction below
+///    `policy.query_conviction_threshold`), return `None`. A query
+///    inherits no topical anchor; the speaker is asking *about*
+///    something, not continuing a thread, and inheriting the prior
+///    frame would lie about context.
+///
 /// Frame-shifting cues from the current input (which would override
 /// this) are §11.6 territory and not wired in v0; the inheritance
 /// path lights up first.
 ///
-/// Returns `None` when `recent_focus` is empty (first tick) or
-/// when every subject-attributed entry is a pronoun / question
-/// word.
+/// Returns `None` when `recent_focus` is empty (first tick), when
+/// every eligible entry is a pronoun / question word, when every
+/// entry is stale, or when intent is query-shaped.
 ///
 /// Call this BEFORE `hebbian_and_salience`'s push so the result
 /// reflects PRIOR ticks, not the current tick's about-to-be-pushed
 /// entries.
-pub fn derive_active_frame(hg: &Hypergraph) -> Option<ElementId> {
+pub fn derive_active_frame(
+    hg: &Hypergraph,
+    intent: &crate::types::Intent,
+    policy: &crate::types::Policy,
+) -> Option<ElementId> {
+    // Query intent → no inherited frame.
+    if intent.curiosity >= policy.query_curiosity_threshold
+        && intent.conviction <= policy.query_conviction_threshold
+    {
+        return None;
+    }
+    let now = hg.clock.0;
+    let max_age = policy.active_frame_max_age_ticks as u64;
     hg.recent_focus.iter().find_map(|entry| {
         if entry.attribute != Some(hg.subject_attr) {
+            return None;
+        }
+        // Recency gate. `entry.tick == 0` means "pre-clock-bump
+        // legacy data" — treat as fresh to avoid breaking the
+        // first tick after upgrade; subsequent ticks carry a real
+        // stamp from `advance_clock`.
+        if entry.tick.0 > 0 && now.saturating_sub(entry.tick.0) > max_age {
             return None;
         }
         // Reject pronouns and question words — they're sentence
@@ -569,10 +634,10 @@ fn build_reinforcement_set(
 mod tests {
     use super::*;
     use crate::seed::load_seed_graph;
-    use crate::steps::build_relations::build_relations;
+    use crate::steps::build_relations::{build_relations, mint_element, mint_relation};
     use crate::steps::run_extractors::run_extractors;
     use crate::steps::supersede::supersede;
-    use crate::types::Polarity;
+    use crate::types::{Attribute, Polarity};
 
     /// Run Steps 5/8/9 over `text` to produce realistic Step8 + Step9
     /// outputs; return the Hypergraph + both outputs so Step 10 tests
@@ -773,28 +838,52 @@ mod tests {
     }
 
     #[test]
-    fn support_count_increments_per_reinforcement() {
+    fn support_count_increments_per_reextraction() {
+        // support_count is bumped when Step 8's reuse path matches an
+        // existing relation — i.e. on re-extraction. Step 10's
+        // spreading activation does NOT bump it; that's
+        // `focus_success_count`'s role.
         let policy = Policy::default();
-        let (mut hg, step8, step9) = run_through_step9("Sarah called me yesterday.", &[], &policy);
+        let text = "Sarah called me yesterday.";
+        let (mut hg, _step8, _step9) = run_through_step9(text, &[], &policy);
 
-        let pick = step8.minted_relations[0];
-        // support_count starts at 0; bumps by 1 per Step 10 call.
+        // After tick 1, support_count for a freshly minted relation is 0
+        // (the mint path starts at default).
+        let pick = hg
+            .relations
+            .iter()
+            .find(|r| {
+                r.attributes
+                    .iter()
+                    .any(|a| matches!(a.value, crate::types::Term::Element(eid)
+                        if hg.elements[eid.0 as usize].names.iter().any(|n| n == "Sarah")))
+            })
+            .map(|r| r.id)
+            .expect("Sarah-bearing relation should mint");
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 0);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
+
+        // Re-extract via Step 5 + Step 8 → reuse path fires → bump.
+        let ext = run_extractors(text, &[], &policy, &hg, &[]);
+        let _ = build_relations(text, &mut hg, &ext, &policy, None);
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 1);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
+        let ext = run_extractors(text, &[], &policy, &hg, &[]);
+        let _ = build_relations(text, &mut hg, &ext, &policy, None);
         assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 2);
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
-        assert_eq!(hg.relations[pick.0 as usize].stats.support_count, 3);
     }
 
     #[test]
     fn defeasible_promotes_when_gate_clears() {
         // Custom policy: min_count=3, min_diversity=0 (so v0's
-        // 0-by-design diversity counter doesn't block).
+        // 0-by-design diversity counter doesn't block). Disable the
+        // maturity gate so this test focuses on the support_count
+        // gate — a fresh seeded substrate has clock=0 and the seed
+        // predicates also have created_at=0, but if the relation's
+        // attribute is anything *not* seeded the maturity gate
+        // would otherwise hold things back.
         let policy = Policy {
             promotion_min_count: 3,
             promotion_min_diversity: 0,
+            attribute_name_maturity_ticks: 0,
             ..Default::default()
         };
 
@@ -819,9 +908,10 @@ mod tests {
             })
             .expect("expected at least one Defeasible instance_of");
 
-        // First two reinforcements: support_count climbs to 2; gate
-        // not yet cleared.
-        let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
+        // Simulate two prior re-extractions: support_count goes to 2.
+        // (In real use this comes from `mint_or_reuse_base_relation`'s
+        // reuse path firing twice on the same triple.)
+        hg.relations[target_rid.0 as usize].stats.support_count = 2;
         let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
@@ -829,7 +919,8 @@ mod tests {
             "not promoted yet at support_count=2",
         );
 
-        // Third reinforcement clears support_count >= 3.
+        // One more re-extraction → support_count = 3 → gate clears.
+        hg.relations[target_rid.0 as usize].stats.support_count = 3;
         let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
@@ -840,6 +931,83 @@ mod tests {
             out.promoted.contains(&target_rid),
             "Step10Output.promoted must list the promoted relation",
         );
+    }
+
+    #[test]
+    fn promotion_blocked_by_attribute_name_maturity() {
+        // A relation whose attribute-name element is brand-new
+        // (created_at close to hg.clock) should NOT promote even if
+        // support_count clears. Maturity gate = 5 ticks; the relation's
+        // attribute name was minted at clock=0 and the substrate's
+        // clock is also still 0 here, so age=0 < 5 blocks promotion.
+        let policy = Policy {
+            promotion_min_count: 1,
+            promotion_min_diversity: 0,
+            attribute_name_maturity_ticks: 5,
+            ..Default::default()
+        };
+        let mut hg = load_seed_graph();
+        // Build a relation using a brand-new attribute-name element
+        // ("uses" — not a seeded predicate; lexicon-dedup would catch
+        // it normally, but for this test bypass that by minting
+        // directly).
+        let mut result = Step8Output::default();
+        let new_attr_id = mint_element(
+            &mut hg,
+            vec!["custom_attr".to_string()],
+            crate::embed::embed_text("custom_attr"),
+            crate::types::Polarity::Signal,
+            1.0,
+        );
+        result.minted_elements.push(new_attr_id);
+        // Some subject element.
+        let subj_id = mint_element(
+            &mut hg,
+            vec!["custom_subj".to_string()],
+            crate::embed::embed_text("custom_subj"),
+            crate::types::Polarity::Signal,
+            1.0,
+        );
+        let obj_id = mint_element(
+            &mut hg,
+            vec!["custom_obj".to_string()],
+            crate::embed::embed_text("custom_obj"),
+            crate::types::Polarity::Signal,
+            1.0,
+        );
+        let subject_attr = hg.subject_attr;
+        let rel = mint_relation(
+            &mut hg,
+            vec![
+                Attribute {
+                    name: subject_attr,
+                    value: Term::Element(subj_id),
+                },
+                Attribute {
+                    name: new_attr_id,
+                    value: Term::Element(obj_id),
+                },
+            ],
+            RelationStatus::Defeasible,
+            0.3,
+        );
+        // Simulate enough support_count to clear that gate.
+        hg.relations[rel.0 as usize].stats.support_count = 5;
+
+        // Hand-construct minimal Step 8/9 output that reinforces this
+        // relation.
+        let step8 = Step8Output {
+            minted_relations: vec![rel],
+            ..Default::default()
+        };
+        let step9 = crate::steps::supersede::Step9Output::default();
+        let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
+        assert_eq!(
+            hg.relations[rel.0 as usize].status,
+            RelationStatus::Defeasible,
+            "maturity gate should block promotion of a relation whose attribute is brand-new",
+        );
+        assert!(out.promoted.is_empty());
     }
 
     #[test]
@@ -965,6 +1133,7 @@ mod tests {
         let policy = Policy {
             promotion_min_count: 1,
             promotion_min_diversity: 0,
+            attribute_name_maturity_ticks: 0,
             default_conf: 0.9,
             ..Default::default()
         };
@@ -987,6 +1156,8 @@ mod tests {
         let conf_before = hg.relations[target_rid.0 as usize].stats.confidence;
         assert!(conf_before < 0.9);
 
+        // promotion_min_count=1 so a single bump clears the gate.
+        hg.relations[target_rid.0 as usize].stats.support_count = 1;
         let _ = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(
             hg.relations[target_rid.0 as usize].status,
@@ -1181,6 +1352,7 @@ mod tests {
             hebbian_rate: 0.4,
             promotion_min_count: 2,
             promotion_min_diversity: 0,
+            attribute_name_maturity_ticks: 0,
             ..Default::default()
         };
         let labels: &[&str] = &["person", "event", "weekday", "role"];
@@ -1201,7 +1373,10 @@ mod tests {
         let act_after_1 = hg.relations[pick.0 as usize].stats.activation;
         let support_after_1 = hg.relations[pick.0 as usize].stats.support_count;
         assert!(act_after_1 > 0.0 && act_after_1 < 1.0);
-        assert_eq!(support_after_1, 1);
+        // Fresh mint on this tick — no reuse bumps yet, so support_count
+        // is still 0. (`focus_success_count` carries the reinforcement
+        // signal; see Fix C in the frame-quality-fixes plan.)
+        assert_eq!(support_after_1, 0);
 
         // Snapshot the head of recent_focus for ordering check.
         let head_after_1: Vec<ElementId> =
@@ -1261,18 +1436,16 @@ mod tests {
             })
             .expect("expected a Defeasible instance_of relation");
 
-        // After tick 1, support_count=1, gate=2 → still Defeasible.
+        // After tick 1, support_count=0 (fresh mint, no reuse-bumps
+        // yet), gate=2 → still Defeasible.
         assert_eq!(
             hg2.relations[defeasible_iotuple.0 as usize].status,
             RelationStatus::Defeasible,
         );
 
-        // Tick 2 over the same Defeasible relation. We don't have a
-        // mechanism in v0 to re-fire NER on the exact same element
-        // (Step 8 mints a NEW relation each tick), so for the
-        // promotion verification we directly bump support_count by
-        // re-running Step 10 on the SAME step8/step9 outputs. That
-        // simulates "the same evidence arriving again."
+        // Simulate two re-extractions of the same triple (in real use
+        // these come from Step 8's reuse path firing twice).
+        hg2.relations[defeasible_iotuple.0 as usize].stats.support_count = 2;
         let out_promo = hebbian_and_salience(&mut hg2, &s8_a, &s9_a, None, &policy, &[]);
         assert_eq!(
             hg2.relations[defeasible_iotuple.0 as usize].status,

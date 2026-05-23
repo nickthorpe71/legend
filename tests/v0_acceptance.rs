@@ -53,6 +53,7 @@ fn run_tick(
     labels: &[&str],
     policy: &Policy,
 ) -> legend::types::ConsciousAttentionFrame {
+    legend::advance_clock(hg);
     let ext = run_extractors(text, labels, policy, hg, &[]);
     let step8 = build_relations(text, hg, &ext, policy, None);
     let step9 = supersede(hg, &step8.minted_relations, policy);
@@ -241,6 +242,139 @@ fn v0_pipeline_two_tick_acceptance() {
             }
         }
     }
+}
+
+#[test]
+fn v0_pipeline_clock_advances_across_ticks() {
+    // Each tick must bump `hg.clock` so `frame.tick`, `created_at`,
+    // and `last_seen` distinguish ticks. Without this, recency-based
+    // gating (e.g. `derive_active_frame`) can't tell stale state from
+    // fresh.
+    let policy = Policy::default();
+    let mut hg = load_seed_graph();
+    let initial = hg.clock.0;
+    let frame1 = run_tick(&mut hg, "Sarah called me.", &[], &policy);
+    let frame2 = run_tick(&mut hg, "Then Sarah left.", &[], &policy);
+    assert_eq!(
+        frame1.tick.0,
+        initial + 1,
+        "first tick should advance from {initial}",
+    );
+    assert_eq!(
+        frame2.tick.0,
+        initial + 2,
+        "second tick should advance once more",
+    );
+    assert_eq!(hg.clock.0, initial + 2);
+}
+
+#[test]
+fn v0_self_referential_relations_are_dropped() {
+    // `(X, instance_of, X)` and similar self-loops are degenerate
+    // extractions — NER's tag for X matches X's surface form. The
+    // mint path must reject them so the frame doesn't fill up with
+    // tautological lines like `language → instance_of → language`.
+    let policy = Policy::default();
+    let mut hg = load_seed_graph();
+    let frame = run_tick(&mut hg, "The language we're using is Rust", &[], &policy);
+
+    // Walk every focused relation; assert no element appears as both
+    // subject and value of the same relation.
+    use legend::types::ResolvedTerm;
+    for ra in &frame.focused_relations {
+        let subj = ra
+            .relation
+            .attributes
+            .iter()
+            .find(|a| a.name.name == "subject")
+            .and_then(|a| match &a.value {
+                ResolvedTerm::Element(e) => Some(e.id),
+                _ => None,
+            });
+        let Some(subj_id) = subj else { continue };
+        for a in &ra.relation.attributes {
+            if a.name.name == "subject" {
+                continue;
+            }
+            if let ResolvedTerm::Element(e) = &a.value {
+                assert_ne!(
+                    e.id, subj_id,
+                    "relation R{} is self-referential (subject == value): {:?}",
+                    ra.relation.id.0, ra.relation.attributes,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn v0_active_frame_drops_on_query_intent() {
+    // High curiosity + low conviction = query intent. Even with a
+    // populated recent_focus, derive_active_frame should return None
+    // — a query inherits no topical anchor.
+    let policy = Policy::default();
+    let mut hg = load_seed_graph();
+    let _ = run_tick(&mut hg, "Sarah called me.", &[], &policy);
+    let statement_intent = legend::types::Intent {
+        conviction: 0.7,
+        prediction_error: 0.3,
+        arousal: 0.3,
+        curiosity: 0.2,
+    };
+    let query_intent = legend::types::Intent {
+        conviction: 0.2,
+        prediction_error: 0.3,
+        arousal: 0.3,
+        curiosity: 0.9,
+    };
+    let statement_frame = legend::steps::hebbian::derive_active_frame(
+        &hg,
+        &statement_intent,
+        &policy,
+    );
+    let query_frame = legend::steps::hebbian::derive_active_frame(
+        &hg,
+        &query_intent,
+        &policy,
+    );
+    assert!(
+        statement_frame.is_some(),
+        "statement intent should inherit the focal subject",
+    );
+    assert!(
+        query_frame.is_none(),
+        "query intent should clear active_frame (got {query_frame:?})",
+    );
+}
+
+#[test]
+fn v0_active_frame_drops_when_recent_focus_is_stale() {
+    // recent_focus entries older than policy.active_frame_max_age_ticks
+    // are skipped. Simulate by pushing a tick, then running many no-op
+    // ticks to age the entry past the threshold.
+    let policy = Policy {
+        active_frame_max_age_ticks: 2,
+        ..Policy::default()
+    };
+    let mut hg = load_seed_graph();
+
+    let _ = run_tick(&mut hg, "Sarah called me.", &[], &policy);
+    // The recent_focus entry now stamped at hg.clock.
+
+    let neutral_intent = legend::types::Intent::default();
+    let fresh = legend::steps::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
+    assert!(fresh.is_some(), "fresh entry should win active_frame");
+
+    // Advance the clock past the max-age threshold without touching
+    // recent_focus.
+    for _ in 0..(policy.active_frame_max_age_ticks as u64 + 1) {
+        legend::advance_clock(&mut hg);
+    }
+    let stale = legend::steps::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
+    assert!(
+        stale.is_none(),
+        "stale entry should be skipped (got {stale:?})",
+    );
 }
 
 #[test]

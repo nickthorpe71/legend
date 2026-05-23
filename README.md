@@ -4,13 +4,10 @@ Long-term memory for LLMs. v2 rewrite in Rust.
 
 ## Status
 
-v0 in progress. Built and tested:
-- Step 1 — per-dimension intent detection
-- Step 2 — policy adjustment
-- Seeded substrate — 72 elements / 53 relations boot from `seed_pack.yaml`
-
-Next: Step 4 region routing, then extractors. See
-`new_foundation_v0_core.md` for the v0 scope.
+v0 end-to-end. The 12-step tick pipeline (intent → policy → routing →
+extractors → coref → build relations → supersede → hebbian → decay →
+frame) runs against a 622-element / 610-relation seeded substrate.
+Source-of-truth design: `new_foundation.md`, `new_foundation_v0_core.md`.
 
 ## Build
 
@@ -20,27 +17,35 @@ cargo build --release
 
 Baked into the binary via `include_bytes!` — no network access or
 external files at runtime:
-- all-MiniLM-L6-v2 ONNX model (~23 MB)
+
+- all-MiniLM-L6-v2 INT8 weights (~22 MB) + GLiNER1 INT8 weights
 - Four trained intent classifiers
-- Seed hypergraph (~120 KB)
+- Seed hypergraph (`src/seed/graph.bin`, ~1 MB)
 
 ## Try it
 
+Two execution modes share the same tick code path:
+
 ```bash
+# Daemon (default): auto-starts on first call, amortizes cold-start.
 ./target/release/legend "I am absolutely certain that the meeting is at 3pm"
-# intent
-#   conviction       0.507
-#   prediction_error 0.331
-#   arousal          0.413
-#   curiosity        0.246
-# policy (adjusted)
-#   default_conf           0.420
-#   ...
-# seed graph
-#   elements         72
-#   relations        53
-#   region children of GENESIS  15
+# Prints the rendered ConsciousAttentionFrame.
+
+./target/release/legend start    # launch daemon in the background
+./target/release/legend status   # pid, uptime, substrate sizes
+./target/release/legend stop     # graceful shutdown
 ```
+
+```bash
+# In-process: full Step 1–12 verbose dump, prints every intermediate.
+LEGEND_INPROC=1 ./target/release/legend "..."
+LEGEND_TIME=1   ./target/release/legend "..."   # per-step timings
+LEGEND_RESET=1  ./target/release/legend "..."   # skip on-disk snapshot
+```
+
+The daemon listens on TCP loopback; clients discover the port via
+`.legend/legend.port`. A `fs2` exclusive flock on `.legend/legend.lock`
+guarantees single-writer.
 
 ## Persistence + git merge driver
 
@@ -70,6 +75,7 @@ Superseded > Asserted > Entailed > Defeasible.
 
 ```bash
 cargo test --lib                                # unit tests
+cargo test --test v0_acceptance                 # end-to-end tick acceptance
 cargo run --release --example test_intent       # held-out intent accuracy
 cargo run --release --example audit_classifiers # classifier diagnostics
 cargo run --release --example dump_hypergraph_md  # snapshot to inspect/seed.md
@@ -87,4 +93,4 @@ cargo run --release --example gen_seed_graph          # → src/seed/graph.bin
 
 - `new_foundation.md` / `new_foundation_v0_core.md` — design (source of truth)
 - `R-STAR.md` — Rust style guide for this repo
-- `docs/` — operate notes (retraining, validation, per-step internals)
+- `docs/` — operate notes (seed graph, inference engine, intent detection, inspection)

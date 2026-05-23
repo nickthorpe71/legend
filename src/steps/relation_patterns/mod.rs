@@ -53,11 +53,22 @@ pub struct RelationCandidate {
     pub subject_char_end: usize,
 
     /// Attribute element name. Step 8 resolves via:
-    /// (1) `hg.by_name` lookup, (2) embedding-knn over attribute-name
-    /// elements, (3) mint a Defeasible attribute element if both
-    /// miss. Canonical seed-attribute names ("from", "to", "at",
-    /// "instance_of") hit (1).
+    /// (1) `hg.by_name` lookup, (2) typed-relation lexicon, (3)
+    /// embedding-knn over attribute-name centroids, (4) mint a
+    /// Defeasible attribute element if all three miss. Canonical
+    /// seed-attribute names ("from", "to", "at", "instance_of")
+    /// hit (1).
     pub attribute_name: String,
+
+    /// Character range of the predicate's surface form in the source
+    /// input. SVO populates this; other emitters that use canonical
+    /// predicate names (NER-anchored templates, span-typing,
+    /// appositive) leave it `None` because their predicate is a
+    /// `&'static str` not present at a specific char range.
+    /// Step 8 uses it to compute the predicate's contextualized
+    /// span embedding when resolving novel attribute names.
+    pub attribute_char_start: Option<usize>,
+    pub attribute_char_end: Option<usize>,
 
     /// Object reference. `Span` for objects that are sub-spans of
     /// `input_text` (Step 8 slices + resolves by name); `Label` for

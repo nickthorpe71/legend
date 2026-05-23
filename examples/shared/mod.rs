@@ -30,22 +30,40 @@ use std::path::Path;
 #[derive(Deserialize)]
 pub struct SeedPack {
     pub anchors: Vec<RawElement>,
-    pub seeded_attribute_names: Vec<RawElement>,
+    pub seeded_attribute_names: Vec<RawSeededAttributeName>,
     pub regions: Vec<RawRegion>,
     pub reference_frames: Vec<RawElement>,
     pub seeded_relations: RawSeededRelations,
     pub intent_prototypes: IntentPhrases,
 }
 
-/// Anchors, seeded attribute names, and reference frames all share this
-/// shape: a symbolic ID, one or more surface forms, and a rationale
-/// string the seed-graph generator ignores at gen time but the YAML
-/// keeps for human readers.
+/// Anchors and reference frames share this shape: a symbolic ID, one
+/// or more surface forms, and a rationale string the seed-graph
+/// generator ignores at gen time but the YAML keeps for human readers.
 #[derive(Deserialize)]
 pub struct RawElement {
     pub element_id: String,
     pub names: Vec<String>,
     pub rationale: String,
+}
+
+/// Seeded attribute-name (predicate) entry. Same shape as
+/// [`RawElement`] plus an optional `examples` list — short sentences
+/// containing the predicate in canonical usage. The seed-graph
+/// generator computes the predicate's embedding as the centroid of
+/// contextualized span vectors over the examples; when empty, falls
+/// back to `embed_text(name)` (the legacy bare-token path).
+///
+/// Why: predicates need usage centroids, not bare-word vectors, for
+/// embedding-knn dedup to work (see `docs/frame-quality-fixes.md`
+/// Fix F).
+#[derive(Deserialize)]
+pub struct RawSeededAttributeName {
+    pub element_id: String,
+    pub names: Vec<String>,
+    pub rationale: String,
+    #[serde(default)]
+    pub examples: Vec<String>,
 }
 
 /// Region entries carry the generator's inputs: `parent_regions`

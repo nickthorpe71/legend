@@ -56,6 +56,8 @@ pub fn extract_appositives(text: &str, chunks: &[OrthographicChunk]) -> Vec<Rela
                     subject_char_start: proper_first.char_start,
                     subject_char_end: proper_last.char_end,
                     attribute_name: "instance_of".to_string(),
+                    attribute_char_start: None,
+                    attribute_char_end: None,
                     object: ObjectRef::Span {
                         char_start: head.char_start,
                         char_end: head.char_end,

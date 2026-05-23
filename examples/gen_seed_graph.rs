@@ -163,13 +163,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ── 2. Seeded attribute names ─────────────────────────────────────
+    //
+    // Predicate embedding policy: when the YAML carries `examples`, the
+    // embedding is the centroid of contextualized span vectors over
+    // those examples — i.e. the same representation content elements
+    // get. Without examples, fall back to `embed_text(name)`. Per
+    // `docs/frame-quality-fixes.md` Fix F: predicates need usage
+    // centroids, not bare-word vectors, for embedding-knn dedup to
+    // have meaningful signal.
     for raw in &pack.seeded_attribute_names {
+        let embedding = if raw.examples.is_empty() {
+            embed_text(&raw.names[0])
+        } else {
+            contextualized_centroid(&raw.examples, &raw.names[0])
+                .unwrap_or_else(|| embed_text(&raw.names[0]))
+        };
         let id = mint_element(
             &mut elements,
             &mut symbol_to_id,
             &raw.element_id,
             raw.names.clone(),
-            embed_text(&raw.names[0]),
+            embedding,
             Polarity::Signal,
         );
         for name in &raw.names {
@@ -467,6 +481,28 @@ fn find_anchor<'a>(pack: &'a SeedPack, symbol: &str) -> &'a RawElement {
         .iter()
         .find(|a| a.element_id == symbol)
         .unwrap_or_else(|| panic!("seed pack missing anchor: {symbol}"))
+}
+
+/// Build a predicate embedding by mean-pooling the contextualized
+/// span vectors for `predicate_name` across each `examples` sentence.
+/// Folds successive observations with `fold_streaming_centroid` so the
+/// math matches the substrate's online entity-embedding update. Returns
+/// `None` if no example contains the predicate as a whole word (which
+/// shouldn't happen if the YAML is well-formed; callers fall back to
+/// the bare-token embedding in that case).
+fn contextualized_centroid(examples: &[String], predicate_name: &str) -> Option<Vec<f32>> {
+    use legend::embed::{EMBEDDING_DIM, fold_streaming_centroid};
+    let mut centroid = vec![0.0f32; EMBEDDING_DIM];
+    let mut n: u32 = 0;
+    for ex in examples {
+        if let Some((start, end)) = find_whole_word_ci(ex, predicate_name)
+            && let Some(v) = embed_span_in_context(ex, start, end)
+        {
+            fold_streaming_centroid(&mut centroid, &v, n);
+            n = n.saturating_add(1);
+        }
+    }
+    if n == 0 { None } else { Some(centroid) }
 }
 
 /// Scan `examples` for the first phrase containing `member_name` as a

@@ -33,6 +33,10 @@ fn make(
         subject_char_start: subj.0,
         subject_char_end: subj.1,
         attribute_name: attr.to_string(),
+        // Canonical seed-name predicate; resolved via exact-match in
+        // Step 8, so no contextualization needed.
+        attribute_char_start: None,
+        attribute_char_end: None,
         object,
         confidence: conf,
         status,
@@ -347,10 +351,18 @@ fn match_change_verb(prefix: &str) -> Option<String> {
         "upgraded",
         "downgraded",
     ];
-    // Try exact match against stripped prefix; if not, try the original
-    // (handles "is now" where the stripped form is "now").
+    // Try exact match first, then prefix-match (verb + space + tail).
+    // Prefix-match catches naturally-phrased changes like "changed the
+    // language we're using" where the verb leads but the prefix isn't
+    // just the verb alone. Restricting to "verb " (with trailing space)
+    // keeps it from false-positiving on compounds — e.g. "changedover"
+    // would not match "changed".
     for &verb in CHANGE_VERBS {
-        if stripped == verb || p == verb {
+        if stripped == verb
+            || p == verb
+            || stripped.starts_with(&format!("{verb} "))
+            || p.starts_with(&format!("{verb} "))
+        {
             return Some(verb.to_string());
         }
     }
@@ -576,5 +588,37 @@ mod tests {
                 r.object
             );
         }
+    }
+
+    #[test]
+    fn change_verb_prefix_match_fires_on_long_prefix() {
+        // "we changed the language to be C" — the prefix before
+        // " to " is "changed the language" which starts with
+        // "changed ". Should fire Template 5 with anchor "changed".
+        let text = "we changed the language to be C.";
+        let spans = vec![
+            span(0, 2, "person", 0.85, "we"),
+            span(30, 31, "language", 0.85, "C"),
+        ];
+        let rels = extract_relations(text, &spans);
+        let from = rels
+            .iter()
+            .find(|r| r.attribute_name == "from")
+            .expect("change-verb prefix-match should synthesize a from");
+        let to = rels
+            .iter()
+            .find(|r| r.attribute_name == "to")
+            .expect("change-verb prefix-match should emit a to");
+        assert_eq!(from.event_anchor.as_deref(), Some("changed"));
+        assert_eq!(to.event_anchor.as_deref(), Some("changed"));
+    }
+
+    #[test]
+    fn change_verb_prefix_match_rejects_non_change_prefix() {
+        // "I went to the store" — `went` is not in the change-verb
+        // list, so even though the prefix starts with a verb, the
+        // template should not fire.
+        let p = "went to the store";
+        assert!(super::match_change_verb(p).is_none());
     }
 }

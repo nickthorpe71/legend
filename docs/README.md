@@ -26,10 +26,3 @@ Build/operate notes for v2. Source-of-truth design lives in
 - [intent-detection.md](intent-detection.md) — Step 1: per-dimension intent
   classifiers (conviction, prediction_error, arousal, curiosity). Pipeline,
   retraining, validation.
-
-### Proposals (design sketches, pre-implementation)
-
-- [frame-as-surface.md](frame-as-surface.md) — `ConsciousAttentionFrame`
-  is the entire observable surface of a tick. Logic lives in lib
-  code; the daemon and CLI are thin entry points. Denormalize the
-  frame, drop `TickResult`, stop benches from reading the substrate.

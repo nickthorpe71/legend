@@ -165,7 +165,7 @@ pub fn supersede(
         } else {
             RelationStatus::Defeasible
         };
-        let cache_id = mint_or_reuse_base_relation(
+        let Some(cache_id) = mint_or_reuse_base_relation(
             hg,
             vec![
                 Attribute {
@@ -179,7 +179,13 @@ pub fn supersede(
             ],
             cache_status,
             event_conf,
-        );
+        ) else {
+            // Self-referential cache: target and to_value resolved to
+            // the same element. Shouldn't happen for well-formed events
+            // (the cache would mean "X's current property is X"), but
+            // skip rather than panic if upstream extraction produces it.
+            continue;
+        };
         out.cache_relations.push(cache_id);
 
         // ── Linking meta-relations ─────────────────────────────────

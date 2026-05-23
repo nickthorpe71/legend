@@ -306,10 +306,11 @@ fn tick(
         )
         .into());
     }
+    crate::advance_clock(hg);
     let embedding = crate::embed::embed_text(input);
     let intent = detect_intent(input, &embedding);
     let policy = adjust_policy(&intent, &hg.policy);
-    let active_frame = derive_active_frame(hg);
+    let active_frame = derive_active_frame(hg, &intent, &policy);
     let route = route_regions(&embedding, hg, &policy);
     let extraction = run_extractors(input, &[], &policy, hg, &route.active_regions);
     let _ = apply_region_delta(hg, &route.delta, &policy);

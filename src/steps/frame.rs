@@ -157,6 +157,11 @@ pub fn assemble_frame(
                 RelationStatus::Asserted | RelationStatus::Entailed | RelationStatus::Defeasible,
             )
         })
+        // Drop seed-graph structural pins (region/frame `instance_of →
+        // <class>`). They're load-bearing in the substrate but uniformly
+        // high-confidence noise in the focus list. Keeping the substrate
+        // shape; just don't surface here.
+        .filter(|&rid| !crate::steps::build_relations::is_structural_relation(hg, rid))
         .collect();
 
     let mut dense: Vec<RelationId> = live.clone();
@@ -328,7 +333,40 @@ pub fn assemble_frame(
     // the frame did not surface it.
     let mut current_state: Vec<RelationId> = Vec::new();
     let mut cs_seen: HashSet<RelationId> = HashSet::new();
-    for &eid in &step8.referenced_elements {
+    // Walk explicitly-referenced elements first (Step 8's by-name
+    // resolutions), then topically-activated ones (Step 10's seed
+    // input). The topical seeds let query inputs surface live caches
+    // on entities they reference implicitly — e.g. "what language
+    // are we using?" doesn't name-mention "we" via NER, but `we`
+    // shows up via topical_neighbors and pulls in its
+    // `current_<property>` cache.
+    let mut element_walk: Vec<ElementId> =
+        Vec::with_capacity(step8.referenced_elements.len() + step10.topical_seeds.len());
+    let mut walked: HashSet<ElementId> = HashSet::new();
+    for &eid in step8.referenced_elements.iter().chain(step10.topical_seeds.iter()) {
+        if walked.insert(eid) {
+            element_walk.push(eid);
+        }
+    }
+    // Also expand element_walk via the elements each reinforced
+    // relation touches. The n-ary change event (R615 in the smoke
+    // test) is `reinforced` via the n-ary's value slots, and we want
+    // its derived cache (R617 `(we, current_tech, C)`) to surface in
+    // current_state too — without this hop, the cache stays hidden
+    // because neither `we` nor `C` is in `referenced_elements` or
+    // `topical_seeds` directly on a query like "what language are we
+    // using?".
+    for &rid in &step10.reinforced {
+        let r = &hg.relations[rid.0 as usize];
+        for attr in &r.attributes {
+            if let crate::types::Term::Element(eid) = attr.value
+                && walked.insert(eid)
+            {
+                element_walk.push(eid);
+            }
+        }
+    }
+    for &eid in &element_walk {
         let Some(rels) = hg.relations_by_element.get(&eid) else {
             continue;
         };
@@ -340,6 +378,7 @@ pub fn assemble_frame(
                         | RelationStatus::Entailed
                         | RelationStatus::Defeasible,
                 )
+                && !crate::steps::build_relations::is_structural_relation(hg, rid)
             {
                 cs_seen.insert(rid);
                 current_state.push(rid);

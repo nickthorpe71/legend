@@ -18,7 +18,7 @@ Open in any previewer; renders inline on GitHub via Mermaid.
 | Section          | What it shows                                                                                                                        |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | Summary          | Element category counts (anchor / attribute-name / region / frame / class / prototype / minted) + per-attribute relation counts      |
-| Anchors          | The four boot-time IDs (VOID, GENESIS, REGION_CLASS, REFERENCE_FRAME_CLASS)                                                          |
+| Anchors          | The two boot-time anchor IDs (VOID, GENESIS) plus the two seeded classes (REGION_CLASS, REFERENCE_FRAME_CLASS)                       |
 | Region DAG       | Mermaid diagram — GENESIS at root, region children, prototype attachments. Color-coded: regions blue, prototypes green, anchors gold |
 | Regions          | Table: name, ID, parent(s) with weight, prototype(s)                                                                                 |
 | Attribute Names  | Grouped by category (Ontology / Meta-relation / Region structural / Generic participant / Behavioral modal / Causal-relation)        |

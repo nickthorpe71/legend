@@ -225,12 +225,22 @@ seeded_attribute_names:
     rationale: >
       Origin or prior state of a change; supersession lookup (§11.10)
       reads `from` to find the relation being superseded.
+    examples:
+      - "the flight from New York landed on time"
+      - "the meeting moved from Tuesday to Friday"
+      - "she came from Berlin last week"
+      - "the call from Sarah was about the project"
 
   - element_id: ATTR_TO
     names: ["to"]
     rationale: >
       Destination or new state of a change; pairs with `from` in every
       change-shaped relation.
+    examples:
+      - "we transferred the file to the new server"
+      - "the meeting moved from Tuesday to Friday"
+      - "she flew to Paris yesterday"
+      - "the team switched to a new tool"
 
   - element_id: ATTR_INSTRUMENT
     names: ["instrument"]
@@ -261,6 +271,11 @@ seeded_attribute_names:
       the Void adposition `VOID_ADP_WITH` so by-name resolution from
       the extractor doesn't accidentally bind to the function-word
       member.
+    examples:
+      - "I had lunch with Sarah at the cafe"
+      - "the standup is with the platform team today"
+      - "Bob is working with Alice on the migration"
+      - "she's using Rust with cargo for the build"
 
   - element_id: ATTR_AT
     names: ["at"]
@@ -268,6 +283,11 @@ seeded_attribute_names:
       Location or temporal anchor slot — "met at Times Square", "lands
       at 3pm". Pattern RE emits this label for the `X at Y` template.
       Same Signal/Void duplication pattern as `ATTR_WITH`.
+    examples:
+      - "Sarah works at Anthropic"
+      - "we met at the cafe on Tuesday"
+      - "the package arrived at the office"
+      - "the talk is at 3pm in the auditorium"
 
   # Deliberately not seeded:
   #   `time`     — temporal scope lives on `valid_from`/`valid_to`
