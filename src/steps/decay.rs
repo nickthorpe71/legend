@@ -190,35 +190,6 @@ pub fn focus_radius_decay(
     }
 }
 
-/// Hand-rolled debug print so the dev-time tick output shows what
-/// Step 11 actually walked. Mirrors `print_step10`.
-pub fn print_step11(out: &Step11Output, policy: &Policy) {
-    println!();
-    println!("focus-radius decay (Step 11)");
-    println!(
-        "  elements walked       {}  (BFS from reinforcement set)",
-        out.elements_walked,
-    );
-    println!(
-        "  relations decayed     {}  (depth ≥ 1, non-reinforced)",
-        out.relations_decayed,
-    );
-    println!(
-        "  max depth reached     {}  (radius cap {})",
-        out.max_depth_reached, policy.focus_decay_radius,
-    );
-    if policy.focus_decay_radius == 0 || policy.decay_rate <= 0.0 {
-        println!(
-            "  rate / radius         {:.3} / {}  (no-op: gate skipped BFS)",
-            policy.decay_rate, policy.focus_decay_radius,
-        );
-    } else {
-        println!(
-            "  rate / radius         {:.3} / {}",
-            policy.decay_rate, policy.focus_decay_radius,
-        );
-    }
-}
 
 /// Build the BFS seed Element set: every Element-valued attribute
 /// of every relation in `reinforced_relations`. Deduped. Term::

@@ -23,7 +23,6 @@ use std::collections::HashSet;
 
 use crate::hebbian::bounded_hebbian_bump;
 use crate::steps::build_relations::{Step8Output, kind_of};
-use crate::steps::print_util::truncate;
 use crate::steps::supersede::Step9Output;
 use crate::types::{
     ElementId, Hypergraph, Policy, RecentFocusEntry, RelationId, RelationStatus, Term,
@@ -151,79 +150,6 @@ pub fn hebbian_and_salience(
     out.focus_pushed = push_recent_focus(hg, step8, step9, active_frame, policy);
 
     out
-}
-
-/// Hand-rolled debug print so the dev-time tick output shows what
-/// Step 10 actually wrote. Mirrors `print_step9`.
-pub fn print_step10(out: &Step10Output, hg: &Hypergraph, policy: &Policy) {
-    println!();
-    println!("hebbian + salience (Step 10)");
-    println!(
-        "  reinforced relations  {}  (activation bumps via Oja)",
-        out.reinforced.len(),
-    );
-    println!(
-        "  promoted to Asserted  {}  (Defeasible → Asserted)",
-        out.promoted.len(),
-    );
-    println!(
-        "  focus entries pushed  {}  (recent_focus depth: {})",
-        out.focus_pushed,
-        hg.recent_focus.len(),
-    );
-    if policy.hebbian_rate == 0.0 {
-        println!(
-            "  rate                  {:.3}  (no-op: stats.activation/salience untouched)",
-            policy.hebbian_rate,
-        );
-    } else {
-        println!("  rate                  {:.3}", policy.hebbian_rate);
-    }
-
-    if !out.promoted.is_empty() {
-        println!();
-        println!("  promoted relations:");
-        for &rid in &out.promoted {
-            let r = &hg.relations[rid.0 as usize];
-            // Lookup the subject Element's name for a readable row.
-            let subj = r
-                .attributes
-                .iter()
-                .find(|a| a.name == hg.subject_attr)
-                .and_then(|a| match a.value {
-                    Term::Element(e) => hg.elements[e.0 as usize].names.first().cloned(),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            println!(
-                "    R{:<5} subject={subj}  support_count={}",
-                rid.0, r.stats.support_count,
-            );
-        }
-    }
-
-    if !hg.recent_focus.is_empty() {
-        println!();
-        let preview = hg.recent_focus.iter().take(5);
-        println!("  recent_focus head (most recent first, up to 5):");
-        for entry in preview {
-            let el_name = hg.elements[entry.element.0 as usize]
-                .names
-                .first()
-                .cloned()
-                .unwrap_or_default();
-            let attr_name = entry
-                .attribute
-                .and_then(|a| hg.elements[a.0 as usize].names.first().cloned())
-                .unwrap_or_else(|| "?".to_string());
-            println!(
-                "    tick={:<3} {:<20} bound={:<10}",
-                entry.tick.0,
-                truncate(&el_name, 20),
-                attr_name,
-            );
-        }
-    }
 }
 
 /// Push `RecentFocusEntry` records for this tick's focal elements.
@@ -444,8 +370,8 @@ fn relation_has_exact_value_attribute(hg: &Hypergraph, rid: RelationId) -> bool 
 /// 1. **Recency.** An entry pushed more than
 ///    `policy.active_frame_max_age_ticks` ago is stale by
 ///    construction (likely from a different conversational episode)
-///    and skipped. Requires `hg.clock` to advance per tick — see
-///    [`crate::advance_clock`].
+///    and skipped. Requires `hg.clock` to advance per tick — the
+///    clock bump lives at the top of `execute_tick::run`.
 ///
 /// 2. **Query intent.** When `intent` reads as a query (curiosity
 ///    above `policy.query_curiosity_threshold` AND conviction below
@@ -485,7 +411,7 @@ pub fn derive_active_frame(
         // Recency gate. `entry.tick == 0` means "pre-clock-bump
         // legacy data" — treat as fresh to avoid breaking the
         // first tick after upgrade; subsequent ticks carry a real
-        // stamp from `advance_clock`.
+        // stamp from the per-tick clock bump.
         if entry.tick.0 > 0 && now.saturating_sub(entry.tick.0) > max_age {
             return None;
         }

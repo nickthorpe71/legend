@@ -22,7 +22,7 @@ use legend::steps::frame::assemble_frame;
 use legend::steps::hebbian::hebbian_and_salience;
 use legend::steps::run_extractors::run_extractors;
 use legend::steps::supersede::supersede;
-use legend::types::{Hypergraph, Intent, Policy, RelationId, RelationStatus};
+use legend::types::{Hypergraph, Intent, Policy, RelationId, RelationStatus, Tick};
 
 /// Mirror of `crate::steps::build_relations::is_cache_relation`
 /// (which is `pub(crate)`). Returns true iff `rid`'s attribute
@@ -53,7 +53,7 @@ fn run_tick(
     labels: &[&str],
     policy: &Policy,
 ) -> legend::types::ConsciousAttentionFrame {
-    legend::advance_clock(hg);
+    hg.clock = Tick(hg.clock.0 + 1);
     let ext = run_extractors(text, labels, policy, hg, &[]);
     let step8 = build_relations(text, hg, &ext, policy, None);
     let step9 = supersede(hg, &step8.minted_relations, policy);
@@ -368,7 +368,7 @@ fn v0_active_frame_drops_when_recent_focus_is_stale() {
     // Advance the clock past the max-age threshold without touching
     // recent_focus.
     for _ in 0..(policy.active_frame_max_age_ticks as u64 + 1) {
-        legend::advance_clock(&mut hg);
+        hg.clock = Tick(hg.clock.0 + 1);
     }
     let stale = legend::steps::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
     assert!(

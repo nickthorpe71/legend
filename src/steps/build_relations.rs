@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
 use crate::steps::coref::CorefDecision;
 use crate::steps::orthographic::OrthographicChunk;
-use crate::steps::print_util::truncate;
 use crate::steps::relation_patterns::{ObjectRef, RelationCandidate};
 use crate::steps::run_extractors::ExtractionOutput;
 use crate::types::{
@@ -1415,47 +1414,6 @@ fn mint_novelty_relation(
     )
 }
 
-/// Hand-rolled debug print so the dev-time tick output shows what
-/// Step 8 actually wrote. Mirrors the style of `print_extraction`
-/// in `lib.rs`.
-pub fn print_step8(
-    out: &Step8Output,
-    hg: &Hypergraph,
-    prior_element_count: usize,
-    prior_relation_count: usize,
-) {
-    println!();
-    println!("build_relations (Step 8)");
-    println!(
-        "  minted elements    {} ({} → {})",
-        out.minted_elements.len(),
-        prior_element_count,
-        hg.elements.len(),
-    );
-    println!(
-        "  minted relations   {} ({} → {})",
-        out.minted_relations.len(),
-        prior_relation_count,
-        hg.relations.len(),
-    );
-    if out.attr_names_minted > 0 {
-        println!(
-            "  new attribute names {}  (>{} would warn per policy)",
-            out.attr_names_minted, hg.policy.attribute_name_mint_warning_count,
-        );
-    }
-    if out.minted_elements.is_empty() {
-        return;
-    }
-    println!();
-    println!("  {:<6} {:<28} {:<8}", "id", "name", "polarity");
-    println!("  {:-<6} {:-<28} {:-<8}", "", "", "");
-    for &id in &out.minted_elements {
-        let el = &hg.elements[id.0 as usize];
-        let name = el.names.first().map(|s| s.as_str()).unwrap_or("?");
-        println!("  {:<6} {:<28} {:?}", id.0, truncate(name, 28), el.polarity);
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -33,7 +33,14 @@ use std::time::{Duration, Instant};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::types::ConsciousAttentionFrame;
+use crate::MAX_INPUT_TOKENS;
+use crate::embed::{embed_text, token_count};
+use crate::execute_tick;
+use crate::inference::deberta::tokenizer::BUNDLED_TOKENIZER;
+use crate::inference::deberta::weights_int8::WeightsDebertaInt8;
+use crate::persistence::{default_path, load_or_seed, save};
+use crate::seed::load_seed_graph;
+use crate::types::{ConsciousAttentionFrame, Hypergraph};
 
 // ─── Protocol ────────────────────────────────────────────────────────
 
@@ -50,6 +57,11 @@ pub enum DaemonRequest {
     /// Snapshot of how the daemon is doing — uptime, how many ticks
     /// it's processed, current substrate sizes.
     Status,
+    /// Wipe the in-RAM substrate and reload from the bundled seed
+    /// graph, then persist the fresh snapshot to disk. The replacement
+    /// of `legend.rs`'s old `LEGEND_RESET=1` env var, which only made
+    /// sense when each CLI invocation owned its own substrate.
+    Reset,
 }
 
 /// Boxed `ConsciousAttentionFrame` to keep the variant sizes balanced
@@ -73,6 +85,9 @@ pub enum DaemonResponse {
         elements: usize,
         relations: usize,
     },
+    /// Daemon acknowledged `Reset`. Reports the post-reset substrate
+    /// sizes (which equal the freshly-loaded seed sizes).
+    Reset { elements: usize, relations: usize },
     /// Server-side failure (load error, panic-during-tick, persist
     /// failure). `message` is the `Display` of the underlying error.
     /// Clients should print it and exit non-zero.
@@ -176,13 +191,21 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Load substrate once. Subsequent ticks mutate this in place;
     //    persist runs at the end of each tick.
-    let snapshot_path = crate::persistence::default_path();
-    let mut hg = crate::persistence::load_or_seed(&snapshot_path)?;
+    let snapshot_path = default_path();
+    let mut hypergraph = load_or_seed(&snapshot_path)?;
     eprintln!(
         "[daemon] loaded substrate: {} elements, {} relations",
-        hg.elements.len(),
-        hg.relations.len(),
+        hypergraph.elements.len(),
+        hypergraph.relations.len(),
     );
+
+    // 5. Warm the heavy model singletons so the first tick doesn't
+    //    pay their init cost. GLiNER tokenizer init alone is ~162 ms
+    //    — shifting it off the user's first interactive tick onto
+    //    daemon startup is the whole point of this step.
+    let warm_start = Instant::now();
+    warm_models();
+    eprintln!("[daemon] warmed models in {:?}", warm_start.elapsed());
 
     // 5. Accept loop with TTL. set_nonblocking + spin loop with sleep
     //    is portable and good enough for a 100ms poll interval.
@@ -209,7 +232,7 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
                 last_request = Instant::now();
                 handle_one(
                     stream,
-                    &mut hg,
+                    &mut hypergraph,
                     &snapshot_path,
                     started,
                     tick_count,
@@ -233,7 +256,7 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
 
 fn handle_one(
     mut stream: TcpStream,
-    hg: &mut crate::types::Hypergraph,
+    hypergraph: &mut Hypergraph,
     snapshot_path: &Path,
     started: Instant,
     tick_count_so_far: u64,
@@ -254,7 +277,7 @@ fn handle_one(
         }
     };
     let resp = match req {
-        DaemonRequest::Tick { input } => match tick(hg, &input, snapshot_path) {
+        DaemonRequest::Tick { input } => match tick(hypergraph, &input, snapshot_path) {
             Ok(frame) => DaemonResponse::Frame(Box::new(frame)),
             Err(e) => DaemonResponse::Error {
                 message: format!("tick failed: {e}"),
@@ -264,13 +287,22 @@ fn handle_one(
             pid: std::process::id(),
             uptime_secs: started.elapsed().as_secs(),
             tick_count: tick_count_so_far,
-            elements: hg.elements.len(),
-            relations: hg.relations.len(),
+            elements: hypergraph.elements.len(),
+            relations: hypergraph.relations.len(),
         },
         DaemonRequest::Stop => {
             *stop_flag = true;
             DaemonResponse::Stopping
         }
+        DaemonRequest::Reset => match reset(hypergraph, snapshot_path) {
+            Ok(()) => DaemonResponse::Reset {
+                elements: hypergraph.elements.len(),
+                relations: hypergraph.relations.len(),
+            },
+            Err(e) => DaemonResponse::Error {
+                message: format!("reset failed: {e}"),
+            },
+        },
     };
     let _ = write_frame(&mut stream, &resp);
     Ok(())
@@ -280,58 +312,45 @@ fn handle_one(
 /// pipeline as `lib::run()`'s tick block, just without process-level
 /// scaffolding (printing, snapshot reload, init-warmup timing).
 fn tick(
-    hg: &mut crate::types::Hypergraph,
+    hypergraph: &mut Hypergraph,
     input: &str,
     snapshot_path: &Path,
 ) -> Result<ConsciousAttentionFrame, Box<dyn std::error::Error>> {
-    use crate::steps::{
-        adjust_policy::adjust_policy,
-        apply_region_delta::apply_region_delta,
-        build_relations::build_relations,
-        decay::focus_radius_decay,
-        detect_intent::detect_intent,
-        frame::assemble_frame,
-        hebbian::{derive_active_frame, hebbian_and_salience},
-        route_regions::route_regions,
-        run_extractors::run_extractors,
-        supersede::supersede,
-        topical::topical_neighbors,
-    };
-
-    let token_count = crate::embed::token_count(input);
-    if token_count > crate::MAX_INPUT_TOKENS {
-        return Err(format!(
-            "input too long: {token_count} tokens, max {}",
-            crate::MAX_INPUT_TOKENS
-        )
-        .into());
+    let n_tokens = token_count(input);
+    if n_tokens > MAX_INPUT_TOKENS {
+        return Err(format!("input too long: {n_tokens} tokens, max {MAX_INPUT_TOKENS}").into());
     }
-    crate::advance_clock(hg);
-    let embedding = crate::embed::embed_text(input);
-    let intent = detect_intent(input, &embedding);
-    let policy = adjust_policy(&intent, &hg.policy);
-    let active_frame = derive_active_frame(hg, &intent, &policy);
-    let route = route_regions(&embedding, hg, &policy);
-    let extraction = run_extractors(input, &[], &policy, hg, &route.active_regions);
-    let _ = apply_region_delta(hg, &route.delta, &policy);
-    let step8 = build_relations(input, hg, &extraction, &policy, None);
-    let step9 = supersede(hg, &step8.minted_relations, &policy);
-    let topical_seeds = topical_neighbors(hg, &embedding, 32);
-    let step10 = hebbian_and_salience(hg, &step8, &step9, active_frame, &policy, &topical_seeds);
-    let _ = focus_radius_decay(hg, &step10.reinforced, &policy);
-    let frame = assemble_frame(
-        input,
-        hg,
-        &intent,
-        active_frame,
-        &route,
-        &step8,
-        &step9,
-        &step10,
-        &policy,
-    );
-    crate::persistence::save(hg, snapshot_path)?;
+    let frame = execute_tick::run(input, hypergraph);
+    save(hypergraph, snapshot_path)?;
     Ok(frame)
+}
+
+/// Touch the heaviest model singletons so they're ready before the
+/// first tick request lands. Only forces the one-time init cost
+/// (LazyLock construction); doesn't run a forward pass — per-input
+/// matmul work is paid every tick regardless and can't be amortized.
+fn warm_models() {
+    // GLiNER tokenizer — the dominant init cost (~162 ms). Parsing
+    // a tokenizer.json with 250k merges is the bottleneck.
+    let _ = BUNDLED_TOKENIZER.get_vocab_size(true);
+    // GLiNER INT8 weights — ~150 MB memmap; cheap (~3 ms) but worth
+    // doing here so the first NER call doesn't page-fault on read.
+    let _ = WeightsDebertaInt8::load_bundled();
+    // MiniLM tokenizer + INT8 weights + warm the matmul/cache state
+    // via a tiny forward pass. `embed_text` exercises both singletons.
+    let _ = embed_text("warmup");
+}
+
+/// Replace the in-RAM substrate with a fresh seed graph and persist
+/// the new (seed) state to disk. The daemon keeps running; the next
+/// tick will mutate the fresh substrate. Used by `legend reset`.
+fn reset(
+    hypergraph: &mut Hypergraph,
+    snapshot_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    *hypergraph = load_seed_graph();
+    save(hypergraph, snapshot_path)?;
+    Ok(())
 }
 
 // ─── Client ─────────────────────────────────────────────────────────

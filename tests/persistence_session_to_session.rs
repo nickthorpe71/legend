@@ -668,10 +668,11 @@ fn cli_binary_persists_state_across_invocations() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-// ─── J. LEGEND_RESET behavior ────────────────────────────────────────
+// ─── J. `legend reset` subcommand behavior ──────────────────────────
 //
-// LEGEND_RESET is wired into `src/lib.rs::run()` to skip the load
-// step. The CLI subprocess test below covers the runtime contract;
+// `legend reset` sends a `Reset` IPC request to the daemon, which
+// replaces its in-RAM substrate with a fresh seed graph and persists.
+// The CLI subprocess test below covers the runtime contract;
 // `legend::persistence::load_or_seed` is exercised in
 // `persistence_round_trip.rs::cross_session_load_or_seed_returns_existing_snapshot`.
 
@@ -691,7 +692,8 @@ fn cli_legend_reset_starts_fresh_but_overwrites_snapshot() {
 
     let bin = env!("CARGO_BIN_EXE_legend");
 
-    // Seed a snapshot.
+    // Seed a snapshot by ticking a non-trivial input — auto-starts a
+    // daemon scoped to this temp dir.
     let _ = std::process::Command::new(bin)
         .env("LEGEND_STATE_DIR", &dir)
         .arg("Polaris is a Rust project.")
@@ -700,18 +702,30 @@ fn cli_legend_reset_starts_fresh_but_overwrites_snapshot() {
     assert!(snapshot.exists());
     let baseline = fs::metadata(&snapshot).unwrap().len();
 
-    // Invoke with LEGEND_RESET=1. Should NOT load the prior snapshot;
-    // the run starts from fresh seed and writes a fresh snapshot.
-    let out = std::process::Command::new(bin)
+    // `legend reset` — daemon drops in-RAM substrate, reloads from
+    // seed, persists. Snapshot now holds only seed state.
+    let reset = std::process::Command::new(bin)
         .env("LEGEND_STATE_DIR", &dir)
-        .env("LEGEND_RESET", "1")
-        .arg("Hello.")
+        .arg("reset")
         .output()
         .expect("reset invocation");
     assert!(
-        out.status.success(),
+        reset.status.success(),
         "reset invocation failed: stderr={}",
-        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&reset.stderr),
+    );
+
+    // Tick a tiny input on the freshly reset substrate. Stdout should
+    // not surface Polaris (the prior snapshot's content is gone).
+    let tick = std::process::Command::new(bin)
+        .env("LEGEND_STATE_DIR", &dir)
+        .arg("Hello.")
+        .output()
+        .expect("post-reset tick");
+    assert!(
+        tick.status.success(),
+        "post-reset tick failed: stderr={}",
+        String::from_utf8_lossy(&tick.stderr),
     );
     let after_reset = fs::metadata(&snapshot).unwrap().len();
     // After reset, the snapshot reflects only the fresh-seed + one
@@ -719,16 +733,19 @@ fn cli_legend_reset_starts_fresh_but_overwrites_snapshot() {
     // had Polaris + Rust + ancillary mints.
     assert!(
         after_reset <= baseline,
-        "LEGEND_RESET should produce a snapshot no larger than the prior; \
+        "`legend reset` should produce a snapshot no larger than the prior; \
          baseline={baseline} after_reset={after_reset}",
     );
-    // The reset run's stdout should NOT mention Polaris (it loaded
-    // from seed, not from the prior snapshot).
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = String::from_utf8_lossy(&tick.stdout);
     assert!(
         !stdout.contains("Polaris"),
-        "LEGEND_RESET run should not surface Polaris (would mean it loaded the prior snapshot)",
+        "post-reset tick should not surface Polaris (would mean reset didn't wipe)",
     );
 
+    // Stop the daemon we auto-spawned so we don't leak a process.
+    let _ = std::process::Command::new(bin)
+        .env("LEGEND_STATE_DIR", &dir)
+        .arg("stop")
+        .output();
     let _ = fs::remove_dir_all(&dir);
 }
