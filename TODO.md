@@ -1,0 +1,5 @@
+- [x] remove steps.rs; execute_tick.rs is now tick_pipeline/mod.rs (run renamed to execute_tick); /steps renamed to /tick_pipeline; all pipeline steps called from tick_pipeline/mod.rs
+- [ ] lock down tick_pipeline step modules to private (currently `pub mod` for test/example access) — needs the introspection tests moved into the crate or rewritten to drive execute_tick
+- [ ] review and refactor daemon
+- [ ] refactor tick steps so they have better clearer naming and logic (should not return step 8)
+- [ ] update docs espeically regarding tick pipeline and daemon
