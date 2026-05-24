@@ -12,13 +12,13 @@
 
 use legend::persistence;
 use legend::seed::load_seed_graph;
-use legend::steps::adjust_policy::adjust_policy;
-use legend::steps::build_relations::build_relations;
-use legend::steps::decay::focus_radius_decay;
-use legend::steps::detect_intent::detect_intent;
-use legend::steps::hebbian::{derive_active_frame, hebbian_and_salience};
-use legend::steps::run_extractors::run_extractors;
-use legend::steps::supersede::supersede;
+use legend::tick_pipeline::adjust_policy::adjust_policy;
+use legend::tick_pipeline::build_relations::build_relations;
+use legend::tick_pipeline::decay::focus_radius_decay;
+use legend::tick_pipeline::detect_intent::detect_intent;
+use legend::tick_pipeline::hebbian::{derive_active_frame, hebbian_and_salience};
+use legend::tick_pipeline::run_extractors::run_extractors;
+use legend::tick_pipeline::supersede::supersede;
 use legend::types::{Hypergraph, RelationStatus, Term};
 
 use std::fs;

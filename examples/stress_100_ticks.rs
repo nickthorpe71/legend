@@ -5,16 +5,16 @@
 //! Run: `cargo run --release --example stress_100_ticks`
 
 use legend::seed::load_seed_graph;
-use legend::steps::adjust_policy::adjust_policy;
-use legend::steps::apply_region_delta::apply_region_delta;
-use legend::steps::build_relations::build_relations;
-use legend::steps::decay::focus_radius_decay;
-use legend::steps::detect_intent::detect_intent;
-use legend::steps::frame::assemble_frame;
-use legend::steps::hebbian::hebbian_and_salience;
-use legend::steps::route_regions::route_regions;
-use legend::steps::run_extractors::run_extractors;
-use legend::steps::supersede::supersede;
+use legend::tick_pipeline::adjust_policy::adjust_policy;
+use legend::tick_pipeline::apply_region_delta::apply_region_delta;
+use legend::tick_pipeline::build_relations::build_relations;
+use legend::tick_pipeline::decay::focus_radius_decay;
+use legend::tick_pipeline::detect_intent::detect_intent;
+use legend::tick_pipeline::frame::assemble_frame;
+use legend::tick_pipeline::hebbian::hebbian_and_salience;
+use legend::tick_pipeline::route_regions::route_regions;
+use legend::tick_pipeline::run_extractors::run_extractors;
+use legend::tick_pipeline::supersede::supersede;
 use legend::types::{ConsciousAttentionFrame, Hypergraph, RelationStatus};
 
 /// 100 ticks spanning recurrence, supersession, novelty, questions,

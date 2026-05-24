@@ -15,10 +15,10 @@
 
 use std::collections::HashSet;
 
-use crate::steps::build_relations::Step8Output;
-use crate::steps::hebbian::Step10Output;
-use crate::steps::route_regions::RouteResult;
-use crate::steps::supersede::Step9Output;
+use crate::tick_pipeline::build_relations::Step8Output;
+use crate::tick_pipeline::hebbian::Step10Output;
+use crate::tick_pipeline::route_regions::RouteResult;
+use crate::tick_pipeline::supersede::Step9Output;
 use crate::types::{
     ActiveRegion, AttentionAction, ConsciousAttentionFrame, ElementId, Hypergraph, Intent, Policy,
     RegionActivation, RelationActivation, RelationId, RelationStatus, ReplayKind, ResolvedAttribute,
@@ -161,7 +161,7 @@ pub fn assemble_frame(
         // <class>`). They're load-bearing in the substrate but uniformly
         // high-confidence noise in the focus list. Keeping the substrate
         // shape; just don't surface here.
-        .filter(|&rid| !crate::steps::build_relations::is_structural_relation(hg, rid))
+        .filter(|&rid| !crate::tick_pipeline::build_relations::is_structural_relation(hg, rid))
         .collect();
 
     let mut dense: Vec<RelationId> = live.clone();
@@ -200,7 +200,7 @@ pub fn assemble_frame(
     // falls back to relation-id order (older wins). Stable sort
     // preserves RRF order within each group.
     focused_relations.sort_by_key(|ra| {
-        !crate::steps::build_relations::is_cache_relation(hg, ra.relation.id) as u8
+        !crate::tick_pipeline::build_relations::is_cache_relation(hg, ra.relation.id) as u8
     });
 
     // ── supporting_claims + history ─────────────────────────────
@@ -378,7 +378,7 @@ pub fn assemble_frame(
                         | RelationStatus::Entailed
                         | RelationStatus::Defeasible,
                 )
-                && !crate::steps::build_relations::is_structural_relation(hg, rid)
+                && !crate::tick_pipeline::build_relations::is_structural_relation(hg, rid)
             {
                 cs_seen.insert(rid);
                 current_state.push(rid);
@@ -526,11 +526,11 @@ mod tests {
     // ── Phase 3 tests: assemble_frame body ──────────────────────
 
     use crate::seed::load_seed_graph;
-    use crate::steps::build_relations::build_relations;
-    use crate::steps::hebbian::hebbian_and_salience;
-    use crate::steps::route_regions::RouteResult;
-    use crate::steps::run_extractors::run_extractors;
-    use crate::steps::supersede::supersede;
+    use crate::tick_pipeline::build_relations::build_relations;
+    use crate::tick_pipeline::hebbian::hebbian_and_salience;
+    use crate::tick_pipeline::route_regions::RouteResult;
+    use crate::tick_pipeline::run_extractors::run_extractors;
+    use crate::tick_pipeline::supersede::supersede;
     use crate::types::RegionDelta;
 
     /// Build a minimal RouteResult for tests that don't actually
@@ -644,7 +644,7 @@ mod tests {
             &s10,
             &policy,
         );
-        let is_cache = |rid| crate::steps::build_relations::is_cache_relation(&hg, rid);
+        let is_cache = |rid| crate::tick_pipeline::build_relations::is_cache_relation(&hg, rid);
         let (caches, non_caches): (Vec<&RelationActivation>, Vec<&RelationActivation>) = frame
             .focused_relations
             .iter()

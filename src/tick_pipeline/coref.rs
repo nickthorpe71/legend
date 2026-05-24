@@ -409,7 +409,7 @@ mod tests {
         // a subject binding. A pronoun span "She" in the input
         // should resolve to Sarah and emit a CorefDecision.
         let mut hg = load_seed_graph();
-        let sarah_id = crate::steps::build_relations::mint_element(
+        let sarah_id = crate::tick_pipeline::build_relations::mint_element(
             &mut hg,
             vec!["Sarah".to_string()],
             crate::embed::embed_text("Sarah"),

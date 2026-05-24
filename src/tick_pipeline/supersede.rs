@@ -16,7 +16,7 @@
 //! See `step_9_design.md` for the full spec.
 
 use crate::embed::embed_text;
-use crate::steps::build_relations::{
+use crate::tick_pipeline::build_relations::{
     infer_property_kind, mint_element, mint_or_reuse_base_relation, mint_relation,
 };
 use crate::types::{
@@ -450,7 +450,7 @@ fn resolve_or_mint_signal_attr(
 mod tests {
     use super::*;
     use crate::embed::EMBEDDING_DIM;
-    use crate::steps::build_relations::kind_of;
+    use crate::tick_pipeline::build_relations::kind_of;
     use crate::types::{Element, MemoryStats, Tick};
 
     /// Set up a synthetic Hypergraph with the seeded structural
@@ -592,8 +592,8 @@ mod tests {
     /// between Step 8 and Step 9.
     fn run_through_step8(text: &str, labels: &[&str]) -> (Hypergraph, Vec<RelationId>) {
         use crate::seed::load_seed_graph;
-        use crate::steps::build_relations::build_relations;
-        use crate::steps::run_extractors::run_extractors;
+        use crate::tick_pipeline::build_relations::build_relations;
+        use crate::tick_pipeline::run_extractors::run_extractors;
         let mut hg = load_seed_graph();
         let policy = crate::types::Policy::default();
         let ext = run_extractors(text, labels, &policy, &hg, &[]);
@@ -683,7 +683,7 @@ mod tests {
         // Use the same subject name so resolve_span hits the existing
         // element via by_name.
         let text2 = "The meeting moved from Tuesday to Friday.";
-        let ext2 = crate::steps::run_extractors::run_extractors(
+        let ext2 = crate::tick_pipeline::run_extractors::run_extractors(
             text2,
             &["event", "weekday"],
             &policy,
@@ -691,7 +691,7 @@ mod tests {
             &[],
         );
         let step8 =
-            crate::steps::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
+            crate::tick_pipeline::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
         let out2 = supersede(&mut hg, &step8.minted_relations, &policy);
 
         assert!(
@@ -714,7 +714,7 @@ mod tests {
         let _ = supersede(&mut hg, &minted1, &policy);
 
         let text2 = "The meeting moved from Tuesday to Friday.";
-        let ext2 = crate::steps::run_extractors::run_extractors(
+        let ext2 = crate::tick_pipeline::run_extractors::run_extractors(
             text2,
             &["event", "weekday"],
             &policy,
@@ -722,7 +722,7 @@ mod tests {
             &[],
         );
         let step8 =
-            crate::steps::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
+            crate::tick_pipeline::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
         let out2 = supersede(&mut hg, &step8.minted_relations, &policy);
 
         let derived_from_id = hg.by_name["derived_from"][0];
@@ -818,8 +818,8 @@ mod tests {
         let text1 = "Sarah rescheduled the meeting from Monday to Tuesday.";
         let (mut hg, minted1) = {
             use crate::seed::load_seed_graph;
-            use crate::steps::build_relations::build_relations;
-            use crate::steps::run_extractors::run_extractors;
+            use crate::tick_pipeline::build_relations::build_relations;
+            use crate::tick_pipeline::run_extractors::run_extractors;
             let mut h = load_seed_graph();
             let ext = run_extractors(text1, &["person", "event", "weekday"], &policy, &h, &[]);
             let s8 = build_relations(text1, &mut h, &ext, &policy, None);
@@ -828,7 +828,7 @@ mod tests {
         let _ = supersede(&mut hg, &minted1, &policy);
 
         let text2 = "Sarah rescheduled the meeting from Tuesday to Friday.";
-        let ext2 = crate::steps::run_extractors::run_extractors(
+        let ext2 = crate::tick_pipeline::run_extractors::run_extractors(
             text2,
             &["person", "event", "weekday"],
             &policy,
@@ -836,7 +836,7 @@ mod tests {
             &[],
         );
         let step8 =
-            crate::steps::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
+            crate::tick_pipeline::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
         let out2 = supersede(&mut hg, &step8.minted_relations, &policy);
 
         assert!(
@@ -858,8 +858,8 @@ mod tests {
         let text1 = "The meeting moved from Monday to Tuesday.";
         let (mut hg, minted1) = {
             use crate::seed::load_seed_graph;
-            use crate::steps::build_relations::build_relations;
-            use crate::steps::run_extractors::run_extractors;
+            use crate::tick_pipeline::build_relations::build_relations;
+            use crate::tick_pipeline::run_extractors::run_extractors;
             let mut h = load_seed_graph();
             let ext = run_extractors(text1, &["event", "weekday"], &policy, &h, &[]);
             let s8 = build_relations(text1, &mut h, &ext, &policy, None);
@@ -868,7 +868,7 @@ mod tests {
         let _ = supersede(&mut hg, &minted1, &policy);
 
         let text2 = "The meeting changed from Tuesday to Friday.";
-        let ext2 = crate::steps::run_extractors::run_extractors(
+        let ext2 = crate::tick_pipeline::run_extractors::run_extractors(
             text2,
             &["event", "weekday"],
             &policy,
@@ -876,7 +876,7 @@ mod tests {
             &[],
         );
         let step8 =
-            crate::steps::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
+            crate::tick_pipeline::build_relations::build_relations(text2, &mut hg, &ext2, &policy, None);
         let out2 = supersede(&mut hg, &step8.minted_relations, &policy);
 
         // Gate failed: no flips, no supersedes meta, cache lands Defeasible.
@@ -943,8 +943,8 @@ mod tests {
     #[test]
     fn two_tick_supersession_integration() {
         use crate::seed::load_seed_graph;
-        use crate::steps::build_relations::build_relations;
-        use crate::steps::run_extractors::run_extractors;
+        use crate::tick_pipeline::build_relations::build_relations;
+        use crate::tick_pipeline::run_extractors::run_extractors;
 
         let policy = crate::types::Policy::default();
         let mut hg = load_seed_graph();

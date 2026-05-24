@@ -327,7 +327,7 @@ mod tests {
 
     // ── Phase 2 tests: BFS + decay behavior ─────────────────────
 
-    use crate::steps::build_relations::{mint_element, mint_relation};
+    use crate::tick_pipeline::build_relations::{mint_element, mint_relation};
     use crate::types::{Attribute, ElementId as ElId, Polarity};
 
     /// Build a synthetic Hypergraph with N "ring" elements where
@@ -633,10 +633,10 @@ mod tests {
     #[test]
     fn integration_real_sentence_decays_periphery_not_focus() {
         use crate::seed::load_seed_graph;
-        use crate::steps::build_relations::build_relations;
-        use crate::steps::hebbian::hebbian_and_salience;
-        use crate::steps::run_extractors::run_extractors;
-        use crate::steps::supersede::supersede;
+        use crate::tick_pipeline::build_relations::build_relations;
+        use crate::tick_pipeline::hebbian::hebbian_and_salience;
+        use crate::tick_pipeline::run_extractors::run_extractors;
+        use crate::tick_pipeline::supersede::supersede;
 
         let policy = Policy {
             focus_decay_radius: 2,
@@ -714,10 +714,10 @@ mod tests {
         // zero-count Step11Output and leave activation untouched
         // across the substrate.
         use crate::seed::load_seed_graph;
-        use crate::steps::build_relations::build_relations;
-        use crate::steps::hebbian::hebbian_and_salience;
-        use crate::steps::run_extractors::run_extractors;
-        use crate::steps::supersede::supersede;
+        use crate::tick_pipeline::build_relations::build_relations;
+        use crate::tick_pipeline::hebbian::hebbian_and_salience;
+        use crate::tick_pipeline::run_extractors::run_extractors;
+        use crate::tick_pipeline::supersede::supersede;
 
         let policy = Policy::default();
         let mut hg = load_seed_graph();

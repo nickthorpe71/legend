@@ -1,6 +1,5 @@
 pub mod daemon;
 pub mod embed;
-pub mod execute_tick;
 pub mod hebbian;
 pub mod inference;
 pub mod intent_classifiers;
@@ -10,7 +9,7 @@ pub mod merge;
 pub mod persistence;
 pub mod render;
 pub mod seed;
-pub mod steps;
+pub mod tick_pipeline;
 pub mod types;
 
 use std::fs;
@@ -252,4 +251,3 @@ fn daemon_reset() -> Result<(), Box<dyn std::error::Error>> {
         other => Err(format!("unexpected reset response: {other:?}").into()),
     }
 }
-

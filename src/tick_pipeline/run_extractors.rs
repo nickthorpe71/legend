@@ -4,7 +4,7 @@
 //! convert into hypergraph relations.
 //!
 //! Every relation-shaped output is a
-//! [`crate::steps::relation_patterns::RelationCandidate`]; the buckets
+//! [`crate::tick_pipeline::relation_patterns::RelationCandidate`]; the buckets
 //! on `ExtractionOutput` exist to preserve Step 8's batch processing
 //! order (instance_of first, then NER-anchored RE with n-ary merge,
 //! then surface OpenIE).
@@ -12,22 +12,22 @@
 //! Pattern families called:
 //!
 //! 1. **GLiNER NER + temporal regex → span-typing** —
-//!    [`crate::steps::relation_patterns::build_instance_of_proposals`].
+//!    [`crate::tick_pipeline::relation_patterns::build_instance_of_proposals`].
 //! 2. **NER-anchored RE templates** —
-//!    [`crate::steps::relation_patterns::extract_relations`].
+//!    [`crate::tick_pipeline::relation_patterns::extract_relations`].
 //! 3. **Surface OpenIE (SVO + appositive)** —
-//!    [`crate::steps::relation_patterns::extract_surface_relations`].
+//!    [`crate::tick_pipeline::relation_patterns::extract_surface_relations`].
 //!
 //! Coref runs alongside as a separate, non-relation output.
 
 use crate::inference::deberta::predict::predict_entities;
-use crate::steps::coref::{CorefDecision, resolve_coref};
-use crate::steps::orthographic::{OrthographicChunk, extract_chunks, extract_proper_noun_runs};
-use crate::steps::relation_patterns::{
+use crate::tick_pipeline::coref::{CorefDecision, resolve_coref};
+use crate::tick_pipeline::orthographic::{OrthographicChunk, extract_chunks, extract_proper_noun_runs};
+use crate::tick_pipeline::relation_patterns::{
     RelationCandidate, build_instance_of_proposals, extract_relations, extract_surface_relations,
 };
-use crate::steps::temporal::extract_temporal;
-use crate::steps::void_filter::extract_content_tokens;
+use crate::tick_pipeline::temporal::extract_temporal;
+use crate::tick_pipeline::void_filter::extract_content_tokens;
 use crate::types::{Hypergraph, Policy, RegionActivation};
 
 /// Everything Step 5 contributes to a tick. Every relation-shaped
@@ -217,7 +217,7 @@ fn build_label_set(hg: &Hypergraph, active_regions: &[RegionActivation]) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::steps::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
+    use crate::tick_pipeline::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
 
     fn default_policy() -> Policy {
         Policy {

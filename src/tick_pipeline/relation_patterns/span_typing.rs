@@ -17,8 +17,8 @@
 //! first.
 
 use crate::inference::deberta::predict::LabeledSpan;
-use crate::steps::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
-use crate::steps::temporal::TemporalSpan;
+use crate::tick_pipeline::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
+use crate::tick_pipeline::temporal::TemporalSpan;
 use crate::types::{Policy, RelationStatus};
 
 /// Build span-typing proposals from NER spans + temporal regex spans.

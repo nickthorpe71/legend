@@ -12,16 +12,16 @@
 //! - 1  one or more checkpoints failed (details printed to stderr)
 
 use legend::seed::load_seed_graph;
-use legend::steps::adjust_policy::adjust_policy;
-use legend::steps::apply_region_delta::apply_region_delta;
-use legend::steps::build_relations::build_relations;
-use legend::steps::decay::focus_radius_decay;
-use legend::steps::detect_intent::detect_intent;
-use legend::steps::frame::assemble_frame;
-use legend::steps::hebbian::{derive_active_frame, hebbian_and_salience};
-use legend::steps::route_regions::route_regions;
-use legend::steps::run_extractors::run_extractors;
-use legend::steps::supersede::supersede;
+use legend::tick_pipeline::adjust_policy::adjust_policy;
+use legend::tick_pipeline::apply_region_delta::apply_region_delta;
+use legend::tick_pipeline::build_relations::build_relations;
+use legend::tick_pipeline::decay::focus_radius_decay;
+use legend::tick_pipeline::detect_intent::detect_intent;
+use legend::tick_pipeline::frame::assemble_frame;
+use legend::tick_pipeline::hebbian::{derive_active_frame, hebbian_and_salience};
+use legend::tick_pipeline::route_regions::route_regions;
+use legend::tick_pipeline::run_extractors::run_extractors;
+use legend::tick_pipeline::supersede::supersede;
 use legend::types::{AttentionAction, ConsciousAttentionFrame};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,7 +284,7 @@ fn main() {
         let _ = apply_region_delta(&mut hg, &route.delta, &policy);
         let step8 = build_relations(turn.text, &mut hg, &extraction, &policy, Some(source_id));
         let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
-        let topical_seeds = legend::steps::topical::topical_neighbors(&hg, &embedding, 32);
+        let topical_seeds = legend::tick_pipeline::topical::topical_neighbors(&hg, &embedding, 32);
         let step10 = hebbian_and_salience(
             &mut hg,
             &step8,
@@ -356,8 +356,8 @@ fn print_turn(
     n: usize,
     turn: &Turn,
     frame: &ConsciousAttentionFrame,
-    step8: &legend::steps::build_relations::Step8Output,
-    step9: &legend::steps::supersede::Step9Output,
+    step8: &legend::tick_pipeline::build_relations::Step8Output,
+    step9: &legend::tick_pipeline::supersede::Step9Output,
 ) {
     println!("─── turn {n:>2} [{:?}] ────────────────", turn.kind);
     println!("  in:  {:?}", turn.text);

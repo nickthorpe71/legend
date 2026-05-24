@@ -15,7 +15,7 @@
 //! Template 5 and 6 for "moved to Y" / "is now Y" handling.
 
 use crate::inference::deberta::predict::LabeledSpan;
-use crate::steps::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
+use crate::tick_pipeline::relation_patterns::{ObjectRef, PatternSource, RelationCandidate};
 use crate::types::RelationStatus;
 
 /// Build a NER-anchored candidate. Helper to keep the eight emit

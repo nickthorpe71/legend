@@ -1,18 +1,35 @@
-use crate::embed::embed_text;
-use crate::steps::adjust_policy::adjust_policy;
-use crate::steps::apply_region_delta::apply_region_delta;
-use crate::steps::build_relations::build_relations;
-use crate::steps::decay::focus_radius_decay;
-use crate::steps::detect_intent::detect_intent;
-use crate::steps::frame::assemble_frame;
-use crate::steps::hebbian::{derive_active_frame, hebbian_and_salience};
-use crate::steps::route_regions::route_regions;
-use crate::steps::run_extractors::run_extractors;
-use crate::steps::supersede::supersede;
-use crate::steps::topical::topical_neighbors;
-use crate::types::{ConsciousAttentionFrame, Hypergraph, Tick};
+pub mod adjust_policy;
+pub mod apply_region_delta;
+pub mod build_relations;
+pub mod coref;
+pub mod decay;
+pub mod detect_intent;
+pub mod frame;
+pub mod hebbian;
+pub mod orthographic;
+pub mod relation_patterns;
+pub mod route_regions;
+pub mod run_extractors;
+pub mod supersede;
+pub mod temporal;
+pub mod topical;
+pub mod void_filter;
 
-pub fn run(input_text: &str, hypergraph: &mut Hypergraph) -> ConsciousAttentionFrame {
+use crate::embed::embed_text;
+use crate::types::{ConsciousAttentionFrame, Hypergraph, Tick};
+use self::adjust_policy::adjust_policy;
+use self::apply_region_delta::apply_region_delta;
+use self::build_relations::build_relations;
+use self::decay::focus_radius_decay;
+use self::detect_intent::detect_intent;
+use self::frame::assemble_frame;
+use self::hebbian::{derive_active_frame, hebbian_and_salience};
+use self::route_regions::route_regions;
+use self::run_extractors::run_extractors;
+use self::supersede::supersede;
+use self::topical::topical_neighbors;
+
+pub fn execute_tick(input_text: &str, hypergraph: &mut Hypergraph) -> ConsciousAttentionFrame {
     hypergraph.clock = Tick(hypergraph.clock.0 + 1);
     let embedding = embed_text(input_text);
     let intent = detect_intent(input_text, &embedding);

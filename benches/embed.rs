@@ -8,7 +8,7 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use legend::embed::embed_text;
-use legend::steps::detect_intent::detect_intent;
+use legend::tick_pipeline::detect_intent::detect_intent;
 
 // Note: as of the Step 4 refactor, `detect_intent` no longer embeds — it
 // takes a precomputed embedding (the pipeline computes it once and shares

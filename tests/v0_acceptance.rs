@@ -16,15 +16,15 @@
 //!   - The Hypergraph clock advances correctly across the run.
 
 use legend::seed::load_seed_graph;
-use legend::steps::build_relations::build_relations;
-use legend::steps::decay::focus_radius_decay;
-use legend::steps::frame::assemble_frame;
-use legend::steps::hebbian::hebbian_and_salience;
-use legend::steps::run_extractors::run_extractors;
-use legend::steps::supersede::supersede;
+use legend::tick_pipeline::build_relations::build_relations;
+use legend::tick_pipeline::decay::focus_radius_decay;
+use legend::tick_pipeline::frame::assemble_frame;
+use legend::tick_pipeline::hebbian::hebbian_and_salience;
+use legend::tick_pipeline::run_extractors::run_extractors;
+use legend::tick_pipeline::supersede::supersede;
 use legend::types::{Hypergraph, Intent, Policy, RelationId, RelationStatus, Tick};
 
-/// Mirror of `crate::steps::build_relations::is_cache_relation`
+/// Mirror of `crate::tick_pipeline::build_relations::is_cache_relation`
 /// (which is `pub(crate)`). Returns true iff `rid`'s attribute
 /// list carries an attribute whose surface name starts with
 /// `"current_"` — i.e. it's a Step 9 cache.
@@ -63,7 +63,7 @@ fn run_tick(
     // here. Step 4 has its own tests; the frame's active_regions is
     // gathered (and stays empty under an empty route) without
     // affecting any of the contracts this test verifies.
-    let empty_route = legend::steps::route_regions::RouteResult {
+    let empty_route = legend::tick_pipeline::route_regions::RouteResult {
         all_scores: Vec::new(),
         active_regions: Vec::new(),
         delta: legend::types::RegionDelta::default(),
@@ -327,12 +327,12 @@ fn v0_active_frame_drops_on_query_intent() {
         arousal: 0.3,
         curiosity: 0.9,
     };
-    let statement_frame = legend::steps::hebbian::derive_active_frame(
+    let statement_frame = legend::tick_pipeline::hebbian::derive_active_frame(
         &hg,
         &statement_intent,
         &policy,
     );
-    let query_frame = legend::steps::hebbian::derive_active_frame(
+    let query_frame = legend::tick_pipeline::hebbian::derive_active_frame(
         &hg,
         &query_intent,
         &policy,
@@ -362,7 +362,7 @@ fn v0_active_frame_drops_when_recent_focus_is_stale() {
     // The recent_focus entry now stamped at hg.clock.
 
     let neutral_intent = legend::types::Intent::default();
-    let fresh = legend::steps::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
+    let fresh = legend::tick_pipeline::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
     assert!(fresh.is_some(), "fresh entry should win active_frame");
 
     // Advance the clock past the max-age threshold without touching
@@ -370,7 +370,7 @@ fn v0_active_frame_drops_when_recent_focus_is_stale() {
     for _ in 0..(policy.active_frame_max_age_ticks as u64 + 1) {
         hg.clock = Tick(hg.clock.0 + 1);
     }
-    let stale = legend::steps::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
+    let stale = legend::tick_pipeline::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
     assert!(
         stale.is_none(),
         "stale entry should be skipped (got {stale:?})",

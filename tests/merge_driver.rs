@@ -5,11 +5,11 @@
 
 use legend::persistence;
 use legend::seed::load_seed_graph;
-use legend::steps::build_relations::build_relations;
-use legend::steps::decay::focus_radius_decay;
-use legend::steps::hebbian::hebbian_and_salience;
-use legend::steps::run_extractors::run_extractors;
-use legend::steps::supersede::supersede;
+use legend::tick_pipeline::build_relations::build_relations;
+use legend::tick_pipeline::decay::focus_radius_decay;
+use legend::tick_pipeline::hebbian::hebbian_and_salience;
+use legend::tick_pipeline::run_extractors::run_extractors;
+use legend::tick_pipeline::supersede::supersede;
 use legend::types::{Hypergraph, Policy};
 
 use std::fs;

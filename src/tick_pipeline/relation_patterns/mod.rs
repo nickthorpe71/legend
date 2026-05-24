@@ -33,7 +33,7 @@ pub use ner_anchored::extract_relations;
 pub use span_typing::build_instance_of_proposals;
 pub use svo::extract_svo_triples;
 
-use crate::steps::orthographic::OrthographicChunk;
+use crate::tick_pipeline::orthographic::OrthographicChunk;
 use crate::types::RelationStatus;
 
 /// One candidate relation emitted by any pattern family. Step 8

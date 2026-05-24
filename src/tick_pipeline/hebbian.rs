@@ -22,8 +22,8 @@
 use std::collections::HashSet;
 
 use crate::hebbian::bounded_hebbian_bump;
-use crate::steps::build_relations::{Step8Output, kind_of};
-use crate::steps::supersede::Step9Output;
+use crate::tick_pipeline::build_relations::{Step8Output, kind_of};
+use crate::tick_pipeline::supersede::Step9Output;
 use crate::types::{
     ElementId, Hypergraph, Policy, RecentFocusEntry, RelationId, RelationStatus, Term,
 };
@@ -508,7 +508,7 @@ fn build_reinforcement_set(
         // order (insertion) is preserved within each group.
         let mut ordered: Vec<RelationId> = candidates.clone();
         ordered
-            .sort_by_key(|&rid| !crate::steps::build_relations::is_cache_relation(hg, rid) as u8);
+            .sort_by_key(|&rid| !crate::tick_pipeline::build_relations::is_cache_relation(hg, rid) as u8);
         let mut added_for_this_element = 0usize;
         for rid in ordered {
             if added_for_this_element >= RETRIEVE_CAP_PER_ELEMENT {
@@ -560,9 +560,9 @@ fn build_reinforcement_set(
 mod tests {
     use super::*;
     use crate::seed::load_seed_graph;
-    use crate::steps::build_relations::{build_relations, mint_element, mint_relation};
-    use crate::steps::run_extractors::run_extractors;
-    use crate::steps::supersede::supersede;
+    use crate::tick_pipeline::build_relations::{build_relations, mint_element, mint_relation};
+    use crate::tick_pipeline::run_extractors::run_extractors;
+    use crate::tick_pipeline::supersede::supersede;
     use crate::types::{Attribute, Polarity};
 
     /// Run Steps 5/8/9 over `text` to produce realistic Step8 + Step9
@@ -926,7 +926,7 @@ mod tests {
             minted_relations: vec![rel],
             ..Default::default()
         };
-        let step9 = crate::steps::supersede::Step9Output::default();
+        let step9 = crate::tick_pipeline::supersede::Step9Output::default();
         let out = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
         assert_eq!(
             hg.relations[rel.0 as usize].status,

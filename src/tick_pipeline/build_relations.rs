@@ -20,10 +20,10 @@
 use std::collections::HashMap;
 
 use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
-use crate::steps::coref::CorefDecision;
-use crate::steps::orthographic::OrthographicChunk;
-use crate::steps::relation_patterns::{ObjectRef, RelationCandidate};
-use crate::steps::run_extractors::ExtractionOutput;
+use crate::tick_pipeline::coref::CorefDecision;
+use crate::tick_pipeline::orthographic::OrthographicChunk;
+use crate::tick_pipeline::relation_patterns::{ObjectRef, RelationCandidate};
+use crate::tick_pipeline::run_extractors::ExtractionOutput;
 use crate::types::{
     Attribute, Element, ElementId, Hypergraph, MemoryStats, Polarity, Relation, RelationId,
     RelationStatus, Term,
@@ -1419,7 +1419,7 @@ fn mint_novelty_relation(
 mod tests {
     use super::*;
     use crate::seed::load_seed_graph;
-    use crate::steps::run_extractors::run_extractors;
+    use crate::tick_pipeline::run_extractors::run_extractors;
     use crate::types::Policy;
 
     fn run_step8(text: &str) -> (Hypergraph, Step8Output) {

@@ -17,7 +17,7 @@
 //! per-token contextual embedding extraction is a tracked follow-on
 //! task (phase 5 in the void-tree rewrite plan, deferred).
 
-use crate::steps::orthographic::{ChunkScale, OrthographicChunk, collect_raw_tokens};
+use crate::tick_pipeline::orthographic::{ChunkScale, OrthographicChunk, collect_raw_tokens};
 use crate::types::{Hypergraph, Polarity};
 
 /// Walk every raw token in `text` and emit a `Token`-scale

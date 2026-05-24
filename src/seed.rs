@@ -622,7 +622,7 @@ mod tests {
         let user_id = hg.by_name["user"][0];
         let instance_of_id = hg.by_name["instance_of"][0];
         let subject_id = hg.subject_attr;
-        let base = crate::steps::build_relations::mint_relation(
+        let base = crate::tick_pipeline::build_relations::mint_relation(
             &mut hg,
             vec![
                 Attribute {
@@ -639,7 +639,7 @@ mod tests {
         );
 
         // Meta-relation pointing at `base` with an `intervened` slot.
-        let _ = crate::steps::build_relations::mint_relation(
+        let _ = crate::tick_pipeline::build_relations::mint_relation(
             &mut hg,
             vec![
                 Attribute {

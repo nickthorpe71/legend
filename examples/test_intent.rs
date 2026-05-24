@@ -7,7 +7,7 @@
 //! dimension, and reports both per-input scores and per-group accuracy.
 
 use legend::embed::embed_text;
-use legend::steps::detect_intent::detect_intent;
+use legend::tick_pipeline::detect_intent::detect_intent;
 use legend::types::Intent;
 
 struct Group {

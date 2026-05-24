@@ -27,8 +27,8 @@
 //!   tokens are Sarah + happy with no verb-shape between them.
 //! - Sentences without a Phrase boundary: bound by the Phrase pass.
 
-use crate::steps::orthographic::{ChunkScale, OrthographicChunk};
-use crate::steps::relation_patterns::{
+use crate::tick_pipeline::orthographic::{ChunkScale, OrthographicChunk};
+use crate::tick_pipeline::relation_patterns::{
     DEFAULT_SURFACE_CONFIDENCE, ObjectRef, PatternSource, RelationCandidate,
 };
 use crate::types::RelationStatus;
@@ -52,7 +52,7 @@ pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<Rela
     //      a containing clause phrase — otherwise "X is employed by
     //      British Broadcasting Corporation" splits the object span
     //      at "Broadcasting".
-    let pn_runs: Vec<(usize, usize)> = crate::steps::orthographic::extract_proper_noun_runs(text)
+    let pn_runs: Vec<(usize, usize)> = crate::tick_pipeline::orthographic::extract_proper_noun_runs(text)
         .into_iter()
         .map(|c| (c.char_start, c.char_end))
         .collect();
@@ -468,8 +468,8 @@ pub(crate) fn is_verb_shape(token: &str) -> bool {
 mod tests {
     use super::*;
     use crate::seed::load_seed_graph;
-    use crate::steps::orthographic::extract_chunks;
-    use crate::steps::void_filter::extract_content_tokens;
+    use crate::tick_pipeline::orthographic::extract_chunks;
+    use crate::tick_pipeline::void_filter::extract_content_tokens;
 
     fn chunks_for(text: &str) -> Vec<OrthographicChunk> {
         let hg = load_seed_graph();

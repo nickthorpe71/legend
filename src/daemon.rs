@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::MAX_INPUT_TOKENS;
 use crate::embed::{embed_text, token_count};
-use crate::execute_tick;
+use crate::tick_pipeline::execute_tick;
 use crate::inference::deberta::tokenizer::BUNDLED_TOKENIZER;
 use crate::inference::deberta::weights_int8::WeightsDebertaInt8;
 use crate::persistence::{default_path, load_or_seed, save};
@@ -320,7 +320,7 @@ fn tick(
     if n_tokens > MAX_INPUT_TOKENS {
         return Err(format!("input too long: {n_tokens} tokens, max {MAX_INPUT_TOKENS}").into());
     }
-    let frame = execute_tick::run(input, hypergraph);
+    let frame = execute_tick(input, hypergraph);
     save(hypergraph, snapshot_path)?;
     Ok(frame)
 }

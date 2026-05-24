@@ -23,8 +23,8 @@
 //! - "shoes, socks, a shirt" → no relations (common-noun list)
 //! - "Dell XPS 13, and my new smartphone" → no relation (coordinator)
 
-use crate::steps::orthographic::{ChunkScale, OrthographicChunk};
-use crate::steps::relation_patterns::{
+use crate::tick_pipeline::orthographic::{ChunkScale, OrthographicChunk};
+use crate::tick_pipeline::relation_patterns::{
     DEFAULT_SURFACE_CONFIDENCE, ObjectRef, PatternSource, RelationCandidate,
 };
 use crate::types::RelationStatus;
@@ -190,8 +190,8 @@ fn run_is_proper(run: &(usize, usize), tokens: &[&OrthographicChunk]) -> bool {
 mod tests {
     use super::*;
     use crate::seed::load_seed_graph;
-    use crate::steps::orthographic::extract_chunks;
-    use crate::steps::void_filter::extract_content_tokens;
+    use crate::tick_pipeline::orthographic::extract_chunks;
+    use crate::tick_pipeline::void_filter::extract_content_tokens;
 
     fn chunks_for(text: &str) -> Vec<OrthographicChunk> {
         let hg = load_seed_graph();
