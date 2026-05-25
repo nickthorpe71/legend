@@ -137,14 +137,14 @@ const INPUTS: &[&str] = &[
 fn main() {
     assert_eq!(INPUTS.len(), 100, "expected exactly 100 inputs");
 
-    let mut hg = load_seed_graph();
-    let seed_elements = hg.elements.len();
-    let seed_relations = hg.relations.len();
+    let mut hypergraph = load_seed_graph();
+    let seed_elements = hypergraph.elements.len();
+    let seed_relations = hypergraph.relations.len();
     // Use the GENESIS element as the source for every tick — without
     // a real ingest pipeline we just need *some* element ID so each
     // base relation gets a `source` meta and `supporting_claims`
     // populates in the frame.
-    let source_id = hg.genesis;
+    let source_id = hypergraph.genesis;
 
     println!("─── seed ───");
     println!("  elements  {seed_elements}");
@@ -165,40 +165,40 @@ fn main() {
     for (i, input_text) in INPUTS.iter().enumerate() {
         let embedding = legend::embed::embed_text(input_text);
         let intent = detect_intent(input_text, &embedding);
-        let policy = adjust_policy(&intent, &hg.policy);
-        let route = route_regions(&embedding, &hg, &policy);
-        let extraction = run_extractors(input_text, &[], &policy, &hg, &route.active_regions);
-        let _ = apply_region_delta(&mut hg, &route.delta, &policy);
-        let step8 = build_relations(input_text, &mut hg, &extraction, &policy, Some(source_id));
-        let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
-        let step10 = hebbian_and_salience(&mut hg, &step8, &step9, None, &policy, &[]);
-        let _step11 = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
+        let policy = adjust_policy(&intent, &hypergraph.policy);
+        let route = route_regions(&embedding, &hypergraph, &policy);
+        let extraction = run_extractors(input_text, &[], &policy, &hypergraph, &route.active_regions);
+        let _ = apply_region_delta(&mut hypergraph, &route.delta, &policy);
+        let built_relations = build_relations(input_text, &mut hypergraph, &extraction, &policy, Some(source_id));
+        let superseded = supersede(&mut hypergraph, &built_relations.minted_relations, &policy);
+        let reinforced = hebbian_and_salience(&mut hypergraph, &built_relations, &superseded, None, &policy, &[]);
+        let _decay = focus_radius_decay(&mut hypergraph, &reinforced.reinforced, &policy);
         let frame = assemble_frame(
-            input_text, &hg, &intent, None, &route, &step8, &step9, &step10, &policy,
+            input_text, &hypergraph, &intent, None, &route, &built_relations, &superseded, &reinforced, &policy,
         );
 
-        elements_history.push(hg.elements.len());
-        relations_history.push(hg.relations.len());
-        superseded_per_tick.push(step9.superseded.len());
-        reinforced_per_tick.push(step10.reinforced.len());
-        promoted_per_tick.push(step10.promoted.len());
+        elements_history.push(hypergraph.elements.len());
+        relations_history.push(hypergraph.relations.len());
+        superseded_per_tick.push(superseded.superseded.len());
+        reinforced_per_tick.push(reinforced.reinforced.len());
+        promoted_per_tick.push(reinforced.promoted.len());
         focused_per_tick.push(frame.focused_relations.len());
-        cache_minted_per_tick.push(step9.cache_relations.len());
+        cache_minted_per_tick.push(superseded.cache_relations.len());
 
         let force_print = i < 3 || i == 9 || i == 19 || i == 49 || i == 99;
-        let interesting = !step9.superseded.is_empty()
-            || !step10.promoted.is_empty()
-            || !step9.cache_relations.is_empty();
+        let interesting = !superseded.superseded.is_empty()
+            || !reinforced.promoted.is_empty()
+            || !superseded.cache_relations.is_empty();
         if force_print || interesting {
             println!(
                 "tick {:>3}: el={:<5} rel={:<5} rein={:<3} cache={:<2} super={:<2} prom={:<2} foc={:<3}  | \"{}\"",
                 i + 1,
-                hg.elements.len(),
-                hg.relations.len(),
-                step10.reinforced.len(),
-                step9.cache_relations.len(),
-                step9.superseded.len(),
-                step10.promoted.len(),
+                hypergraph.elements.len(),
+                hypergraph.relations.len(),
+                reinforced.reinforced.len(),
+                superseded.cache_relations.len(),
+                superseded.superseded.len(),
+                reinforced.promoted.len(),
                 frame.focused_relations.len(),
                 truncate(input_text, 50),
             );
@@ -212,13 +212,13 @@ fn main() {
     println!("─── final substrate ───");
     println!(
         "  elements  {:>6}  (Δ {:+})",
-        hg.elements.len(),
-        hg.elements.len() as isize - seed_elements as isize,
+        hypergraph.elements.len(),
+        hypergraph.elements.len() as isize - seed_elements as isize,
     );
     println!(
         "  relations {:>6}  (Δ {:+})",
-        hg.relations.len(),
-        hg.relations.len() as isize - seed_relations as isize,
+        hypergraph.relations.len(),
+        hypergraph.relations.len() as isize - seed_relations as isize,
     );
 
     // Relation status distribution.
@@ -227,7 +227,7 @@ fn main() {
     let mut defeasible = 0usize;
     let mut superseded = 0usize;
     let mut retracted = 0usize;
-    for r in &hg.relations {
+    for r in &hypergraph.relations {
         match r.status {
             RelationStatus::Asserted => asserted += 1,
             RelationStatus::Entailed => entailed += 1,
@@ -248,7 +248,7 @@ fn main() {
     // all relations whose subject is that element.
     println!();
     println!("─── top 10 most-supported elements ───");
-    print_top_supported(&hg, 10);
+    print_top_supported(&hypergraph, 10);
 
     println!();
     println!("─── per-tick aggregates ───");
@@ -326,16 +326,16 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn print_top_supported(hg: &Hypergraph, k: usize) {
+fn print_top_supported(hypergraph: &Hypergraph, k: usize) {
     let mut totals: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-    for r in &hg.relations {
+    for r in &hypergraph.relations {
         if !matches!(
             r.status,
             RelationStatus::Asserted | RelationStatus::Entailed | RelationStatus::Defeasible
         ) {
             continue;
         }
-        if let Some(attr) = r.attributes.iter().find(|a| a.name == hg.subject_attr)
+        if let Some(attr) = r.attributes.iter().find(|a| a.name == hypergraph.subject_attr)
             && let legend::types::Term::Element(eid) = attr.value
         {
             *totals.entry(eid.0).or_insert(0) += r.stats.support_count;
@@ -344,7 +344,7 @@ fn print_top_supported(hg: &Hypergraph, k: usize) {
     let mut sorted: Vec<(u32, u32)> = totals.into_iter().collect();
     sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
     for (eid, sum) in sorted.into_iter().take(k) {
-        let name = hg.elements[eid as usize]
+        let name = hypergraph.elements[eid as usize]
             .names
             .first()
             .cloned()

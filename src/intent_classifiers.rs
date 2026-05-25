@@ -33,10 +33,10 @@ pub struct IntentClassifiers {
 // Four classifier blobs baked into the binary at compile time.
 // File format: CLASSIFIER_FEATURE_COUNT f32 weights followed by 1 f32 bias,
 // all little-endian. Total = (CLASSIFIER_FEATURE_COUNT + 1) * 4 bytes.
-const CONVICTION: &[u8] = include_bytes!("intent_classifiers/conviction.bin");
-const PREDICTION_ERROR: &[u8] = include_bytes!("intent_classifiers/prediction_error.bin");
-const AROUSAL: &[u8] = include_bytes!("intent_classifiers/arousal.bin");
-const CURIOSITY: &[u8] = include_bytes!("intent_classifiers/curiosity.bin");
+const CONVICTION: &[u8] = include_bytes!("seed/intent_classifiers/conviction.bin");
+const PREDICTION_ERROR: &[u8] = include_bytes!("seed/intent_classifiers/prediction_error.bin");
+const AROUSAL: &[u8] = include_bytes!("seed/intent_classifiers/arousal.bin");
+const CURIOSITY: &[u8] = include_bytes!("seed/intent_classifiers/curiosity.bin");
 
 /// Build the input feature vector: sentence embedding (384) ++ hand-crafted
 /// lexical features (34). Total `CLASSIFIER_FEATURE_COUNT` (= 418) dims.
@@ -44,8 +44,8 @@ const CURIOSITY: &[u8] = include_bytes!("intent_classifiers/curiosity.bin");
 /// the runtime classifier call this.
 ///
 /// Takes the embedding as input rather than computing it, so the runtime
-/// pipeline can compute the embedding once and reuse it across Step 1
-/// (intent) and Step 4 (the embedding itself, consumed by Step 5 routing).
+/// pipeline can compute the embedding once and reuse it across `detect_intent`
+/// (intent) and `route_regions` (the embedding itself, consumed by `run_extractors` routing).
 /// Build-time trainer call sites compute their own embedding per phrase.
 pub fn featurize(text: &str, embedding: &[f32]) -> Vec<f32> {
     debug_assert_eq!(

@@ -360,8 +360,8 @@ fn subem_hit(flat: &str, golds: &[String]) -> Option<String> {
 /// "substrate has it, frame didn't surface" from (b) "substrate
 /// never extracted it." Not a scoring path — purely instrumentation.
 fn gold_in_substrate(snapshot_path: &Path, golds: &[String]) -> std::io::Result<Option<String>> {
-    let hg = legend::persistence::load(snapshot_path).map_err(std::io::Error::other)?;
-    let all_text: String = hg
+    let hypergraph = legend::persistence::load(snapshot_path).map_err(std::io::Error::other)?;
+    let all_text: String = hypergraph
         .elements
         .iter()
         .flat_map(|e| e.names.iter().cloned())

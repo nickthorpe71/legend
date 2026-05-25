@@ -20,17 +20,17 @@ use legend::seed::load_seed_graph;
 use legend::types::{Hypergraph, Polarity};
 
 fn main() {
-    let hg = load_seed_graph();
+    let hypergraph = load_seed_graph();
 
     // Gather embeddings by polarity. Skip elements with zero
     // embeddings (anchors VOID / GENESIS might have degenerate
     // vectors; check by norm) and class sentinels.
     let mut void_embs: Vec<&Vec<f32>> = Vec::new();
     let mut signal_embs: Vec<&Vec<f32>> = Vec::new();
-    for e in &hg.elements {
+    for e in &hypergraph.elements {
         // Skip the class sentinels and the bare anchors; they have
         // hand-set degenerate embeddings.
-        if e.id == hg.void || e.id == hg.genesis {
+        if e.id == hypergraph.void || e.id == hypergraph.genesis {
             continue;
         }
         match e.polarity {
@@ -81,8 +81,8 @@ fn main() {
     let mut signal_classified_signal = 0usize;
     let mut void_confused: Vec<String> = Vec::new();
     let mut signal_confused: Vec<String> = Vec::new();
-    for e in &hg.elements {
-        if e.id == hg.void || e.id == hg.genesis {
+    for e in &hypergraph.elements {
+        if e.id == hypergraph.void || e.id == hypergraph.genesis {
             continue;
         }
         let cv = dot(&e.embedding, &void_centroid);
@@ -196,4 +196,4 @@ fn mean_cos_to(embs: &[&Vec<f32>], centroid: &[f32]) -> f32 {
 // Hypergraph and Polarity used only for type signatures of the
 // public traits the loader returns; not directly invoked here.
 #[allow(dead_code)]
-fn _force_hg(_: &Hypergraph) {}
+fn _force_hypergraph(_: &Hypergraph) {}

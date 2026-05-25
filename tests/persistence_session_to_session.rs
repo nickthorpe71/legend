@@ -41,37 +41,37 @@ fn temp_path(label: &str) -> PathBuf {
     p
 }
 
-/// Run the cognitive pipeline (Steps 5-12 essentials) over `text`.
-/// Returns nothing — caller inspects `hg` directly.
-fn tick(hg: &mut Hypergraph, text: &str) {
+/// Run the cognitive pipeline (the tick pipeline (extractors onward) essentials) over `text`.
+/// Returns nothing — caller inspects `hypergraph` directly.
+fn tick(hypergraph: &mut Hypergraph, text: &str) {
     let embedding = legend::embed::embed_text(text);
     let intent = detect_intent(text, &embedding);
-    let policy = adjust_policy(&intent, &hg.policy);
-    let active_frame = derive_active_frame(hg, &intent, &policy);
-    let ext = run_extractors(text, &[], &policy, hg, &[]);
-    let step8 = build_relations(text, hg, &ext, &policy, None);
-    let step9 = supersede(hg, &step8.minted_relations, &policy);
-    let step10 = hebbian_and_salience(hg, &step8, &step9, active_frame, &policy, &[]);
-    let _ = focus_radius_decay(hg, &step10.reinforced, &policy);
+    let policy = adjust_policy(&intent, &hypergraph.policy);
+    let active_frame = derive_active_frame(hypergraph, &intent, &policy);
+    let ext = run_extractors(text, &[], &policy, hypergraph, &[]);
+    let built_relations = build_relations(text, hypergraph, &ext, &policy, None);
+    let superseded = supersede(hypergraph, &built_relations.minted_relations, &policy);
+    let reinforced = hebbian_and_salience(hypergraph, &built_relations, &superseded, active_frame, &policy, &[]);
+    let _ = focus_radius_decay(hypergraph, &reinforced.reinforced, &policy);
 }
 
-/// Save `hg`, drop it, load a fresh copy from disk. Simulates a
+/// Save `hypergraph`, drop it, load a fresh copy from disk. Simulates a
 /// process restart.
-fn save_drop_load(hg: Hypergraph, path: &Path) -> Hypergraph {
-    persistence::save(&hg, path).expect("save");
-    drop(hg);
+fn save_drop_load(hypergraph: Hypergraph, path: &Path) -> Hypergraph {
+    persistence::save(&hypergraph, path).expect("save");
+    drop(hypergraph);
     persistence::load(path).expect("load")
 }
 
 /// Find a relation by subject-name + attribute-name substring. Used
 /// to assert specific claims survived. Returns the first match.
 fn find_relation_subj_attr(
-    hg: &Hypergraph,
+    hypergraph: &Hypergraph,
     subj_name: &str,
     attr_substr: &str,
 ) -> Option<legend::types::RelationId> {
     let subj_lower = subj_name.to_ascii_lowercase();
-    for r in &hg.relations {
+    for r in &hypergraph.relations {
         if !matches!(
             r.status,
             RelationStatus::Asserted | RelationStatus::Entailed | RelationStatus::Defeasible,
@@ -81,10 +81,10 @@ fn find_relation_subj_attr(
         let mut subj_matches = false;
         let mut attr_matches = false;
         for a in &r.attributes {
-            if a.name == hg.subject_attr
+            if a.name == hypergraph.subject_attr
                 && let Term::Element(e) = a.value
             {
-                let name = hg.elements[e.0 as usize]
+                let name = hypergraph.elements[e.0 as usize]
                     .names
                     .first()
                     .cloned()
@@ -93,8 +93,8 @@ fn find_relation_subj_attr(
                     subj_matches = true;
                 }
             }
-            if a.name != hg.subject_attr && a.name != hg.target_attr {
-                let attr_name = hg.elements[a.name.0 as usize]
+            if a.name != hypergraph.subject_attr && a.name != hypergraph.target_attr {
+                let attr_name = hypergraph.elements[a.name.0 as usize]
                     .names
                     .first()
                     .cloned()
@@ -119,34 +119,34 @@ fn find_relation_subj_attr(
 #[test]
 fn elements_relations_clock_survive_save_load() {
     let path = temp_path("structural");
-    let mut hg = load_seed_graph();
-    let seed_elements = hg.elements.len();
-    let seed_relations = hg.relations.len();
+    let mut hypergraph = load_seed_graph();
+    let seed_elements = hypergraph.elements.len();
+    let seed_relations = hypergraph.relations.len();
 
-    tick(&mut hg, "Alice works at Acme.");
-    let pre_elements = hg.elements.len();
-    let pre_relations = hg.relations.len();
-    let pre_clock = hg.clock.0;
+    tick(&mut hypergraph, "Alice works at Acme.");
+    let pre_elements = hypergraph.elements.len();
+    let pre_relations = hypergraph.relations.len();
+    let pre_clock = hypergraph.clock.0;
     assert!(
         pre_elements > seed_elements,
         "session 1 should mint elements"
     );
     assert!(pre_relations > seed_relations);
 
-    let hg2 = save_drop_load(hg, &path);
-    assert_eq!(hg2.elements.len(), pre_elements);
-    assert_eq!(hg2.relations.len(), pre_relations);
-    assert_eq!(hg2.clock.0, pre_clock);
+    let hypergraph2 = save_drop_load(hypergraph, &path);
+    assert_eq!(hypergraph2.elements.len(), pre_elements);
+    assert_eq!(hypergraph2.relations.len(), pre_relations);
+    assert_eq!(hypergraph2.clock.0, pre_clock);
 
     // Indices regenerated.
-    assert!(!hg2.by_name.is_empty());
-    assert!(!hg2.region_children.is_empty());
-    assert!(!hg2.relations_by_element.is_empty());
+    assert!(!hypergraph2.by_name.is_empty());
+    assert!(!hypergraph2.region_children.is_empty());
+    assert!(!hypergraph2.relations_by_element.is_empty());
 
     // Anchor IDs survive.
-    assert_eq!(hg2.genesis, load_seed_graph().genesis);
-    assert_eq!(hg2.subject_attr, load_seed_graph().subject_attr);
-    assert_eq!(hg2.target_attr, load_seed_graph().target_attr);
+    assert_eq!(hypergraph2.genesis, load_seed_graph().genesis);
+    assert_eq!(hypergraph2.subject_attr, load_seed_graph().subject_attr);
+    assert_eq!(hypergraph2.target_attr, load_seed_graph().target_attr);
 
     let _ = fs::remove_file(&path);
 }
@@ -154,23 +154,23 @@ fn elements_relations_clock_survive_save_load() {
 #[test]
 fn anchor_ids_match_seed_after_load() {
     let path = temp_path("anchors");
-    let mut hg = load_seed_graph();
-    let seed_genesis = hg.genesis;
-    let seed_subject = hg.subject_attr;
-    let seed_target = hg.target_attr;
-    let seed_void = hg.void;
-    let seed_parent_region = hg.parent_region_attr;
-    let seed_prototype = hg.prototype_attr;
+    let mut hypergraph = load_seed_graph();
+    let seed_genesis = hypergraph.genesis;
+    let seed_subject = hypergraph.subject_attr;
+    let seed_target = hypergraph.target_attr;
+    let seed_void = hypergraph.void;
+    let seed_parent_region = hypergraph.parent_region_attr;
+    let seed_prototype = hypergraph.prototype_attr;
 
-    tick(&mut hg, "Beam is a server.");
-    let hg2 = save_drop_load(hg, &path);
+    tick(&mut hypergraph, "Beam is a server.");
+    let hypergraph2 = save_drop_load(hypergraph, &path);
 
-    assert_eq!(hg2.genesis, seed_genesis);
-    assert_eq!(hg2.subject_attr, seed_subject);
-    assert_eq!(hg2.target_attr, seed_target);
-    assert_eq!(hg2.void, seed_void);
-    assert_eq!(hg2.parent_region_attr, seed_parent_region);
-    assert_eq!(hg2.prototype_attr, seed_prototype);
+    assert_eq!(hypergraph2.genesis, seed_genesis);
+    assert_eq!(hypergraph2.subject_attr, seed_subject);
+    assert_eq!(hypergraph2.target_attr, seed_target);
+    assert_eq!(hypergraph2.void, seed_void);
+    assert_eq!(hypergraph2.parent_region_attr, seed_parent_region);
+    assert_eq!(hypergraph2.prototype_attr, seed_prototype);
 
     let _ = fs::remove_file(&path);
 }
@@ -181,19 +181,19 @@ fn embeddings_preserved_through_lz4_roundtrip() {
     // or truncates, the routing/cosine machinery downstream would
     // silently drift.
     let path = temp_path("embeddings");
-    let mut hg = load_seed_graph();
-    tick(&mut hg, "Polaris is a CLI tool written in Rust.");
+    let mut hypergraph = load_seed_graph();
+    tick(&mut hypergraph, "Polaris is a CLI tool written in Rust.");
 
     // Snapshot embeddings of every minted-after-seed element.
     let baseline_seed = load_seed_graph();
     let new_element_idx = baseline_seed.elements.len();
-    let pre_embeddings: Vec<Vec<f32>> = hg.elements[new_element_idx..]
+    let pre_embeddings: Vec<Vec<f32>> = hypergraph.elements[new_element_idx..]
         .iter()
         .map(|e| e.embedding.clone())
         .collect();
 
-    let hg2 = save_drop_load(hg, &path);
-    let post_embeddings: Vec<Vec<f32>> = hg2.elements[new_element_idx..]
+    let hypergraph2 = save_drop_load(hypergraph, &path);
+    let post_embeddings: Vec<Vec<f32>> = hypergraph2.elements[new_element_idx..]
         .iter()
         .map(|e| e.embedding.clone())
         .collect();
@@ -224,25 +224,25 @@ fn session_2_query_retrieves_session_1_entity() {
     let path = temp_path("retrieval");
 
     // Session 1: assert a fact.
-    let mut hg = load_seed_graph();
-    tick(&mut hg, "Polaris is written in Rust.");
-    let polaris_at_rust = find_relation_subj_attr(&hg, "Polaris", "at");
+    let mut hypergraph = load_seed_graph();
+    tick(&mut hypergraph, "Polaris is written in Rust.");
+    let polaris_at_rust = find_relation_subj_attr(&hypergraph, "Polaris", "at");
     assert!(
         polaris_at_rust.is_some(),
         "session 1 should mint a Polaris-at-Rust relation"
     );
 
     // Cross session boundary.
-    let mut hg2 = save_drop_load(hg, &path);
+    let mut hypergraph2 = save_drop_load(hypergraph, &path);
 
     // Session 2: query. The retrieval pass should pull the
     // Polaris relations into the reinforcement set so the frame
     // surfaces them.
-    tick(&mut hg2, "What language is Polaris in?");
+    tick(&mut hypergraph2, "What language is Polaris in?");
 
     // The relation minted in session 1 should still exist in
     // session 2 with the same ID.
-    let polaris_at_rust_2 = find_relation_subj_attr(&hg2, "Polaris", "at");
+    let polaris_at_rust_2 = find_relation_subj_attr(&hypergraph2, "Polaris", "at");
     assert_eq!(
         polaris_at_rust, polaris_at_rust_2,
         "Polaris-at-Rust relation must persist by ID across the session boundary"
@@ -258,18 +258,18 @@ fn supersession_in_session_2_flips_session_1_cache() {
     let path = temp_path("supersession");
 
     // Session 1: a change event mints a cache for current_<property>.
-    let mut hg = load_seed_graph();
-    tick(&mut hg, "Polaris switched from Rust to Go.");
-    let session1_cache = hg
+    let mut hypergraph = load_seed_graph();
+    tick(&mut hypergraph, "Polaris switched from Rust to Go.");
+    let session1_cache = hypergraph
         .relations
         .iter()
         .find(|r| {
             r.status == RelationStatus::Asserted
                 && r.attributes.iter().any(|a| {
-                    if a.name == hg.subject_attr || a.name == hg.target_attr {
+                    if a.name == hypergraph.subject_attr || a.name == hypergraph.target_attr {
                         return false;
                     }
-                    hg.elements[a.name.0 as usize]
+                    hypergraph.elements[a.name.0 as usize]
                         .names
                         .first()
                         .map(|n| n.starts_with("current_"))
@@ -284,21 +284,21 @@ fn supersession_in_session_2_flips_session_1_cache() {
     let session1_cache_id = session1_cache.unwrap();
 
     // Cross session boundary.
-    let mut hg2 = save_drop_load(hg, &path);
+    let mut hypergraph2 = save_drop_load(hypergraph, &path);
 
     // The session-1 cache should still be Asserted (live) before
     // session 2 supersedes it.
     assert_eq!(
-        hg2.relations[session1_cache_id.0 as usize].status,
+        hypergraph2.relations[session1_cache_id.0 as usize].status,
         RelationStatus::Asserted,
         "session 1's cache should still be Asserted after load"
     );
 
     // Session 2: a restatement should find the session-1 cache as
     // a prior and flip it.
-    tick(&mut hg2, "Polaris is now written in Python.");
+    tick(&mut hypergraph2, "Polaris is now written in Python.");
 
-    let post_status = hg2.relations[session1_cache_id.0 as usize].status;
+    let post_status = hypergraph2.relations[session1_cache_id.0 as usize].status;
     assert_eq!(
         post_status,
         RelationStatus::Superseded,
@@ -315,11 +315,11 @@ fn superseded_relations_remain_superseded_after_load() {
     // status MUST survive the load. Otherwise the supersession dedup
     // (which skips Superseded for reuse) breaks.
     let path = temp_path("superseded_status");
-    let mut hg = load_seed_graph();
-    tick(&mut hg, "Polaris switched from Rust to Go.");
-    tick(&mut hg, "Polaris is now written in Python.");
+    let mut hypergraph = load_seed_graph();
+    tick(&mut hypergraph, "Polaris switched from Rust to Go.");
+    tick(&mut hypergraph, "Polaris is now written in Python.");
 
-    let superseded_ids: Vec<_> = hg
+    let superseded_ids: Vec<_> = hypergraph
         .relations
         .iter()
         .filter(|r| r.status == RelationStatus::Superseded)
@@ -330,10 +330,10 @@ fn superseded_relations_remain_superseded_after_load() {
         "two-tick test should produce at least one Superseded relation"
     );
 
-    let hg2 = save_drop_load(hg, &path);
+    let hypergraph2 = save_drop_load(hypergraph, &path);
     for id in &superseded_ids {
         assert_eq!(
-            hg2.relations[id.0 as usize].status,
+            hypergraph2.relations[id.0 as usize].status,
             RelationStatus::Superseded,
             "R{} must remain Superseded after load",
             id.0,
@@ -347,16 +347,16 @@ fn superseded_relations_remain_superseded_after_load() {
 
 #[test]
 fn recent_focus_survives_session_boundary() {
-    // recent_focus is the ring buffer Step 6 coref and active-frame
+    // recent_focus is the ring buffer `coref` and active-frame
     // inheritance read from. If it doesn't survive save/load, every
     // process start would lose conversational context.
     let path = temp_path("recent_focus");
-    let mut hg = load_seed_graph();
-    tick(&mut hg, "Polaris is a Rust project.");
-    tick(&mut hg, "Polaris targets macOS and Linux.");
+    let mut hypergraph = load_seed_graph();
+    tick(&mut hypergraph, "Polaris is a Rust project.");
+    tick(&mut hypergraph, "Polaris targets macOS and Linux.");
 
-    let pre_depth = hg.recent_focus.len();
-    let pre_head: Vec<_> = hg
+    let pre_depth = hypergraph.recent_focus.len();
+    let pre_head: Vec<_> = hypergraph
         .recent_focus
         .iter()
         .take(5)
@@ -364,14 +364,14 @@ fn recent_focus_survives_session_boundary() {
         .collect();
     assert!(pre_depth > 0, "two ticks should populate recent_focus");
 
-    let hg2 = save_drop_load(hg, &path);
+    let hypergraph2 = save_drop_load(hypergraph, &path);
 
     assert_eq!(
-        hg2.recent_focus.len(),
+        hypergraph2.recent_focus.len(),
         pre_depth,
         "recent_focus depth must match across save/load"
     );
-    let post_head: Vec<_> = hg2
+    let post_head: Vec<_> = hypergraph2
         .recent_focus
         .iter()
         .take(5)
@@ -392,29 +392,29 @@ fn active_frame_inherits_across_session_boundary() {
     // Polaris (or some other valid topical subject from session 1's
     // recent_focus).
     let path = temp_path("active_frame");
-    let mut hg = load_seed_graph();
-    tick(&mut hg, "Polaris is a Rust project.");
-    tick(&mut hg, "Polaris has fuzzy search.");
+    let mut hypergraph = load_seed_graph();
+    tick(&mut hypergraph, "Polaris is a Rust project.");
+    tick(&mut hypergraph, "Polaris has fuzzy search.");
 
     // Default Intent/Policy — this test exercises the recent_focus
     // path, not query-intent or recency edges.
     let intent = legend::types::Intent::default();
-    let policy = hg.policy.clone();
-    let pre_active = derive_active_frame(&hg, &intent, &policy);
+    let policy = hypergraph.policy.clone();
+    let pre_active = derive_active_frame(&hypergraph, &intent, &policy);
     assert!(
         pre_active.is_some(),
         "after two ticks about Polaris, derive_active_frame should pick a subject"
     );
-    let pre_active_name = hg.elements[pre_active.unwrap().0 as usize]
+    let pre_active_name = hypergraph.elements[pre_active.unwrap().0 as usize]
         .names
         .first()
         .cloned()
         .unwrap_or_default();
 
-    let hg2 = save_drop_load(hg, &path);
-    let post_active = derive_active_frame(&hg2, &intent, &policy);
+    let hypergraph2 = save_drop_load(hypergraph, &path);
+    let post_active = derive_active_frame(&hypergraph2, &intent, &policy);
     let post_active_name = post_active.map(|id| {
-        hg2.elements[id.0 as usize]
+        hypergraph2.elements[id.0 as usize]
             .names
             .first()
             .cloned()
@@ -439,29 +439,29 @@ fn support_count_accumulates_across_sessions() {
     // every session boundary, promotion would never fire for a
     // long-running multi-session conversation.
     let path = temp_path("support_count");
-    let mut hg = load_seed_graph();
-    tick(&mut hg, "Carol started a project.");
+    let mut hypergraph = load_seed_graph();
+    tick(&mut hypergraph, "Carol started a project.");
 
     // Pick a minted relation involving "Carol" we can track.
-    let carol_rel = find_relation_subj_attr(&hg, "Carol", "instance_of");
+    let carol_rel = find_relation_subj_attr(&hypergraph, "Carol", "instance_of");
     assert!(carol_rel.is_some());
     let carol_rel_id = carol_rel.unwrap();
-    let support_after_tick_1 = hg.relations[carol_rel_id.0 as usize].stats.support_count;
+    let support_after_tick_1 = hypergraph.relations[carol_rel_id.0 as usize].stats.support_count;
     assert!(
         support_after_tick_1 >= 1,
         "first tick should bump support_count at least once"
     );
 
     // Cross session, re-mention Carol.
-    let mut hg2 = save_drop_load(hg, &path);
-    let support_after_load = hg2.relations[carol_rel_id.0 as usize].stats.support_count;
+    let mut hypergraph2 = save_drop_load(hypergraph, &path);
+    let support_after_load = hypergraph2.relations[carol_rel_id.0 as usize].stats.support_count;
     assert_eq!(
         support_after_load, support_after_tick_1,
         "support_count must survive save/load unchanged"
     );
 
-    tick(&mut hg2, "Carol works in Rust.");
-    let support_after_tick_2 = hg2.relations[carol_rel_id.0 as usize].stats.support_count;
+    tick(&mut hypergraph2, "Carol works in Rust.");
+    let support_after_tick_2 = hypergraph2.relations[carol_rel_id.0 as usize].stats.support_count;
     assert!(
         support_after_tick_2 > support_after_load,
         "re-mentioning Carol across the session boundary should bump support_count further: \
@@ -478,30 +478,30 @@ fn three_session_accumulation_chain() {
     let path = temp_path("three_session");
 
     // Session 1.
-    let mut hg = load_seed_graph();
-    tick(&mut hg, "Alice is a developer.");
-    let elements_1 = hg.elements.len();
-    let relations_1 = hg.relations.len();
-    let clock_1 = hg.clock.0;
+    let mut hypergraph = load_seed_graph();
+    tick(&mut hypergraph, "Alice is a developer.");
+    let elements_1 = hypergraph.elements.len();
+    let relations_1 = hypergraph.relations.len();
+    let clock_1 = hypergraph.clock.0;
 
     // Session 2.
-    let mut hg = save_drop_load(hg, &path);
-    assert_eq!(hg.elements.len(), elements_1);
-    assert_eq!(hg.relations.len(), relations_1);
-    assert_eq!(hg.clock.0, clock_1, "clock must survive save/load exactly");
-    tick(&mut hg, "Alice works on Polaris.");
-    let elements_2 = hg.elements.len();
-    let relations_2 = hg.relations.len();
+    let mut hypergraph = save_drop_load(hypergraph, &path);
+    assert_eq!(hypergraph.elements.len(), elements_1);
+    assert_eq!(hypergraph.relations.len(), relations_1);
+    assert_eq!(hypergraph.clock.0, clock_1, "clock must survive save/load exactly");
+    tick(&mut hypergraph, "Alice works on Polaris.");
+    let elements_2 = hypergraph.elements.len();
+    let relations_2 = hypergraph.relations.len();
     assert!(elements_2 > elements_1, "session 2 should grow elements");
     assert!(relations_2 > relations_1, "session 2 should grow relations");
 
     // Session 3.
-    let mut hg = save_drop_load(hg, &path);
-    assert_eq!(hg.elements.len(), elements_2);
-    assert_eq!(hg.relations.len(), relations_2);
-    tick(&mut hg, "Polaris is written in Rust.");
-    assert!(hg.elements.len() > elements_2);
-    assert!(hg.relations.len() > relations_2);
+    let mut hypergraph = save_drop_load(hypergraph, &path);
+    assert_eq!(hypergraph.elements.len(), elements_2);
+    assert_eq!(hypergraph.relations.len(), relations_2);
+    tick(&mut hypergraph, "Polaris is written in Rust.");
+    assert!(hypergraph.elements.len() > elements_2);
+    assert!(hypergraph.relations.len() > relations_2);
 
     // Single-process control: same three ticks, all in one go.
     let mut control = load_seed_graph();
@@ -510,7 +510,7 @@ fn three_session_accumulation_chain() {
     tick(&mut control, "Polaris is written in Rust.");
 
     assert_eq!(
-        (hg.elements.len(), hg.relations.len(), hg.clock.0),
+        (hypergraph.elements.len(), hypergraph.relations.len(), hypergraph.clock.0),
         (
             control.elements.len(),
             control.relations.len(),
@@ -530,38 +530,38 @@ fn indices_after_load_match_indices_after_seed_then_replay() {
     // as building the same state from scratch + rebuild. Catches
     // any drift between the live update path and the rebuild path.
     let path = temp_path("index_correctness");
-    let mut hg_a = load_seed_graph();
-    tick(&mut hg_a, "Beam is a server.");
-    tick(&mut hg_a, "Beam is written in Go.");
+    let mut hypergraph_a = load_seed_graph();
+    tick(&mut hypergraph_a, "Beam is a server.");
+    tick(&mut hypergraph_a, "Beam is written in Go.");
 
-    let hg_b = save_drop_load(hg_a, &path);
+    let hypergraph_b = save_drop_load(hypergraph_a, &path);
 
     // Build the same state from scratch, but force a final
     // rebuild_indices call so both graphs got their indices from the
     // same rebuild path.
-    let mut hg_c = load_seed_graph();
-    tick(&mut hg_c, "Beam is a server.");
-    tick(&mut hg_c, "Beam is written in Go.");
-    legend::seed::rebuild_indices(&mut hg_c);
+    let mut hypergraph_c = load_seed_graph();
+    tick(&mut hypergraph_c, "Beam is a server.");
+    tick(&mut hypergraph_c, "Beam is written in Go.");
+    legend::seed::rebuild_indices(&mut hypergraph_c);
 
     assert_eq!(
-        hg_b.by_name.len(),
-        hg_c.by_name.len(),
+        hypergraph_b.by_name.len(),
+        hypergraph_c.by_name.len(),
         "by_name size differs"
     );
     assert_eq!(
-        hg_b.relations_by_element.len(),
-        hg_c.relations_by_element.len(),
+        hypergraph_b.relations_by_element.len(),
+        hypergraph_c.relations_by_element.len(),
         "relations_by_element size differs",
     );
     assert_eq!(
-        hg_b.region_children.len(),
-        hg_c.region_children.len(),
+        hypergraph_b.region_children.len(),
+        hypergraph_c.region_children.len(),
         "region_children size differs",
     );
     assert_eq!(
-        hg_b.meta_relations_by_subject.len(),
-        hg_c.meta_relations_by_subject.len(),
+        hypergraph_b.meta_relations_by_subject.len(),
+        hypergraph_c.meta_relations_by_subject.len(),
         "meta_relations_by_subject size differs",
     );
 
@@ -576,11 +576,11 @@ fn policy_survives_save_load() {
     // every one bit-for-bit. A regression would silently change
     // pipeline behavior in session 2.
     let path = temp_path("policy");
-    let hg = load_seed_graph();
-    let pre = hg.policy.clone();
+    let hypergraph = load_seed_graph();
+    let pre = hypergraph.policy.clone();
 
-    let hg2 = save_drop_load(hg, &path);
-    let post = hg2.policy;
+    let hypergraph2 = save_drop_load(hypergraph, &path);
+    let post = hypergraph2.policy;
 
     assert_eq!(pre.default_conf.to_bits(), post.default_conf.to_bits());
     assert_eq!(

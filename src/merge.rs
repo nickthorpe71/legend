@@ -452,33 +452,33 @@ mod tests {
     use crate::seed::load_seed_graph;
 
     /// Add a synthetic Signal element with `name` and return its ID.
-    fn add_element(hg: &mut Hypergraph, name: &str) -> ElementId {
-        let id = ElementId(hg.elements.len() as u32);
-        hg.elements.push(crate::types::Element {
+    fn add_element(hypergraph: &mut Hypergraph, name: &str) -> ElementId {
+        let id = ElementId(hypergraph.elements.len() as u32);
+        hypergraph.elements.push(crate::types::Element {
             id,
             names: vec![name.to_string()],
             stats: Default::default(),
-            created_at: hg.clock,
+            created_at: hypergraph.clock,
             embedding: vec![0.0; crate::embed::EMBEDDING_DIM],
             polarity: Polarity::Signal,
         });
-        rebuild_indices(hg);
+        rebuild_indices(hypergraph);
         id
     }
 
     /// Add an `(subject: sub, attr: obj)` Asserted relation.
     fn add_binary_relation(
-        hg: &mut Hypergraph,
+        hypergraph: &mut Hypergraph,
         sub: ElementId,
         attr_name: ElementId,
         obj: ElementId,
     ) -> RelationId {
-        let id = RelationId(hg.relations.len() as u32);
-        hg.relations.push(crate::types::Relation {
+        let id = RelationId(hypergraph.relations.len() as u32);
+        hypergraph.relations.push(crate::types::Relation {
             id,
             attributes: vec![
                 Attribute {
-                    name: hg.subject_attr,
+                    name: hypergraph.subject_attr,
                     value: Term::Element(sub),
                 },
                 Attribute {
@@ -489,9 +489,9 @@ mod tests {
             status: RelationStatus::Asserted,
             stats: Default::default(),
             priority: 0,
-            created_at: hg.clock,
+            created_at: hypergraph.clock,
         });
-        rebuild_indices(hg);
+        rebuild_indices(hypergraph);
         id
     }
 

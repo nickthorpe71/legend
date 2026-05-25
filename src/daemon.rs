@@ -42,11 +42,43 @@ use crate::persistence::{default_path, load_or_seed, save};
 use crate::seed::load_seed_graph;
 use crate::types::{ConsciousAttentionFrame, Hypergraph};
 
+// ─── Tuning ──────────────────────────────────────────────────────────
+
+/// Hidden subcommand the parent passes to `legend` when spawning the
+/// detached daemon child. Anything not in the public CLI is fair game
+/// for this name — `__daemon` is the convention; the leading underscores
+/// make it visually obvious that users shouldn't type it.
+pub const DAEMON_SUBCOMMAND: &str = "__daemon";
+
+/// How long each request-handling read/write may block before timing
+/// out. 60 s is generous for a local loopback connection but matches
+/// the slowest tick we've measured on cold long-input paths.
+const HANDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Client-side socket timeout. Bigger than `HANDLE_TIMEOUT` so the
+/// server's own timeout fires first and the client sees the daemon's
+/// `Error` response instead of a confused "read timed out."
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Default time `connect_or_start` waits for a freshly-spawned daemon
+/// to publish its port file before giving up.
+const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Accept-loop poll cadence. The listener is non-blocking; a busy-wait
+/// at this interval lets us check the TTL between accept attempts
+/// without pulling in `mio` / `socket2`. 50 ms × 5 min ≈ 6000 idle
+/// wake-ups, each a single no-op syscall — negligible CPU.
+const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// `spawn_detached`'s readiness poll cadence — same justification as
+/// `ACCEPT_POLL_INTERVAL`.
+const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 // ─── Protocol ────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum DaemonRequest {
-    /// Run one Step 1-12 tick over `input`. The daemon mutates the
+    /// Run one the tick pipeline tick over `input`. The daemon mutates the
     /// in-RAM substrate and persists at the end of the tick (same
     /// semantics as the standalone CLI).
     Tick { input: String },
@@ -154,43 +186,21 @@ fn default_ttl() -> Duration {
 
 // ─── Server ─────────────────────────────────────────────────────────
 
-/// Daemon entry point. Acquires the lock, binds TCP loopback, writes
-/// the port file, loads the substrate, then loops accepting requests
-/// until TTL expires or a `Stop` arrives.
+/// Daemon entry point. Orchestrates startup (lock, bind, load, warm),
+/// runs the accept loop until TTL or `Stop`, then cleans up.
 ///
 /// On any unrecoverable error (lock contention, bind failure,
 /// persist failure) returns an `Err` and the parent / supervisor
 /// can decide whether to retry. Clean exit on TTL or `Stop` returns
 /// `Ok(())`.
 pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Make sure the state dir exists so the lock file can land.
-    let dir = state_dir();
-    std::fs::create_dir_all(&dir)?;
-
-    // 2. Exclusive flock. If another daemon already holds it, exit
-    //    quietly — the client will find the existing one via the
-    //    port file.
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(lock_path())?;
-    if lock_file.try_lock_exclusive().is_err() {
-        eprintln!("[daemon] another instance holds the lock; exiting");
+    std::fs::create_dir_all(state_dir())?;
+    let Some(lock_file) = acquire_lock()? else {
+        // Another daemon already holds the lock; client finds it via
+        // the port file. Nothing to do.
         return Ok(());
-    }
-
-    // 3. Bind loopback with OS-assigned port, then publish that
-    //    port + pid so clients can find us.
-    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-    let port = listener.local_addr()?.port();
-    let pid = std::process::id();
-    std::fs::write(port_path(), format!("{pid}:{port}\n"))?;
-    eprintln!("[daemon] listening on 127.0.0.1:{port}, pid {pid}");
-
-    // 4. Load substrate once. Subsequent ticks mutate this in place;
-    //    persist runs at the end of each tick.
+    };
+    let listener = bind_and_publish_port()?;
     let snapshot_path = default_path();
     let mut hypergraph = load_or_seed(&snapshot_path)?;
     eprintln!(
@@ -199,71 +209,99 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
         hypergraph.relations.len(),
     );
 
-    // 5. Warm the heavy model singletons so the first tick doesn't
-    //    pay their init cost. GLiNER tokenizer init alone is ~162 ms
-    //    — shifting it off the user's first interactive tick onto
-    //    daemon startup is the whole point of this step.
     let warm_start = Instant::now();
     warm_models();
     eprintln!("[daemon] warmed models in {:?}", warm_start.elapsed());
 
-    // 5. Accept loop with TTL. set_nonblocking + spin loop with sleep
-    //    is portable and good enough for a 100ms poll interval.
-    listener.set_nonblocking(true)?;
-    let ttl = default_ttl();
-    let started = Instant::now();
-    let mut last_request = Instant::now();
-    let mut tick_count: u64 = 0;
-    let mut stop_requested = false;
+    run_accept_loop(listener, &mut hypergraph, &snapshot_path)?;
 
-    while !stop_requested {
-        // TTL check.
-        if last_request.elapsed() >= ttl {
-            eprintln!(
-                "[daemon] idle for {:?} ≥ TTL {:?}; exiting",
-                last_request.elapsed(),
-                ttl,
-            );
-            break;
-        }
-        // Accept (non-blocking).
-        match listener.accept() {
-            Ok((stream, _)) => {
-                last_request = Instant::now();
-                handle_one(
-                    stream,
-                    &mut hypergraph,
-                    &snapshot_path,
-                    started,
-                    tick_count,
-                    &mut stop_requested,
-                )?;
-                tick_count += 1;
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    // 6. Clean up.
     let _ = std::fs::remove_file(port_path());
     let _ = FileExt::unlock(&lock_file);
     eprintln!("[daemon] exiting cleanly");
     Ok(())
 }
 
+/// Acquire the exclusive flock at `lock_path()`. Returns
+/// `Ok(Some(file))` when this process won the race, `Ok(None)` when
+/// another daemon already holds it (caller should exit quietly),
+/// `Err` only on file-system failures opening the path.
+fn acquire_lock() -> io::Result<Option<std::fs::File>> {
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path())?;
+    if lock_file.try_lock_exclusive().is_err() {
+        eprintln!("[daemon] another instance holds the lock; exiting");
+        return Ok(None);
+    }
+    Ok(Some(lock_file))
+}
+
+/// Bind a loopback TCP listener on an OS-assigned port, write the
+/// `<pid>:<port>` advertisement to `port_path()`, and return the
+/// listener ready for the accept loop.
+fn bind_and_publish_port() -> io::Result<TcpListener> {
+    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let port = listener.local_addr()?.port();
+    let pid = std::process::id();
+    std::fs::write(port_path(), format!("{pid}:{port}\n"))?;
+    eprintln!("[daemon] listening on 127.0.0.1:{port}, pid {pid}");
+    Ok(listener)
+}
+
+/// Non-blocking accept loop. Exits when the TTL elapses without a
+/// request or when a handler signals `Stop`.
+fn run_accept_loop(
+    listener: TcpListener,
+    hypergraph: &mut Hypergraph,
+    snapshot_path: &Path,
+) -> io::Result<()> {
+    listener.set_nonblocking(true)?;
+    let ttl = default_ttl();
+    let started = Instant::now();
+    let mut last_request = Instant::now();
+    let mut tick_count: u64 = 0;
+
+    loop {
+        if last_request.elapsed() >= ttl {
+            eprintln!(
+                "[daemon] idle for {:?} ≥ TTL {:?}; exiting",
+                last_request.elapsed(),
+                ttl,
+            );
+            return Ok(());
+        }
+        match listener.accept() {
+            Ok((stream, _)) => {
+                last_request = Instant::now();
+                let stop = handle_one(stream, hypergraph, snapshot_path, started, tick_count)?;
+                tick_count += 1;
+                if stop {
+                    return Ok(());
+                }
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(ACCEPT_POLL_INTERVAL);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Read one request, dispatch it, write the response. Returns `true`
+/// iff the request was `Stop` and the accept loop should exit after
+/// this handler returns.
 fn handle_one(
     mut stream: TcpStream,
     hypergraph: &mut Hypergraph,
     snapshot_path: &Path,
     started: Instant,
     tick_count_so_far: u64,
-    stop_flag: &mut bool,
-) -> io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(60)))?;
+) -> io::Result<bool> {
+    stream.set_read_timeout(Some(HANDLE_TIMEOUT))?;
+    stream.set_write_timeout(Some(HANDLE_TIMEOUT))?;
     let req: DaemonRequest = match read_frame(&mut stream) {
         Ok(r) => r,
         Err(e) => {
@@ -273,9 +311,10 @@ fn handle_one(
                     message: format!("failed to parse request: {e}"),
                 },
             );
-            return Ok(());
+            return Ok(false);
         }
     };
+    let mut stop = false;
     let resp = match req {
         DaemonRequest::Tick { input } => match tick(hypergraph, &input, snapshot_path) {
             Ok(frame) => DaemonResponse::Frame(Box::new(frame)),
@@ -291,7 +330,7 @@ fn handle_one(
             relations: hypergraph.relations.len(),
         },
         DaemonRequest::Stop => {
-            *stop_flag = true;
+            stop = true;
             DaemonResponse::Stopping
         }
         DaemonRequest::Reset => match reset(hypergraph, snapshot_path) {
@@ -305,10 +344,10 @@ fn handle_one(
         },
     };
     let _ = write_frame(&mut stream, &resp);
-    Ok(())
+    Ok(stop)
 }
 
-/// Run one tick over the daemon's in-RAM substrate. Same Step 1-12
+/// Run one tick over the daemon's in-RAM substrate. Same the tick pipeline
 /// pipeline as `lib::run()`'s tick block, just without process-level
 /// scaffolding (printing, snapshot reload, init-warmup timing).
 fn tick(
@@ -368,8 +407,8 @@ pub fn try_connect() -> io::Result<TcpStream> {
         )
     })?;
     let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))?;
-    stream.set_read_timeout(Some(Duration::from_secs(120)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(120)))?;
+    stream.set_read_timeout(Some(CLIENT_TIMEOUT))?;
+    stream.set_write_timeout(Some(CLIENT_TIMEOUT))?;
     Ok(stream)
 }
 
@@ -394,7 +433,7 @@ pub fn round_trip(req: &DaemonRequest) -> io::Result<DaemonResponse> {
 pub fn spawn_detached(ready_timeout: Duration) -> io::Result<()> {
     let exe = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("__daemon")
+    cmd.arg(DAEMON_SUBCOMMAND)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -414,12 +453,12 @@ pub fn spawn_detached(ready_timeout: Duration) -> io::Result<()> {
         if port_path().exists() && try_connect().is_ok() {
             return Ok(());
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(SPAWN_POLL_INTERVAL);
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
         format!(
-            "daemon did not become reachable within {:?}; check stderr or run `legend __daemon` manually",
+            "daemon did not become reachable within {:?}; check stderr or run `legend {DAEMON_SUBCOMMAND}` manually",
             ready_timeout
         ),
     ))
@@ -431,7 +470,7 @@ pub fn connect_or_start() -> io::Result<TcpStream> {
     match try_connect() {
         Ok(s) => Ok(s),
         Err(_) => {
-            spawn_detached(Duration::from_secs(15))?;
+            spawn_detached(SPAWN_READY_TIMEOUT)?;
             try_connect()
         }
     }

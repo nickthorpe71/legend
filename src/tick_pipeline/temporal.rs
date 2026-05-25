@@ -1,4 +1,4 @@
-//! Temporal-span extractor for Step 5. Pure regex over the input text,
+//! Temporal-span extractor for `run_extractors`. Pure regex over the input text,
 //! no model call. v0 covers the high-frequency cases:
 //!
 //! - **Weekdays** — `Monday`..`Sunday`, case-insensitive.
@@ -9,7 +9,7 @@
 //! "time")` extraction proposal. The §11.7 spec mentions
 //! `chrono-english` for relative-phrase parsing — that's a deferred
 //! extension once we need to turn `"next Tuesday"` into a concrete
-//! datetime. For Step 5's job (proposing candidate temporal spans),
+//! datetime. For `run_extractors`'s job (proposing candidate temporal spans),
 //! the regex pass is sufficient and matches the doc's listed kinds.
 
 use std::sync::LazyLock;

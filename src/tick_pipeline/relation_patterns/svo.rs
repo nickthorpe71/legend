@@ -10,7 +10,7 @@
 //! pronouns that the void filter dropped (e.g. "I") are recovered
 //! from the raw input via [`find_pronoun_subject`].
 //!
-//! Output: every triple is `Defeasible`-bound. Step 8 will resolve
+//! Output: every triple is `Defeasible`-bound. `build_relations` will resolve
 //! `attribute_text` to an attribute-name Element (lookup → embedding
 //! search → mint Defeasible if no match). Replay confirms or prunes.
 //!
@@ -155,7 +155,7 @@ pub fn extract_svo_triples(text: &str, chunks: &[OrthographicChunk]) -> Vec<Rela
             };
             let raw_attr_slice = text[prev_tail_end..obj_first.char_start].trim();
             // Compute the trimmed slice's char range *within the input
-            // text* so Step 8 can contextualize the predicate. `.trim()`
+            // text* so `build_relations` can contextualize the predicate. `.trim()`
             // returns a sub-slice; find its bounds via pointer math.
             let raw_attr_full = &text[prev_tail_end..obj_first.char_start];
             let leading_ws = raw_attr_full.len() - raw_attr_full.trim_start().len();
@@ -472,9 +472,9 @@ mod tests {
     use crate::tick_pipeline::void_filter::extract_content_tokens;
 
     fn chunks_for(text: &str) -> Vec<OrthographicChunk> {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         let mut chunks = extract_chunks(text);
-        chunks.extend(extract_content_tokens(text, &hg));
+        chunks.extend(extract_content_tokens(text, &hypergraph));
         chunks.sort_by_key(|c| (c.char_start, c.char_end));
         chunks
     }

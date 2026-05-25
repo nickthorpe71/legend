@@ -1,6 +1,6 @@
 //! Relation-extraction patterns. Every place we go from raw text to a
 //! candidate relation lives in one of this module's submodules and
-//! emits the shared [`RelationCandidate`] type — so Step 8 has a
+//! emits the shared [`RelationCandidate`] type — so `build_relations` has a
 //! single consumer path regardless of pattern source.
 //!
 //! Pattern families:
@@ -13,13 +13,13 @@
 //!   orthographic chunker's output. Model-free; always emits
 //!   `Defeasible` candidates.
 //!
-//! Step 5 (`run_extractors`) is responsible for calling each family
+//! `run_extractors` (`run_extractors`) is responsible for calling each family
 //! and partitioning the results into three buckets:
 //!
 //! - **instance_of** — `ObjectRef::Label`-bearing candidates (span
-//!   typing). Step 8 resolves the label via the seed-pack lookup.
+//!   typing). `build_relations` resolves the label via the seed-pack lookup.
 //! - **relations** — NER-anchored candidates with `Span` objects.
-//!   Step 8 runs n-ary event-merge over these first.
+//!   `build_relations` runs n-ary event-merge over these first.
 //! - **surface** — SVO + appositive candidates. Always Defeasible;
 //!   merged after the known-branch proposals.
 
@@ -36,7 +36,7 @@ pub use svo::extract_svo_triples;
 use crate::tick_pipeline::orthographic::OrthographicChunk;
 use crate::types::RelationStatus;
 
-/// One candidate relation emitted by any pattern family. Step 8
+/// One candidate relation emitted by any pattern family. `build_relations`
 /// consumes a homogeneous slice of these and dispatches on
 /// [`ObjectRef`] (span vs label) and [`event_anchor`] (n-ary event
 /// merge) rather than on pattern source.
@@ -45,15 +45,15 @@ use crate::types::RelationStatus;
 #[derive(Debug, Clone)]
 pub struct RelationCandidate {
     /// Which pattern family produced this candidate. Behavioral
-    /// decisions in Step 8 are driven by the data fields below, not
+    /// decisions in `build_relations` are driven by the data fields below, not
     /// by source — `source` is for telemetry and dedup heuristics.
     pub source: PatternSource,
 
     pub subject_char_start: usize,
     pub subject_char_end: usize,
 
-    /// Attribute element name. Step 8 resolves via:
-    /// (1) `hg.by_name` lookup, (2) typed-relation lexicon, (3)
+    /// Attribute element name. `build_relations` resolves via:
+    /// (1) `hypergraph.by_name` lookup, (2) typed-relation lexicon, (3)
     /// embedding-knn over attribute-name centroids, (4) mint a
     /// Defeasible attribute element if all three miss. Canonical
     /// seed-attribute names ("from", "to", "at", "instance_of")
@@ -65,15 +65,15 @@ pub struct RelationCandidate {
     /// predicate names (NER-anchored templates, span-typing,
     /// appositive) leave it `None` because their predicate is a
     /// `&'static str` not present at a specific char range.
-    /// Step 8 uses it to compute the predicate's contextualized
+    /// `build_relations` uses it to compute the predicate's contextualized
     /// span embedding when resolving novel attribute names.
     pub attribute_char_start: Option<usize>,
     pub attribute_char_end: Option<usize>,
 
     /// Object reference. `Span` for objects that are sub-spans of
-    /// `input_text` (Step 8 slices + resolves by name); `Label` for
+    /// `input_text` (`build_relations` slices + resolves by name); `Label` for
     /// objects that are known class/kind elements addressed by name
-    /// (Step 8 calls `resolve_label_element`).
+    /// (`build_relations` calls `resolve_label_element`).
     pub object: ObjectRef,
 
     pub confidence: f32,
@@ -88,18 +88,18 @@ pub struct RelationCandidate {
 /// How the object should be resolved to an `ElementId` at mint time.
 #[derive(Debug, Clone)]
 pub enum ObjectRef {
-    /// Object is a sub-span of `input_text`. Step 8 slices, looks up
+    /// Object is a sub-span of `input_text`. `build_relations` slices, looks up
     /// by name, mints a Defeasible element on miss.
     Span { char_start: usize, char_end: usize },
     /// Object is a known class/kind element addressed by name
     /// (e.g. `"weekday"`, `"month"`, `"person"`, `"unknown_prior"`).
-    /// Step 8 resolves via the seed-pack label table.
+    /// `build_relations` resolves via the seed-pack label table.
     Label(String),
 }
 
 /// Which pattern family emitted a candidate. Used for telemetry and
 /// for any source-specific dedup heuristic; never branched on by the
-/// substrate-mutating code in Step 8.
+/// substrate-mutating code in `build_relations`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatternSource {
     /// NER-anchored RE templates ("X from A to B", "X at Y", "X's Y").
@@ -116,7 +116,7 @@ pub enum PatternSource {
 
 /// Default confidence stamped on every surface (SVO + appositive)
 /// candidate. Low enough that any known-branch candidate on the same
-/// span outranks it in Step 8's merge.
+/// span outranks it in `build_relations`'s merge.
 pub(crate) const DEFAULT_SURFACE_CONFIDENCE: f32 = 0.4;
 
 /// Run both surface-OpenIE pattern families over the same chunk

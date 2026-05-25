@@ -89,7 +89,7 @@ pub fn embed_sequence_with_offsets(text: &str) -> (Vec<f32>, Vec<(usize, usize)>
 /// direction is what cosine routing reads, so this is sufficient.
 ///
 /// Phase 4 of `contextualized_embeddings_plan.md`. The call-site
-/// for re-mentions lands when Step 8 (`build_relations`) gets
+/// for re-mentions lands when `build_relations` (`build_relations`) gets
 /// wired; until then this is a tested-but-uncalled primitive.
 ///
 /// # Panics

@@ -9,8 +9,8 @@
 //! - [`bounded_hebbian_decay`] — moves `x` toward 0.0; asymptotes from
 //!   above. `decay(x, 0.0) == x`, `decay(x, 1.0) == 0.0`.
 //!
-//! Per `new_foundation.md` §14.9. Step 10 reinforces via `_bump`;
-//! Step 11's focus-radius decay walks via `_decay`.
+//! Per `new_foundation.md` §14.9. `hebbian_and_salience` reinforces via `_bump`;
+//! `focus_radius_decay`'s focus-radius decay walks via `_decay`.
 //!
 //! Callers are responsible for keeping `rate` and `x` in range. Out-
 //! of-range inputs are clamped on the way out so a stray epsilon never

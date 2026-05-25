@@ -84,10 +84,10 @@ const CASES: &[(&str, &str, Option<&str>)] = &[
 ];
 
 fn main() {
-    let hg = load_seed_graph();
-    let genesis_children: Vec<ElementId> = hg
+    let hypergraph = load_seed_graph();
+    let genesis_children: Vec<ElementId> = hypergraph
         .region_children
-        .get(&hg.genesis)
+        .get(&hypergraph.genesis)
         .cloned()
         .unwrap_or_default();
 
@@ -113,16 +113,16 @@ fn main() {
         // Anchor columns: bare-name, K=1 (max), K=3 (production), K=∞ (full mean).
         let preds = [
             [
-                pick_by_bare_name(&q_span, &genesis_children, &hg).0,
-                pick_by_mean_top_k(&q_span, &genesis_children, &hg, 1).0,
-                pick_by_mean_top_k(&q_span, &genesis_children, &hg, 3).0,
-                pick_by_mean_top_k(&q_span, &genesis_children, &hg, usize::MAX).0,
+                pick_by_bare_name(&q_span, &genesis_children, &hypergraph).0,
+                pick_by_mean_top_k(&q_span, &genesis_children, &hypergraph, 1).0,
+                pick_by_mean_top_k(&q_span, &genesis_children, &hypergraph, 3).0,
+                pick_by_mean_top_k(&q_span, &genesis_children, &hypergraph, usize::MAX).0,
             ],
             [
-                pick_by_bare_name(&q_sentence, &genesis_children, &hg).0,
-                pick_by_mean_top_k(&q_sentence, &genesis_children, &hg, 1).0,
-                pick_by_mean_top_k(&q_sentence, &genesis_children, &hg, 3).0,
-                pick_by_mean_top_k(&q_sentence, &genesis_children, &hg, usize::MAX).0,
+                pick_by_bare_name(&q_sentence, &genesis_children, &hypergraph).0,
+                pick_by_mean_top_k(&q_sentence, &genesis_children, &hypergraph, 1).0,
+                pick_by_mean_top_k(&q_sentence, &genesis_children, &hypergraph, 3).0,
+                pick_by_mean_top_k(&q_sentence, &genesis_children, &hypergraph, usize::MAX).0,
             ],
         ];
 
@@ -130,7 +130,7 @@ fn main() {
             total_with_expected += 1;
             for q in 0..2 {
                 for a in 0..4 {
-                    if &name_of(&hg, preds[q][a]) == e {
+                    if &name_of(&hypergraph, preds[q][a]) == e {
                         acc[q][a] += 1;
                     }
                 }
@@ -170,10 +170,10 @@ fn main() {
 
 /// Score each region by cosine against `embed_text(region.names[0])`.
 /// Returns (best_region_id, score).
-fn pick_by_bare_name(query: &[f32], regions: &[ElementId], hg: &Hypergraph) -> (ElementId, f32) {
+fn pick_by_bare_name(query: &[f32], regions: &[ElementId], hypergraph: &Hypergraph) -> (ElementId, f32) {
     let mut best: (ElementId, f32) = (regions[0], f32::NEG_INFINITY);
     for &id in regions {
-        let name = &hg.elements[id.0 as usize].names[0];
+        let name = &hypergraph.elements[id.0 as usize].names[0];
         let anchor = embed_text(name);
         let s = dot(query, &anchor);
         if s > best.1 {
@@ -189,17 +189,17 @@ fn pick_by_bare_name(query: &[f32], regions: &[ElementId], hg: &Hypergraph) -> (
 fn pick_by_mean_top_k(
     query: &[f32],
     regions: &[ElementId],
-    hg: &Hypergraph,
+    hypergraph: &Hypergraph,
     k: usize,
 ) -> (ElementId, f32) {
     let mut best: (ElementId, f32) = (regions[0], f32::NEG_INFINITY);
     for &id in regions {
-        let Some(protos) = hg.region_prototypes.get(&id) else {
+        let Some(protos) = hypergraph.region_prototypes.get(&id) else {
             continue;
         };
         let mut sims: Vec<f32> = protos
             .iter()
-            .map(|p_id| dot(query, &hg.elements[p_id.0 as usize].embedding))
+            .map(|p_id| dot(query, &hypergraph.elements[p_id.0 as usize].embedding))
             .collect();
         sims.sort_by(|a, b| b.partial_cmp(a).unwrap());
         let kk = k.min(sims.len()).max(1);
@@ -211,8 +211,8 @@ fn pick_by_mean_top_k(
     best
 }
 
-fn name_of(hg: &Hypergraph, id: ElementId) -> String {
-    hg.elements[id.0 as usize]
+fn name_of(hypergraph: &Hypergraph, id: ElementId) -> String {
+    hypergraph.elements[id.0 as usize]
         .names
         .first()
         .cloned()

@@ -38,27 +38,27 @@ pub fn execute_tick(input_text: &str, hypergraph: &mut Hypergraph) -> ConsciousA
     let route = route_regions(&embedding, hypergraph, &policy);
     let out = run_extractors(input_text, &[], &policy, hypergraph, &route.active_regions);
     apply_region_delta(hypergraph, &route.delta, &policy);
-    let step8 = build_relations(input_text, hypergraph, &out, &policy, None);
-    let step9 = supersede(hypergraph, &step8.minted_relations, &policy);
+    let built_relations = build_relations(input_text, hypergraph, &out, &policy, None);
+    let superseded = supersede(hypergraph, &built_relations.minted_relations, &policy);
     let topical_seeds = topical_neighbors(hypergraph, &embedding, 32);
-    let step10 = hebbian_and_salience(
+    let reinforced = hebbian_and_salience(
         hypergraph,
-        &step8,
-        &step9,
+        &built_relations,
+        &superseded,
         active_frame,
         &policy,
         &topical_seeds,
     );
-    focus_radius_decay(hypergraph, &step10.reinforced, &policy);
+    focus_radius_decay(hypergraph, &reinforced.reinforced, &policy);
     assemble_frame(
         input_text,
         hypergraph,
         &intent,
         active_frame,
         &route,
-        &step8,
-        &step9,
-        &step10,
+        &built_relations,
+        &superseded,
+        &reinforced,
         &policy,
     )
 }

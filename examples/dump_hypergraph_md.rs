@@ -15,10 +15,10 @@ use std::io::Write;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let hg = load_seed_graph();
+    let hypergraph = load_seed_graph();
     let out_path = Path::new("inspect/seed.md");
     fs::create_dir_all(out_path.parent().unwrap())?;
-    let md = render(&hg);
+    let md = render(&hypergraph);
     let mut file = fs::File::create(out_path)?;
     file.write_all(md.as_bytes())?;
     println!("wrote {} ({} bytes)", out_path.display(), md.len());

@@ -33,12 +33,12 @@ use crate::types::{ElementId, Hypergraph, Polarity};
 ///
 /// Returned ids are in score-descending order, deduped, with stable
 /// tie-break on lower `ElementId.0` first.
-pub fn topical_neighbors(hg: &Hypergraph, embedding: &[f32], k: usize) -> Vec<ElementId> {
+pub fn topical_neighbors(hypergraph: &Hypergraph, embedding: &[f32], k: usize) -> Vec<ElementId> {
     if k == 0 || embedding.is_empty() {
         return Vec::new();
     }
-    let mut scored: Vec<(ElementId, f32)> = Vec::with_capacity(hg.elements.len());
-    for el in &hg.elements {
+    let mut scored: Vec<(ElementId, f32)> = Vec::with_capacity(hypergraph.elements.len());
+    for el in &hypergraph.elements {
         if el.polarity == Polarity::Void {
             continue;
         }
@@ -79,15 +79,15 @@ mod tests {
 
     #[test]
     fn returns_empty_for_k_zero() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         let emb = vec![0.5f32; EMBEDDING_DIM];
-        assert!(topical_neighbors(&hg, &emb, 0).is_empty());
+        assert!(topical_neighbors(&hypergraph, &emb, 0).is_empty());
     }
 
     #[test]
     fn returns_empty_for_empty_embedding() {
-        let hg = load_seed_graph();
-        assert!(topical_neighbors(&hg, &[], 5).is_empty());
+        let hypergraph = load_seed_graph();
+        assert!(topical_neighbors(&hypergraph, &[], 5).is_empty());
     }
 
     #[test]
@@ -95,34 +95,34 @@ mod tests {
         // Build a synthetic graph with three orthogonal elements
         // along axes 0, 1, 2. A query along axis 0 should return
         // the axis-0 element first.
-        let mut hg = Hypergraph::default();
-        hg.elements.push(synth_element(0, "axis0", 0));
-        hg.elements.push(synth_element(1, "axis1", 1));
-        hg.elements.push(synth_element(2, "axis2", 2));
-        rebuild_indices(&mut hg);
+        let mut hypergraph = Hypergraph::default();
+        hypergraph.elements.push(synth_element(0, "axis0", 0));
+        hypergraph.elements.push(synth_element(1, "axis1", 1));
+        hypergraph.elements.push(synth_element(2, "axis2", 2));
+        rebuild_indices(&mut hypergraph);
 
         let mut q = vec![0.0f32; EMBEDDING_DIM];
         q[0] = 1.0;
-        let neighbors = topical_neighbors(&hg, &q, 3);
+        let neighbors = topical_neighbors(&hypergraph, &q, 3);
         assert_eq!(neighbors, vec![ElementId(0), ElementId(1), ElementId(2)]);
     }
 
     #[test]
     fn skips_void_elements() {
-        let mut hg = Hypergraph::default();
+        let mut hypergraph = Hypergraph::default();
         // Two elements along axis 0: one Signal, one Void. The
         // Void one shouldn't appear in the top-K.
         let mut signal = synth_element(0, "the_signal", 0);
         signal.polarity = Polarity::Signal;
         let mut void = synth_element(1, "the_void", 0);
         void.polarity = Polarity::Void;
-        hg.elements.push(signal);
-        hg.elements.push(void);
-        rebuild_indices(&mut hg);
+        hypergraph.elements.push(signal);
+        hypergraph.elements.push(void);
+        rebuild_indices(&mut hypergraph);
 
         let mut q = vec![0.0f32; EMBEDDING_DIM];
         q[0] = 1.0;
-        let neighbors = topical_neighbors(&hg, &q, 5);
+        let neighbors = topical_neighbors(&hypergraph, &q, 5);
         assert_eq!(neighbors, vec![ElementId(0)]);
     }
 
@@ -130,9 +130,9 @@ mod tests {
     fn topical_seed_graph_returns_k_elements_with_real_query() {
         // End-to-end smoke test against the actual seed graph + a
         // contextualized query embedding.
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         let emb = crate::embed::embed_text("calendar appointment scheduling");
-        let neighbors = topical_neighbors(&hg, &emb, 10);
+        let neighbors = topical_neighbors(&hypergraph, &emb, 10);
         assert_eq!(neighbors.len(), 10);
         // Sanity: ids are unique.
         let mut sorted = neighbors.clone();

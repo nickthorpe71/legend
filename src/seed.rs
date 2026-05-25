@@ -64,7 +64,7 @@ pub fn load_seed_graph() -> Hypergraph {
         r.remaining(),
     );
 
-    let mut hg = Hypergraph {
+    let mut hypergraph = Hypergraph {
         elements,
         relations,
         void,
@@ -76,8 +76,8 @@ pub fn load_seed_graph() -> Hypergraph {
         prototype_attr,
         ..Hypergraph::default()
     };
-    rebuild_indices(&mut hg);
-    hg
+    rebuild_indices(&mut hypergraph);
+    hypergraph
 }
 
 /// Rebuild `Hypergraph`'s derived indices from `elements` + `relations`.
@@ -98,59 +98,59 @@ pub fn load_seed_graph() -> Hypergraph {
 ///
 /// Clears each index before refilling, so callers don't have to worry
 /// about residual state from a prior build.
-pub fn rebuild_indices(hg: &mut Hypergraph) {
-    hg.by_name.clear();
-    hg.region_children.clear();
-    hg.region_parents.clear();
-    hg.region_prototypes.clear();
-    hg.region_stats.clear();
-    hg.relations_by_element.clear();
-    hg.relations_by_attribute_name.clear();
-    hg.meta_relations_by_subject.clear();
-    hg.meta_relations_by_object.clear();
-    hg.attribute_value_counts.clear();
-    hg.attribute_co_counts.clear();
-    hg.meta_relation_presence.clear();
+pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
+    hypergraph.by_name.clear();
+    hypergraph.region_children.clear();
+    hypergraph.region_parents.clear();
+    hypergraph.region_prototypes.clear();
+    hypergraph.region_stats.clear();
+    hypergraph.relations_by_element.clear();
+    hypergraph.relations_by_attribute_name.clear();
+    hypergraph.meta_relations_by_subject.clear();
+    hypergraph.meta_relations_by_object.clear();
+    hypergraph.attribute_value_counts.clear();
+    hypergraph.attribute_co_counts.clear();
+    hypergraph.meta_relation_presence.clear();
 
-    for e in &hg.elements {
+    for e in &hypergraph.elements {
         for name in &e.names {
-            hg.by_name.entry(name.clone()).or_default().push(e.id);
+            hypergraph.by_name.entry(name.clone()).or_default().push(e.id);
         }
     }
 
     // `target_attr` is derivable — `target` is seeded as a unique
     // Signal attribute-name element. Resolving here rather than reading
     // a 4th cached ID from the bin header keeps the on-disk format
-    // stable across the Step 8 plumbing.
-    if let Some(ids) = hg.by_name.get("target")
+    // stable across the `build_relations` plumbing.
+    if let Some(ids) = hypergraph.by_name.get("target")
         && let Some(&id) = ids.first()
     {
-        hg.target_attr = id;
+        hypergraph.target_attr = id;
     }
 
     // Region indices — same logic as before, ignoring subject-less
     // relations (meta-relations) since they don't carry region topology.
-    for r in &hg.relations {
-        let subject = match find_subject(r, hg.subject_attr) {
+    for r in &hypergraph.relations {
+        let subject = match find_subject(r, hypergraph.subject_attr) {
             Some(s) => s,
             None => continue,
         };
         for attr in &r.attributes {
-            if attr.name == hg.subject_attr {
+            if attr.name == hypergraph.subject_attr {
                 continue;
             }
             let target = match attr.value {
                 Term::Element(e) => e,
                 Term::Relation(_) => continue,
             };
-            if attr.name == hg.parent_region_attr {
-                hg.region_children.entry(target).or_default().push(subject);
-                hg.region_parents
+            if attr.name == hypergraph.parent_region_attr {
+                hypergraph.region_children.entry(target).or_default().push(subject);
+                hypergraph.region_parents
                     .entry(subject)
                     .or_default()
                     .push((target, r.stats.confidence));
-            } else if attr.name == hg.prototype_attr {
-                hg.region_prototypes
+            } else if attr.name == hypergraph.prototype_attr {
+                hypergraph.region_prototypes
                     .entry(subject)
                     .or_default()
                     .push(target);
@@ -158,31 +158,31 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
         }
     }
 
-    // Step 8 indices — every relation contributes, including meta-
-    // relations. Mirrors the incremental update logic Step 8 runs
+    // `build_relations` indices — every relation contributes, including meta-
+    // relations. Mirrors the incremental update logic `build_relations` runs
     // per minted relation so build-from-scratch and incremental paths
     // produce identical index state.
-    for r in &hg.relations {
+    for r in &hypergraph.relations {
         let mut parent_relations: Vec<RelationId> = Vec::new();
         for attr in &r.attributes {
-            hg.relations_by_attribute_name
+            hypergraph.relations_by_attribute_name
                 .entry(attr.name)
                 .or_default()
                 .push(r.id);
             match attr.value {
                 Term::Element(e) => {
-                    hg.relations_by_element.entry(e).or_default().push(r.id);
-                    *hg.attribute_value_counts.entry((attr.name, e)).or_insert(0) += 1;
+                    hypergraph.relations_by_element.entry(e).or_default().push(r.id);
+                    *hypergraph.attribute_value_counts.entry((attr.name, e)).or_insert(0) += 1;
                 }
                 Term::Relation(parent) => {
-                    if attr.name == hg.target_attr {
-                        hg.meta_relations_by_subject
+                    if attr.name == hypergraph.target_attr {
+                        hypergraph.meta_relations_by_subject
                             .entry(parent)
                             .or_default()
                             .push(r.id);
                         parent_relations.push(parent);
                     } else {
-                        hg.meta_relations_by_object
+                        hypergraph.meta_relations_by_object
                             .entry(parent)
                             .or_default()
                             .push(r.id);
@@ -194,24 +194,24 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
         // NON-target sibling attribute as present on the parent.
         // Lets `meta_relation_presence` answer "does relation R
         // carry a meta-attribute named X?" without a meta walk —
-        // Step 9's `intervened` gate reads this.
+        // `supersede`'s `intervened` gate reads this.
         for &parent in &parent_relations {
             for attr in &r.attributes {
-                if attr.name != hg.target_attr {
-                    hg.meta_relation_presence.insert((parent, attr.name), true);
+                if attr.name != hypergraph.target_attr {
+                    hypergraph.meta_relation_presence.insert((parent, attr.name), true);
                 }
             }
         }
         // Co-occurrence: every ordered pair (i, j) of distinct
         // attribute positions on this relation. Symmetric pairs are
-        // both counted — Step 12's frame-recognition logic reads
+        // both counted — `assemble_frame`'s frame-recognition logic reads
         // directional co-occurrence, not the symmetric collapse.
         for i in 0..r.attributes.len() {
             for j in 0..r.attributes.len() {
                 if i == j {
                     continue;
                 }
-                *hg.attribute_co_counts
+                *hypergraph.attribute_co_counts
                     .entry((r.attributes[i].name, r.attributes[j].name))
                     .or_insert(0) += 1;
             }
@@ -222,14 +222,14 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
     // Two-pass population variance — n is bounded (typically 1–30 per
     // region) so naive arithmetic is numerically fine; switch to
     // Welford if regions ever grow into the hundreds.
-    for (&region_id, proto_ids) in &hg.region_prototypes {
+    for (&region_id, proto_ids) in &hypergraph.region_prototypes {
         if proto_ids.is_empty() {
             continue;
         }
         let n = proto_ids.len();
         let mut mean = vec![0.0f32; EMBEDDING_DIM];
         for &p in proto_ids {
-            let emb = &hg.elements[p.0 as usize].embedding;
+            let emb = &hypergraph.elements[p.0 as usize].embedding;
             for (i, &v) in emb.iter().enumerate() {
                 mean[i] += v;
             }
@@ -240,7 +240,7 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
         }
         let mut var = vec![0.0f32; EMBEDDING_DIM];
         for &p in proto_ids {
-            let emb = &hg.elements[p.0 as usize].embedding;
+            let emb = &hypergraph.elements[p.0 as usize].embedding;
             for (i, &v) in emb.iter().enumerate() {
                 let d = v - mean[i];
                 var[i] += d * d;
@@ -249,7 +249,7 @@ pub fn rebuild_indices(hg: &mut Hypergraph) {
         for v in &mut var {
             *v *= inv_n;
         }
-        hg.region_stats.insert(
+        hypergraph.region_stats.insert(
             region_id,
             crate::types::RegionStats {
                 mean,
@@ -451,57 +451,57 @@ mod tests {
 
     #[test]
     fn loads_expected_counts() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         // 2 anchors + 32 attrs + 22 regions (14 signal + 8 void)
         // + 8 frames + 2 classes + 440 prototypes (22 × 20)
         // + 118 void members = 624.
-        assert_eq!(hg.elements.len(), 624);
+        assert_eq!(hypergraph.elements.len(), 624);
         // 22 region-class + 8 frame-class + 22 region-parent
         // + 440 prototype-attach + 118 member instance_of = 610.
-        assert_eq!(hg.relations.len(), 610);
+        assert_eq!(hypergraph.relations.len(), 610);
     }
 
     #[test]
     fn anchors_at_fixed_ids() {
-        let hg = load_seed_graph();
-        assert_eq!(hg.void, ElementId(0));
-        assert_eq!(hg.genesis, ElementId(1));
+        let hypergraph = load_seed_graph();
+        assert_eq!(hypergraph.void, ElementId(0));
+        assert_eq!(hypergraph.genesis, ElementId(1));
     }
 
     #[test]
     fn by_name_resolves_anchors() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         assert_eq!(
-            hg.by_name.get("genesis").map(|v| v.as_slice()),
-            Some(&[hg.genesis][..])
+            hypergraph.by_name.get("genesis").map(|v| v.as_slice()),
+            Some(&[hypergraph.genesis][..])
         );
         assert_eq!(
-            hg.by_name.get("void").map(|v| v.as_slice()),
-            Some(&[hg.void][..])
+            hypergraph.by_name.get("void").map(|v| v.as_slice()),
+            Some(&[hypergraph.void][..])
         );
     }
 
     #[test]
     fn region_children_of_genesis_has_14_entries() {
-        let hg = load_seed_graph();
-        let children = hg
+        let hypergraph = load_seed_graph();
+        let children = hypergraph
             .region_children
-            .get(&hg.genesis)
+            .get(&hypergraph.genesis)
             .expect("GENESIS should have 14 region children");
         assert_eq!(children.len(), 14);
     }
 
     #[test]
     fn region_children_of_void_has_eight_entries() {
-        let hg = load_seed_graph();
-        let children = hg
+        let hypergraph = load_seed_graph();
+        let children = hypergraph
             .region_children
-            .get(&hg.void)
+            .get(&hypergraph.void)
             .expect("VOID should have 8 region children");
         assert_eq!(children.len(), 8);
         // All children of VOID must carry polarity = Void.
         for &child_id in children {
-            let child = &hg.elements[child_id.0 as usize];
+            let child = &hypergraph.elements[child_id.0 as usize];
             assert_eq!(
                 child.polarity,
                 Polarity::Void,
@@ -514,15 +514,15 @@ mod tests {
 
     #[test]
     fn known_stop_words_resolve_to_void_elements() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         for stop in ["the", "of", "and", "if", "is"] {
-            let ids = hg
+            let ids = hypergraph
                 .by_name
                 .get(stop)
                 .unwrap_or_else(|| panic!("stop word '{stop}' not in by_name"));
             assert!(
                 ids.iter()
-                    .any(|id| { hg.elements[id.0 as usize].polarity == Polarity::Void }),
+                    .any(|id| { hypergraph.elements[id.0 as usize].polarity == Polarity::Void }),
                 "no Polarity::Void element resolves '{stop}'",
             );
         }
@@ -530,17 +530,17 @@ mod tests {
 
     #[test]
     fn every_seeded_region_has_twenty_prototypes_with_full_embedding() {
-        let hg = load_seed_graph();
-        let genesis_children = hg
+        let hypergraph = load_seed_graph();
+        let genesis_children = hypergraph
             .region_children
-            .get(&hg.genesis)
+            .get(&hypergraph.genesis)
             .expect("GENESIS region children");
-        let void_children = hg
+        let void_children = hypergraph
             .region_children
-            .get(&hg.void)
+            .get(&hypergraph.void)
             .expect("VOID region children");
         for region in genesis_children.iter().chain(void_children.iter()) {
-            let protos = hg
+            let protos = hypergraph
                 .region_prototypes
                 .get(region)
                 .unwrap_or_else(|| panic!("region {region:?} should have prototypes"));
@@ -550,7 +550,7 @@ mod tests {
                 "region {region:?} should have exactly 20 prototypes (one per YAML example)"
             );
             for proto_id in protos {
-                let proto = &hg.elements[proto_id.0 as usize];
+                let proto = &hypergraph.elements[proto_id.0 as usize];
                 assert_eq!(
                     proto.embedding.len(),
                     EMBEDDING_DIM,
@@ -563,43 +563,43 @@ mod tests {
 
     #[test]
     fn rebuild_indices_is_idempotent() {
-        let mut hg = load_seed_graph();
-        let before_children = hg.region_children.clone();
-        let before_protos = hg.region_prototypes.clone();
-        let before_stats = hg.region_stats.clone();
-        let before_rels_by_el = hg.relations_by_element.clone();
-        let before_rels_by_attr = hg.relations_by_attribute_name.clone();
-        let before_meta_subj = hg.meta_relations_by_subject.clone();
-        let before_meta_obj = hg.meta_relations_by_object.clone();
-        let before_attr_vals = hg.attribute_value_counts.clone();
-        let before_attr_co = hg.attribute_co_counts.clone();
-        let before_meta_pres = hg.meta_relation_presence.clone();
-        let before_target = hg.target_attr;
-        rebuild_indices(&mut hg);
-        assert_eq!(hg.region_children, before_children);
-        assert_eq!(hg.region_prototypes, before_protos);
-        assert_eq!(hg.region_stats, before_stats);
-        assert_eq!(hg.relations_by_element, before_rels_by_el);
-        assert_eq!(hg.relations_by_attribute_name, before_rels_by_attr);
-        assert_eq!(hg.meta_relations_by_subject, before_meta_subj);
-        assert_eq!(hg.meta_relations_by_object, before_meta_obj);
-        assert_eq!(hg.attribute_value_counts, before_attr_vals);
-        assert_eq!(hg.attribute_co_counts, before_attr_co);
-        assert_eq!(hg.meta_relation_presence, before_meta_pres);
-        assert_eq!(hg.target_attr, before_target);
+        let mut hypergraph = load_seed_graph();
+        let before_children = hypergraph.region_children.clone();
+        let before_protos = hypergraph.region_prototypes.clone();
+        let before_stats = hypergraph.region_stats.clone();
+        let before_rels_by_el = hypergraph.relations_by_element.clone();
+        let before_rels_by_attr = hypergraph.relations_by_attribute_name.clone();
+        let before_meta_subj = hypergraph.meta_relations_by_subject.clone();
+        let before_meta_obj = hypergraph.meta_relations_by_object.clone();
+        let before_attr_vals = hypergraph.attribute_value_counts.clone();
+        let before_attr_co = hypergraph.attribute_co_counts.clone();
+        let before_meta_pres = hypergraph.meta_relation_presence.clone();
+        let before_target = hypergraph.target_attr;
+        rebuild_indices(&mut hypergraph);
+        assert_eq!(hypergraph.region_children, before_children);
+        assert_eq!(hypergraph.region_prototypes, before_protos);
+        assert_eq!(hypergraph.region_stats, before_stats);
+        assert_eq!(hypergraph.relations_by_element, before_rels_by_el);
+        assert_eq!(hypergraph.relations_by_attribute_name, before_rels_by_attr);
+        assert_eq!(hypergraph.meta_relations_by_subject, before_meta_subj);
+        assert_eq!(hypergraph.meta_relations_by_object, before_meta_obj);
+        assert_eq!(hypergraph.attribute_value_counts, before_attr_vals);
+        assert_eq!(hypergraph.attribute_co_counts, before_attr_co);
+        assert_eq!(hypergraph.meta_relation_presence, before_meta_pres);
+        assert_eq!(hypergraph.target_attr, before_target);
     }
 
     /// `target_attr` should resolve via the `by_name` lookup against
     /// the uniquely-seeded `target` attribute-name element.
     #[test]
     fn target_attr_resolves() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         assert_ne!(
-            hg.target_attr,
+            hypergraph.target_attr,
             ElementId(u32::MAX),
             "target_attr must resolve at seed load",
         );
-        let el = &hg.elements[hg.target_attr.0 as usize];
+        let el = &hypergraph.elements[hypergraph.target_attr.0 as usize];
         assert_eq!(el.names[0], "target");
     }
 
@@ -611,19 +611,19 @@ mod tests {
     #[test]
     fn meta_relation_presence_records_sibling_attributes() {
         use crate::types::{Attribute, RelationStatus};
-        let mut hg = load_seed_graph();
-        let intervened_id = hg.by_name["intervened"][0];
-        let target_id = hg.target_attr;
+        let mut hypergraph = load_seed_graph();
+        let intervened_id = hypergraph.by_name["intervened"][0];
+        let target_id = hypergraph.target_attr;
 
         // Pick an arbitrary seeded element to use as a parent value.
         // The base relation we'll attach a meta to:
         //   [subject: user, instance_of: user] (whatever lands).
         // We mint our own base relation so the parent is fresh.
-        let user_id = hg.by_name["user"][0];
-        let instance_of_id = hg.by_name["instance_of"][0];
-        let subject_id = hg.subject_attr;
+        let user_id = hypergraph.by_name["user"][0];
+        let instance_of_id = hypergraph.by_name["instance_of"][0];
+        let subject_id = hypergraph.subject_attr;
         let base = crate::tick_pipeline::build_relations::mint_relation(
-            &mut hg,
+            &mut hypergraph,
             vec![
                 Attribute {
                     name: subject_id,
@@ -640,7 +640,7 @@ mod tests {
 
         // Meta-relation pointing at `base` with an `intervened` slot.
         let _ = crate::tick_pipeline::build_relations::mint_relation(
-            &mut hg,
+            &mut hypergraph,
             vec![
                 Attribute {
                     name: target_id,
@@ -656,14 +656,14 @@ mod tests {
         );
 
         assert_eq!(
-            hg.meta_relation_presence
+            hypergraph.meta_relation_presence
                 .get(&(base, intervened_id))
                 .copied(),
             Some(true),
             "intervened should be marked present on the parent",
         );
         assert!(
-            !hg.meta_relation_presence.contains_key(&(base, target_id)),
+            !hypergraph.meta_relation_presence.contains_key(&(base, target_id)),
             "target is the link itself; not a sibling — should NOT be indexed as present",
         );
     }
@@ -672,17 +672,17 @@ mod tests {
     /// for each of its Element-valued attribute targets, and in
     /// `relations_by_attribute_name` for every attribute name.
     #[test]
-    fn step8_indices_cover_every_seed_relation() {
-        let hg = load_seed_graph();
-        for r in &hg.relations {
+    fn build_relation_indices_cover_every_seed_relation() {
+        let hypergraph = load_seed_graph();
+        for r in &hypergraph.relations {
             for attr in &r.attributes {
-                let by_attr = hg
+                let by_attr = hypergraph
                     .relations_by_attribute_name
                     .get(&attr.name)
                     .expect("attribute name must be indexed");
                 assert!(by_attr.contains(&r.id), "missing in by_attribute_name");
                 if let crate::types::Term::Element(e) = attr.value {
-                    let by_el = hg
+                    let by_el = hypergraph
                         .relations_by_element
                         .get(&e)
                         .expect("element must be indexed");
@@ -694,14 +694,14 @@ mod tests {
 
     #[test]
     fn region_stats_built_for_every_seed_region() {
-        let hg = load_seed_graph();
-        let genesis_children = hg
+        let hypergraph = load_seed_graph();
+        let genesis_children = hypergraph
             .region_children
-            .get(&hg.genesis)
+            .get(&hypergraph.genesis)
             .expect("GENESIS region children");
-        let void_children = hg
+        let void_children = hypergraph
             .region_children
-            .get(&hg.void)
+            .get(&hypergraph.void)
             .expect("VOID region children");
         let all_regions: Vec<ElementId> = genesis_children
             .iter()
@@ -709,13 +709,13 @@ mod tests {
             .copied()
             .collect();
         assert_eq!(
-            hg.region_stats.len(),
+            hypergraph.region_stats.len(),
             all_regions.len(),
             "stats count should match total region count (signal + void)"
         );
         for region in &all_regions {
             assert!(
-                hg.region_stats.contains_key(region),
+                hypergraph.region_stats.contains_key(region),
                 "region {region:?} missing from region_stats"
             );
         }
@@ -723,8 +723,8 @@ mod tests {
 
     #[test]
     fn region_stats_dimensions_match_embedding_dim() {
-        let hg = load_seed_graph();
-        for (region, stats) in &hg.region_stats {
+        let hypergraph = load_seed_graph();
+        for (region, stats) in &hypergraph.region_stats {
             assert_eq!(
                 stats.mean.len(),
                 EMBEDDING_DIM,
@@ -745,8 +745,8 @@ mod tests {
     /// non-zero in some dimensions).
     #[test]
     fn region_stats_have_twenty_examples_and_non_trivial_variance() {
-        let hg = load_seed_graph();
-        for (region, stats) in &hg.region_stats {
+        let hypergraph = load_seed_graph();
+        for (region, stats) in &hypergraph.region_stats {
             assert_eq!(stats.n, 20, "region {region:?} expected n=20 at v0 seed");
             let total_var: f32 = stats.var.iter().sum();
             assert!(
@@ -776,16 +776,16 @@ mod tests {
             polarity: Polarity::Signal,
         };
         let zero = vec![0.0f32; EMBEDDING_DIM];
-        let mut hg = Hypergraph {
+        let mut hypergraph = Hypergraph {
             subject_attr: ElementId(0),
             prototype_attr: ElementId(1),
             parent_region_attr: ElementId(99), // unused, just non-conflicting
             ..Default::default()
         };
 
-        hg.elements.push(mk_elem(0, zero.clone()));
-        hg.elements.push(mk_elem(1, zero.clone()));
-        hg.elements.push(mk_elem(2, zero.clone())); // region
+        hypergraph.elements.push(mk_elem(0, zero.clone()));
+        hypergraph.elements.push(mk_elem(1, zero.clone()));
+        hypergraph.elements.push(mk_elem(2, zero.clone())); // region
         // Three prototype embeddings — only the first dim varies.
         let mut e3 = zero.clone();
         e3[0] = 0.0;
@@ -793,21 +793,21 @@ mod tests {
         e4[0] = 1.0;
         let mut e5 = zero.clone();
         e5[0] = 2.0;
-        hg.elements.push(mk_elem(3, e3));
-        hg.elements.push(mk_elem(4, e4));
-        hg.elements.push(mk_elem(5, e5));
+        hypergraph.elements.push(mk_elem(3, e3));
+        hypergraph.elements.push(mk_elem(4, e4));
+        hypergraph.elements.push(mk_elem(5, e5));
 
         // Three relations: (region, prototype, proto_i)
         for (i, proto_id) in [3u32, 4, 5].iter().enumerate() {
-            hg.relations.push(Relation {
+            hypergraph.relations.push(Relation {
                 id: RelationId(i as u32),
                 attributes: vec![
                     Attribute {
-                        name: hg.subject_attr,
+                        name: hypergraph.subject_attr,
                         value: Term::Element(ElementId(2)),
                     },
                     Attribute {
-                        name: hg.prototype_attr,
+                        name: hypergraph.prototype_attr,
                         value: Term::Element(ElementId(*proto_id)),
                     },
                 ],
@@ -818,9 +818,9 @@ mod tests {
             });
         }
 
-        rebuild_indices(&mut hg);
+        rebuild_indices(&mut hypergraph);
 
-        let stats = hg
+        let stats = hypergraph
             .region_stats
             .get(&ElementId(2))
             .expect("region should have stats");

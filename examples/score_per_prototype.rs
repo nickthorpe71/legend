@@ -19,8 +19,8 @@ fn main() {
     let region_name = &args[1];
     let input = &args[2];
 
-    let hg = load_seed_graph();
-    let region_id = hg
+    let hypergraph = load_seed_graph();
+    let region_id = hypergraph
         .by_name
         .get(region_name)
         .and_then(|ids| ids.first().copied())
@@ -28,7 +28,7 @@ fn main() {
             eprintln!("region {region_name:?} not found");
             std::process::exit(1);
         });
-    let protos = hg
+    let protos = hypergraph
         .region_prototypes
         .get(&region_id)
         .cloned()
@@ -38,7 +38,7 @@ fn main() {
     let mut scored: Vec<(String, f32)> = protos
         .iter()
         .map(|&p| {
-            let elem = &hg.elements[p.0 as usize];
+            let elem = &hypergraph.elements[p.0 as usize];
             // Look up the example text by recovering from the proto's
             // name — but it's just "<region>_proto_<i>"; the example
             // text lives only in the YAML. For diagnostic value, show

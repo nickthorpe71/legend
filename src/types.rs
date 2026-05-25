@@ -57,12 +57,12 @@ pub struct Hypergraph {
     /// `created_at` / `last_seen` field, then bumped before the next call.
     pub clock: Tick,
 
-    /// Tuning constants every pipeline step reads. Step 2 produces a
+    /// Tuning constants every pipeline step reads. `adjust_policy` produces a
     /// per-tick adjusted Policy from this rest-state value; Steps 4–12
     /// see the adjusted view. Only PFC writes the rest-state Policy.
     pub policy: Policy,
 
-    /// Working-memory ring buffer of recent focal points. Step 4 inherits
+    /// Working-memory ring buffer of recent focal points. `route_regions` inherits
     /// `active_frame` from here when the input's frame is unset and not
     /// shifting. Capacity is bounded by `policy.recent_focus_capacity`;
     /// oldest entries fall off the back. `VecDeque` (not `Vec`) for O(1)
@@ -73,7 +73,7 @@ pub struct Hypergraph {
     //
     // Denormalized read caches over `relations` and `elements`. They are
     // *never* serialized into the seed bin or any future snapshot —
-    // `seed::rebuild_indices(&mut hg)` rebuilds them after deserialization
+    // `seed::rebuild_indices(&mut hypergraph)` rebuilds them after deserialization
     // and after any test that hand-builds the graph. Keeping them out of
     // the on-disk format means the relation graph is the single source
     // of truth and we can change index shapes without versioning the bin.
@@ -87,7 +87,7 @@ pub struct Hypergraph {
     #[serde(skip)]
     pub by_name: HashMap<String, Vec<ElementId>>,
 
-    /// DAG-descent topology read by Step 4 region routing. For each
+    /// DAG-descent topology read by `route_regions` region routing. For each
     /// region `R`, the list of its child regions (regions whose own
     /// `parent_region` attribute points at `R`). Derived from
     /// `parent_region` relations on every load; the relation graph is
@@ -104,7 +104,7 @@ pub struct Hypergraph {
     pub region_parents: HashMap<ElementId, Vec<(ElementId, f32)>>,
 
     /// For each region `R`, the prototype Elements attached via
-    /// `(R, prototype, P)` relations. Read by Step 4 routing — at each
+    /// `(R, prototype, P)` relations. Read by `route_regions` routing — at each
     /// candidate region, the score is `max cosine` over each prototype's
     /// inline `embedding`. v0 day zero ships one prototype per seeded
     /// region (built from the YAML `descriptor`); replay grows or merges
@@ -114,30 +114,30 @@ pub struct Hypergraph {
 
     /// For each region `R`, the per-dimension mean + variance of its
     /// prototype elements' embeddings. Computed from
-    /// `region_prototypes[R]` during `rebuild_indices`; lets Step 4
+    /// `region_prototypes[R]` during `rebuild_indices`; lets `route_regions`
     /// score input via diagonal Mahalanobis distance instead of
     /// max-cosine when many-prototype data is available. With a single
-    /// prototype `var` collapses to all-zeros — Step 4 mixes a
+    /// prototype `var` collapses to all-zeros — `route_regions` mixes a
     /// variance prior at use time to keep the score well-defined.
     #[serde(skip)]
     pub region_stats: HashMap<ElementId, RegionStats>,
 
-    // ── Step 8 relation indices ────────────────────────────────────────
+    // ── `build_relations` relation indices ────────────────────────────────────────
     //
-    // Populated by `rebuild_indices` over `hg.relations` and updated
-    // incrementally by Step 8 (`build_relations`) per minted relation.
+    // Populated by `rebuild_indices` over `hypergraph.relations` and updated
+    // incrementally by `build_relations` (`build_relations`) per minted relation.
     // None of these are serialized — they're derived caches that
     // rebuild deterministically from the relations themselves.
     /// For each Element `E`, the list of Relations that mention `E` as
     /// the value of any of their attributes. Drives "what does the
-    /// graph claim about E?" lookups (Step 9's supersession search,
-    /// Step 12's focus walk).
+    /// graph claim about E?" lookups (`supersede`'s supersession search,
+    /// `assemble_frame`'s focus walk).
     #[serde(skip)]
     pub relations_by_element: HashMap<ElementId, Vec<RelationId>>,
 
     /// For each attribute-name Element `A`, the list of Relations that
     /// use `A` as one of their attribute names. Drives label-set
-    /// resolution and Step 9's filtering ("relations with a `property`
+    /// resolution and `supersede`'s filtering ("relations with a `property`
     /// attribute").
     #[serde(skip)]
     pub relations_by_attribute_name: HashMap<ElementId, Vec<RelationId>>,
@@ -174,7 +174,7 @@ pub struct Hypergraph {
     /// Populated by walking every relation's attributes — when an
     /// attribute is `Term::Relation(R)` and named `target`, every
     /// non-`target` sibling attribute on that relation gets marked
-    /// present on `R`. Lets Step 9 / Step 10 ask
+    /// present on `R`. Lets `supersede` / `hebbian_and_salience` ask
     /// "does this event have an `intervened` meta?" in O(1).
     #[serde(skip)]
     pub meta_relation_presence: HashMap<(RelationId, ElementId), bool>,
@@ -187,12 +187,12 @@ pub struct Hypergraph {
     // unusable in production (any lookup against a sentinel ID will
     // panic on the elements bounds check).
     /// Sink for retracted / pruned elements that must remain referenceable
-    /// without participating in routing or focus. Step 4 routes
+    /// without participating in routing or focus. `route_regions` routes
     /// sub-threshold inputs here. Seeded as `ElementId(0)` at gen time.
     pub void: ElementId,
 
     /// Root of the region DAG — every seeded region declares Genesis as
-    /// a parent, so Step 4 routing always has a single starting point.
+    /// a parent, so `route_regions` routing always has a single starting point.
     /// Seeded as `ElementId(1)` at gen time.
     pub genesis: ElementId,
 
@@ -296,7 +296,7 @@ pub struct Element {
 
     /// Semantic anchor for this element. Populated at mint time from
     /// `names` (or the originating span text for anonymous NER spans).
-    /// Read by region routing (Step 4) and anywhere similarity is needed.
+    /// Read by region routing (`route_regions`) and anywhere similarity is needed.
     /// Inline `Vec<f32>` so a single index lookup gets you the vector
     /// without an extra hash hop.
     pub embedding: Vec<f32>,
@@ -449,8 +449,8 @@ pub struct MemoryStats {
     pub access_count: u32,
 
     /// Bumped each tick this thing landed on the focus path *and* the
-    /// tick was judged successful (per Step 10 hebbian reinforcement).
-    /// Drives RRF rank in Step 12.
+    /// tick was judged successful (per `hebbian_and_salience` hebbian reinforcement).
+    /// Drives RRF rank in `assemble_frame`.
     pub focus_success_count: u32,
 
     /// Independent ticks supporting this claim. Distinct from
@@ -481,7 +481,7 @@ pub struct MemoryStats {
 // Tick I/O
 // ─────────────────────────────────────────────────────────────────────────────
 /// The output of every tick. Most fields are *gathered* from per-tick
-/// buffers that earlier steps populated as a side effect; Step 12's own
+/// buffers that earlier steps populated as a side effect; `assemble_frame`'s own
 /// work is just the `focused_relations` RRF merge and `next_actions`
 /// suggestions. The frame is a post-tick snapshot of the focused
 /// subgraph, not a pre-assembled answer — the calling LLM derives any
@@ -494,23 +494,23 @@ pub struct ConsciousAttentionFrame {
     /// Echo of the input text. Not durable.
     pub input_echo: String,
 
-    /// 4-dim intent vector from Step 1 — cosine projection against the
-    /// intent prototype banks. Drives Step 2's policy adjustments.
+    /// 4-dim intent vector from `detect_intent` — cosine projection against the
+    /// intent prototype banks. Drives `adjust_policy`'s policy adjustments.
     pub intent: Intent,
 
     /// The active frame at the time this tick ran. `None` when no frame
     /// is active and the input doesn't establish one. Inherited from
-    /// `recent_focus` or set by a frame-shifting cue in Step 4.
+    /// `recent_focus` or set by a frame-shifting cue in `route_regions`.
     pub active_frame: Option<ResolvedElement>,
 
     /// Regions that lit up during routing. Union of per-window
-    /// `route_regions(...)` results from Step 4. Denormalized for the
+    /// `route_regions(...)` results from `route_regions`. Denormalized for the
     /// frame; internal pipeline still uses `RegionActivation`.
     pub active_regions: Vec<ActiveRegion>,
 
     /// The focused-relations ranked list, fused via RRF (Reciprocal
     /// Rank Fusion) over Dense (path-reinforced focus set), Sparse
-    /// (BM25), and Path-reinforced (focus_success bumps from Step 10).
+    /// (BM25), and Path-reinforced (focus_success bumps from `hebbian_and_salience`).
     /// RRF merges ranked lists by `Σ 1 / (60 + rank_i)` — keeps ranks,
     /// discards incompatibly-scaled raw scores. Asserted + Entailed
     /// pass; Defeasible flagged with lower weight; Superseded/Retracted
@@ -528,7 +528,7 @@ pub struct ConsciousAttentionFrame {
     pub history: Vec<ResolvedRelation>,
 
     /// Per-tick uncertainty signals pushed by Steps 4, 5, 6, 8, 9.
-    /// Step 12 collects from a per-tick buffer and surfaces them so the
+    /// `assemble_frame` collects from a per-tick buffer and surfaces them so the
     /// caller can act on disagreement, ungrounded time, ambiguous
     /// coreference, low-confidence extraction, or detected contradictions.
     pub uncertainty: Vec<UncertaintySignal>,
@@ -540,7 +540,7 @@ pub struct ConsciousAttentionFrame {
     pub durable_writes: Vec<ResolvedElement>,
 
     /// Relations whose status flipped to Superseded this tick.
-    /// Recorded by Step 9. Same shortcut role as `durable_writes`.
+    /// Recorded by `supersede`. Same shortcut role as `durable_writes`.
     pub superseded: Vec<ResolvedRelation>,
 
     /// Live `current_<property>` caches for entities this tick
@@ -570,7 +570,7 @@ pub struct ConsciousAttentionFrame {
 // the full attribute snapshot + status + confidence) inline so a consumer
 // can render, score, or transmit the frame without substrate access.
 //
-// Denormalization happens once during frame assembly (Step 12); it's
+// Denormalization happens once during frame assembly (`assemble_frame`); it's
 // library work, not consumer work.
 
 /// An element with its canonical name attached. The id is preserved so
@@ -614,7 +614,7 @@ pub struct ResolvedRelation {
 
 /// One region that lit up during routing, as exposed on the frame.
 /// Mirrors the internal pipeline's `RegionActivation` but carries the
-/// resolved name. Kept separate so the internal Step 4 → Step 5 path
+/// resolved name. Kept separate so the internal `route_regions` → `run_extractors` path
 /// doesn't pay the name-resolution cost on every routing decision.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActiveRegion {
@@ -627,8 +627,8 @@ pub struct ActiveRegion {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Tuning constants. The base Policy on the Hypergraph is the inter-tick
-/// rest state; Step 2 produces a per-tick adjusted Policy from it
-/// (using the intent from Step 1) that Steps 4–12 see. Tick-internal
+/// rest state; `adjust_policy` produces a per-tick adjusted Policy from it
+/// (using the intent from `detect_intent`) that Steps 4–12 see. Tick-internal
 /// subroutines read `&Policy`; only PFC writes the rest state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Policy {
@@ -640,7 +640,7 @@ pub struct Policy {
 
     /// Vigilance for accepting a leaf match. Absolute (not relative to
     /// best alternative) so it acts as a quality floor regardless of
-    /// the rest of the routing tree. Intent-driven — Step 2 may scale
+    /// the rest of the routing tree. Intent-driven — `adjust_policy` may scale
     /// this up for high-precision intents.
     pub leaf_vigilance: f32,
 
@@ -663,7 +663,7 @@ pub struct Policy {
     pub region_activation_threshold: f32,
 
     /// Variance prior (ε) added to every per-dimension variance during
-    /// diagonal-Mahalanobis routing in Step 4. Two roles:
+    /// diagonal-Mahalanobis routing in `route_regions`. Two roles:
     /// 1. Numerical stability — prevents divide-by-zero when a region
     ///    has only one prototype (variance = 0).
     /// 2. Bootstrap smoothing — when n is small, the empirical variance
@@ -685,7 +685,7 @@ pub struct Policy {
 
     // ── Attribute-name dedup ─────────────────────────────────────────
     /// Cosine similarity threshold for collapsing two attribute-name
-    /// elements into one (Step 8 / §11.9). Strict by default so
+    /// elements into one (`build_relations` / §11.9). Strict by default so
     /// `SUBJECT` and `ACTOR` stay distinct even though they overlap.
     pub attribute_name_dedup_threshold: f32,
 
@@ -744,7 +744,7 @@ pub struct Policy {
 
     /// Hebbian learning rate — how much focus-co-occurrence bumps
     /// `focus_success_count` and related stats. Intent-modulated by
-    /// Step 2.
+    /// `adjust_policy`.
     pub hebbian_rate: f32,
 
     /// Number of hops out from the focus path that escapes decay this
@@ -754,7 +754,7 @@ pub struct Policy {
     /// Capacity of `Hypergraph.recent_focus`.
     pub recent_focus_capacity: u32,
 
-    /// Maximum tick distance from `hg.clock` for a `recent_focus`
+    /// Maximum tick distance from `hypergraph.clock` for a `recent_focus`
     /// entry to still be eligible to win the active_frame slot.
     /// Entries older than this are stale (likely from a different
     /// conversational episode) and skipped. Default: 8.
@@ -788,24 +788,24 @@ pub struct Policy {
     pub replay_focus_floor: u32,
 
     // ── Extractor confidence threshold ───────────────────────────────
-    /// NER assertion-confidence threshold. Below this, Step 5 mints the
+    /// NER assertion-confidence threshold. Below this, `run_extractors` mints the
     /// relation as `Defeasible` rather than `Asserted`.
     pub ner_assertion_threshold: f32,
 
     // ── Coref ────────────────────────────────────────────────────────
-    /// Minimum aggregate score for a Step 6 coref decision to fire.
-    /// Below this, the ambiguous span falls through to Step 8's
+    /// Minimum aggregate score for a `coref` decision to fire.
+    /// Below this, the ambiguous span falls through to `build_relations`'s
     /// normal mint path. Tuned conservatively (default 1.0) so a
     /// recency bonus alone isn't enough to bind — coref needs at
     /// least one substantive signal on top. Wrong binds are harder
     /// to unwind than missed binds (replay can merge later).
     pub coref_threshold: f32,
 
-    // ── Intent-modulated knobs (Step 2 outputs) ──────────────────────
+    // ── Intent-modulated knobs (`adjust_policy` outputs) ──────────────────────
     //
     // These five fields hold the rest-state base on the Hypergraph's
-    // Policy and the adjusted scalar on the per-tick Policy that Step 2
-    // returns. Same field name, two roles — Step 2 reads each as
+    // Policy and the adjusted scalar on the per-tick Policy that `adjust_policy`
+    // returns. Same field name, two roles — `adjust_policy` reads each as
     // `base_*` and writes back the §10.6-formula result on the
     // returned Policy. Steps 4–12 only ever see the adjusted view.
     /// Default confidence assigned to newly-minted Asserted relations
@@ -820,7 +820,7 @@ pub struct Policy {
     /// Surprise + emotional intensity → harder encoding.
     pub salience_multiplier: f32,
 
-    /// Threshold above which Step 9 actively searches for and marks
+    /// Threshold above which `supersede` actively searches for and marks
     /// prior relations as Superseded. Formula:
     /// `supersession_threshold = base_threshold * (1 - prediction_error)`.
     /// High prediction-error inputs lower the bar so contradictions
@@ -919,7 +919,7 @@ pub enum ReplayCadence {
 // Working memory & per-tick activation snapshots
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One entry in `Hypergraph.recent_focus`. Step 4 walks this ring
+/// One entry in `Hypergraph.recent_focus`. `route_regions` walks this ring
 /// looking for an active frame to inherit when the input doesn't
 /// establish one of its own.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -941,10 +941,10 @@ pub struct RecentFocusEntry {
     pub tick: Tick,
 }
 
-/// 4-dim intent vector produced by Step 1. Each component is a cosine
+/// 4-dim intent vector produced by `detect_intent`. Each component is a cosine
 /// projection of the input's window embedding against an intent
 /// prototype bank (the four banks come from the seed pack). Drives
-/// Step 2's policy adjustments. Maps onto neuromodulator analogs:
+/// `adjust_policy`'s policy adjustments. Maps onto neuromodulator analogs:
 /// conviction (cognitive), prediction_error (DA), arousal (NE),
 /// curiosity (retrieval vs assertion shape). Does NOT gate which
 /// steps run — only modulates how Steps 4/8/10/11 weight their work.
@@ -966,12 +966,12 @@ pub struct Intent {
 
     /// Retrieval-shape vs assertion-shape. High = "what do I know
     /// about X?" (retrieval-leaning); low = "X is true" (assertion-
-    /// leaning). Modulates how aggressively Step 12 surfaces history
+    /// leaning). Modulates how aggressively `assemble_frame` surfaces history
     /// and supporting claims.
     pub curiosity: f32,
 }
 
-/// One region that lit up during Step 4 routing.
+/// One region that lit up during `route_regions` routing.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct RegionActivation {
     /// The region anchor element.
@@ -984,11 +984,11 @@ pub struct RegionActivation {
 
 /// Per-dimension mean + variance of a region's prototype embeddings.
 /// Populated by `seed::rebuild_indices` after `region_prototypes` is
-/// built; consumed by Step 4 routing for diagonal Mahalanobis scoring.
+/// built; consumed by `route_regions` routing for diagonal Mahalanobis scoring.
 ///
 /// Length invariant: `mean.len() == var.len() == EMBEDDING_DIM` (384).
 /// With `n == 1` the variance is all-zeros (a single point has no
-/// spread); Step 4 applies a variance prior at use time so the
+/// spread); `route_regions` applies a variance prior at use time so the
 /// Mahalanobis denominator never collapses.
 ///
 /// `PartialEq` is derived for the idempotency test in `seed::tests` —
@@ -1005,14 +1005,14 @@ pub struct RegionStats {
     /// a sample drawn from a larger population).
     pub var: Vec<f32>,
 
-    /// Number of prototype embeddings folded into mean/var. Step 4
+    /// Number of prototype embeddings folded into mean/var. `route_regions`
     /// uses this to weight the variance prior — small `n` → trust the
     /// prior more; large `n` → trust the empirical variance.
     pub n: u32,
 }
 
-/// What Step 4 routing proposes to do to the substrate. Held through
-/// the read-mostly phase, applied by Step 7 (`apply_region_delta`)
+/// What `route_regions` routing proposes to do to the substrate. Held through
+/// the read-mostly phase, applied by `apply_region_delta` (`apply_region_delta`)
 /// during the mutation phase. Verbatim from §10.2 of `new_foundation.md`.
 #[derive(Default, Debug, Clone)]
 pub struct RegionDelta {
@@ -1026,18 +1026,18 @@ pub struct RegionDelta {
     /// overwriting the prototype Element's inline `embedding` via
     /// spherical k-means: `new = normalize(old + lr · (target − old))`
     /// where `lr = proto.stats.plasticity * policy.hebbian_rate`.
-    /// Step 4 stores only the target; Step 7 reads policy + plasticity
+    /// `route_regions` stores only the target; `apply_region_delta` reads policy + plasticity
     /// and does the math.
     pub prototype_updates: Vec<(ElementId, Vec<f32>)>,
 
-    /// Empty in v0 Step 4 — mid-path insertion (§10.3.5) needs span-
-    /// level embeddings, which only exist after Step 6 mints elements.
-    /// Step 8 owns this list. Field exists so the struct stays stable
+    /// Empty in v0 `route_regions` — mid-path insertion (§10.3.5) needs span-
+    /// level embeddings, which only exist after `coref` mints elements.
+    /// `build_relations` owns this list. Field exists so the struct stays stable
     /// across pipeline phases.
     pub new_regions: Vec<NewRegion>,
 
-    /// Empty in v0 Step 4 for the same reason — authoritative member
-    /// assignment uses each minted element's own embedding (Step 8).
+    /// Empty in v0 `route_regions` for the same reason — authoritative member
+    /// assignment uses each minted element's own embedding (`build_relations`).
     pub new_members: Vec<(ElementId, ElementId)>,
 
     /// Number of routing branches that died at sub-threshold quality
@@ -1048,9 +1048,9 @@ pub struct RegionDelta {
     pub unrouted_count: u32,
 }
 
-/// Mid-path insertion candidate. Populated by Step 8 from span-level
-/// embeddings; written by Step 7 as a Defeasible `parent_region`
-/// relation pending replay confirmation. Not used in v0 Step 4.
+/// Mid-path insertion candidate. Populated by `build_relations` from span-level
+/// embeddings; written by `apply_region_delta` as a Defeasible `parent_region`
+/// relation pending replay confirmation. Not used in v0 `route_regions`.
 #[derive(Debug, Clone)]
 pub struct NewRegion {
     pub parent: ElementId,
@@ -1058,7 +1058,7 @@ pub struct NewRegion {
 }
 
 /// One relation in the frame's ranked focus list. `activation`
-/// carries the Step 12 RRF-fused score (NOT the raw
+/// carries the `assemble_frame` RRF-fused score (NOT the raw
 /// `stats.activation` post-decay — those drive the RRF input
 /// ranking, not the output). `relation` is denormalized: id +
 /// resolved attributes + status + confidence inline, so consumers
@@ -1075,34 +1075,34 @@ pub struct RelationActivation {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// One detected uncertainty signal. The pipeline pushes these into a
-/// per-tick buffer as side effects of Steps 4, 5, 6, 8, and 9; Step 12
+/// per-tick buffer as side effects of Steps 4, 5, 6, 8, and 9; `assemble_frame`
 /// collects them into the frame's `uncertainty` field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UncertaintySignal {
-    /// Step 4: routing didn't converge — multiple regions matched
+    /// `route_regions`: routing didn't converge — multiple regions matched
     /// equivalently, or none matched above `void_threshold`.
     DiffuseRouting,
 
-    /// Step 5/6: a temporal reference ("yesterday", "next Tuesday")
+    /// `run_extractors`/6: a temporal reference ("yesterday", "next Tuesday")
     /// couldn't be resolved against `Input.wall_clock` plus context.
     UngroundedTime,
 
-    /// Step 6: coreference resolution found multiple equally-plausible
+    /// `coref`: coreference resolution found multiple equally-plausible
     /// candidates for a referring expression.
     AmbiguousCoref,
 
-    /// Step 5/8: an extractor produced output below
+    /// `run_extractors`/8: an extractor produced output below
     /// `policy.ner_assertion_threshold` (relation minted as
     /// `Defeasible`, signal raised so the caller knows).
     LowConfidence,
 
-    /// Step 9: a candidate supersession lacks a clear winner —
+    /// `supersede`: a candidate supersession lacks a clear winner —
     /// the new claim and the existing one conflict but neither
     /// dominates. The caller may want to ask a follow-up.
     Contradiction,
 }
 
-/// An advisory action Step 12 emits in the frame's `next_actions`.
+/// An advisory action `assemble_frame` emits in the frame's `next_actions`.
 /// The caller (typically the agent loop wrapping `tick()`) decides
 /// whether to act on each.
 #[derive(Clone, Debug, Serialize, Deserialize)]

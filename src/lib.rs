@@ -37,12 +37,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Subcommand dispatch. Daemon verbs first, then init, then fall
-    // through to the tick path. `__daemon` is the private "run as
-    // the daemon process" verb; `start` wraps it with detached spawn.
-    // `git-merge-driver` is invoked by git itself (registered via
-    // `legend init`); users never type it.
+    // through to the tick path. `DAEMON_SUBCOMMAND` (`__daemon`) is
+    // the private "run as the daemon process" verb; `start` wraps it
+    // with detached spawn. `git-merge-driver` is invoked by git
+    // itself (registered via `legend init`); users never type it.
     match args[1].as_str() {
-        "__daemon" => return daemon::serve(),
+        s if s == daemon::DAEMON_SUBCOMMAND => return daemon::serve(),
         "start" => return daemon_start(),
         "stop" => return daemon_stop(),
         "status" => return daemon_status(),

@@ -1,5 +1,5 @@
 //! Pattern fast-path for zero-shot relation extraction (§15.1 / §24.1
-//! of the v0 doc). Operates on `LabeledSpan` output from Step 5's NER
+//! of the v0 doc). Operates on `LabeledSpan` output from `run_extractors`'s NER
 //! pass: for each pair of nearby spans, checks for canonical
 //! surface-form templates ("X from Y to Z", "X at Y", etc.) and emits
 //! a [`RelationCandidate`] per match.
@@ -34,7 +34,7 @@ fn make(
         subject_char_end: subj.1,
         attribute_name: attr.to_string(),
         // Canonical seed-name predicate; resolved via exact-match in
-        // Step 8, so no contextualization needed.
+        // `build_relations`, so no contextualization needed.
         attribute_char_start: None,
         attribute_char_end: None,
         object,
@@ -252,9 +252,9 @@ pub fn extract_relations(text: &str, spans: &[LabeledSpan]) -> Vec<RelationCandi
     // Template 5: change-verb singletons — "X <verb> to Y" where
     // <verb> is a state-change verb. Only `to` is overt; the implicit
     // `from` becomes a synthetic `unknown_prior` proposal sharing the
-    // same anchor so Step 8's n-ary merge picks them up as an event.
+    // same anchor so `build_relations`'s n-ary merge picks them up as an event.
     // Without this, naturally-phrased property changes ("Bob moved
-    // to Austin") never reach Step 9's supersession gate.
+    // to Austin") never reach `supersede`'s supersession gate.
     for i in 0..spans.len() {
         for j in (i + 1)..spans.len() {
             let between = &text[spans[i].char_end..spans[j].char_start];

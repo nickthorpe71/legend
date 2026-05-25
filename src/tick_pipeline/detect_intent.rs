@@ -10,7 +10,7 @@ use crate::types::Intent;
 // memory for the rest of the process. ~7 KB resident; negligible.
 static CLASSIFIERS: LazyLock<IntentClassifiers> = LazyLock::new(load_intent_classifiers);
 
-/// Step 1 of the tick pipeline. Build a feature vector from the input
+/// `detect_intent` of the tick pipeline. Build a feature vector from the input
 /// (sentence embedding ++ hand-crafted lexical features), run it through
 /// four binary logistic-regression classifiers (one per intent dimension),
 /// and return a 4-dim intent vector with each component in [0, 1].
@@ -25,7 +25,7 @@ static CLASSIFIERS: LazyLock<IntentClassifiers> = LazyLock::new(load_intent_clas
 /// without the topic confounding the embedding carries.
 ///
 /// Takes the embedding precomputed by the caller — the same vector also
-/// feeds Step 4 (region routing). One embedding per tick, never two.
+/// feeds `route_regions` (region routing). One embedding per tick, never two.
 pub fn detect_intent(input_text: &str, embedding: &[f32]) -> Intent {
     let features = featurize(input_text, embedding);
     let c = &*CLASSIFIERS;

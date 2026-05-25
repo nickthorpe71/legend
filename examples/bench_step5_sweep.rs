@@ -1,4 +1,4 @@
-//! Wall-clock sweep for Step 5 (`run_extractors`) across realistic
+//! Wall-clock sweep for `run_extractors` (`run_extractors`) across realistic
 //! input shapes. Reports p50/p90/mean for each (input_token_count,
 //! label_count) combination so we can see how latency scales.
 //!

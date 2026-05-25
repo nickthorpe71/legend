@@ -4,9 +4,11 @@ Long-term memory for LLMs. v2 rewrite in Rust.
 
 ## Status
 
-v0 end-to-end. The 12-step tick pipeline (intent → policy → routing →
-extractors → coref → build relations → supersede → hebbian → decay →
-frame) runs against a 622-element / 610-relation seeded substrate.
+v0 end-to-end. One tick runs `execute_tick` over a 622-element /
+610-relation seeded substrate: `detect_intent` → `adjust_policy` →
+`derive_active_frame` → `route_regions` → `run_extractors` →
+`apply_region_delta` → `build_relations` → `supersede` →
+`hebbian_and_salience` → `focus_radius_decay` → `assemble_frame`.
 Source-of-truth design: `new_foundation.md`, `new_foundation_v0_core.md`.
 
 ## Build
@@ -24,37 +26,33 @@ external files at runtime:
 
 ## Try it
 
-Two execution modes share the same tick code path:
-
 ```bash
-# Daemon (default): auto-starts on first call, amortizes cold-start.
+# Daemon auto-starts on first call and amortizes the ~190 ms model
+# warmup across subsequent ticks.
 ./target/release/legend "I am absolutely certain that the meeting is at 3pm"
 # Prints the rendered ConsciousAttentionFrame.
 
 ./target/release/legend start    # launch daemon in the background
 ./target/release/legend status   # pid, uptime, substrate sizes
+./target/release/legend reset    # wipe in-RAM substrate back to seed, persist
 ./target/release/legend stop     # graceful shutdown
-```
-
-```bash
-# In-process: full Step 1–12 verbose dump, prints every intermediate.
-LEGEND_INPROC=1 ./target/release/legend "..."
-LEGEND_TIME=1   ./target/release/legend "..."   # per-step timings
-LEGEND_RESET=1  ./target/release/legend "..."   # skip on-disk snapshot
 ```
 
 The daemon listens on TCP loopback; clients discover the port via
 `.legend/legend.port`. A `fs2` exclusive flock on `.legend/legend.lock`
-guarantees single-writer.
+guarantees single-writer. Idle TTL is 5 minutes (override with
+`LEGEND_DAEMON_TTL=<secs>`); the workspace state directory can be
+relocated with `LEGEND_STATE_DIR=...`. `LEGEND_TIME=1` enables
+per-extractor timing inside `run_extractors`.
 
 ## Persistence + git merge driver
 
 The substrate is saved to `./.legend/memory.lz4` after every tick and
 loaded at the top of the next run, so memory carries forward across
-process restarts. To skip the load for a single run:
+process restarts. To wipe the substrate back to seed:
 
 ```bash
-LEGEND_RESET=1 ./target/release/legend "..."
+./target/release/legend reset
 ```
 
 `.legend/memory.lz4` is committed alongside source. When two branches
@@ -85,7 +83,7 @@ cargo bench                                     # criterion benches
 ## Regenerate baked artifacts
 
 ```bash
-cargo run --release --example gen_intent_classifiers  # → src/intent_classifiers/*.bin
+cargo run --release --example gen_intent_classifiers  # → src/seed/intent_classifiers/*.bin
 cargo run --release --example gen_seed_graph          # → src/seed/graph.bin
 ```
 

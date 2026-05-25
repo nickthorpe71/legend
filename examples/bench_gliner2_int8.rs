@@ -44,5 +44,5 @@ fn main() {
     println!("  p50   {:>7.2} ms", p50);
     println!("  p90   {:>7.2} ms", p90);
     println!("  mean  {:>7.2} ms", mean);
-    println!("\n  v0 budget for Step 5 (run_extractors)   130-208 ms p50");
+    println!("\n  v0 budget for `run_extractors` (run_extractors)   130-208 ms p50");
 }

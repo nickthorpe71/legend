@@ -1,8 +1,8 @@
 # Seed graph (boot-time hypergraph)
 
 Legend boots with a seeded `Hypergraph` containing 622 elements and
-610 relations — the substrate's day-zero state. Without this, Step 4
-region routing has nothing to descend into, the token-level void
+610 relations — the substrate's day-zero state. Without this,
+`route_regions` has nothing to descend into, the token-level void
 filter has no closed-class anchors to consult, and nothing minted by
 extractors has a parent in the DAG. This doc describes the YAML →
 bin → runtime pipeline and how to modify the seeds.
@@ -109,7 +109,7 @@ Derived indices (`by_name`, `region_children`, `region_parents`,
 relation graph is authoritative. `rebuild_indices` repopulates them
 after deserialization. `region_stats` (per-region mean + variance of
 prototype embeddings) is computed in the same pass, consumed by
-Step 4 Mahalanobis routing.
+`route_regions`'s Mahalanobis routing.
 
 ## Regenerate
 
@@ -150,8 +150,8 @@ pulled in via `include_bytes!`.
    update those too.
 
 Each `examples` entry becomes a prototype Element whose embedding
-is `MiniLM(example)`; the per-region prototype set drives Step 4
-routing (mean of top-K cosine + diagonal Mahalanobis against
+is `MiniLM(example)`; the per-region prototype set drives
+`route_regions` (mean of top-K cosine + diagonal Mahalanobis against
 `region_stats`). The `descriptor` field is documentation only at
 runtime — useful for the inspection MD dump and as a human-readable
 summary, but not embedded. Replay (§14.8) will drift prototypes
@@ -163,8 +163,8 @@ first dozen ticks.
 Void members live under one of the 8 void regions
 (`REGION_DETERMINERS`, `REGION_PRONOUNS`, …) via the region's
 `members:` list. They carry `Polarity::Void`, which is what
-`src/steps/void_filter.rs` keys on to drop function-word tokens
-from Step 5a's content stream.
+`src/tick_pipeline/void_filter.rs` keys on to drop function-word
+tokens from the orthographic chunker's content stream.
 
 1. Find the right void region in `seed_pack.yaml` and append a new
    entry to its `members:` list:
@@ -213,7 +213,7 @@ schema drift — update them deliberately when adding seeds, not by
 
 ## Why bake the bin
 
-Same pattern as `intent_classifiers/*.bin`: build-time tools live in
+Same pattern as `seed/intent_classifiers/*.bin`: build-time tools live in
 `examples/` with `serde`/`serde_yaml` in dev-dependencies; the runtime
 crate has no `serde` and no YAML. A downloaded `legend` ships the
 seeded substrate as part of the binary — no first-run YAML parse, no

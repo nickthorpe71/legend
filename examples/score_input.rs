@@ -1,5 +1,5 @@
 //! Score an input phrase against every GENESIS-child region's
-//! prototypes. Throwaway diagnostic for calibrating Step 4 thresholds.
+//! prototypes. Throwaway diagnostic for calibrating `route_regions` thresholds.
 //!
 //! Run: `cargo run --release --example score_input -- "your phrase"`
 //!
@@ -20,29 +20,29 @@ fn main() {
         std::process::exit(1);
     }
     let input = &args[1];
-    let hg = load_seed_graph();
+    let hypergraph = load_seed_graph();
     let embedding = embed_text(input);
 
-    let children = hg
+    let children = hypergraph
         .region_children
-        .get(&hg.genesis)
+        .get(&hypergraph.genesis)
         .cloned()
         .unwrap_or_default();
 
     let mut scored: Vec<(String, f32, ElementId)> = Vec::with_capacity(children.len());
     for child in children {
-        let Some(protos) = hg.region_prototypes.get(&child) else {
+        let Some(protos) = hypergraph.region_prototypes.get(&child) else {
             continue;
         };
         let mut best: Option<(ElementId, f32)> = None;
         for &proto in protos {
-            let sim = dot(&embedding, &hg.elements[proto.0 as usize].embedding);
+            let sim = dot(&embedding, &hypergraph.elements[proto.0 as usize].embedding);
             if best.is_none_or(|(_, s)| sim > s) {
                 best = Some((proto, sim));
             }
         }
         if let Some((p, s)) = best {
-            let name = hg.elements[child.0 as usize]
+            let name = hypergraph.elements[child.0 as usize]
                 .names
                 .first()
                 .cloned()

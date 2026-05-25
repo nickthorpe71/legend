@@ -1,6 +1,6 @@
-//! Step 7 — apply the `RegionDelta` collected by Step 4 routing.
+//! `apply_region_delta` — apply the `RegionDelta` collected by `route_regions` routing.
 //!
-//! Step 4 (`route_regions`) is read-only — it walks the region DAG,
+//! `route_regions` (`route_regions`) is read-only — it walks the region DAG,
 //! scores each child, and *collects* what would change without
 //! actually changing it. Everything it'd write lives in `RegionDelta`.
 //!
@@ -24,14 +24,14 @@
 //! - **`parent_attachments`** — would commit `(child, parent_region,
 //!   parent)` relations / reinforce existing ones. v0 keeps the
 //!   seed-pack-shaped region tree; new attachments are §10.3.5
-//!   mid-path insertion which needs Step 8.
-//! - **`new_regions`**, **`new_members`** — also Step 8.
+//!   mid-path insertion which needs `build_relations`.
+//! - **`new_regions`**, **`new_members`** — also `build_relations`.
 //! - **`region_stats` updates** — when prototypes drift, the
 //!   region's mean/variance technically drift too, but we skip
-//!   the Welford update for v0. Mahalanobis routing in Step 4
+//!   the Welford update for v0. Mahalanobis routing in `route_regions`
 //!   degrades gracefully (variance prior keeps the denominator
 //!   alive).
-//! - **`unrouted_count`** — read by Step 12's frame, not mutated
+//! - **`unrouted_count`** — read by `assemble_frame`'s frame, not mutated
 //!   here.
 
 use crate::types::{Hypergraph, Policy, RegionDelta};
@@ -52,14 +52,14 @@ pub struct RegionDeltaApplied {
 /// Apply the drift portion of a `RegionDelta`. Idempotent on a
 /// no-op delta (no `prototype_updates`).
 pub fn apply_region_delta(
-    hg: &mut Hypergraph,
+    hypergraph: &mut Hypergraph,
     delta: &RegionDelta,
     policy: &Policy,
 ) -> RegionDeltaApplied {
     let mut applied = RegionDeltaApplied::default();
     for (proto_id, target) in &delta.prototype_updates {
         let idx = proto_id.0 as usize;
-        let proto = &mut hg.elements[idx];
+        let proto = &mut hypergraph.elements[idx];
         debug_assert_eq!(
             proto.embedding.len(),
             target.len(),
@@ -104,11 +104,11 @@ mod tests {
     /// Build a synthetic Hypergraph with one prototype-shaped Element
     /// at index `proto_idx`, set its embedding/plasticity, and return
     /// the graph alongside the prototype's ElementId.
-    fn synth_hg_with_proto(initial: Vec<f32>, plasticity: f32) -> (Hypergraph, ElementId) {
-        let mut hg = Hypergraph::default();
+    fn synth_hypergraph_with_proto(initial: Vec<f32>, plasticity: f32) -> (Hypergraph, ElementId) {
+        let mut hypergraph = Hypergraph::default();
         // Two placeholder elements: anchor at 0, prototype at 1.
         for id_u32 in 0..2u32 {
-            hg.elements.push(crate::types::Element {
+            hypergraph.elements.push(crate::types::Element {
                 id: ElementId(id_u32),
                 names: vec![format!("e{id_u32}")],
                 stats: MemoryStats::default(),
@@ -117,9 +117,9 @@ mod tests {
                 polarity: crate::types::Polarity::Signal,
             });
         }
-        hg.elements[1].embedding = initial;
-        hg.elements[1].stats.plasticity = plasticity;
-        (hg, ElementId(1))
+        hypergraph.elements[1].embedding = initial;
+        hypergraph.elements[1].stats.plasticity = plasticity;
+        (hypergraph, ElementId(1))
     }
 
     fn unit_e(idx: usize) -> Vec<f32> {
@@ -133,21 +133,21 @@ mod tests {
         // Default policy: hebbian_rate = 0.0. Prototype stays put.
         let initial = unit_e(0);
         let target = unit_e(1);
-        let (mut hg, proto_id) = synth_hg_with_proto(initial.clone(), /*plasticity*/ 1.0);
+        let (mut hypergraph, proto_id) = synth_hypergraph_with_proto(initial.clone(), /*plasticity*/ 1.0);
 
         let delta = RegionDelta {
             prototype_updates: vec![(proto_id, target.clone())],
             ..Default::default()
         };
-        apply_region_delta(&mut hg, &delta, &Policy::default());
+        apply_region_delta(&mut hypergraph, &delta, &Policy::default());
 
         assert_eq!(
-            hg.elements[1].embedding, initial,
+            hypergraph.elements[1].embedding, initial,
             "expected no drift at lr = 0",
         );
         // access_count still bumps even when lr=0 (the routing
         // touched this prototype).
-        assert_eq!(hg.elements[1].stats.access_count, 1);
+        assert_eq!(hypergraph.elements[1].stats.access_count, 1);
     }
 
     #[test]
@@ -155,7 +155,7 @@ mod tests {
         // lr = 1.0: new = old + 1 * (target - old) = target.
         let initial = unit_e(0);
         let target = unit_e(1);
-        let (mut hg, proto_id) = synth_hg_with_proto(initial, 1.0);
+        let (mut hypergraph, proto_id) = synth_hypergraph_with_proto(initial, 1.0);
 
         let policy = Policy {
             hebbian_rate: 1.0,
@@ -165,9 +165,9 @@ mod tests {
             prototype_updates: vec![(proto_id, target.clone())],
             ..Default::default()
         };
-        apply_region_delta(&mut hg, &delta, &policy);
+        apply_region_delta(&mut hypergraph, &delta, &policy);
 
-        let new = &hg.elements[1].embedding;
+        let new = &hypergraph.elements[1].embedding;
         for i in 0..EMBEDDING_DIM {
             assert!(
                 (new[i] - target[i]).abs() < 1e-5,
@@ -185,7 +185,7 @@ mod tests {
         // [0.5, 0.5, 0…], normalized is [1/√2, 1/√2, 0…].
         let initial = unit_e(0);
         let target = unit_e(1);
-        let (mut hg, proto_id) = synth_hg_with_proto(initial, 1.0);
+        let (mut hypergraph, proto_id) = synth_hypergraph_with_proto(initial, 1.0);
 
         let policy = Policy {
             hebbian_rate: 0.5,
@@ -195,10 +195,10 @@ mod tests {
             prototype_updates: vec![(proto_id, target)],
             ..Default::default()
         };
-        apply_region_delta(&mut hg, &delta, &policy);
+        apply_region_delta(&mut hypergraph, &delta, &policy);
 
         let expected = 1.0 / 2.0f32.sqrt();
-        let new = &hg.elements[1].embedding;
+        let new = &hypergraph.elements[1].embedding;
         assert!((new[0] - expected).abs() < 1e-4);
         assert!((new[1] - expected).abs() < 1e-4);
         for c in new.iter().skip(2) {
@@ -210,7 +210,7 @@ mod tests {
     fn re_normalization_preserves_unit_length() {
         let initial = unit_e(0);
         let target = unit_e(1);
-        let (mut hg, proto_id) = synth_hg_with_proto(initial, 1.0);
+        let (mut hypergraph, proto_id) = synth_hypergraph_with_proto(initial, 1.0);
 
         let policy = Policy {
             hebbian_rate: 0.3,
@@ -220,9 +220,9 @@ mod tests {
             prototype_updates: vec![(proto_id, target)],
             ..Default::default()
         };
-        apply_region_delta(&mut hg, &delta, &policy);
+        apply_region_delta(&mut hypergraph, &delta, &policy);
 
-        let norm: f32 = hg.elements[1]
+        let norm: f32 = hypergraph.elements[1]
             .embedding
             .iter()
             .map(|x| x * x)
@@ -236,18 +236,18 @@ mod tests {
 
     #[test]
     fn empty_delta_is_noop() {
-        let (mut hg, _) = synth_hg_with_proto(unit_e(0), 1.0);
-        let before = hg.elements[1].embedding.clone();
-        apply_region_delta(&mut hg, &RegionDelta::default(), &Policy::default());
-        assert_eq!(hg.elements[1].embedding, before);
-        assert_eq!(hg.elements[1].stats.access_count, 0);
+        let (mut hypergraph, _) = synth_hypergraph_with_proto(unit_e(0), 1.0);
+        let before = hypergraph.elements[1].embedding.clone();
+        apply_region_delta(&mut hypergraph, &RegionDelta::default(), &Policy::default());
+        assert_eq!(hypergraph.elements[1].embedding, before);
+        assert_eq!(hypergraph.elements[1].stats.access_count, 0);
     }
 
     #[test]
     fn multiple_prototype_updates_all_apply() {
-        let mut hg = Hypergraph::default();
+        let mut hypergraph = Hypergraph::default();
         for id_u32 in 0..3u32 {
-            hg.elements.push(crate::types::Element {
+            hypergraph.elements.push(crate::types::Element {
                 id: ElementId(id_u32),
                 names: vec![format!("e{id_u32}")],
                 stats: MemoryStats {
@@ -271,9 +271,9 @@ mod tests {
             ],
             ..Default::default()
         };
-        apply_region_delta(&mut hg, &delta, &policy);
-        assert!((hg.elements[0].embedding[5] - 1.0).abs() < 1e-5);
-        assert!((hg.elements[1].embedding[6] - 1.0).abs() < 1e-5);
-        assert!((hg.elements[2].embedding[7] - 1.0).abs() < 1e-5);
+        apply_region_delta(&mut hypergraph, &delta, &policy);
+        assert!((hypergraph.elements[0].embedding[5] - 1.0).abs() < 1e-5);
+        assert!((hypergraph.elements[1].embedding[6] - 1.0).abs() < 1e-5);
+        assert!((hypergraph.elements[2].embedding[7] - 1.0).abs() < 1e-5);
     }
 }

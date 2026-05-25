@@ -14,7 +14,7 @@
 //! │                       refused on mismatch to avoid loading   │
 //! │                       a snapshot whose anchor IDs would now  │
 //! │                       point at the wrong elements.           │
-//! │ 20..   LZ4 payload    size-prepended LZ4 of rmp-serde(hg)    │
+//! │ 20..   LZ4 payload    size-prepended LZ4 of rmp-serde(hypergraph)    │
 //! └──────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -174,11 +174,11 @@ fn fnv1a_64(data: &[u8]) -> u64 {
 
 // ─── Save ────────────────────────────────────────────────────────────
 
-/// Encode `hg` and atomically write the result to `path`. The 12
+/// Encode `hypergraph` and atomically write the result to `path`. The 12
 /// `#[serde(skip)]` index fields on `Hypergraph` are omitted by serde
 /// itself — they regenerate on load.
-pub fn save(hg: &Hypergraph, path: &Path) -> Result<(), PersistError> {
-    let encoded = rmp_serde::to_vec(hg).map_err(PersistError::Encode)?;
+pub fn save(hypergraph: &Hypergraph, path: &Path) -> Result<(), PersistError> {
+    let encoded = rmp_serde::to_vec(hypergraph).map_err(PersistError::Encode)?;
     let compressed = lz4_flex::block::compress_prepend_size(&encoded);
 
     if let Some(parent) = path.parent()
@@ -297,15 +297,15 @@ pub fn load(path: &Path) -> Result<Hypergraph, PersistError> {
             source,
         }
     })?;
-    let mut hg: Hypergraph =
+    let mut hypergraph: Hypergraph =
         rmp_serde::from_slice(&decompressed).map_err(|source| PersistError::Decode {
             path: path.to_path_buf(),
             source,
         })?;
 
     // Skipped index fields land as `Default::default()`. Repopulate.
-    rebuild_indices(&mut hg);
-    Ok(hg)
+    rebuild_indices(&mut hypergraph);
+    Ok(hypergraph)
 }
 
 /// If `path` exists, `load` from it. Otherwise build a fresh
@@ -315,9 +315,9 @@ pub fn load_or_seed(path: &Path) -> Result<Hypergraph, PersistError> {
     if path.exists() {
         load(path)
     } else {
-        let hg = load_seed_graph();
-        save(&hg, path)?;
-        Ok(hg)
+        let hypergraph = load_seed_graph();
+        save(&hypergraph, path)?;
+        Ok(hypergraph)
     }
 }
 
@@ -338,26 +338,26 @@ mod tests {
 
     #[test]
     fn round_trip_seed_graph() {
-        let hg = load_seed_graph();
-        let elements_before = hg.elements.len();
-        let relations_before = hg.relations.len();
-        let clock_before = hg.clock;
-        let by_name_before = hg.by_name.len();
+        let hypergraph = load_seed_graph();
+        let elements_before = hypergraph.elements.len();
+        let relations_before = hypergraph.relations.len();
+        let clock_before = hypergraph.clock;
+        let by_name_before = hypergraph.by_name.len();
 
         let path = temp_path("round_trip");
-        save(&hg, &path).expect("save");
-        let hg2 = load(&path).expect("load");
+        save(&hypergraph, &path).expect("save");
+        let hypergraph2 = load(&path).expect("load");
 
-        assert_eq!(hg2.elements.len(), elements_before);
-        assert_eq!(hg2.relations.len(), relations_before);
-        assert_eq!(hg2.clock, clock_before);
+        assert_eq!(hypergraph2.elements.len(), elements_before);
+        assert_eq!(hypergraph2.relations.len(), relations_before);
+        assert_eq!(hypergraph2.clock, clock_before);
         // Indices were rebuilt — by_name should be populated, not empty.
-        assert_eq!(hg2.by_name.len(), by_name_before);
-        assert!(!hg2.region_children.is_empty(), "indices regenerated");
+        assert_eq!(hypergraph2.by_name.len(), by_name_before);
+        assert!(!hypergraph2.region_children.is_empty(), "indices regenerated");
         // Anchor IDs survived.
-        assert_eq!(hg2.genesis, hg.genesis);
-        assert_eq!(hg2.subject_attr, hg.subject_attr);
-        assert_eq!(hg2.target_attr, hg.target_attr);
+        assert_eq!(hypergraph2.genesis, hypergraph.genesis);
+        assert_eq!(hypergraph2.subject_attr, hypergraph.subject_attr);
+        assert_eq!(hypergraph2.target_attr, hypergraph.target_attr);
 
         let _ = fs::remove_file(&path);
     }
@@ -436,9 +436,9 @@ mod tests {
         let _ = fs::remove_file(&path);
         assert!(!path.exists());
 
-        let hg = load_or_seed(&path).expect("load_or_seed");
+        let hypergraph = load_or_seed(&path).expect("load_or_seed");
         assert!(path.exists(), "snapshot file should exist after first run");
-        assert!(!hg.elements.is_empty(), "seed graph should be non-empty");
+        assert!(!hypergraph.elements.is_empty(), "seed graph should be non-empty");
 
         let _ = fs::remove_file(&path);
     }

@@ -4,14 +4,14 @@
 //!
 //! What's verified:
 //!   - All 12 step modules wire end-to-end without panicking.
-//!   - Step 8's minted entities appear in the frame's
+//!   - `build_relations`'s minted entities appear in the frame's
 //!     `durable_writes`.
-//!   - Step 9's supersession chain threads through the frame
+//!   - `supersede`'s supersession chain threads through the frame
 //!     (`superseded`, `history`, `supporting_claims`).
-//!   - Step 10's reinforcement set populates `focused_relations`;
+//!   - `hebbian_and_salience`'s reinforcement set populates `focused_relations`;
 //!     scores are RRF-fused (monotonically descending).
 //!   - Status filter excludes Superseded/Retracted from the frame.
-//!   - `recent_focus` populates and gives Step 6 candidates on
+//!   - `recent_focus` populates and gives `coref` candidates on
 //!     subsequent ticks.
 //!   - The Hypergraph clock advances correctly across the run.
 
@@ -27,14 +27,14 @@ use legend::types::{Hypergraph, Intent, Policy, RelationId, RelationStatus, Tick
 /// Mirror of `crate::tick_pipeline::build_relations::is_cache_relation`
 /// (which is `pub(crate)`). Returns true iff `rid`'s attribute
 /// list carries an attribute whose surface name starts with
-/// `"current_"` — i.e. it's a Step 9 cache.
-fn is_current_cache(hg: &Hypergraph, rid: RelationId) -> bool {
-    let r = &hg.relations[rid.0 as usize];
+/// `"current_"` — i.e. it's a `supersede` cache.
+fn is_current_cache(hypergraph: &Hypergraph, rid: RelationId) -> bool {
+    let r = &hypergraph.relations[rid.0 as usize];
     for attr in &r.attributes {
-        if attr.name == hg.subject_attr || attr.name == hg.target_attr {
+        if attr.name == hypergraph.subject_attr || attr.name == hypergraph.target_attr {
             continue;
         }
-        if let Some(name) = hg.elements[attr.name.0 as usize].names.first()
+        if let Some(name) = hypergraph.elements[attr.name.0 as usize].names.first()
             && name.starts_with("current_")
         {
             return true;
@@ -45,22 +45,22 @@ fn is_current_cache(hg: &Hypergraph, rid: RelationId) -> bool {
 
 /// Run Steps 5 → 12 against `text`, returning the assembled frame.
 /// Steps 1-4 + 7 are exercised individually elsewhere; this driver
-/// focuses on the cognitive-substrate Steps 5-12 that v0 actually
+/// focuses on the cognitive-substrate the tick pipeline (extractors onward) that v0 actually
 /// ships as user-facing behavior.
 fn run_tick(
-    hg: &mut Hypergraph,
+    hypergraph: &mut Hypergraph,
     text: &str,
     labels: &[&str],
     policy: &Policy,
 ) -> legend::types::ConsciousAttentionFrame {
-    hg.clock = Tick(hg.clock.0 + 1);
-    let ext = run_extractors(text, labels, policy, hg, &[]);
-    let step8 = build_relations(text, hg, &ext, policy, None);
-    let step9 = supersede(hg, &step8.minted_relations, policy);
-    let step10 = hebbian_and_salience(hg, &step8, &step9, None, policy, &[]);
-    let _ = focus_radius_decay(hg, &step10.reinforced, policy);
-    // Empty route for the v0 acceptance test — we exercise Steps 5-12
-    // here. Step 4 has its own tests; the frame's active_regions is
+    hypergraph.clock = Tick(hypergraph.clock.0 + 1);
+    let ext = run_extractors(text, labels, policy, hypergraph, &[]);
+    let built_relations = build_relations(text, hypergraph, &ext, policy, None);
+    let superseded = supersede(hypergraph, &built_relations.minted_relations, policy);
+    let reinforced = hebbian_and_salience(hypergraph, &built_relations, &superseded, None, policy, &[]);
+    let _ = focus_radius_decay(hypergraph, &reinforced.reinforced, policy);
+    // Empty route for the v0 acceptance test — we exercise the tick pipeline (extractors onward)
+    // here. `route_regions` has its own tests; the frame's active_regions is
     // gathered (and stays empty under an empty route) without
     // affecting any of the contracts this test verifies.
     let empty_route = legend::tick_pipeline::route_regions::RouteResult {
@@ -71,13 +71,13 @@ fn run_tick(
     };
     assemble_frame(
         text,
-        hg,
+        hypergraph,
         &Intent::default(),
         None,
         &empty_route,
-        &step8,
-        &step9,
-        &step10,
+        &built_relations,
+        &superseded,
+        &reinforced,
         policy,
     )
 }
@@ -86,13 +86,13 @@ fn run_tick(
 fn v0_pipeline_two_tick_acceptance() {
     let policy = Policy::default();
     let labels: &[&str] = &["person", "event", "weekday", "role"];
-    let mut hg = load_seed_graph();
+    let mut hypergraph = load_seed_graph();
 
     // ── Tick 1 ─────────────────────────────────────────────────────
     // Establishes baseline state: mints Sarah / Tuesday / meeting,
     // builds a moved-from/to n-ary event, mints a current_date cache.
     let text1 = "The meeting moved from Monday to Tuesday.";
-    let frame1 = run_tick(&mut hg, text1, labels, &policy);
+    let frame1 = run_tick(&mut hypergraph, text1, labels, &policy);
 
     // Sanity: frame populates.
     assert_eq!(frame1.input_echo, text1);
@@ -108,23 +108,23 @@ fn v0_pipeline_two_tick_acceptance() {
         frame1.superseded.is_empty(),
         "tick 1 has no priors to supersede",
     );
-    // recent_focus should now have entries Step 6 can score on tick 2.
+    // recent_focus should now have entries `coref` can score on tick 2.
     assert!(
-        !hg.recent_focus.is_empty(),
-        "Step 10 must populate recent_focus on tick 1",
+        !hypergraph.recent_focus.is_empty(),
+        "`hebbian_and_salience` must populate recent_focus on tick 1",
     );
 
     // ── Tick 2 ─────────────────────────────────────────────────────
     // Same target, different to-value → tick 1's cache should
     // supersede.
     let text2 = "The meeting moved from Tuesday to Friday.";
-    let prior_focus_depth = hg.recent_focus.len();
-    let frame2 = run_tick(&mut hg, text2, labels, &policy);
+    let prior_focus_depth = hypergraph.recent_focus.len();
+    let frame2 = run_tick(&mut hypergraph, text2, labels, &policy);
 
     // ── Contract 1: clock advances on each mint. ───────────────────
     assert_eq!(
-        frame2.tick, hg.clock,
-        "frame.tick must mirror hg.clock at assembly time",
+        frame2.tick, hypergraph.clock,
+        "frame.tick must mirror hypergraph.clock at assembly time",
     );
 
     // ── Contract 2: tick 2 supersedes tick 1's cache. ──────────────
@@ -163,8 +163,8 @@ fn v0_pipeline_two_tick_acceptance() {
     //                but each group individually is. ────────────────
     let mut in_cache_group = true;
     for w in frame2.focused_relations.windows(2) {
-        let a_cache = is_current_cache(&hg, w[0].relation.id);
-        let b_cache = is_current_cache(&hg, w[1].relation.id);
+        let a_cache = is_current_cache(&hypergraph, w[0].relation.id);
+        let b_cache = is_current_cache(&hypergraph, w[1].relation.id);
         if a_cache && !b_cache {
             in_cache_group = false;
             continue; // transition between groups; score relation doesn't apply
@@ -204,7 +204,7 @@ fn v0_pipeline_two_tick_acceptance() {
 
     // ── Contract 7: derived_from meta-relations populate
     //                supporting_claims. ───────────────────────────────
-    let derived_from_attr = hg.by_name["derived_from"][0];
+    let derived_from_attr = hypergraph.by_name["derived_from"][0];
     let any_derived = frame2
         .supporting_claims
         .iter()
@@ -214,12 +214,12 @@ fn v0_pipeline_two_tick_acceptance() {
         "tick 2's cache should carry a derived_from supporting_claim",
     );
 
-    // ── Contract 8: recent_focus grew across ticks (Step 10's push). ─
+    // ── Contract 8: recent_focus grew across ticks (`hebbian_and_salience`'s push). ─
     assert!(
-        hg.recent_focus.len() > prior_focus_depth,
+        hypergraph.recent_focus.len() > prior_focus_depth,
         "recent_focus must grow tick-over-tick (was {}; now {})",
         prior_focus_depth,
-        hg.recent_focus.len(),
+        hypergraph.recent_focus.len(),
     );
 
     // ── Contract 9: indices stay consistent — every focused
@@ -228,10 +228,10 @@ fn v0_pipeline_two_tick_acceptance() {
     //                relation present in their bucket. ──────────────
     for ra in &frame2.focused_relations {
         let rid = ra.relation.id;
-        let r = &hg.relations[rid.0 as usize];
+        let r = &hypergraph.relations[rid.0 as usize];
         for attr in &r.attributes {
             if let legend::types::Term::Element(e) = attr.value {
-                let bucket = hg
+                let bucket = hypergraph
                     .relations_by_element
                     .get(&e)
                     .unwrap_or_else(|| panic!("element {e:?} missing from index"));
@@ -246,15 +246,15 @@ fn v0_pipeline_two_tick_acceptance() {
 
 #[test]
 fn v0_pipeline_clock_advances_across_ticks() {
-    // Each tick must bump `hg.clock` so `frame.tick`, `created_at`,
+    // Each tick must bump `hypergraph.clock` so `frame.tick`, `created_at`,
     // and `last_seen` distinguish ticks. Without this, recency-based
     // gating (e.g. `derive_active_frame`) can't tell stale state from
     // fresh.
     let policy = Policy::default();
-    let mut hg = load_seed_graph();
-    let initial = hg.clock.0;
-    let frame1 = run_tick(&mut hg, "Sarah called me.", &[], &policy);
-    let frame2 = run_tick(&mut hg, "Then Sarah left.", &[], &policy);
+    let mut hypergraph = load_seed_graph();
+    let initial = hypergraph.clock.0;
+    let frame1 = run_tick(&mut hypergraph, "Sarah called me.", &[], &policy);
+    let frame2 = run_tick(&mut hypergraph, "Then Sarah left.", &[], &policy);
     assert_eq!(
         frame1.tick.0,
         initial + 1,
@@ -265,7 +265,7 @@ fn v0_pipeline_clock_advances_across_ticks() {
         initial + 2,
         "second tick should advance once more",
     );
-    assert_eq!(hg.clock.0, initial + 2);
+    assert_eq!(hypergraph.clock.0, initial + 2);
 }
 
 #[test]
@@ -275,8 +275,8 @@ fn v0_self_referential_relations_are_dropped() {
     // mint path must reject them so the frame doesn't fill up with
     // tautological lines like `language → instance_of → language`.
     let policy = Policy::default();
-    let mut hg = load_seed_graph();
-    let frame = run_tick(&mut hg, "The language we're using is Rust", &[], &policy);
+    let mut hypergraph = load_seed_graph();
+    let frame = run_tick(&mut hypergraph, "The language we're using is Rust", &[], &policy);
 
     // Walk every focused relation; assert no element appears as both
     // subject and value of the same relation.
@@ -313,8 +313,8 @@ fn v0_active_frame_drops_on_query_intent() {
     // populated recent_focus, derive_active_frame should return None
     // — a query inherits no topical anchor.
     let policy = Policy::default();
-    let mut hg = load_seed_graph();
-    let _ = run_tick(&mut hg, "Sarah called me.", &[], &policy);
+    let mut hypergraph = load_seed_graph();
+    let _ = run_tick(&mut hypergraph, "Sarah called me.", &[], &policy);
     let statement_intent = legend::types::Intent {
         conviction: 0.7,
         prediction_error: 0.3,
@@ -328,12 +328,12 @@ fn v0_active_frame_drops_on_query_intent() {
         curiosity: 0.9,
     };
     let statement_frame = legend::tick_pipeline::hebbian::derive_active_frame(
-        &hg,
+        &hypergraph,
         &statement_intent,
         &policy,
     );
     let query_frame = legend::tick_pipeline::hebbian::derive_active_frame(
-        &hg,
+        &hypergraph,
         &query_intent,
         &policy,
     );
@@ -356,21 +356,21 @@ fn v0_active_frame_drops_when_recent_focus_is_stale() {
         active_frame_max_age_ticks: 2,
         ..Policy::default()
     };
-    let mut hg = load_seed_graph();
+    let mut hypergraph = load_seed_graph();
 
-    let _ = run_tick(&mut hg, "Sarah called me.", &[], &policy);
-    // The recent_focus entry now stamped at hg.clock.
+    let _ = run_tick(&mut hypergraph, "Sarah called me.", &[], &policy);
+    // The recent_focus entry now stamped at hypergraph.clock.
 
     let neutral_intent = legend::types::Intent::default();
-    let fresh = legend::tick_pipeline::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
+    let fresh = legend::tick_pipeline::hebbian::derive_active_frame(&hypergraph, &neutral_intent, &policy);
     assert!(fresh.is_some(), "fresh entry should win active_frame");
 
     // Advance the clock past the max-age threshold without touching
     // recent_focus.
     for _ in 0..(policy.active_frame_max_age_ticks as u64 + 1) {
-        hg.clock = Tick(hg.clock.0 + 1);
+        hypergraph.clock = Tick(hypergraph.clock.0 + 1);
     }
-    let stale = legend::tick_pipeline::hebbian::derive_active_frame(&hg, &neutral_intent, &policy);
+    let stale = legend::tick_pipeline::hebbian::derive_active_frame(&hypergraph, &neutral_intent, &policy);
     assert!(
         stale.is_none(),
         "stale entry should be skipped (got {stale:?})",
@@ -382,8 +382,8 @@ fn v0_pipeline_empty_input_does_not_panic() {
     // Empty input is a no-op tick. Verifies the pipeline doesn't
     // crash on an edge case.
     let policy = Policy::default();
-    let mut hg = load_seed_graph();
-    let frame = run_tick(&mut hg, "", &[], &policy);
+    let mut hypergraph = load_seed_graph();
+    let frame = run_tick(&mut hypergraph, "", &[], &policy);
     assert!(frame.focused_relations.is_empty());
     assert!(frame.durable_writes.is_empty());
     assert!(frame.superseded.is_empty());
@@ -392,21 +392,21 @@ fn v0_pipeline_empty_input_does_not_panic() {
 #[test]
 fn v0_pipeline_repeat_input_accumulates_support_count() {
     // Same input three times → support_count should climb on
-    // re-minted relations. Verifies Step 10's support_count bump
+    // re-minted relations. Verifies `hebbian_and_salience`'s support_count bump
     // is observable through the substrate.
     let policy = Policy::default();
-    let mut hg = load_seed_graph();
+    let mut hypergraph = load_seed_graph();
     let text = "Sarah called me yesterday.";
 
     for _ in 0..3 {
-        let _ = run_tick(&mut hg, text, &[], &policy);
+        let _ = run_tick(&mut hypergraph, text, &[], &policy);
     }
 
     // Find a relation whose subject is the seeded `user` element
     // OR whose attributes include the Sarah element (the latter is
     // what NER produces). Just verify SOMETHING in the graph has
     // support_count > 1 after 3 ticks of identical input.
-    let max_support = hg
+    let max_support = hypergraph
         .relations
         .iter()
         .map(|r| r.stats.support_count)
@@ -424,14 +424,14 @@ fn v0_dedup_skips_superseded_relations() {
     // Tick 1: cache `current_date = Tuesday`. Tick 2: supersede to
     // Friday (tick 1's cache flips to Superseded). Tick 3: cache
     // back to Tuesday — should mint a FRESH Asserted relation, not
-    // resurrect tick 1's superseded one. Step 9 should then flip
+    // resurrect tick 1's superseded one. `supersede` should then flip
     // tick 2's Friday cache.
     let policy = Policy::default();
     let labels: &[&str] = &["event", "weekday"];
-    let mut hg = load_seed_graph();
+    let mut hypergraph = load_seed_graph();
 
     let _ = run_tick(
-        &mut hg,
+        &mut hypergraph,
         "The meeting moved from Monday to Tuesday.",
         labels,
         &policy,
@@ -440,12 +440,12 @@ fn v0_dedup_skips_superseded_relations() {
     // Snapshot: find tick 1's cache (the [subject: meeting,
     // current_date: Tuesday] relation). It's the most recently
     // minted Asserted cache mentioning `current_date`.
-    let current_date_attr = hg
+    let current_date_attr = hypergraph
         .by_name
         .get("current_date")
         .and_then(|v| v.first().copied())
-        .expect("Step 9 should have minted current_date");
-    let tick1_cache = hg
+        .expect("`supersede` should have minted current_date");
+    let tick1_cache = hypergraph
         .relations
         .iter()
         .rev()
@@ -457,7 +457,7 @@ fn v0_dedup_skips_superseded_relations() {
         .expect("tick 1 should have minted a current_date cache");
 
     let _ = run_tick(
-        &mut hg,
+        &mut hypergraph,
         "The meeting moved from Tuesday to Friday.",
         labels,
         &policy,
@@ -465,28 +465,28 @@ fn v0_dedup_skips_superseded_relations() {
 
     // Tick 1's cache should now be Superseded.
     assert_eq!(
-        hg.relations[tick1_cache.0 as usize].status,
+        hypergraph.relations[tick1_cache.0 as usize].status,
         RelationStatus::Superseded,
         "tick 1's cache should be Superseded after tick 2",
     );
-    let relation_count_after_tick2 = hg.relations.len();
+    let relation_count_after_tick2 = hypergraph.relations.len();
 
     // Tick 3: same state as tick 1 — should NOT resurrect the
     // Superseded relation. Should mint a fresh Asserted one.
     let _ = run_tick(
-        &mut hg,
+        &mut hypergraph,
         "The meeting moved from Friday to Tuesday.",
         labels,
         &policy,
     );
 
     assert!(
-        hg.relations.len() > relation_count_after_tick2,
+        hypergraph.relations.len() > relation_count_after_tick2,
         "tick 3 must mint NEW relations, not reuse Superseded prior",
     );
     // Tick 1's cache is still Superseded (dedup didn't touch it).
     assert_eq!(
-        hg.relations[tick1_cache.0 as usize].status,
+        hypergraph.relations[tick1_cache.0 as usize].status,
         RelationStatus::Superseded,
         "Superseded prior must remain Superseded — dedup must skip it",
     );
@@ -497,16 +497,16 @@ fn v0_pronoun_coref_rebinds_to_recent_focus_subject() {
     // Two-tick test of the closed-class pronoun path. Tick 1 mints
     // "Sarah" as a person and pushes her onto `recent_focus`. Tick 2
     // says "She emailed me." — the pronoun "She" should rebind to
-    // Sarah via Step 6 coref + Step 8's `apply_coref_decisions`. The
+    // Sarah via `coref` + `build_relations`'s `apply_coref_decisions`. The
     // assertion: no fresh element gets minted for "She"; instead,
     // Sarah's access_count bumps.
     let policy = Policy::default();
     let labels: &[&str] = &["person"];
-    let mut hg = load_seed_graph();
+    let mut hypergraph = load_seed_graph();
 
     // Tick 1: establish Sarah as the focal subject.
-    let _ = run_tick(&mut hg, "Sarah waved at the meeting.", labels, &policy);
-    let sarah_ids = hg
+    let _ = run_tick(&mut hypergraph, "Sarah waved at the meeting.", labels, &policy);
+    let sarah_ids = hypergraph
         .by_name
         .get("Sarah")
         .cloned()
@@ -517,21 +517,21 @@ fn v0_pronoun_coref_rebinds_to_recent_focus_subject() {
         "tick 1 should mint exactly one Sarah element"
     );
     let sarah_id = sarah_ids[0];
-    let sarah_access_before = hg.elements[sarah_id.0 as usize].stats.access_count;
+    let sarah_access_before = hypergraph.elements[sarah_id.0 as usize].stats.access_count;
 
     // Tick 2: pronoun "She" — should NOT mint a fresh element. Coref
     // rebinds the span to Sarah and the NER instance_of proposal for
     // "She" gets short-circuited via the span cache.
-    let element_count_after_tick1 = hg.elements.len();
-    let _ = run_tick(&mut hg, "She emailed me.", labels, &policy);
+    let element_count_after_tick1 = hypergraph.elements.len();
+    let _ = run_tick(&mut hypergraph, "She emailed me.", labels, &policy);
 
     // No element named "She" should appear in by_name.
     assert!(
-        !hg.by_name.contains_key("She"),
+        !hypergraph.by_name.contains_key("She"),
         "pronoun 'She' must not mint as a separate element after coref"
     );
     // Sarah's access count bumped (rebinding folded a mention).
-    let sarah_access_after = hg.elements[sarah_id.0 as usize].stats.access_count;
+    let sarah_access_after = hypergraph.elements[sarah_id.0 as usize].stats.access_count;
     assert!(
         sarah_access_after > sarah_access_before,
         "Sarah's access_count should bump when 'She' rebinds to her: \
@@ -539,7 +539,7 @@ fn v0_pronoun_coref_rebinds_to_recent_focus_subject() {
     );
     // Pipeline doesn't crash; substrate continued to grow.
     assert!(
-        hg.elements.len() >= element_count_after_tick1,
+        hypergraph.elements.len() >= element_count_after_tick1,
         "element count should not regress"
     );
 }

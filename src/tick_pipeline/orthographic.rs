@@ -1,4 +1,4 @@
-//! Step 5a — orthographic chunker. Pure functions, no model, no
+//! the orthographic chunker — orthographic chunker. Pure functions, no model, no
 //! persistent state. Produces content-bearing chunk candidates from
 //! punctuation, whitespace, casing, and slash separators. Always
 //! produces output for non-empty inputs; never depends on a label

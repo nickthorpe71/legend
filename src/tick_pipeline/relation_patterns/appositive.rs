@@ -194,9 +194,9 @@ mod tests {
     use crate::tick_pipeline::void_filter::extract_content_tokens;
 
     fn chunks_for(text: &str) -> Vec<OrthographicChunk> {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         let mut chunks = extract_chunks(text);
-        chunks.extend(extract_content_tokens(text, &hg));
+        chunks.extend(extract_content_tokens(text, &hypergraph));
         chunks.sort_by_key(|c| (c.char_start, c.char_end));
         chunks
     }

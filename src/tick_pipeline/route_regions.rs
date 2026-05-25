@@ -4,10 +4,10 @@ use crate::types::{
 };
 use std::collections::HashSet;
 
-/// What Step 4 returns to the rest of the read-mostly phase. The
-/// `delta` is held through Steps 5–6 and committed by Step 7; the
-/// active region list seeds Step 5's warm-bias label set; the
-/// `uncertainty` signals get appended to the per-tick buffer Step 13
+/// What `route_regions` returns to the rest of the read-mostly phase. The
+/// `delta` is held through `run_extractors` and `coref` and committed by `apply_region_delta`; the
+/// active region list seeds `run_extractors`'s warm-bias label set; the
+/// `uncertainty` signals get appended to the per-tick buffer `assemble_frame`
 /// collects. `all_scores` is a debug-only side-channel — every
 /// scored child along with both its cosine and Mahalanobis values.
 /// Lets `lib::run` display the actual scoring distribution without
@@ -30,7 +30,7 @@ pub struct RegionScore {
     pub mahalanobis: f32,
 }
 
-/// Step 4 of the tick pipeline. Read-only DAG descent from GENESIS,
+/// `route_regions` of the tick pipeline. Read-only DAG descent from GENESIS,
 /// scoring each candidate region against the input embedding and
 /// proposing structural updates to the routed-through path. Pure:
 /// no model calls, no allocation beyond the result.
@@ -62,21 +62,21 @@ pub struct RegionScore {
 /// - If the final active set is empty, `DiffuseRouting` is raised.
 ///
 /// `prototype_updates` carries `(best_cosine_prototype, target)`
-/// pairs so Step 7's spherical-k-means drift has a per-prototype
+/// pairs so `apply_region_delta`'s spherical-k-means drift has a per-prototype
 /// target. Per-prototype drift is still meaningful even when
 /// activation is decided by region-level stats.
 ///
 /// Mid-path insertion (§10.3.5) is deliberately skipped here — that
-/// pass uses span-level embeddings that don't exist until Step 6
-/// mints elements. Step 8 owns it.
-pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> RouteResult {
+/// pass uses span-level embeddings that don't exist until `coref`
+/// mints elements. `build_relations` owns it.
+pub fn route_regions(embedding: &[f32], hypergraph: &Hypergraph, policy: &Policy) -> RouteResult {
     let mut active_regions: Vec<RegionActivation> = Vec::new();
     let mut delta = RegionDelta::default();
     let mut uncertainty: Vec<UncertaintySignal> = Vec::new();
     let mut all_scores: Vec<RegionScore> = Vec::new();
 
     let mut visited: HashSet<ElementId> = HashSet::new();
-    let mut frontier: Vec<ElementId> = vec![hg.genesis];
+    let mut frontier: Vec<ElementId> = vec![hypergraph.genesis];
 
     while !frontier.is_empty() {
         let mut next_frontier: Vec<ElementId> = Vec::new();
@@ -86,7 +86,7 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
             }
 
             // Structural leaf — no children to score.
-            let Some(children) = hg.region_children.get(&current) else {
+            let Some(children) = hypergraph.region_children.get(&current) else {
                 continue;
             };
             if children.is_empty() {
@@ -105,7 +105,7 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
             }
             let mut scored: Vec<ScoredChild> = Vec::with_capacity(children.len());
             for &child in children {
-                let Some(protos) = hg.region_prototypes.get(&child) else {
+                let Some(protos) = hypergraph.region_prototypes.get(&child) else {
                     continue;
                 };
                 if protos.is_empty() {
@@ -115,13 +115,13 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
                 let mut sims: Vec<(ElementId, f32)> = protos
                     .iter()
                     .map(|&pid| {
-                        let proto = &hg.elements[pid.0 as usize];
+                        let proto = &hypergraph.elements[pid.0 as usize];
                         (pid, dot(embedding, &proto.embedding))
                     })
                     .collect();
                 sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
                 // best_proto = the single highest-cosine prototype
-                // (still used for prototype_updates so Step 7's
+                // (still used for prototype_updates so `apply_region_delta`'s
                 // per-prototype drift has a target).
                 let best_proto = sims[0].0;
                 // Mean-of-top-K cosine: averages out single-outlier
@@ -132,7 +132,7 @@ pub fn route_regions(embedding: &[f32], hg: &Hypergraph, policy: &Policy) -> Rou
                 // otherwise reuse the cosine so the fusion gates still
                 // make a decision (degrades gracefully for a hand-
                 // built test graph that skipped stats population).
-                let mahalanobis_score = match hg.region_stats.get(&child) {
+                let mahalanobis_score = match hypergraph.region_stats.get(&child) {
                     Some(stats) => mahalanobis_similarity(embedding, stats, policy.variance_prior),
                     None => cosine_score,
                 };
@@ -253,13 +253,13 @@ mod tests {
     /// 14 entries and unrouted_count stays 0.
     #[test]
     fn descends_every_child_with_permissive_thresholds() {
-        let hg = load_seed_graph();
-        let mut policy = hg.policy.clone();
+        let hypergraph = load_seed_graph();
+        let mut policy = hypergraph.policy.clone();
         policy.descend_threshold = 0.0;
         policy.leaf_vigilance = 0.0;
 
         let embedding = embed_text("my doctor rescheduled the appointment");
-        let result = route_regions(&embedding, &hg, &policy);
+        let result = route_regions(&embedding, &hypergraph, &policy);
 
         assert_eq!(result.delta.parent_attachments.len(), 14);
         assert_eq!(result.delta.prototype_updates.len(), 14);
@@ -271,14 +271,14 @@ mod tests {
     /// DiffuseRouting raised.
     #[test]
     fn raises_diffuse_routing_when_nothing_activates() {
-        let hg = load_seed_graph();
-        let mut policy = hg.policy.clone();
+        let hypergraph = load_seed_graph();
+        let mut policy = hypergraph.policy.clone();
         policy.descend_threshold = 0.0;
         policy.leaf_vigilance = 0.0;
         policy.region_activation_threshold = 2.0;
 
         let embedding = embed_text("anything");
-        let result = route_regions(&embedding, &hg, &policy);
+        let result = route_regions(&embedding, &hypergraph, &policy);
 
         assert!(result.active_regions.is_empty());
         assert_eq!(result.uncertainty, vec![UncertaintySignal::DiffuseRouting]);
@@ -303,7 +303,7 @@ mod tests {
             polarity: crate::types::Polarity::Signal,
         };
 
-        let mut hg = Hypergraph {
+        let mut hypergraph = Hypergraph {
             subject_attr: ElementId(0),
             prototype_attr: ElementId(1),
             parent_region_attr: ElementId(2),
@@ -314,26 +314,26 @@ mod tests {
         let zero = vec![0.0f32; EMBEDDING_DIM];
         // Elements 0..3 — attr names + genesis sentinel.
         for i in 0..4 {
-            hg.elements.push(mk_elem(i, zero.clone()));
+            hypergraph.elements.push(mk_elem(i, zero.clone()));
         }
         // Element 4 = region; element 5 = prototype with embedding
         // far from the input we'll route.
-        hg.elements.push(mk_elem(4, zero.clone()));
+        hypergraph.elements.push(mk_elem(4, zero.clone()));
         let mut proto_emb = vec![0.0f32; EMBEDDING_DIM];
         proto_emb[0] = 1.0; // unit vector along axis 0
-        hg.elements.push(mk_elem(5, proto_emb));
+        hypergraph.elements.push(mk_elem(5, proto_emb));
 
         // (region, parent_region, genesis)
-        hg.relations.push(Relation {
+        hypergraph.relations.push(Relation {
             id: RelationId(0),
             attributes: vec![
                 Attribute {
-                    name: hg.subject_attr,
+                    name: hypergraph.subject_attr,
                     value: Term::Element(ElementId(4)),
                 },
                 Attribute {
-                    name: hg.parent_region_attr,
-                    value: Term::Element(hg.genesis),
+                    name: hypergraph.parent_region_attr,
+                    value: Term::Element(hypergraph.genesis),
                 },
             ],
             stats: MemoryStats::default(),
@@ -342,15 +342,15 @@ mod tests {
             priority: 0,
         });
         // (region, prototype, proto)
-        hg.relations.push(Relation {
+        hypergraph.relations.push(Relation {
             id: RelationId(1),
             attributes: vec![
                 Attribute {
-                    name: hg.subject_attr,
+                    name: hypergraph.subject_attr,
                     value: Term::Element(ElementId(4)),
                 },
                 Attribute {
-                    name: hg.prototype_attr,
+                    name: hypergraph.prototype_attr,
                     value: Term::Element(ElementId(5)),
                 },
             ],
@@ -359,7 +359,7 @@ mod tests {
             status: RelationStatus::Asserted,
             priority: 0,
         });
-        crate::seed::rebuild_indices(&mut hg);
+        crate::seed::rebuild_indices(&mut hypergraph);
 
         // Route a vector pointing the opposite way from the prototype.
         let mut anti = vec![0.0f32; EMBEDDING_DIM];
@@ -375,7 +375,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = route_regions(&anti, &hg, &policy);
+        let result = route_regions(&anti, &hypergraph, &policy);
         assert_eq!(result.delta.unrouted_count, 1);
         assert!(result.active_regions.is_empty());
         assert_eq!(result.uncertainty, vec![UncertaintySignal::DiffuseRouting]);
@@ -386,11 +386,11 @@ mod tests {
     /// immediately with empty results and DiffuseRouting raised.
     #[test]
     fn empty_hypergraph_returns_diffuse_routing() {
-        let hg = Hypergraph::default();
+        let hypergraph = Hypergraph::default();
         let policy = Policy::default();
 
         let embedding = vec![0.0f32; EMBEDDING_DIM];
-        let result = route_regions(&embedding, &hg, &policy);
+        let result = route_regions(&embedding, &hypergraph, &policy);
 
         assert!(result.active_regions.is_empty());
         assert!(result.delta.parent_attachments.is_empty());

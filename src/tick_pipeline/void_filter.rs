@@ -24,11 +24,11 @@ use crate::types::{Hypergraph, Polarity};
 /// `OrthographicChunk` for each one whose lowercase surface form
 /// does *not* resolve to a `Polarity::Void` element. Function words
 /// disappear; content tokens survive.
-pub fn extract_content_tokens(text: &str, hg: &Hypergraph) -> Vec<OrthographicChunk> {
+pub fn extract_content_tokens(text: &str, hypergraph: &Hypergraph) -> Vec<OrthographicChunk> {
     let mut out = Vec::new();
     let mut seen_text: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in collect_raw_tokens(text) {
-        if is_void_token(&t.text, hg) {
+        if is_void_token(&t.text, hypergraph) {
             continue;
         }
         if !seen_text.insert(t.text.clone()) {
@@ -48,23 +48,23 @@ pub fn extract_content_tokens(text: &str, hg: &Hypergraph) -> Vec<OrthographicCh
 /// `polarity == Polarity::Void`. Tries the exact surface form first
 /// (catches case-sensitive entries like "I"), then a lowercased
 /// fallback (catches "The" / "the" / "THE" uniformly).
-pub fn is_void_token(token: &str, hg: &Hypergraph) -> bool {
-    if resolves_to_void(token, hg) {
+pub fn is_void_token(token: &str, hypergraph: &Hypergraph) -> bool {
+    if resolves_to_void(token, hypergraph) {
         return true;
     }
     let lower = token.to_lowercase();
-    if lower != token && resolves_to_void(&lower, hg) {
+    if lower != token && resolves_to_void(&lower, hypergraph) {
         return true;
     }
     false
 }
 
-fn resolves_to_void(name: &str, hg: &Hypergraph) -> bool {
-    let Some(ids) = hg.by_name.get(name) else {
+fn resolves_to_void(name: &str, hypergraph: &Hypergraph) -> bool {
+    let Some(ids) = hypergraph.by_name.get(name) else {
         return false;
     };
     ids.iter()
-        .any(|id| hg.elements[id.0 as usize].polarity == Polarity::Void)
+        .any(|id| hypergraph.elements[id.0 as usize].polarity == Polarity::Void)
 }
 
 #[cfg(test)]
@@ -74,10 +74,10 @@ mod tests {
 
     #[test]
     fn common_stop_words_classify_as_void() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         for word in ["the", "of", "and", "if", "is", "to", "in", "on"] {
             assert!(
-                is_void_token(word, &hg),
+                is_void_token(word, &hypergraph),
                 "expected '{word}' to classify as void"
             );
         }
@@ -85,10 +85,10 @@ mod tests {
 
     #[test]
     fn capitalized_stop_words_still_classify_as_void() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         for word in ["The", "Of", "AND", "If"] {
             assert!(
-                is_void_token(word, &hg),
+                is_void_token(word, &hypergraph),
                 "expected '{word}' to classify as void (case-insensitive)"
             );
         }
@@ -96,10 +96,10 @@ mod tests {
 
     #[test]
     fn content_words_do_not_classify_as_void() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         for word in ["London", "appointment", "dentist", "Sarah", "Tuesday"] {
             assert!(
-                !is_void_token(word, &hg),
+                !is_void_token(word, &hypergraph),
                 "did not expect '{word}' to classify as void"
             );
         }
@@ -107,9 +107,9 @@ mod tests {
 
     #[test]
     fn pathological_input_keeps_only_content_tokens() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         let text = "I need to make sure I wait outside the gates of london town";
-        let chunks = extract_content_tokens(text, &hg);
+        let chunks = extract_content_tokens(text, &hypergraph);
         let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
 
         // Function-word stragglers must be gone:
@@ -130,16 +130,16 @@ mod tests {
 
     #[test]
     fn empty_input_yields_no_chunks() {
-        let hg = load_seed_graph();
-        assert!(extract_content_tokens("", &hg).is_empty());
-        assert!(extract_content_tokens("   ", &hg).is_empty());
+        let hypergraph = load_seed_graph();
+        assert!(extract_content_tokens("", &hypergraph).is_empty());
+        assert!(extract_content_tokens("   ", &hypergraph).is_empty());
     }
 
     #[test]
     fn token_chunks_offsets_round_trip_into_text() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         let text = "The dentist called Sarah on Tuesday.";
-        let chunks = extract_content_tokens(text, &hg);
+        let chunks = extract_content_tokens(text, &hypergraph);
         for c in &chunks {
             let slice = &text[c.char_start..c.char_end];
             assert_eq!(slice, c.text, "offset mismatch for {c:?}");

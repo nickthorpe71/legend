@@ -1,5 +1,7 @@
 - [x] remove steps.rs; execute_tick.rs is now tick_pipeline/mod.rs (run renamed to execute_tick); /steps renamed to /tick_pipeline; all pipeline steps called from tick_pipeline/mod.rs
-- [ ] lock down tick_pipeline step modules to private (currently `pub mod` for test/example access) — needs the introspection tests moved into the crate or rewritten to drive execute_tick
-- [ ] review and refactor daemon
-- [ ] refactor tick steps so they have better clearer naming and logic (should not return step 8)
-- [ ] update docs espeically regarding tick pipeline and daemon
+- [ ] lock down tick_pipeline step modules to private — deferred: not worth the test/example rewrite cost until there's a stable external consumer of `execute_tick`. Revisit when the notes app frontend lands or when pipeline churn starts breaking integration tests painfully.
+- [x] review and refactor daemon — `serve()` split into `acquire_lock` / `bind_and_publish_port` / `run_accept_loop` helpers, `handle_one` returns `bool` instead of taking `&mut bool` out-param, magic numbers extracted to named consts, `DAEMON_SUBCOMMAND` const replaces bare `"__daemon"` string in lib.rs dispatch.
+- [x] refactor tick steps so they have better clearer naming and logic (should not return step 8) — types renamed (Step8Output→MintedRelations, Step9Output→Supersession, Step10Output→Reinforcement, Step11Output→Decay); vars renamed (step8→built_relations, step9→superseded, step10→reinforced); test helpers renamed
+- [x] remove the concept of numbered steps or relabel them as they dont all currently have a number and seem out of order. Plus docs are not accurate — comment refs rewritten from "Step N" to function names (`build_relations`, `supersede`, `hebbian_and_salience`, `focus_radius_decay`, `assemble_frame`, etc.)
+- [x] rename `hg` → `hypergraph` everywhere — function parameters, locals, test helpers. Spelled-out form matches the rest of the codebase's style.
+- [x] update docs espeically regarding tick pipeline and daemon — README, docs/README, docs/intent-detection, docs/seed-graph rewritten to match current code (no more "Step N", no more `LEGEND_INPROC`/`LEGEND_RESET`, paths point at `src/seed/intent_classifiers/` and `src/tick_pipeline/`). `new_foundation*.md` left to your section-by-section review.

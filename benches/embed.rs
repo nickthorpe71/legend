@@ -10,9 +10,9 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use legend::embed::embed_text;
 use legend::tick_pipeline::detect_intent::detect_intent;
 
-// Note: as of the Step 4 refactor, `detect_intent` no longer embeds — it
+// Note: as of the `route_regions` refactor, `detect_intent` no longer embeds — it
 // takes a precomputed embedding (the pipeline computes it once and shares
-// it with Step 4 region routing). The `bench_detect_intent` benchmark
+// it with `route_regions` region routing). The `bench_detect_intent` benchmark
 // reflects that and only measures classifier inference; for the
 // historical "embed + classify" cost, sum it with `bench_embed_text`.
 

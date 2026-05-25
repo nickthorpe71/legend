@@ -320,20 +320,20 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Render the full markdown report for `hg`. Pure string assembly —
+/// Render the full markdown report for `hypergraph`. Pure string assembly —
 /// no I/O. Callable from anywhere with a `&Hypergraph`.
-pub fn render(hg: &Hypergraph) -> String {
-    let cat = categorize(hg);
+pub fn render(hypergraph: &Hypergraph) -> String {
+    let cat = categorize(hypergraph);
     let mut s = String::new();
 
-    write_header(&mut s, hg, &cat);
-    write_anchors(&mut s, hg);
-    write_dag_diagram(&mut s, hg, &cat);
-    write_regions_table(&mut s, hg, &cat);
-    write_attribute_names(&mut s, hg, &cat);
-    write_frames(&mut s, hg, &cat);
-    write_prototypes(&mut s, hg, &cat);
-    write_relations_grouped(&mut s, hg);
+    write_header(&mut s, hypergraph, &cat);
+    write_anchors(&mut s, hypergraph);
+    write_dag_diagram(&mut s, hypergraph, &cat);
+    write_regions_table(&mut s, hypergraph, &cat);
+    write_attribute_names(&mut s, hypergraph, &cat);
+    write_frames(&mut s, hypergraph, &cat);
+    write_prototypes(&mut s, hypergraph, &cat);
+    write_relations_grouped(&mut s, hypergraph);
 
     s
 }
@@ -361,40 +361,40 @@ struct Categorized {
     by_element: HashMap<ElementId, Category>,
 }
 
-fn categorize(hg: &Hypergraph) -> Categorized {
+fn categorize(hypergraph: &Hypergraph) -> Categorized {
     let mut by_element: HashMap<ElementId, Category> = HashMap::new();
 
-    by_element.insert(hg.void, Category::Anchor);
-    by_element.insert(hg.genesis, Category::Anchor);
-    by_element.insert(hg.region_class, Category::Class);
-    by_element.insert(hg.reference_frame_class, Category::Class);
+    by_element.insert(hypergraph.void, Category::Anchor);
+    by_element.insert(hypergraph.genesis, Category::Anchor);
+    by_element.insert(hypergraph.region_class, Category::Class);
+    by_element.insert(hypergraph.reference_frame_class, Category::Class);
 
-    for region in hg.region_parents.keys() {
+    for region in hypergraph.region_parents.keys() {
         by_element.insert(*region, Category::Region);
     }
 
-    for protos in hg.region_prototypes.values() {
+    for protos in hypergraph.region_prototypes.values() {
         for proto in protos {
             by_element.insert(*proto, Category::Prototype);
         }
     }
 
-    let instance_of = match hg.by_name.get("instance_of") {
+    let instance_of = match hypergraph.by_name.get("instance_of") {
         Some(v) if !v.is_empty() => v[0],
         _ => panic!("instance_of attribute name not found in by_name"),
     };
-    for r in &hg.relations {
+    for r in &hypergraph.relations {
         let mut subj = None;
         let mut points_at_frame_class = false;
         for a in &r.attributes {
-            if a.name == hg.subject_attr
+            if a.name == hypergraph.subject_attr
                 && let Term::Element(s) = a.value
             {
                 subj = Some(s);
             }
             if a.name == instance_of
                 && let Term::Element(t) = a.value
-                && t == hg.reference_frame_class
+                && t == hypergraph.reference_frame_class
             {
                 points_at_frame_class = true;
             }
@@ -405,12 +405,12 @@ fn categorize(hg: &Hypergraph) -> Categorized {
     }
 
     let mut attr_name_ids: HashSet<ElementId> = HashSet::new();
-    for r in &hg.relations {
+    for r in &hypergraph.relations {
         for a in &r.attributes {
             attr_name_ids.insert(a.name);
         }
     }
-    for e in &hg.elements {
+    for e in &hypergraph.elements {
         if e.names.iter().any(|n| attribute_group(n) != "Other") {
             attr_name_ids.insert(e.id);
         }
@@ -419,7 +419,7 @@ fn categorize(hg: &Hypergraph) -> Categorized {
         by_element.entry(*id).or_insert(Category::AttributeName);
     }
 
-    for e in &hg.elements {
+    for e in &hypergraph.elements {
         by_element.entry(e.id).or_insert(Category::Minted);
     }
 
@@ -464,20 +464,20 @@ const ATTRIBUTE_GROUP_ORDER: &[&str] = &[
 // Section writers
 // ─────────────────────────────────────────────────────────────────────
 
-fn write_header(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
+fn write_header(s: &mut String, hypergraph: &Hypergraph, cat: &Categorized) {
     let mut counts: HashMap<Category, usize> = HashMap::new();
     for c in cat.by_element.values() {
         *counts.entry(*c).or_default() += 1;
     }
 
     let _ = writeln!(s, "# Hypergraph Snapshot");
-    let _ = writeln!(s, "Tick {}", hg.clock.0);
+    let _ = writeln!(s, "Tick {}", hypergraph.clock.0);
     let _ = writeln!(s);
     let _ = writeln!(s, "## Summary");
     let _ = writeln!(
         s,
         "- **{}** elements ({} anchor / {} attribute-name / {} region / {} frame / {} class / {} prototype / {} minted)",
-        hg.elements.len(),
+        hypergraph.elements.len(),
         counts.get(&Category::Anchor).copied().unwrap_or(0),
         counts.get(&Category::AttributeName).copied().unwrap_or(0),
         counts.get(&Category::Region).copied().unwrap_or(0),
@@ -486,12 +486,12 @@ fn write_header(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
         counts.get(&Category::Prototype).copied().unwrap_or(0),
         counts.get(&Category::Minted).copied().unwrap_or(0),
     );
-    let _ = writeln!(s, "- **{}** relations", hg.relations.len());
+    let _ = writeln!(s, "- **{}** relations", hypergraph.relations.len());
 
     let mut counts_by_attr: BTreeMap<ElementId, usize> = BTreeMap::new();
-    for r in &hg.relations {
+    for r in &hypergraph.relations {
         for a in &r.attributes {
-            if a.name == hg.subject_attr {
+            if a.name == hypergraph.subject_attr {
                 continue;
             }
             *counts_by_attr.entry(a.name).or_default() += 1;
@@ -501,49 +501,49 @@ fn write_header(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
     sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.0.cmp(&b.0.0)));
     let _ = writeln!(s, "- **By attribute name:**");
     for (id, count) in sorted {
-        let name = canonical_name(hg, id);
+        let name = canonical_name(hypergraph, id);
         let _ = writeln!(s, "  - `{name}` × {count}");
     }
     let _ = writeln!(s);
 }
 
-fn write_anchors(s: &mut String, hg: &Hypergraph) {
+fn write_anchors(s: &mut String, hypergraph: &Hypergraph) {
     let _ = writeln!(s, "## Anchors");
     let _ = writeln!(s);
     let _ = writeln!(s, "| Symbol | ID | Names |");
     let _ = writeln!(s, "|---|---|---|");
     for (label, id) in [
-        ("VOID", hg.void),
-        ("GENESIS", hg.genesis),
-        ("REGION_CLASS", hg.region_class),
-        ("REFERENCE_FRAME_CLASS", hg.reference_frame_class),
+        ("VOID", hypergraph.void),
+        ("GENESIS", hypergraph.genesis),
+        ("REGION_CLASS", hypergraph.region_class),
+        ("REFERENCE_FRAME_CLASS", hypergraph.reference_frame_class),
     ] {
-        let names = element_names(hg, id);
+        let names = element_names(hypergraph, id);
         let _ = writeln!(s, "| {label} | {} | {names} |", id.0);
     }
     let _ = writeln!(s);
 }
 
-fn write_dag_diagram(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
+fn write_dag_diagram(s: &mut String, hypergraph: &Hypergraph, cat: &Categorized) {
     let _ = writeln!(s, "## Region DAG");
     let _ = writeln!(s);
     let _ = writeln!(s, "```mermaid");
     let _ = writeln!(s, "graph TD");
-    let _ = writeln!(s, "  {}((GENESIS))", mermaid_id(hg, hg.genesis));
+    let _ = writeln!(s, "  {}((GENESIS))", mermaid_id(hypergraph, hypergraph.genesis));
 
     let mut visited: HashSet<ElementId> = HashSet::new();
-    let mut stack = vec![hg.genesis];
+    let mut stack = vec![hypergraph.genesis];
     while let Some(node) = stack.pop() {
         if !visited.insert(node) {
             continue;
         }
-        if let Some(children) = hg.region_children.get(&node) {
+        if let Some(children) = hypergraph.region_children.get(&node) {
             let mut sorted_children: Vec<_> = children.to_vec();
             sorted_children.sort();
             for child in sorted_children {
-                let parent_label = mermaid_id(hg, node);
-                let child_label = mermaid_id(hg, child);
-                let weight = hg
+                let parent_label = mermaid_id(hypergraph, node);
+                let child_label = mermaid_id(hypergraph, child);
+                let weight = hypergraph
                     .region_parents
                     .get(&child)
                     .and_then(|parents| parents.iter().find(|(p, _)| *p == node))
@@ -553,12 +553,12 @@ fn write_dag_diagram(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
                 stack.push(child);
             }
         }
-        if let Some(protos) = hg.region_prototypes.get(&node) {
+        if let Some(protos) = hypergraph.region_prototypes.get(&node) {
             let mut sorted_protos: Vec<_> = protos.to_vec();
             sorted_protos.sort();
             for proto in sorted_protos {
-                let parent_label = mermaid_id(hg, node);
-                let proto_label = mermaid_id(hg, proto);
+                let parent_label = mermaid_id(hypergraph, node);
+                let proto_label = mermaid_id(hypergraph, proto);
                 let _ = writeln!(s, "  {parent_label} -.proto.-> {proto_label}",);
             }
         }
@@ -590,19 +590,19 @@ fn write_dag_diagram(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
     proto_ids.sort();
 
     if !region_ids.is_empty() {
-        let labels: Vec<_> = region_ids.iter().map(|id| mermaid_id(hg, *id)).collect();
+        let labels: Vec<_> = region_ids.iter().map(|id| mermaid_id(hypergraph, *id)).collect();
         let _ = writeln!(s, "  class {} region", labels.join(","));
     }
     if !proto_ids.is_empty() {
-        let labels: Vec<_> = proto_ids.iter().map(|id| mermaid_id(hg, *id)).collect();
+        let labels: Vec<_> = proto_ids.iter().map(|id| mermaid_id(hypergraph, *id)).collect();
         let _ = writeln!(s, "  class {} proto", labels.join(","));
     }
-    let _ = writeln!(s, "  class {} anchor", mermaid_id(hg, hg.genesis));
+    let _ = writeln!(s, "  class {} anchor", mermaid_id(hypergraph, hypergraph.genesis));
     let _ = writeln!(s, "```");
     let _ = writeln!(s);
 }
 
-fn write_regions_table(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
+fn write_regions_table(s: &mut String, hypergraph: &Hypergraph, cat: &Categorized) {
     let _ = writeln!(s, "## Regions");
     let _ = writeln!(s);
     let _ = writeln!(s, "| Region | ID | Parent(s) | Prototype(s) |");
@@ -617,23 +617,23 @@ fn write_regions_table(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
     regions.sort_by_key(|id| id.0);
 
     for id in regions {
-        let name = canonical_name(hg, id);
-        let parents = hg
+        let name = canonical_name(hypergraph, id);
+        let parents = hypergraph
             .region_parents
             .get(&id)
             .map(|ps| {
                 ps.iter()
-                    .map(|(p, w)| format!("{} ({:.2})", canonical_name(hg, *p), w))
+                    .map(|(p, w)| format!("{} ({:.2})", canonical_name(hypergraph, *p), w))
                     .collect::<Vec<_>>()
                     .join(", ")
             })
             .unwrap_or_else(|| "—".into());
-        let protos = hg
+        let protos = hypergraph
             .region_prototypes
             .get(&id)
             .map(|ps| {
                 ps.iter()
-                    .map(|p| format!("{} ({})", canonical_name(hg, *p), p.0))
+                    .map(|p| format!("{} ({})", canonical_name(hypergraph, *p), p.0))
                     .collect::<Vec<_>>()
                     .join(", ")
             })
@@ -643,7 +643,7 @@ fn write_regions_table(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
     let _ = writeln!(s);
 }
 
-fn write_attribute_names(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
+fn write_attribute_names(s: &mut String, hypergraph: &Hypergraph, cat: &Categorized) {
     let _ = writeln!(s, "## Attribute Names");
     let _ = writeln!(s);
 
@@ -652,7 +652,7 @@ fn write_attribute_names(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
         if *c != Category::AttributeName {
             continue;
         }
-        let name = canonical_name(hg, *id);
+        let name = canonical_name(hypergraph, *id);
         let group = attribute_group(&name);
         grouped.entry(group).or_default().push(*id);
     }
@@ -669,13 +669,13 @@ fn write_attribute_names(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
         let _ = writeln!(s, "| Name | ID |");
         let _ = writeln!(s, "|---|---|");
         for id in ids {
-            let _ = writeln!(s, "| `{}` | {} |", canonical_name(hg, *id), id.0);
+            let _ = writeln!(s, "| `{}` | {} |", canonical_name(hypergraph, *id), id.0);
         }
         let _ = writeln!(s);
     }
 }
 
-fn write_frames(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
+fn write_frames(s: &mut String, hypergraph: &Hypergraph, cat: &Categorized) {
     let _ = writeln!(s, "## Reference Frames");
     let _ = writeln!(s);
     let _ = writeln!(s, "| Frame | ID | Names |");
@@ -690,14 +690,14 @@ fn write_frames(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
     frames.sort_by_key(|id| id.0);
 
     for id in frames {
-        let names = element_names(hg, id);
-        let canonical = canonical_name(hg, id);
+        let names = element_names(hypergraph, id);
+        let canonical = canonical_name(hypergraph, id);
         let _ = writeln!(s, "| `{canonical}` | {} | {names} |", id.0);
     }
     let _ = writeln!(s);
 }
 
-fn write_prototypes(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
+fn write_prototypes(s: &mut String, hypergraph: &Hypergraph, cat: &Categorized) {
     let _ = writeln!(s, "## Prototypes");
     let _ = writeln!(s);
     let _ = writeln!(
@@ -707,7 +707,7 @@ fn write_prototypes(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
     let _ = writeln!(s, "|---|---|---|---|");
 
     let mut proto_to_region: HashMap<ElementId, ElementId> = HashMap::new();
-    for (region, protos) in &hg.region_prototypes {
+    for (region, protos) in &hypergraph.region_prototypes {
         for p in protos {
             proto_to_region.insert(*p, *region);
         }
@@ -722,23 +722,23 @@ fn write_prototypes(s: &mut String, hg: &Hypergraph, cat: &Categorized) {
     protos.sort_by_key(|id| id.0);
 
     for id in protos {
-        let element = &hg.elements[id.0 as usize];
+        let element = &hypergraph.elements[id.0 as usize];
         let mag = (element.embedding.iter().map(|v| v * v).sum::<f32>()).sqrt();
         let owner = proto_to_region
             .get(&id)
-            .map(|r| canonical_name(hg, *r))
+            .map(|r| canonical_name(hypergraph, *r))
             .unwrap_or_else(|| "—".into());
         let _ = writeln!(
             s,
             "| `{}` | {} | `{owner}` | {mag:.4} |",
-            canonical_name(hg, id),
+            canonical_name(hypergraph, id),
             id.0,
         );
     }
     let _ = writeln!(s);
 }
 
-fn write_relations_grouped(s: &mut String, hg: &Hypergraph) {
+fn write_relations_grouped(s: &mut String, hypergraph: &Hypergraph) {
     let _ = writeln!(s, "## Relations");
     let _ = writeln!(s);
     let _ = writeln!(
@@ -750,10 +750,10 @@ fn write_relations_grouped(s: &mut String, hg: &Hypergraph) {
     let mut grouped: BTreeMap<ElementId, Vec<(ElementId, ElementId, RelationStatus, f32)>> =
         BTreeMap::new();
 
-    for r in &hg.relations {
+    for r in &hypergraph.relations {
         let mut subject: Option<ElementId> = None;
         for a in &r.attributes {
-            if a.name == hg.subject_attr
+            if a.name == hypergraph.subject_attr
                 && let Term::Element(s) = a.value
             {
                 subject = Some(s);
@@ -763,7 +763,7 @@ fn write_relations_grouped(s: &mut String, hg: &Hypergraph) {
             continue;
         };
         for a in &r.attributes {
-            if a.name == hg.subject_attr {
+            if a.name == hypergraph.subject_attr {
                 continue;
             }
             let target = match a.value {
@@ -778,16 +778,16 @@ fn write_relations_grouped(s: &mut String, hg: &Hypergraph) {
     }
 
     let mut ordered: Vec<_> = grouped.into_iter().collect();
-    ordered.sort_by_key(|a| canonical_name(hg, a.0));
+    ordered.sort_by_key(|a| canonical_name(hypergraph, a.0));
 
     for (attr_id, mut entries) in ordered {
-        let attr_name = canonical_name(hg, attr_id);
+        let attr_name = canonical_name(hypergraph, attr_id);
         let _ = writeln!(s, "### `{attr_name}` ({})", entries.len());
         let _ = writeln!(s);
         entries.sort_by_key(|(subj, obj, _, _)| (subj.0, obj.0));
         for (subj, obj, status, conf) in entries {
-            let subj_name = canonical_name(hg, subj);
-            let obj_name = canonical_name(hg, obj);
+            let subj_name = canonical_name(hypergraph, subj);
+            let obj_name = canonical_name(hypergraph, obj);
             let _ = writeln!(
                 s,
                 "- `{subj_name}` → `{obj_name}`  ({}, conf={:.2})",
@@ -803,16 +803,16 @@ fn write_relations_grouped(s: &mut String, hg: &Hypergraph) {
 // Small helpers
 // ─────────────────────────────────────────────────────────────────────
 
-fn canonical_name(hg: &Hypergraph, id: ElementId) -> String {
-    hg.elements
+fn canonical_name(hypergraph: &Hypergraph, id: ElementId) -> String {
+    hypergraph.elements
         .get(id.0 as usize)
         .and_then(|e| e.names.first())
         .cloned()
         .unwrap_or_else(|| format!("?{}?", id.0))
 }
 
-fn element_names(hg: &Hypergraph, id: ElementId) -> String {
-    hg.elements
+fn element_names(hypergraph: &Hypergraph, id: ElementId) -> String {
+    hypergraph.elements
         .get(id.0 as usize)
         .map(|e| {
             e.names
@@ -827,8 +827,8 @@ fn element_names(hg: &Hypergraph, id: ElementId) -> String {
 /// Sanitize an element name into a mermaid-safe identifier. Mermaid
 /// node IDs can't contain dots or slashes; replace with underscores.
 /// Prefix with element ID to disambiguate elements that share a name.
-fn mermaid_id(hg: &Hypergraph, id: ElementId) -> String {
-    let raw = canonical_name(hg, id);
+fn mermaid_id(hypergraph: &Hypergraph, id: ElementId) -> String {
+    let raw = canonical_name(hypergraph, id);
     let safe: String = raw
         .chars()
         .map(|c| {

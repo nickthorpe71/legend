@@ -21,8 +21,8 @@ Build/operate notes for v2. Source-of-truth design lives in
   matmul kernels (scalar / AVX2 / AVX-VNNI), 2×4 register tile, the
   +128 shift trick, performance ceiling, portability matrix.
 
-### Tick steps
+### Tick pipeline
 
-- [intent-detection.md](intent-detection.md) — Step 1: per-dimension intent
-  classifiers (conviction, prediction_error, arousal, curiosity). Pipeline,
-  retraining, validation.
+- [intent-detection.md](intent-detection.md) — `detect_intent`:
+  per-dimension intent classifiers (conviction, prediction_error,
+  arousal, curiosity). Pipeline, retraining, validation.

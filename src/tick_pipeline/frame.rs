@@ -1,24 +1,24 @@
-//! Step 12 — Assemble Attention Frame.
+//! `assemble_frame` — Assemble Attention Frame.
 //!
 //! No model. The frame is a post-tick snapshot of the focused
 //! subgraph; the calling LLM derives any natural-language response
 //! off `focused_relations` + `supporting_claims` + `history`.
 //!
-//! Step 12 itself does two things:
+//! `assemble_frame` itself does two things:
 //! 1. RRF-merges already-computed signals into `focused_relations`.
 //! 2. Maps uncertainty signals to `next_actions`.
 //!
 //! Everything else gathers from per-tick buffers earlier steps
 //! populated as a side effect of their own work.
 //!
-//! See `step_12_design.md` for the spec.
+//! See `new_foundation.md`.
 
 use std::collections::HashSet;
 
-use crate::tick_pipeline::build_relations::Step8Output;
-use crate::tick_pipeline::hebbian::Step10Output;
+use crate::tick_pipeline::build_relations::MintedRelations;
+use crate::tick_pipeline::hebbian::Reinforcement;
 use crate::tick_pipeline::route_regions::RouteResult;
-use crate::tick_pipeline::supersede::Step9Output;
+use crate::tick_pipeline::supersede::Supersession;
 use crate::types::{
     ActiveRegion, AttentionAction, ConsciousAttentionFrame, ElementId, Hypergraph, Intent, Policy,
     RegionActivation, RelationActivation, RelationId, RelationStatus, ReplayKind, ResolvedAttribute,
@@ -29,12 +29,12 @@ use crate::types::{
 //
 // The frame is the entire observable surface (§docs/frame-as-surface.md).
 // Every ID-bearing field on it is resolved to a name (+ relation
-// metadata) before the frame leaves Step 12. The hot path that benefits
+// metadata) before the frame leaves `assemble_frame`. The hot path that benefits
 // from these is `focused_relations` → `ResolvedRelation`; the rest
 // reuse the same helpers.
 
-fn resolve_element(hg: &Hypergraph, eid: ElementId) -> ResolvedElement {
-    let name = hg
+fn resolve_element(hypergraph: &Hypergraph, eid: ElementId) -> ResolvedElement {
+    let name = hypergraph
         .elements
         .get(eid.0 as usize)
         .and_then(|e| e.names.first().cloned())
@@ -42,21 +42,21 @@ fn resolve_element(hg: &Hypergraph, eid: ElementId) -> ResolvedElement {
     ResolvedElement { id: eid, name }
 }
 
-fn resolve_term(hg: &Hypergraph, term: Term) -> ResolvedTerm {
+fn resolve_term(hypergraph: &Hypergraph, term: Term) -> ResolvedTerm {
     match term {
-        Term::Element(eid) => ResolvedTerm::Element(resolve_element(hg, eid)),
+        Term::Element(eid) => ResolvedTerm::Element(resolve_element(hypergraph, eid)),
         Term::Relation(rid) => ResolvedTerm::Relation(rid),
     }
 }
 
-fn resolve_relation(hg: &Hypergraph, rid: RelationId) -> ResolvedRelation {
-    let r = &hg.relations[rid.0 as usize];
+fn resolve_relation(hypergraph: &Hypergraph, rid: RelationId) -> ResolvedRelation {
+    let r = &hypergraph.relations[rid.0 as usize];
     let attributes = r
         .attributes
         .iter()
         .map(|a| ResolvedAttribute {
-            name: resolve_element(hg, a.name),
-            value: resolve_term(hg, a.value),
+            name: resolve_element(hypergraph, a.name),
+            value: resolve_term(hypergraph, a.value),
         })
         .collect();
     ResolvedRelation {
@@ -70,7 +70,7 @@ fn resolve_relation(hg: &Hypergraph, rid: RelationId) -> ResolvedRelation {
 /// Reciprocal Rank Fusion constant per Cormack, Clarke & Buettcher,
 /// SIGIR 2009. Their paper-recommended default. Larger `k` softens
 /// the contribution of rank-1 items; we keep it at 60 because the
-/// signals Step 12 fuses (dense activation + path-reinforced focus
+/// signals `assemble_frame` fuses (dense activation + path-reinforced focus
 /// count) live on different value distributions and RRF's whole
 /// point is to be robust to that.
 pub const RRF_K: u32 = 60;
@@ -133,13 +133,13 @@ pub fn rrf_merge(ranked_lists: &[Vec<RelationId>], k: u32) -> Vec<(RelationId, f
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_frame(
     input_text: &str,
-    hg: &Hypergraph,
+    hypergraph: &Hypergraph,
     intent: &Intent,
     active_frame: Option<crate::types::ElementId>,
     route: &RouteResult,
-    step8: &Step8Output,
-    step9: &Step9Output,
-    step10: &Step10Output,
+    built_relations: &MintedRelations,
+    superseded: &Supersession,
+    reinforced: &Reinforcement,
     _policy: &Policy,
 ) -> ConsciousAttentionFrame {
     // ── focused_relations ──────────────────────────────────────
@@ -147,13 +147,13 @@ pub fn assemble_frame(
     // descending) and path-reinforced (by stats.focus_success_count
     // descending). Status filter applied before ranking so
     // Superseded/Retracted never enter the RRF.
-    let live: Vec<RelationId> = step10
+    let live: Vec<RelationId> = reinforced
         .reinforced
         .iter()
         .copied()
         .filter(|rid| {
             matches!(
-                hg.relations[rid.0 as usize].status,
+                hypergraph.relations[rid.0 as usize].status,
                 RelationStatus::Asserted | RelationStatus::Entailed | RelationStatus::Defeasible,
             )
         })
@@ -161,13 +161,13 @@ pub fn assemble_frame(
         // <class>`). They're load-bearing in the substrate but uniformly
         // high-confidence noise in the focus list. Keeping the substrate
         // shape; just don't surface here.
-        .filter(|&rid| !crate::tick_pipeline::build_relations::is_structural_relation(hg, rid))
+        .filter(|&rid| !crate::tick_pipeline::build_relations::is_structural_relation(hypergraph, rid))
         .collect();
 
     let mut dense: Vec<RelationId> = live.clone();
     dense.sort_by(|a, b| {
-        let ax = hg.relations[a.0 as usize].stats.activation;
-        let bx = hg.relations[b.0 as usize].stats.activation;
+        let ax = hypergraph.relations[a.0 as usize].stats.activation;
+        let bx = hypergraph.relations[b.0 as usize].stats.activation;
         bx.partial_cmp(&ax)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.0.cmp(&b.0))
@@ -175,8 +175,8 @@ pub fn assemble_frame(
 
     let mut path: Vec<RelationId> = live.clone();
     path.sort_by(|a, b| {
-        let ax = hg.relations[a.0 as usize].stats.focus_success_count;
-        let bx = hg.relations[b.0 as usize].stats.focus_success_count;
+        let ax = hypergraph.relations[a.0 as usize].stats.focus_success_count;
+        let bx = hypergraph.relations[b.0 as usize].stats.focus_success_count;
         bx.cmp(&ax).then(a.0.cmp(&b.0))
     });
 
@@ -184,7 +184,7 @@ pub fn assemble_frame(
     let mut focused_relations: Vec<RelationActivation> = merged
         .into_iter()
         .map(|(rid, score)| RelationActivation {
-            relation: resolve_relation(hg, rid),
+            relation: resolve_relation(hypergraph, rid),
             activation: score,
         })
         .collect();
@@ -200,18 +200,18 @@ pub fn assemble_frame(
     // falls back to relation-id order (older wins). Stable sort
     // preserves RRF order within each group.
     focused_relations.sort_by_key(|ra| {
-        !crate::tick_pipeline::build_relations::is_cache_relation(hg, ra.relation.id) as u8
+        !crate::tick_pipeline::build_relations::is_cache_relation(hypergraph, ra.relation.id) as u8
     });
 
     // ── supporting_claims + history ─────────────────────────────
     // Walk meta_relations_by_subject[R] for each focused R; filter
     // by attribute name on each meta. Dedup the resulting flat lists.
-    let derived_from_attr = hg
+    let derived_from_attr = hypergraph
         .by_name
         .get("derived_from")
         .and_then(|v| v.first().copied());
-    let source_attr = hg.by_name.get("source").and_then(|v| v.first().copied());
-    let supersedes_attr = hg
+    let source_attr = hypergraph.by_name.get("source").and_then(|v| v.first().copied());
+    let supersedes_attr = hypergraph
         .by_name
         .get("supersedes")
         .and_then(|v| v.first().copied());
@@ -222,11 +222,11 @@ pub fn assemble_frame(
     let mut history: Vec<RelationId> = Vec::new();
 
     for ra in &focused_relations {
-        let Some(metas) = hg.meta_relations_by_subject.get(&ra.relation.id) else {
+        let Some(metas) = hypergraph.meta_relations_by_subject.get(&ra.relation.id) else {
             continue;
         };
         for &mid in metas {
-            let m = &hg.relations[mid.0 as usize];
+            let m = &hypergraph.relations[mid.0 as usize];
             let mut is_supporting = false;
             let mut is_history = false;
             let mut history_target: Option<RelationId> = None;
@@ -266,16 +266,16 @@ pub fn assemble_frame(
     let mut coref_emitted = false;
     let mut contradiction_emitted = false;
     // Merge uncertainty signals from every step that raises them.
-    // Step 4 (route) raises DiffuseRouting; Step 8 raises
-    // LowConfidence on Defeasible mints; Step 9 raises Contradiction
+    // `route_regions` (route) raises DiffuseRouting; `build_relations` raises
+    // LowConfidence on Defeasible mints; `supersede` raises Contradiction
     // on gate-failed events with conflicting priors. Dedup by kind
     // so the consumer doesn't see N copies of the same flag.
     let mut uncertainty: Vec<UncertaintySignal> = Vec::new();
     for sig in route
         .uncertainty
         .iter()
-        .chain(step8.uncertainty.iter())
-        .chain(step9.uncertainty.iter())
+        .chain(built_relations.uncertainty.iter())
+        .chain(superseded.uncertainty.iter())
     {
         if !uncertainty.contains(sig) {
             uncertainty.push(*sig);
@@ -333,17 +333,17 @@ pub fn assemble_frame(
     // the frame did not surface it.
     let mut current_state: Vec<RelationId> = Vec::new();
     let mut cs_seen: HashSet<RelationId> = HashSet::new();
-    // Walk explicitly-referenced elements first (Step 8's by-name
-    // resolutions), then topically-activated ones (Step 10's seed
+    // Walk explicitly-referenced elements first (`build_relations`'s by-name
+    // resolutions), then topically-activated ones (`hebbian_and_salience`'s seed
     // input). The topical seeds let query inputs surface live caches
     // on entities they reference implicitly — e.g. "what language
     // are we using?" doesn't name-mention "we" via NER, but `we`
     // shows up via topical_neighbors and pulls in its
     // `current_<property>` cache.
     let mut element_walk: Vec<ElementId> =
-        Vec::with_capacity(step8.referenced_elements.len() + step10.topical_seeds.len());
+        Vec::with_capacity(built_relations.referenced_elements.len() + reinforced.topical_seeds.len());
     let mut walked: HashSet<ElementId> = HashSet::new();
-    for &eid in step8.referenced_elements.iter().chain(step10.topical_seeds.iter()) {
+    for &eid in built_relations.referenced_elements.iter().chain(reinforced.topical_seeds.iter()) {
         if walked.insert(eid) {
             element_walk.push(eid);
         }
@@ -356,8 +356,8 @@ pub fn assemble_frame(
     // because neither `we` nor `C` is in `referenced_elements` or
     // `topical_seeds` directly on a query like "what language are we
     // using?".
-    for &rid in &step10.reinforced {
-        let r = &hg.relations[rid.0 as usize];
+    for &rid in &reinforced.reinforced {
+        let r = &hypergraph.relations[rid.0 as usize];
         for attr in &r.attributes {
             if let crate::types::Term::Element(eid) = attr.value
                 && walked.insert(eid)
@@ -367,18 +367,18 @@ pub fn assemble_frame(
         }
     }
     for &eid in &element_walk {
-        let Some(rels) = hg.relations_by_element.get(&eid) else {
+        let Some(rels) = hypergraph.relations_by_element.get(&eid) else {
             continue;
         };
         for &rid in rels {
             if !cs_seen.contains(&rid)
                 && matches!(
-                    hg.relations[rid.0 as usize].status,
+                    hypergraph.relations[rid.0 as usize].status,
                     RelationStatus::Asserted
                         | RelationStatus::Entailed
                         | RelationStatus::Defeasible,
                 )
-                && !crate::tick_pipeline::build_relations::is_structural_relation(hg, rid)
+                && !crate::tick_pipeline::build_relations::is_structural_relation(hypergraph, rid)
             {
                 cs_seen.insert(rid);
                 current_state.push(rid);
@@ -388,35 +388,35 @@ pub fn assemble_frame(
 
     // ── Denormalization pass ────────────────────────────────────
     // Every ID still in flight gets resolved so the frame leaves
-    // Step 12 self-contained (§docs/frame-as-surface.md).
-    let active_frame_resolved = active_frame.map(|eid| resolve_element(hg, eid));
+    // `assemble_frame` self-contained (§docs/frame-as-surface.md).
+    let active_frame_resolved = active_frame.map(|eid| resolve_element(hypergraph, eid));
     let active_regions_resolved: Vec<ActiveRegion> = route
         .active_regions
         .iter()
         .map(|ra: &RegionActivation| ActiveRegion {
-            region: resolve_element(hg, ra.region),
+            region: resolve_element(hypergraph, ra.region),
             activation: ra.activation,
         })
         .collect();
     let supporting_claims_resolved: Vec<ResolvedRelation> =
-        supporting_claims.iter().map(|&rid| resolve_relation(hg, rid)).collect();
+        supporting_claims.iter().map(|&rid| resolve_relation(hypergraph, rid)).collect();
     let history_resolved: Vec<ResolvedRelation> =
-        history.iter().map(|&rid| resolve_relation(hg, rid)).collect();
-    let durable_writes_resolved: Vec<ResolvedElement> = step8
+        history.iter().map(|&rid| resolve_relation(hypergraph, rid)).collect();
+    let durable_writes_resolved: Vec<ResolvedElement> = built_relations
         .minted_elements
         .iter()
-        .map(|&eid| resolve_element(hg, eid))
+        .map(|&eid| resolve_element(hypergraph, eid))
         .collect();
-    let superseded_resolved: Vec<ResolvedRelation> = step9
+    let superseded_resolved: Vec<ResolvedRelation> = superseded
         .superseded
         .iter()
-        .map(|&rid| resolve_relation(hg, rid))
+        .map(|&rid| resolve_relation(hypergraph, rid))
         .collect();
     let current_state_resolved: Vec<ResolvedRelation> =
-        current_state.iter().map(|&rid| resolve_relation(hg, rid)).collect();
+        current_state.iter().map(|&rid| resolve_relation(hypergraph, rid)).collect();
 
     ConsciousAttentionFrame {
-        tick: hg.clock,
+        tick: hypergraph.clock,
         input_echo: input_text.to_string(),
         intent: *intent,
         active_frame: active_frame_resolved,
@@ -534,7 +534,7 @@ mod tests {
     use crate::types::RegionDelta;
 
     /// Build a minimal RouteResult for tests that don't actually
-    /// run Step 4. Empty active regions / no uncertainty.
+    /// run `route_regions`. Empty active regions / no uncertainty.
     fn empty_route() -> RouteResult {
         RouteResult {
             all_scores: Vec::new(),
@@ -544,42 +544,42 @@ mod tests {
         }
     }
 
-    /// Drive Step 5 → 8 → 9 → 10 over a sentence, return everything
-    /// Step 12 needs. Steps 7 (apply_region_delta) and 11 (decay)
+    /// Drive the tick pipeline up through hebbian_and_salience over a sentence, return everything
+    /// `assemble_frame` needs. Steps 7 (apply_region_delta) and 11 (decay)
     /// are skipped — they don't materially affect frame assembly.
-    fn run_through_step10(
+    fn run_through_hebbian(
         text: &str,
         labels: &[&str],
         policy: &Policy,
-    ) -> (Hypergraph, Step8Output, Step9Output, Step10Output) {
-        let mut hg = load_seed_graph();
-        let ext = run_extractors(text, labels, policy, &hg, &[]);
-        let s8 = build_relations(text, &mut hg, &ext, policy, None);
-        let s9 = supersede(&mut hg, &s8.minted_relations, policy);
-        let s10 = hebbian_and_salience(&mut hg, &s8, &s9, None, policy, &[]);
-        (hg, s8, s9, s10)
+    ) -> (Hypergraph, MintedRelations, Supersession, Reinforcement) {
+        let mut hypergraph = load_seed_graph();
+        let ext = run_extractors(text, labels, policy, &hypergraph, &[]);
+        let built_relations = build_relations(text, &mut hypergraph, &ext, policy, None);
+        let superseded = supersede(&mut hypergraph, &built_relations.minted_relations, policy);
+        let reinforced = hebbian_and_salience(&mut hypergraph, &built_relations, &superseded, None, policy, &[]);
+        (hypergraph, built_relations, superseded, reinforced)
     }
 
     #[test]
-    fn frame_gathers_durable_writes_from_step8() {
+    fn frame_gathers_durable_writes_from_build_relations() {
         let policy = Policy::default();
-        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let (hypergraph, built_relations, superseded, reinforced) = run_through_hebbian("Sarah called me yesterday.", &[], &policy);
         let route = empty_route();
         let frame = assemble_frame(
             "Sarah called me yesterday.",
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8,
-            &s9,
-            &s10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
         let durable_ids: Vec<_> = frame.durable_writes.iter().map(|e| e.id).collect();
-        assert_eq!(durable_ids, s8.minted_elements);
+        assert_eq!(durable_ids, built_relations.minted_elements);
         assert_eq!(frame.input_echo, "Sarah called me yesterday.");
-        assert_eq!(frame.tick, hg.clock);
+        assert_eq!(frame.tick, hypergraph.clock);
     }
 
     #[test]
@@ -588,7 +588,7 @@ mod tests {
         // sub-threshold). All focused should be Asserted/Entailed
         // /Defeasible — never Superseded/Retracted.
         let policy = Policy::default();
-        let (hg, s8, s9, s10) = run_through_step10(
+        let (hypergraph, built_relations, superseded, reinforced) = run_through_hebbian(
             "The meeting moved from Tuesday to Friday.",
             &["event", "weekday"],
             &policy,
@@ -596,13 +596,13 @@ mod tests {
         let route = empty_route();
         let frame = assemble_frame(
             "The meeting moved from Tuesday to Friday.",
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8,
-            &s9,
-            &s10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
         assert!(!frame.focused_relations.is_empty());
@@ -627,7 +627,7 @@ mod tests {
         // group and the non-cache group are each individually
         // score-descending. Check both partitions.
         let policy = Policy::default();
-        let (hg, s8, s9, s10) = run_through_step10(
+        let (hypergraph, built_relations, superseded, reinforced) = run_through_hebbian(
             "The meeting moved from Tuesday to Friday.",
             &["event", "weekday"],
             &policy,
@@ -635,16 +635,16 @@ mod tests {
         let route = empty_route();
         let frame = assemble_frame(
             "The meeting moved from Tuesday to Friday.",
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8,
-            &s9,
-            &s10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
-        let is_cache = |rid| crate::tick_pipeline::build_relations::is_cache_relation(&hg, rid);
+        let is_cache = |rid| crate::tick_pipeline::build_relations::is_cache_relation(&hypergraph, rid);
         let (caches, non_caches): (Vec<&RelationActivation>, Vec<&RelationActivation>) = frame
             .focused_relations
             .iter()
@@ -664,33 +664,33 @@ mod tests {
 
     #[test]
     fn frame_supporting_claims_walks_derived_from_meta() {
-        // Step 9 emits derived_from metas for every cache it mints.
+        // `supersede` emits derived_from metas for every cache it mints.
         // The frame's supporting_claims should pick them up.
         let policy = Policy::default();
-        let (hg, s8, s9, s10) = run_through_step10(
+        let (hypergraph, built_relations, superseded, reinforced) = run_through_hebbian(
             "The meeting moved from Tuesday to Friday.",
             &["event", "weekday"],
             &policy,
         );
         assert!(
-            !s9.meta_relations.is_empty(),
-            "test prerequisite: Step 9 should have minted metas",
+            !superseded.meta_relations.is_empty(),
+            "test prerequisite: `supersede` should have minted metas",
         );
         let route = empty_route();
         let frame = assemble_frame(
             "The meeting moved from Tuesday to Friday.",
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8,
-            &s9,
-            &s10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
         // At least one supporting_claim should exist (the
-        // derived_from meta on a cache relation Step 9 minted).
-        let derived_from_attr = hg.by_name["derived_from"][0];
+        // derived_from meta on a cache relation `supersede` minted).
+        let derived_from_attr = hypergraph.by_name["derived_from"][0];
         let has_derived = frame
             .supporting_claims
             .iter()
@@ -703,39 +703,39 @@ mod tests {
     }
 
     #[test]
-    fn frame_superseded_mirrors_step9_output() {
+    fn frame_superseded_mirrors_supersede_output() {
         // Two ticks: first establishes a cache; second supersedes
         // it. Frame from tick 2 should list the flipped prior.
         let policy = Policy::default();
-        let mut hg = load_seed_graph();
+        let mut hypergraph = load_seed_graph();
         let labels: &[&str] = &["event", "weekday"];
 
         let text1 = "The meeting moved from Monday to Tuesday.";
-        let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
-        let s8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
-        let s9_1 = supersede(&mut hg, &s8_1.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg, &s8_1, &s9_1, None, &policy, &[]);
+        let ext1 = run_extractors(text1, labels, &policy, &hypergraph, &[]);
+        let built_relations_1 = build_relations(text1, &mut hypergraph, &ext1, &policy, None);
+        let superseded_1 = supersede(&mut hypergraph, &built_relations_1.minted_relations, &policy);
+        let _ = hebbian_and_salience(&mut hypergraph, &built_relations_1, &superseded_1, None, &policy, &[]);
 
         let text2 = "The meeting moved from Tuesday to Friday.";
-        let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
-        let s8_2 = build_relations(text2, &mut hg, &ext2, &policy, None);
-        let s9_2 = supersede(&mut hg, &s8_2.minted_relations, &policy);
-        let s10_2 = hebbian_and_salience(&mut hg, &s8_2, &s9_2, None, &policy, &[]);
+        let ext2 = run_extractors(text2, labels, &policy, &hypergraph, &[]);
+        let built_relations_2 = build_relations(text2, &mut hypergraph, &ext2, &policy, None);
+        let superseded_2 = supersede(&mut hypergraph, &built_relations_2.minted_relations, &policy);
+        let reinforced_2 = hebbian_and_salience(&mut hypergraph, &built_relations_2, &superseded_2, None, &policy, &[]);
 
         let route = empty_route();
         let frame = assemble_frame(
             text2,
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8_2,
-            &s9_2,
-            &s10_2,
+            &built_relations_2,
+            &superseded_2,
+            &reinforced_2,
             &policy,
         );
         let superseded_ids: Vec<_> = frame.superseded.iter().map(|r| r.id).collect();
-        assert_eq!(superseded_ids, s9_2.superseded);
+        assert_eq!(superseded_ids, superseded_2.superseded);
         assert!(
             !frame.superseded.is_empty(),
             "test prerequisite: tick 2 should supersede a prior",
@@ -745,18 +745,18 @@ mod tests {
     #[test]
     fn frame_next_actions_diffuse_routing_enqueues_replay() {
         let policy = Policy::default();
-        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let (hypergraph, built_relations, superseded, reinforced) = run_through_hebbian("Sarah called me yesterday.", &[], &policy);
         let mut route = empty_route();
         route.uncertainty.push(UncertaintySignal::DiffuseRouting);
         let frame = assemble_frame(
             "Sarah called me yesterday.",
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8,
-            &s9,
-            &s10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
         let has_replay = frame.next_actions.iter().any(|a| {
@@ -773,20 +773,20 @@ mod tests {
     #[test]
     fn frame_next_actions_dedupe_repeat_signals() {
         let policy = Policy::default();
-        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let (hypergraph, built_relations, superseded, reinforced) = run_through_hebbian("Sarah called me yesterday.", &[], &policy);
         let mut route = empty_route();
         route.uncertainty.push(UncertaintySignal::DiffuseRouting);
         route.uncertainty.push(UncertaintySignal::LowConfidence);
         route.uncertainty.push(UncertaintySignal::DiffuseRouting);
         let frame = assemble_frame(
             "Sarah called me yesterday.",
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8,
-            &s9,
-            &s10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
         let replay_count = frame
@@ -800,18 +800,18 @@ mod tests {
     #[test]
     fn frame_next_actions_ambiguous_coref_emits_follow_up() {
         let policy = Policy::default();
-        let (hg, s8, s9, s10) = run_through_step10("Sarah called me yesterday.", &[], &policy);
+        let (hypergraph, built_relations, superseded, reinforced) = run_through_hebbian("Sarah called me yesterday.", &[], &policy);
         let mut route = empty_route();
         route.uncertainty.push(UncertaintySignal::AmbiguousCoref);
         let frame = assemble_frame(
             "Sarah called me yesterday.",
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8,
-            &s9,
-            &s10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
         let has_follow_up = frame
@@ -824,24 +824,24 @@ mod tests {
     #[test]
     fn frame_ungrounded_time_no_action_emitted() {
         let policy = Policy::default();
-        let (hg, mut s8, mut s9, s10) =
-            run_through_step10("Sarah called me yesterday.", &[], &policy);
-        // Real Step 8/9 may raise their own LowConfidence /
+        let (hypergraph, mut built_relations, mut superseded, reinforced) =
+            run_through_hebbian("Sarah called me yesterday.", &[], &policy);
+        // Real `build_relations`/9 may raise their own LowConfidence /
         // Contradiction signals on this input. Clear them so the
         // test isolates the UngroundedTime-alone behavior.
-        s8.uncertainty.clear();
-        s9.uncertainty.clear();
+        built_relations.uncertainty.clear();
+        superseded.uncertainty.clear();
         let mut route = empty_route();
         route.uncertainty.push(UncertaintySignal::UngroundedTime);
         let frame = assemble_frame(
             "Sarah called me yesterday.",
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8,
-            &s9,
-            &s10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
         // UngroundedTime is v0-no-action (chrono not wired); still
@@ -857,61 +857,61 @@ mod tests {
     /// End-to-end two-tick integration: tick 1 mints a cache;
     /// tick 2 supersedes it. Frame from tick 2 should surface:
     ///   - new cache (Asserted) in focused_relations
-    ///   - prior cache id in superseded (mirrors Step 9)
+    ///   - prior cache id in superseded (mirrors `supersede`)
     ///   - prior cache id appears in history
     ///   - derived_from meta in supporting_claims
     ///
-    /// Exercises the full handoff from Steps 8/9/10 through Step 12.
+    /// Exercises the full handoff from Steps 8/9/10 through `assemble_frame`.
     #[test]
     fn two_tick_integration_supersession_threads_through_frame() {
         let policy = Policy::default();
         let labels: &[&str] = &["event", "weekday"];
-        let mut hg = load_seed_graph();
+        let mut hypergraph = load_seed_graph();
 
         // ── Tick 1 ─────────────────────────────────────────────────
         let text1 = "The meeting moved from Monday to Tuesday.";
-        let ext1 = run_extractors(text1, labels, &policy, &hg, &[]);
-        let s8_1 = build_relations(text1, &mut hg, &ext1, &policy, None);
-        let s9_1 = supersede(&mut hg, &s8_1.minted_relations, &policy);
-        let _ = hebbian_and_salience(&mut hg, &s8_1, &s9_1, None, &policy, &[]);
+        let ext1 = run_extractors(text1, labels, &policy, &hypergraph, &[]);
+        let built_relations_1 = build_relations(text1, &mut hypergraph, &ext1, &policy, None);
+        let superseded_1 = supersede(&mut hypergraph, &built_relations_1.minted_relations, &policy);
+        let _ = hebbian_and_salience(&mut hypergraph, &built_relations_1, &superseded_1, None, &policy, &[]);
         // Tick 1 has no supersession (no priors exist yet).
-        assert!(s9_1.superseded.is_empty(), "tick 1 has no priors");
+        assert!(superseded_1.superseded.is_empty(), "tick 1 has no priors");
         assert!(
-            !s9_1.cache_relations.is_empty(),
+            !superseded_1.cache_relations.is_empty(),
             "tick 1 should mint a cache"
         );
-        let prior_cache = *s9_1.cache_relations.first().unwrap();
+        let prior_cache = *superseded_1.cache_relations.first().unwrap();
 
         // ── Tick 2 ─────────────────────────────────────────────────
         let text2 = "The meeting moved from Tuesday to Friday.";
-        let ext2 = run_extractors(text2, labels, &policy, &hg, &[]);
-        let s8_2 = build_relations(text2, &mut hg, &ext2, &policy, None);
-        let s9_2 = supersede(&mut hg, &s8_2.minted_relations, &policy);
-        let s10_2 = hebbian_and_salience(&mut hg, &s8_2, &s9_2, None, &policy, &[]);
+        let ext2 = run_extractors(text2, labels, &policy, &hypergraph, &[]);
+        let built_relations_2 = build_relations(text2, &mut hypergraph, &ext2, &policy, None);
+        let superseded_2 = supersede(&mut hypergraph, &built_relations_2.minted_relations, &policy);
+        let reinforced_2 = hebbian_and_salience(&mut hypergraph, &built_relations_2, &superseded_2, None, &policy, &[]);
         assert!(
-            s9_2.superseded.contains(&prior_cache),
+            superseded_2.superseded.contains(&prior_cache),
             "tick 2 should flip tick 1's cache",
         );
 
         let route = empty_route();
         let frame = assemble_frame(
             text2,
-            &hg,
+            &hypergraph,
             &Intent::default(),
             None,
             &route,
-            &s8_2,
-            &s9_2,
-            &s10_2,
+            &built_relations_2,
+            &superseded_2,
+            &reinforced_2,
             &policy,
         );
 
-        // ── (a) frame.superseded mirrors Step 9. ───────────────────
+        // ── (a) frame.superseded mirrors `supersede`. ───────────────────
         let superseded_ids: Vec<_> = frame.superseded.iter().map(|r| r.id).collect();
-        assert_eq!(superseded_ids, s9_2.superseded);
+        assert_eq!(superseded_ids, superseded_2.superseded);
 
         // ── (b) new cache lands in focused_relations as Asserted. ─
-        let new_cache = *s9_2.cache_relations.first().unwrap();
+        let new_cache = *superseded_2.cache_relations.first().unwrap();
         let focused_ids: Vec<RelationId> = frame
             .focused_relations
             .iter()
@@ -941,8 +941,8 @@ mod tests {
         );
 
         // ── (d) at least one supporting_claim is a derived_from
-        //        meta pointing at the n-ary event Step 8 minted. ───
-        let derived_from_attr = hg.by_name["derived_from"][0];
+        //        meta pointing at the n-ary event `build_relations` minted. ───
+        let derived_from_attr = hypergraph.by_name["derived_from"][0];
         let any_derived = frame
             .supporting_claims
             .iter()

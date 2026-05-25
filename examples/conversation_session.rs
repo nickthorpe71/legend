@@ -154,7 +154,7 @@ const DIALOG: &[Turn] = &[
         expect_supporting: true,
     },
     Turn {
-        // Phrased as an event ("now has") so Step 9 mints a cache on
+        // Phrased as an event ("now has") so `supersede` mints a cache on
         // the first mention. Without an event-shaped phrasing, "Lumen
         // has 50 GitHub stars" lands as a binary relation only — no
         // cache — and the next turn has no prior to flip.
@@ -258,13 +258,13 @@ const DIALOG: &[Turn] = &[
 ];
 
 fn main() {
-    let mut hg = load_seed_graph();
-    let source_id = hg.genesis;
+    let mut hypergraph = load_seed_graph();
+    let source_id = hypergraph.genesis;
 
     println!("─── Legend conversation-session test ───");
     println!("  dialog turns      {}", DIALOG.len());
-    println!("  seed elements     {}", hg.elements.len());
-    println!("  seed relations    {}", hg.relations.len());
+    println!("  seed elements     {}", hypergraph.elements.len());
+    println!("  seed relations    {}", hypergraph.relations.len());
     println!();
 
     let mut failures: Vec<String> = Vec::new();
@@ -274,39 +274,39 @@ fn main() {
     for (i, turn) in DIALOG.iter().enumerate() {
         let embedding = legend::embed::embed_text(turn.text);
         let intent = detect_intent(turn.text, &embedding);
-        let policy = adjust_policy(&intent, &hg.policy);
+        let policy = adjust_policy(&intent, &hypergraph.policy);
         // Inherit the prior tick's focal subject as this tick's
-        // active frame. Computed before Step 10's push so the value
+        // active frame. Computed before `hebbian_and_salience`'s push so the value
         // reflects history, not this tick's about-to-land entries.
-        let active_frame = derive_active_frame(&hg, &intent, &policy);
-        let route = route_regions(&embedding, &hg, &policy);
-        let extraction = run_extractors(turn.text, &[], &policy, &hg, &route.active_regions);
-        let _ = apply_region_delta(&mut hg, &route.delta, &policy);
-        let step8 = build_relations(turn.text, &mut hg, &extraction, &policy, Some(source_id));
-        let step9 = supersede(&mut hg, &step8.minted_relations, &policy);
-        let topical_seeds = legend::tick_pipeline::topical::topical_neighbors(&hg, &embedding, 32);
-        let step10 = hebbian_and_salience(
-            &mut hg,
-            &step8,
-            &step9,
+        let active_frame = derive_active_frame(&hypergraph, &intent, &policy);
+        let route = route_regions(&embedding, &hypergraph, &policy);
+        let extraction = run_extractors(turn.text, &[], &policy, &hypergraph, &route.active_regions);
+        let _ = apply_region_delta(&mut hypergraph, &route.delta, &policy);
+        let built_relations = build_relations(turn.text, &mut hypergraph, &extraction, &policy, Some(source_id));
+        let superseded = supersede(&mut hypergraph, &built_relations.minted_relations, &policy);
+        let topical_seeds = legend::tick_pipeline::topical::topical_neighbors(&hypergraph, &embedding, 32);
+        let reinforced = hebbian_and_salience(
+            &mut hypergraph,
+            &built_relations,
+            &superseded,
             active_frame,
             &policy,
             &topical_seeds,
         );
-        let _step11 = focus_radius_decay(&mut hg, &step10.reinforced, &policy);
+        let _decay = focus_radius_decay(&mut hypergraph, &reinforced.reinforced, &policy);
         let frame = assemble_frame(
             turn.text,
-            &hg,
+            &hypergraph,
             &intent,
             active_frame,
             &route,
-            &step8,
-            &step9,
-            &step10,
+            &built_relations,
+            &superseded,
+            &reinforced,
             &policy,
         );
 
-        print_turn(i + 1, turn, &frame, &step8, &step9);
+        print_turn(i + 1, turn, &frame, &built_relations, &superseded);
         check_turn(i + 1, turn, &frame, &mut failures);
 
         frames.push(frame);
@@ -315,8 +315,8 @@ fn main() {
 
     println!();
     println!("─── final substrate ───");
-    println!("  elements  {}", hg.elements.len());
-    println!("  relations {}", hg.relations.len());
+    println!("  elements  {}", hypergraph.elements.len());
+    println!("  relations {}", hypergraph.relations.len());
 
     println!();
     println!("─── aggregate ───");
@@ -356,8 +356,8 @@ fn print_turn(
     n: usize,
     turn: &Turn,
     frame: &ConsciousAttentionFrame,
-    step8: &legend::tick_pipeline::build_relations::Step8Output,
-    step9: &legend::tick_pipeline::supersede::Step9Output,
+    built_relations: &legend::tick_pipeline::build_relations::MintedRelations,
+    superseded: &legend::tick_pipeline::supersede::Supersession,
 ) {
     println!("─── turn {n:>2} [{:?}] ────────────────", turn.kind);
     println!("  in:  {:?}", turn.text);
@@ -369,15 +369,15 @@ fn print_turn(
         frame.intent.curiosity,
     );
     println!(
-        "  step8: minted_elements={} minted_relations={}",
-        step8.minted_elements.len(),
-        step8.minted_relations.len(),
+        "  built_relations: minted_elements={} minted_relations={}",
+        built_relations.minted_elements.len(),
+        built_relations.minted_relations.len(),
     );
     println!(
-        "  step9: caches={} superseded={} metas={}",
-        step9.cache_relations.len(),
-        step9.superseded.len(),
-        step9.meta_relations.len(),
+        "  superseded: caches={} superseded={} metas={}",
+        superseded.cache_relations.len(),
+        superseded.superseded.len(),
+        superseded.meta_relations.len(),
     );
     let active_frame_name = frame
         .active_frame

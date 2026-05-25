@@ -1,4 +1,4 @@
-# Intent detection (Step 1)
+# Intent detection (`detect_intent`)
 
 Maps a text input to four intent scores in `[0, 1]`:
 **conviction**, **prediction_error**, **arousal**, **curiosity**.
@@ -32,8 +32,8 @@ the embedding carries intent confounded with topic.
 | `src/embed.rs`                         | In-house INT8 BERT wrapper. `embed_text(&str) -> Vec<f32>`, `EMBEDDING_DIM = 384` |
 | `src/lexical_features.rs`              | `extract_lexical_features(&str) -> [f32; 34]`                             |
 | `src/intent_classifiers.rs`            | Loads the four `.bin` blobs at startup                                    |
-| `src/intent_classifiers/<dim>.bin`     | Trained weights — 418 f32 + 1 f32 bias, little-endian                     |
-| `src/steps/detect_intent.rs`           | Runtime: featurize + score                                                |
+| `src/seed/intent_classifiers/<dim>.bin`     | Trained weights — 418 f32 + 1 f32 bias, little-endian                     |
+| `src/tick_pipeline/detect_intent.rs`           | Runtime: featurize + score                                                |
 | `examples/gen_intent_classifiers.rs`   | **Trainer** — produces the `.bin` files                                   |
 | `examples/audit_classifiers.rs`        | Diagnostics: weight cosines, top activators, paraphrase Δ                 |
 | `examples/test_intent.rs`              | Held-out accuracy check (40 inputs across 8 groups)                       |
@@ -70,14 +70,14 @@ Hyperparameters live in `gen_intent_classifiers.rs::main`:
 cargo run --release --example gen_intent_classifiers
 ```
 
-Reads `seed_pack.yaml`, writes `src/intent_classifiers/*.bin`. The runtime
+Reads `seed_pack.yaml`, writes `src/seed/intent_classifiers/*.bin`. The runtime
 picks up the new weights at the next `cargo build` because the `.bin`
 files are pulled in via `include_bytes!`.
 
 Per-dim train output looks like:
 
 ```
-wrote src/intent_classifiers/conviction.bin
+wrote src/seed/intent_classifiers/conviction.bin
   (pos=42, neg=293, pairs=14, pos_weight=6.98, log_loss=0.367, pair_loss=0.210)
 ```
 
@@ -145,5 +145,5 @@ certain the bug is in X", low: "I think maybe the bug is in X")`.
    `IntentClassifiers` in `src/intent_classifiers.rs`.
 3. Extend `dims()` in `examples/shared/mod.rs`.
 4. Add the `include_bytes!` line in `src/intent_classifiers.rs`.
-5. Wire it through `src/steps/detect_intent.rs`.
+5. Wire it through `src/tick_pipeline/detect_intent.rs`.
 6. Retrain.

@@ -1,19 +1,19 @@
-//! Step 6 — Coreference scoring.
+//! `coref` — Coreference scoring.
 //!
 //! Pure-Rust scorer. For each ambiguous span (pronoun or definite
 //! description) in the input, pick the best-scoring antecedent from
-//! `recent_focus` and emit a `CorefDecision`. Step 8's existing
+//! `recent_focus` and emit a `CorefDecision`. `build_relations`'s existing
 //! `apply_coref_decisions` (§4a) uses the decision to bind the span
 //! to the antecedent's element rather than minting a fresh one.
 //!
 //! Identity is conservative: decisions only fire when the aggregate
 //! score clears `policy.coref_threshold`. Below threshold, the span
-//! falls through to Step 8's normal mint path — a missed coref
+//! falls through to `build_relations`'s normal mint path — a missed coref
 //! produces a provisional element that replay can merge later;
 //! a wrong coref binds two distinct entities together, which is
 //! hard to unwind.
 //!
-//! See `step_6_design.md` for the spec.
+//! See `new_foundation.md`.
 
 use crate::embed::embed_span_in_context;
 use crate::inference::deberta::predict::LabeledSpan;
@@ -21,7 +21,7 @@ use crate::math::dot;
 use crate::types::{ElementId, Hypergraph, Policy, Tick};
 
 /// A pronoun or definite-description span that referred to an
-/// already-mentioned entity. Step 8 uses these to bind the pronoun's
+/// already-mentioned entity. `build_relations` uses these to bind the pronoun's
 /// argument slot to the antecedent's element rather than minting a
 /// fresh provisional instance.
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ pub enum AmbiguousKind {
 }
 
 /// A span in the input text that may refer to an already-mentioned
-/// entity. Returned by `detect_ambiguous_spans` for Step 6 scoring.
+/// entity. Returned by `detect_ambiguous_spans` for `coref` scoring.
 #[derive(Debug, Clone)]
 pub struct AmbiguousSpan {
     pub text: String,
@@ -52,7 +52,7 @@ pub struct AmbiguousSpan {
     pub kind: AmbiguousKind,
 }
 
-/// Closed-class pronouns Step 6 considers for coref. Subject /
+/// Closed-class pronouns `coref` considers for coref. Subject /
 /// object / possessive forms all collapse to one antecedent.
 const PRONOUNS: &[&str] = &[
     "he", "she", "it", "they", "this", "that", "him", "her", "them", "his", "hers", "its", "their",
@@ -64,22 +64,22 @@ const PRONOUNS: &[&str] = &[
 /// For each ambiguous span (pronoun or definite description),
 /// score every `recent_focus` candidate and emit a `CorefDecision`
 /// if the max-scoring candidate clears `policy.coref_threshold`.
-/// Below threshold: no decision (the span falls through to Step 8's
+/// Below threshold: no decision (the span falls through to `build_relations`'s
 /// normal mint path).
 ///
 /// Returns an empty vector when `recent_focus` is empty (first tick
 /// of a session) or when no ambiguous spans are present.
 pub fn resolve_coref(
     input_text: &str,
-    hg: &Hypergraph,
+    hypergraph: &Hypergraph,
     ner_spans: &[LabeledSpan],
     policy: &Policy,
 ) -> Vec<CorefDecision> {
-    let spans = detect_ambiguous_spans(input_text, hg, ner_spans);
-    if spans.is_empty() || hg.recent_focus.is_empty() {
+    let spans = detect_ambiguous_spans(input_text, hypergraph, ner_spans);
+    if spans.is_empty() || hypergraph.recent_focus.is_empty() {
         return Vec::new();
     }
-    let candidates = collect_candidates(hg);
+    let candidates = collect_candidates(hypergraph);
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -93,7 +93,7 @@ pub fn resolve_coref(
     for span in &spans {
         let mut best: Option<(&Candidate, f32)> = None;
         for cand in &candidates {
-            let s = score_candidate(span, input_text, hg, cand);
+            let s = score_candidate(span, input_text, hypergraph, cand);
             match best {
                 Some((_, b)) if s <= b => {}
                 _ => best = Some((cand, s)),
@@ -103,7 +103,7 @@ pub fn resolve_coref(
         if score < policy.coref_threshold {
             continue;
         }
-        let antecedent_name = hg.elements[cand.element.0 as usize]
+        let antecedent_name = hypergraph.elements[cand.element.0 as usize]
             .names
             .first()
             .cloned()
@@ -130,10 +130,10 @@ pub fn resolve_coref(
 /// Pronouns: closed-class list above.
 /// Definite descriptions: `the <head_noun>` where `head_noun`
 /// (last token of the NP, English head-rightmost convention)
-/// resolves via `hg.by_name` to at least one Signal element.
+/// resolves via `hypergraph.by_name` to at least one Signal element.
 pub fn detect_ambiguous_spans(
     input_text: &str,
-    hg: &Hypergraph,
+    hypergraph: &Hypergraph,
     ner_spans: &[LabeledSpan],
 ) -> Vec<AmbiguousSpan> {
     let mut out: Vec<AmbiguousSpan> = Vec::new();
@@ -165,7 +165,7 @@ pub fn detect_ambiguous_spans(
         // Pronouns are closed-class so the surface-form match is
         // more reliable than NER's zero-shot label (GLiNER routinely
         // mistags pronouns as `org` / `person` with low confidence).
-        // Step 8's `apply_coref_decisions` runs first and rebinds the
+        // `build_relations`'s `apply_coref_decisions` runs first and rebinds the
         // pronoun's char range to the antecedent; downstream
         // `resolve_span` calls — including the ones driven by NER
         // proposals — short-circuit on the span cache, so the NER
@@ -207,7 +207,7 @@ pub fn detect_ambiguous_spans(
                 ) {
                     break;
                 }
-                if head_resolves_signal(hg, head_tok) {
+                if head_resolves_signal(hypergraph, head_tok) {
                     best_end_idx = Some(candidate_end);
                 }
             }
@@ -251,14 +251,14 @@ pub(crate) struct Candidate {
     pub freshest_tick: Tick,
 }
 
-/// Dedupe `hg.recent_focus` by element. Most recent entry wins for
+/// Dedupe `hypergraph.recent_focus` by element. Most recent entry wins for
 /// `freshest_tick`; attribute slots accumulate. Returns candidates
 /// in recency-first order (matching the deque order).
-pub(crate) fn collect_candidates(hg: &Hypergraph) -> Vec<Candidate> {
+pub(crate) fn collect_candidates(hypergraph: &Hypergraph) -> Vec<Candidate> {
     let mut by_element: std::collections::HashMap<ElementId, Candidate> =
         std::collections::HashMap::new();
     let mut order: Vec<ElementId> = Vec::new();
-    for entry in &hg.recent_focus {
+    for entry in &hypergraph.recent_focus {
         let cand = by_element.entry(entry.element).or_insert_with(|| {
             order.push(entry.element);
             Candidate {
@@ -284,14 +284,14 @@ pub(crate) fn collect_candidates(hg: &Hypergraph) -> Vec<Candidate> {
 /// candidate's seeded / minted names? Pronouns return 0 (no surface
 /// info). For definite descriptions, exact head-match → 1.0;
 /// substring match → 0.5; else 0.
-pub(crate) fn name_overlap(span: &AmbiguousSpan, hg: &Hypergraph, candidate_id: ElementId) -> f32 {
+pub(crate) fn name_overlap(span: &AmbiguousSpan, hypergraph: &Hypergraph, candidate_id: ElementId) -> f32 {
     if matches!(span.kind, AmbiguousKind::Pronoun) {
         return 0.0;
     }
     // Definite-description head = last whitespace-delimited token.
     let head = span.text.split_whitespace().last().unwrap_or("");
     let head_lower = head.to_ascii_lowercase();
-    let names = &hg.elements[candidate_id.0 as usize].names;
+    let names = &hypergraph.elements[candidate_id.0 as usize].names;
     for name in names {
         let name_lower = name.to_ascii_lowercase();
         if name_lower == head_lower {
@@ -313,13 +313,13 @@ pub(crate) fn name_overlap(span: &AmbiguousSpan, hg: &Hypergraph, candidate_id: 
 pub(crate) fn embedding_similarity(
     span: &AmbiguousSpan,
     input_text: &str,
-    hg: &Hypergraph,
+    hypergraph: &Hypergraph,
     candidate_id: ElementId,
 ) -> f32 {
     let Some(span_emb) = embed_span_in_context(input_text, span.char_start, span.char_end) else {
         return 0.0;
     };
-    let cand_emb = &hg.elements[candidate_id.0 as usize].embedding;
+    let cand_emb = &hypergraph.elements[candidate_id.0 as usize].embedding;
     if cand_emb.len() != span_emb.len() {
         return 0.0;
     }
@@ -354,13 +354,13 @@ pub(crate) fn recency_bonus(candidate: &Candidate, now: Tick) -> f32 {
 pub(crate) fn score_candidate(
     span: &AmbiguousSpan,
     input_text: &str,
-    hg: &Hypergraph,
+    hypergraph: &Hypergraph,
     candidate: &Candidate,
 ) -> f32 {
-    name_overlap(span, hg, candidate.element)
-        + embedding_similarity(span, input_text, hg, candidate.element)
+    name_overlap(span, hypergraph, candidate.element)
+        + embedding_similarity(span, input_text, hypergraph, candidate.element)
         + attribute_overlap_hint(candidate)
-        + recency_bonus(candidate, hg.clock)
+        + recency_bonus(candidate, hypergraph.clock)
 }
 
 fn overlaps_ner(start: usize, end: usize, ner_spans: &[LabeledSpan]) -> bool {
@@ -372,23 +372,23 @@ fn overlaps_ner(start: usize, end: usize, ner_spans: &[LabeledSpan]) -> bool {
 /// Resolves to at least one `Polarity::Signal` element via either
 /// the exact-case name or its lowercased form? Used to gate
 /// definite-description NP-head acceptance.
-fn head_resolves_signal(hg: &Hypergraph, head_tok: &str) -> bool {
+fn head_resolves_signal(hypergraph: &Hypergraph, head_tok: &str) -> bool {
     let any_signal = |ids: &[crate::types::ElementId]| {
         ids.iter().any(|id| {
             matches!(
-                hg.elements[id.0 as usize].polarity,
+                hypergraph.elements[id.0 as usize].polarity,
                 crate::types::Polarity::Signal
             )
         })
     };
-    if let Some(ids) = hg.by_name.get(head_tok)
+    if let Some(ids) = hypergraph.by_name.get(head_tok)
         && any_signal(ids)
     {
         return true;
     }
     let head_lower = head_tok.to_ascii_lowercase();
     if head_lower != head_tok
-        && let Some(ids) = hg.by_name.get(&head_lower)
+        && let Some(ids) = hypergraph.by_name.get(&head_lower)
         && any_signal(ids)
     {
         return true;
@@ -408,16 +408,16 @@ mod tests {
         // Set up: a candidate `Sarah` element in recent_focus with
         // a subject binding. A pronoun span "She" in the input
         // should resolve to Sarah and emit a CorefDecision.
-        let mut hg = load_seed_graph();
+        let mut hypergraph = load_seed_graph();
         let sarah_id = crate::tick_pipeline::build_relations::mint_element(
-            &mut hg,
+            &mut hypergraph,
             vec!["Sarah".to_string()],
             crate::embed::embed_text("Sarah"),
             crate::types::Polarity::Signal,
             1.0,
         );
-        let subject = hg.subject_attr;
-        hg.recent_focus.push_front(RecentFocusEntry {
+        let subject = hypergraph.subject_attr;
+        hypergraph.recent_focus.push_front(RecentFocusEntry {
             element: sarah_id,
             attribute: Some(subject),
             frame: None,
@@ -425,7 +425,7 @@ mod tests {
         });
         let policy = Policy::default();
 
-        let decisions = resolve_coref("She emailed me.", &hg, &[], &policy);
+        let decisions = resolve_coref("She emailed me.", &hypergraph, &[], &policy);
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].pronoun_text, "She");
         assert_eq!(decisions[0].antecedent_text, "Sarah");
@@ -435,9 +435,9 @@ mod tests {
     #[test]
     fn no_decision_when_no_compatible_candidates() {
         // recent_focus is empty → no candidates → no decision.
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         let policy = Policy::default();
-        let decisions = resolve_coref("She emailed me.", &hg, &[], &policy);
+        let decisions = resolve_coref("She emailed me.", &hypergraph, &[], &policy);
         assert!(decisions.is_empty());
     }
 
@@ -449,9 +449,9 @@ mod tests {
         // default is "must clear at least one substantive signal").
         // Bump threshold to 1.6 so even a 1.0 recency bonus + small
         // embedding bump won't clear, and verify nothing fires.
-        let mut hg = load_seed_graph();
-        let user_id = hg.by_name["user"][0];
-        hg.recent_focus.push_front(RecentFocusEntry {
+        let mut hypergraph = load_seed_graph();
+        let user_id = hypergraph.by_name["user"][0];
+        hypergraph.recent_focus.push_front(RecentFocusEntry {
             element: user_id,
             attribute: None, // no attribute → no hint bonus
             frame: None,
@@ -461,7 +461,7 @@ mod tests {
             coref_threshold: 2.5, // very high; pronouns can't clear
             ..Default::default()
         };
-        let decisions = resolve_coref("She emailed me.", &hg, &[], &policy);
+        let decisions = resolve_coref("She emailed me.", &hypergraph, &[], &policy);
         assert!(
             decisions.is_empty(),
             "high threshold should block low-score binds",
@@ -471,16 +471,16 @@ mod tests {
     #[test]
     fn definite_description_binds_when_head_matches() {
         // "the user" → user element via name_overlap = 1.0 (exact).
-        let mut hg = load_seed_graph();
-        let user_id = hg.by_name["user"][0];
-        hg.recent_focus.push_front(RecentFocusEntry {
+        let mut hypergraph = load_seed_graph();
+        let user_id = hypergraph.by_name["user"][0];
+        hypergraph.recent_focus.push_front(RecentFocusEntry {
             element: user_id,
-            attribute: Some(hg.subject_attr),
+            attribute: Some(hypergraph.subject_attr),
             frame: None,
             tick: Tick(0),
         });
         let policy = Policy::default();
-        let decisions = resolve_coref("the user replied.", &hg, &[], &policy);
+        let decisions = resolve_coref("the user replied.", &hypergraph, &[], &policy);
         let dd: Vec<&CorefDecision> = decisions
             .iter()
             .filter(|d| d.pronoun_text.starts_with("the"))
@@ -496,15 +496,15 @@ mod tests {
 
     #[test]
     fn returns_empty_with_no_recent_focus() {
-        let hg = Hypergraph::default();
-        let decisions = resolve_coref("She left.", &hg, &[], &Policy::default());
+        let hypergraph = Hypergraph::default();
+        let decisions = resolve_coref("She left.", &hypergraph, &[], &Policy::default());
         assert!(decisions.is_empty());
     }
 
     #[test]
     fn detects_subject_pronoun() {
-        let hg = load_seed_graph();
-        let spans = detect_ambiguous_spans("She left early.", &hg, &[]);
+        let hypergraph = load_seed_graph();
+        let spans = detect_ambiguous_spans("She left early.", &hypergraph, &[]);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "She");
         assert_eq!(spans[0].kind, AmbiguousKind::Pronoun);
@@ -514,16 +514,16 @@ mod tests {
 
     #[test]
     fn detects_multiple_pronouns() {
-        let hg = load_seed_graph();
-        let spans = detect_ambiguous_spans("He gave her his book.", &hg, &[]);
+        let hypergraph = load_seed_graph();
+        let spans = detect_ambiguous_spans("He gave her his book.", &hypergraph, &[]);
         let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, vec!["He", "her", "his"]);
     }
 
     #[test]
     fn pronoun_match_is_case_insensitive() {
-        let hg = load_seed_graph();
-        let spans = detect_ambiguous_spans("THEY arrived.", &hg, &[]);
+        let hypergraph = load_seed_graph();
+        let spans = detect_ambiguous_spans("THEY arrived.", &hypergraph, &[]);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "THEY");
         assert_eq!(spans[0].kind, AmbiguousKind::Pronoun);
@@ -533,8 +533,8 @@ mod tests {
     fn detects_definite_description_for_seeded_head() {
         // `user` is seeded; "the user" should fire as a definite
         // description.
-        let hg = load_seed_graph();
-        let spans = detect_ambiguous_spans("the user replied.", &hg, &[]);
+        let hypergraph = load_seed_graph();
+        let spans = detect_ambiguous_spans("the user replied.", &hypergraph, &[]);
         let dd: Vec<&AmbiguousSpan> = spans
             .iter()
             .filter(|s| s.kind == AmbiguousKind::DefiniteDescription)
@@ -550,8 +550,8 @@ mod tests {
     #[test]
     fn skips_definite_description_for_unknown_head() {
         // `qwlfkjsk` doesn't resolve in by_name — no DD should fire.
-        let hg = load_seed_graph();
-        let spans = detect_ambiguous_spans("the qwlfkjsk arrived.", &hg, &[]);
+        let hypergraph = load_seed_graph();
+        let spans = detect_ambiguous_spans("the qwlfkjsk arrived.", &hypergraph, &[]);
         let dd: Vec<&AmbiguousSpan> = spans
             .iter()
             .filter(|s| s.kind == AmbiguousKind::DefiniteDescription)
@@ -564,12 +564,12 @@ mod tests {
         // NER zero-shot routinely mistags pronouns as `org` / `person`
         // with low confidence; the surface-form pronoun list is more
         // reliable. So even when an NER span covers the pronoun, the
-        // pronoun should still be detected — Step 8's
+        // pronoun should still be detected — `build_relations`'s
         // `apply_coref_decisions` will rebind it to the antecedent
         // if coref fires, and the NER proposal's `resolve_span` will
         // hit the rebound span cache. This is intentional: pronouns
         // are closed-class.
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         let ner = vec![LabeledSpan {
             char_start: 0,
             char_end: 3,
@@ -577,7 +577,7 @@ mod tests {
             text: "She".to_string(),
             score: 0.99,
         }];
-        let spans = detect_ambiguous_spans("She left.", &hg, &ner);
+        let spans = detect_ambiguous_spans("She left.", &hypergraph, &ner);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "She");
         assert_eq!(spans[0].kind, AmbiguousKind::Pronoun);
@@ -585,8 +585,8 @@ mod tests {
 
     #[test]
     fn detects_demonstrative_pronouns() {
-        let hg = load_seed_graph();
-        let spans = detect_ambiguous_spans("That is mine.", &hg, &[]);
+        let hypergraph = load_seed_graph();
+        let spans = detect_ambiguous_spans("That is mine.", &hypergraph, &[]);
         let texts: Vec<&str> = spans.iter().map(|s| s.text.as_str()).collect();
         assert!(texts.contains(&"That"));
     }
@@ -615,45 +615,45 @@ mod tests {
 
     #[test]
     fn collect_candidates_dedupes_by_element() {
-        let mut hg = load_seed_graph();
-        let user_id = hg.by_name["user"][0];
+        let mut hypergraph = load_seed_graph();
+        let user_id = hypergraph.by_name["user"][0];
         // Push the same element twice — under subject AND target.
-        hg.recent_focus.push_front(RecentFocusEntry {
+        hypergraph.recent_focus.push_front(RecentFocusEntry {
             element: user_id,
-            attribute: Some(hg.subject_attr),
+            attribute: Some(hypergraph.subject_attr),
             frame: None,
             tick: Tick(0),
         });
-        hg.recent_focus.push_front(RecentFocusEntry {
+        hypergraph.recent_focus.push_front(RecentFocusEntry {
             element: user_id,
-            attribute: Some(hg.target_attr),
+            attribute: Some(hypergraph.target_attr),
             frame: None,
             tick: Tick(1),
         });
-        let cands = collect_candidates(&hg);
+        let cands = collect_candidates(&hypergraph);
         assert_eq!(cands.len(), 1, "duplicate element should collapse");
         let c = &cands[0];
         assert_eq!(c.element, user_id);
         assert_eq!(c.attributes.len(), 2);
-        assert!(c.attributes.contains(&Some(hg.subject_attr)));
-        assert!(c.attributes.contains(&Some(hg.target_attr)));
+        assert!(c.attributes.contains(&Some(hypergraph.subject_attr)));
+        assert!(c.attributes.contains(&Some(hypergraph.target_attr)));
         assert_eq!(c.freshest_tick.0, 1, "freshest tick should win");
     }
 
     #[test]
     fn name_overlap_pronoun_returns_zero() {
-        let hg = load_seed_graph();
-        let user_id = hg.by_name["user"][0];
+        let hypergraph = load_seed_graph();
+        let user_id = hypergraph.by_name["user"][0];
         let span = pronoun_span("She", 0, 3);
-        assert_eq!(name_overlap(&span, &hg, user_id), 0.0);
+        assert_eq!(name_overlap(&span, &hypergraph, user_id), 0.0);
     }
 
     #[test]
     fn name_overlap_definite_description_exact_match() {
-        let hg = load_seed_graph();
-        let user_id = hg.by_name["user"][0];
+        let hypergraph = load_seed_graph();
+        let user_id = hypergraph.by_name["user"][0];
         let span = def_desc_span("the user", 0, 8);
-        assert_eq!(name_overlap(&span, &hg, user_id), 1.0);
+        assert_eq!(name_overlap(&span, &hypergraph, user_id), 1.0);
     }
 
     #[test]
@@ -661,9 +661,9 @@ mod tests {
         // Pick an element whose name contains "user" but isn't exact.
         // (Synthetic case — `user` is a one-word seeded element so
         // we mint a custom element to test the substring branch.)
-        let mut hg = load_seed_graph();
+        let mut hypergraph = load_seed_graph();
         let elem = crate::types::Element {
-            id: ElementId(hg.elements.len() as u32),
+            id: ElementId(hypergraph.elements.len() as u32),
             names: vec!["super_user".to_string()],
             stats: crate::types::MemoryStats::default(),
             created_at: Tick(0),
@@ -671,39 +671,39 @@ mod tests {
             polarity: crate::types::Polarity::Signal,
         };
         let id = elem.id;
-        hg.elements.push(elem);
-        hg.by_name.insert("super_user".to_string(), vec![id]);
+        hypergraph.elements.push(elem);
+        hypergraph.by_name.insert("super_user".to_string(), vec![id]);
 
         let span = def_desc_span("the user", 0, 8);
-        assert_eq!(name_overlap(&span, &hg, id), 0.5);
+        assert_eq!(name_overlap(&span, &hypergraph, id), 0.5);
     }
 
     #[test]
     fn recency_bonus_drops_with_tick_distance() {
-        let mut hg = load_seed_graph();
-        let user_id = hg.by_name["user"][0];
-        hg.clock = Tick(10);
+        let mut hypergraph = load_seed_graph();
+        let user_id = hypergraph.by_name["user"][0];
+        hypergraph.clock = Tick(10);
         let cand = Candidate {
             element: user_id,
             attributes: vec![],
             freshest_tick: Tick(10),
         };
-        assert_eq!(recency_bonus(&cand, hg.clock), 1.0);
+        assert_eq!(recency_bonus(&cand, hypergraph.clock), 1.0);
         let cand_old = Candidate {
             freshest_tick: Tick(0),
             ..cand.clone()
         };
-        let bonus = recency_bonus(&cand_old, hg.clock);
+        let bonus = recency_bonus(&cand_old, hypergraph.clock);
         assert!(bonus < 0.1, "10 ticks ago should score < 0.1; got {bonus}");
     }
 
     #[test]
     fn attribute_overlap_hint_rewards_attributed_focus() {
-        let hg = load_seed_graph();
-        let user_id = hg.by_name["user"][0];
+        let hypergraph = load_seed_graph();
+        let user_id = hypergraph.by_name["user"][0];
         let attributed = Candidate {
             element: user_id,
-            attributes: vec![Some(hg.subject_attr)],
+            attributes: vec![Some(hypergraph.subject_attr)],
             freshest_tick: Tick(0),
         };
         let unattributed = Candidate {
@@ -717,16 +717,16 @@ mod tests {
 
     #[test]
     fn score_candidate_combines_terms() {
-        let mut hg = load_seed_graph();
-        let user_id = hg.by_name["user"][0];
-        hg.clock = Tick(0);
+        let mut hypergraph = load_seed_graph();
+        let user_id = hypergraph.by_name["user"][0];
+        hypergraph.clock = Tick(0);
         let span = def_desc_span("the user", 0, 8);
         let cand = Candidate {
             element: user_id,
-            attributes: vec![Some(hg.subject_attr)],
+            attributes: vec![Some(hypergraph.subject_attr)],
             freshest_tick: Tick(0),
         };
-        let s = score_candidate(&span, "the user replied.", &hg, &cand);
+        let s = score_candidate(&span, "the user replied.", &hypergraph, &cand);
         // name_overlap = 1.0; embedding_sim ∈ [0, 1]; attr hint = 0.5;
         // recency = 1.0 (same-tick). Lower bound ≈ 2.5.
         assert!(s >= 2.5, "expected >= 2.5; got {s}");
@@ -736,9 +736,9 @@ mod tests {
 
     #[test]
     fn no_false_positive_for_bare_the() {
-        let hg = load_seed_graph();
+        let hypergraph = load_seed_graph();
         // "the." with no following word — skip.
-        let spans = detect_ambiguous_spans("the.", &hg, &[]);
+        let spans = detect_ambiguous_spans("the.", &hypergraph, &[]);
         let dd: Vec<&AmbiguousSpan> = spans
             .iter()
             .filter(|s| s.kind == AmbiguousKind::DefiniteDescription)

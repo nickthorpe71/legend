@@ -1,6 +1,6 @@
 use crate::types::{Intent, Policy};
 
-/// Step 2 of the tick pipeline. Map the 4-dim `Intent` from Step 1 onto
+/// `adjust_policy` of the tick pipeline. Map the 4-dim `Intent` from `detect_intent` onto
 /// the substrate knobs via the §10.6 formulas, returning a per-tick
 /// Policy that Steps 3–13 see. Pure scalar arithmetic — no model, no
 /// allocation beyond the Policy clone.

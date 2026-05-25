@@ -31,13 +31,13 @@ fn temp_dir(label: &str) -> PathBuf {
     dir
 }
 
-fn tick(hg: &mut Hypergraph, text: &str) {
+fn tick(hypergraph: &mut Hypergraph, text: &str) {
     let policy = Policy::default();
-    let ext = run_extractors(text, &[], &policy, hg, &[]);
-    let step8 = build_relations(text, hg, &ext, &policy, None);
-    let step9 = supersede(hg, &step8.minted_relations, &policy);
-    let step10 = hebbian_and_salience(hg, &step8, &step9, None, &policy, &[]);
-    let _ = focus_radius_decay(hg, &step10.reinforced, &policy);
+    let ext = run_extractors(text, &[], &policy, hypergraph, &[]);
+    let built_relations = build_relations(text, hypergraph, &ext, &policy, None);
+    let superseded = supersede(hypergraph, &built_relations.minted_relations, &policy);
+    let reinforced = hebbian_and_salience(hypergraph, &built_relations, &superseded, None, &policy, &[]);
+    let _ = focus_radius_decay(hypergraph, &reinforced.reinforced, &policy);
 }
 
 #[test]
@@ -50,18 +50,18 @@ fn git_merge_driver_unifies_two_branches_via_subprocess() {
     let ours = dir.join("ours.lz4");
     let theirs = dir.join("theirs.lz4");
 
-    let hg_ancestor = load_seed_graph();
-    persistence::save(&hg_ancestor, &ancestor).expect("save ancestor");
+    let hypergraph_ancestor = load_seed_graph();
+    persistence::save(&hypergraph_ancestor, &ancestor).expect("save ancestor");
 
-    let mut hg_ours = load_seed_graph();
-    tick(&mut hg_ours, "Polaris is written in Rust.");
-    let ours_elements = hg_ours.elements.len();
-    let ours_relations = hg_ours.relations.len();
-    persistence::save(&hg_ours, &ours).expect("save ours");
+    let mut hypergraph_ours = load_seed_graph();
+    tick(&mut hypergraph_ours, "Polaris is written in Rust.");
+    let ours_elements = hypergraph_ours.elements.len();
+    let ours_relations = hypergraph_ours.relations.len();
+    persistence::save(&hypergraph_ours, &ours).expect("save ours");
 
-    let mut hg_theirs = load_seed_graph();
-    tick(&mut hg_theirs, "Beam is a Go server.");
-    persistence::save(&hg_theirs, &theirs).expect("save theirs");
+    let mut hypergraph_theirs = load_seed_graph();
+    tick(&mut hypergraph_theirs, "Beam is a Go server.");
+    persistence::save(&hypergraph_theirs, &theirs).expect("save theirs");
 
     // Invoke the merge driver exactly as git would.
     let bin = env!("CARGO_BIN_EXE_legend");
@@ -119,13 +119,13 @@ fn git_merge_driver_dedupes_same_entity_minted_on_both_branches() {
 
     persistence::save(&load_seed_graph(), &ancestor).expect("save ancestor");
 
-    let mut hg_ours = load_seed_graph();
-    tick(&mut hg_ours, "Polaris is a project.");
-    persistence::save(&hg_ours, &ours).expect("save ours");
+    let mut hypergraph_ours = load_seed_graph();
+    tick(&mut hypergraph_ours, "Polaris is a project.");
+    persistence::save(&hypergraph_ours, &ours).expect("save ours");
 
-    let mut hg_theirs = load_seed_graph();
-    tick(&mut hg_theirs, "Polaris is a project.");
-    persistence::save(&hg_theirs, &theirs).expect("save theirs");
+    let mut hypergraph_theirs = load_seed_graph();
+    tick(&mut hypergraph_theirs, "Polaris is a project.");
+    persistence::save(&hypergraph_theirs, &theirs).expect("save theirs");
 
     let bin = env!("CARGO_BIN_EXE_legend");
     let output = std::process::Command::new(bin)
@@ -164,13 +164,13 @@ fn git_merge_driver_handles_meta_relations_correctly() {
 
     persistence::save(&load_seed_graph(), &ancestor).expect("save ancestor");
 
-    let mut hg_ours = load_seed_graph();
-    tick(&mut hg_ours, "Polaris switched from Rust to Go.");
-    persistence::save(&hg_ours, &ours).expect("save ours");
+    let mut hypergraph_ours = load_seed_graph();
+    tick(&mut hypergraph_ours, "Polaris switched from Rust to Go.");
+    persistence::save(&hypergraph_ours, &ours).expect("save ours");
 
-    let mut hg_theirs = load_seed_graph();
-    tick(&mut hg_theirs, "Beam switched from Python to Rust.");
-    persistence::save(&hg_theirs, &theirs).expect("save theirs");
+    let mut hypergraph_theirs = load_seed_graph();
+    tick(&mut hypergraph_theirs, "Beam switched from Python to Rust.");
+    persistence::save(&hypergraph_theirs, &theirs).expect("save theirs");
 
     let bin = env!("CARGO_BIN_EXE_legend");
     let output = std::process::Command::new(bin)
@@ -344,16 +344,16 @@ fn real_git_merge_auto_resolves_memory_lz4_conflict() {
 
     // Branch `theirs`: add Beam to the substrate, commit.
     run_git(&dir, &["checkout", "-b", "theirs"]);
-    let mut hg_theirs = persistence::load(&snapshot).expect("load on theirs");
-    tick(&mut hg_theirs, "Beam is a Go server.");
-    persistence::save(&hg_theirs, &snapshot).expect("save theirs");
+    let mut hypergraph_theirs = persistence::load(&snapshot).expect("load on theirs");
+    tick(&mut hypergraph_theirs, "Beam is a Go server.");
+    persistence::save(&hypergraph_theirs, &snapshot).expect("save theirs");
     run_git(&dir, &["commit", "-am", "theirs: Beam"]);
 
     // Back to main: add Polaris instead, commit.
     run_git(&dir, &["checkout", "main"]);
-    let mut hg_main = persistence::load(&snapshot).expect("load on main");
-    tick(&mut hg_main, "Polaris is written in Rust.");
-    persistence::save(&hg_main, &snapshot).expect("save main");
+    let mut hypergraph_main = persistence::load(&snapshot).expect("load on main");
+    tick(&mut hypergraph_main, "Polaris is written in Rust.");
+    persistence::save(&hypergraph_main, &snapshot).expect("save main");
     run_git(&dir, &["commit", "-am", "main: Polaris"]);
 
     // Without the merge driver, this would CONFLICT on memory.lz4.
@@ -435,9 +435,9 @@ fn real_git_merge_falls_back_to_conflict_when_driver_errors() {
     run_git(&dir, &["commit", "-am", "drift: tampered"]);
 
     run_git(&dir, &["checkout", "main"]);
-    let mut hg_main = persistence::load(&snapshot).unwrap();
-    tick(&mut hg_main, "Polaris is a project.");
-    persistence::save(&hg_main, &snapshot).unwrap();
+    let mut hypergraph_main = persistence::load(&snapshot).unwrap();
+    tick(&mut hypergraph_main, "Polaris is a project.");
+    persistence::save(&hypergraph_main, &snapshot).unwrap();
     run_git(&dir, &["commit", "-am", "main: Polaris"]);
 
     let output = run_git_output(&dir, &["merge", "--no-edit", "drift"]);
