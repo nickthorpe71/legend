@@ -81,11 +81,25 @@ fn parse(bytes: &[u8]) -> Classifier {
     );
     let mut weights = [0.0f32; CLASSIFIER_FEATURE_COUNT];
     let mut iter = bytes.chunks_exact(4);
+    const REGEN: &str =
+        "regenerate with `cargo run --release --example gen_intent_classifiers`";
     for slot in weights.iter_mut() {
-        let chunk = iter.next().expect("weight chunk");
-        *slot = f32::from_le_bytes(chunk.try_into().expect("4 bytes"));
+        let chunk = iter
+            .next()
+            .unwrap_or_else(|| panic!("intent classifier bin truncated — {REGEN}"));
+        *slot = f32::from_le_bytes(
+            chunk
+                .try_into()
+                .unwrap_or_else(|_| panic!("intent classifier bin chunk is not 4 bytes — {REGEN}")),
+        );
     }
-    let bias_chunk = iter.next().expect("bias chunk");
-    let bias = f32::from_le_bytes(bias_chunk.try_into().expect("4 bytes"));
+    let bias_chunk = iter
+        .next()
+        .unwrap_or_else(|| panic!("intent classifier bin missing bias — {REGEN}"));
+    let bias = f32::from_le_bytes(
+        bias_chunk
+            .try_into()
+            .unwrap_or_else(|_| panic!("intent classifier bias chunk is not 4 bytes — {REGEN}")),
+    );
     Classifier { weights, bias }
 }

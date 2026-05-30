@@ -11,7 +11,7 @@
 
 // Always-on. The INT8 path is the production runtime; pure-logic
 // helpers (decoding, preprocessor, rel-pos buckets, tokenizer) sit
-// here too so Step 5 can call them without the feature flag.
+// here too so callers can use them without the feature flag.
 pub mod decoding;
 pub mod forward_int8;
 pub mod predict;

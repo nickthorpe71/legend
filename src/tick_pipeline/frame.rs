@@ -117,7 +117,7 @@ pub fn rrf_merge(ranked_lists: &[Vec<RelationId>], k: u32) -> Vec<(RelationId, f
 }
 
 /// Assemble the tick's `ConsciousAttentionFrame`. Read-only over
-/// the Hypergraph — all structural mutation belongs to Steps 7-11.
+/// the Hypergraph — all structural mutation happened upstream.
 ///
 /// - `focused_relations`: RRF over (dense activation rank +
 ///   path-reinforced focus_success_count rank) of the
@@ -544,9 +544,10 @@ mod tests {
         }
     }
 
-    /// Drive the tick pipeline up through hebbian_and_salience over a sentence, return everything
-    /// `assemble_frame` needs. Steps 7 (apply_region_delta) and 11 (decay)
-    /// are skipped — they don't materially affect frame assembly.
+    /// Drive the tick pipeline up through `hebbian_and_salience` over a
+    /// sentence and return everything `assemble_frame` needs.
+    /// `apply_region_delta` and `focus_radius_decay` are skipped — they
+    /// don't materially affect frame assembly.
     fn run_through_hebbian(
         text: &str,
         labels: &[&str],
@@ -861,7 +862,8 @@ mod tests {
     ///   - prior cache id appears in history
     ///   - derived_from meta in supporting_claims
     ///
-    /// Exercises the full handoff from Steps 8/9/10 through `assemble_frame`.
+    /// Exercises the full handoff from `build_relations` / `supersede` /
+    /// `hebbian_and_salience` through `assemble_frame`.
     #[test]
     fn two_tick_integration_supersession_threads_through_frame() {
         let policy = Policy::default();

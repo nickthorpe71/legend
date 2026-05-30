@@ -1,15 +1,12 @@
 //! End-to-end GLiNER2 prediction: raw text + label list → labeled
 //! character-offset spans. Wraps the preprocessor + INT8 forward pass
 //! + decoder + word→char mapping.
-//!
-//! Public entry point for Step 5 (`run_extractors`).
 
 use crate::inference::deberta::forward_int8::predict_entities_int8;
 use crate::inference::deberta::preprocess::{Word, build_inputs};
 use crate::inference::deberta::weights_int8::WeightsDebertaInt8;
 
-/// One labeled entity, with character offsets ready to feed into the
-/// Step 5 proposal queue.
+/// One labeled entity: label + character offsets + confidence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LabeledSpan {
     /// Inclusive char offset of the first character.

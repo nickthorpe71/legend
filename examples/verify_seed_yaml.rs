@@ -1,7 +1,7 @@
 //! Verify `seed_pack.yaml` survived the 14-region + 20-examples-per-region
 //! migration. Checks shape, string round-trip integrity, and seeded-
-//! relation consistency. Does NOT verify embeddings or pipeline behavior
-//! — those are downstream of Step 1.
+//! relation consistency. Does NOT verify embeddings or runtime
+//! behavior — only the YAML's own structural sanity.
 //!
 //! Run: `cargo run --release --example verify_seed_yaml`
 //!

@@ -17,10 +17,36 @@
 //! any modern CPU. An HNSW/IVF index becomes worth the dependency
 //! only past N ≈ 100K.
 
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 
 use crate::math::dot;
 use crate::types::{ElementId, Hypergraph, Polarity};
+
+/// Score + id pair with a total ordering on score (higher = greater),
+/// breaking ties on lower id (so the smaller id wins). Wraps `f32`
+/// (which lacks `Ord`) so it can drop into a `BinaryHeap`.
+#[derive(Copy, Clone, PartialEq)]
+struct ScoredId {
+    score: f32,
+    id: ElementId,
+}
+
+impl Eq for ScoredId {}
+
+impl Ord for ScoredId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then(other.id.0.cmp(&self.id.0))
+    }
+}
+
+impl PartialOrd for ScoredId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// Return the top-`k` Signal elements whose inline embedding is
 /// closest (by cosine, which equals dot for L2-normalized vectors)
@@ -37,7 +63,12 @@ pub fn topical_neighbors(hypergraph: &Hypergraph, embedding: &[f32], k: usize) -
     if k == 0 || embedding.is_empty() {
         return Vec::new();
     }
-    let mut scored: Vec<(ElementId, f32)> = Vec::with_capacity(hypergraph.elements.len());
+    // Bounded min-heap over (score, id). After scanning N elements,
+    // the heap holds the top-k by score with deterministic tie-break.
+    // BinaryHeap is a max-heap; Reverse turns it into a min-heap so
+    // the smallest score sits at the root and gets popped when a new
+    // candidate beats it.
+    let mut heap: BinaryHeap<Reverse<ScoredId>> = BinaryHeap::with_capacity(k + 1);
     for el in &hypergraph.elements {
         if el.polarity == Polarity::Void {
             continue;
@@ -45,16 +76,21 @@ pub fn topical_neighbors(hypergraph: &Hypergraph, embedding: &[f32], k: usize) -
         if el.embedding.len() != embedding.len() {
             continue;
         }
-        let score = dot(embedding, &el.embedding);
-        scored.push((el.id, score));
+        let candidate = ScoredId {
+            score: dot(embedding, &el.embedding),
+            id: el.id,
+        };
+        heap.push(Reverse(candidate));
+        if heap.len() > k {
+            heap.pop();
+        }
     }
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(Ordering::Equal)
-            .then(a.0.0.cmp(&b.0.0))
-    });
-    scored.truncate(k);
-    scored.into_iter().map(|(id, _)| id).collect()
+    // `into_sorted_vec` returns ascending in `Reverse<T>` order,
+    // which is descending in `T` order — i.e. our desired output.
+    heap.into_sorted_vec()
+        .into_iter()
+        .map(|Reverse(s)| s.id)
+        .collect()
 }
 
 #[cfg(test)]

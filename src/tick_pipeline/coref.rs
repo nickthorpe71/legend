@@ -276,7 +276,12 @@ pub(crate) fn collect_candidates(hypergraph: &Hypergraph) -> Vec<Candidate> {
     }
     order
         .into_iter()
-        .map(|id| by_element.remove(&id).unwrap())
+        .map(|id| {
+            by_element.remove(&id).expect(
+                "by_element must contain every id from `order`; both are built from \
+                 the same recent_focus walk in the same pass",
+            )
+        })
         .collect()
 }
 

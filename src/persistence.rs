@@ -191,6 +191,7 @@ pub fn save(hypergraph: &Hypergraph, path: &Path) -> Result<(), PersistError> {
     }
 
     let tmp_path = atomic_tmp_path(path);
+    let mut tmp_guard = TmpFileGuard::new(&tmp_path);
     // Scope the file handle so its drop runs before the rename.
     {
         let mut f = fs::File::create(&tmp_path).map_err(|source| PersistError::Io {
@@ -225,6 +226,7 @@ pub fn save(hypergraph: &Hypergraph, path: &Path) -> Result<(), PersistError> {
         path: path.to_path_buf(),
         source,
     })?;
+    tmp_guard.disarm();
     Ok(())
 }
 
@@ -232,6 +234,41 @@ fn atomic_tmp_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".tmp.{}", process::id()));
     path.with_file_name(name)
+}
+
+/// Removes `path` on drop unless `disarm` is called first. Used by
+/// `save` so any early exit (write/sync/rename failure) cleans up the
+/// `.tmp.<pid>` file instead of leaving it stranded.
+struct TmpFileGuard<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl<'a> TmpFileGuard<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path, armed: true }
+    }
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TmpFileGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // ENOENT is fine — the `fs::File::create` may have failed
+        // before anything landed on disk.
+        if let Err(e) = fs::remove_file(self.path)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "[persistence] tmp cleanup failed: {e}, path={}",
+                self.path.display(),
+            );
+        }
+    }
 }
 
 // ─── Load ────────────────────────────────────────────────────────────

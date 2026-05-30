@@ -46,8 +46,9 @@ pub fn split_words(text: &str) -> Vec<Word> {
         .collect()
 }
 
-/// Everything Step 5 needs to feed into the INT8 forward pass plus
-/// the inverse mapping for decoding entities back to char offsets.
+/// GLiNER2 batch inputs ready for the INT8 forward pass, plus the
+/// word list needed to decode predicted word spans back to char
+/// offsets.
 #[derive(Debug)]
 pub struct GlinerInputs {
     pub input_ids: Vec<u32>,

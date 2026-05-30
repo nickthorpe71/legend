@@ -215,8 +215,12 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
 
     run_accept_loop(listener, &mut hypergraph, &snapshot_path)?;
 
-    let _ = std::fs::remove_file(port_path());
-    let _ = FileExt::unlock(&lock_file);
+    if let Err(e) = std::fs::remove_file(port_path()) {
+        eprintln!("[daemon] cleanup warning: failed to remove port file: {e}");
+    }
+    if let Err(e) = FileExt::unlock(&lock_file) {
+        eprintln!("[daemon] cleanup warning: failed to release lock: {e}");
+    }
     eprintln!("[daemon] exiting cleanly");
     Ok(())
 }

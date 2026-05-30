@@ -119,7 +119,13 @@ pub fn route_regions(embedding: &[f32], hypergraph: &Hypergraph, policy: &Policy
                         (pid, dot(embedding, &proto.embedding))
                     })
                     .collect();
-                sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                // partial_cmp returns None only on NaN. Sort as Equal
+                // instead of panicking so a quantization or weight
+                // glitch degrades the routing decision rather than
+                // crashing the daemon.
+                sims.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
                 // best_proto = the single highest-cosine prototype
                 // (still used for prototype_updates so `apply_region_delta`'s
                 // per-prototype drift has a target).

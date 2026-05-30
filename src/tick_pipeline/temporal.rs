@@ -98,4 +98,14 @@ mod tests {
         let spans = extract_temporal("Pure text with no times in it.");
         assert!(spans.is_empty());
     }
+
+    /// Forces all three `LazyLock<Regex>` to evaluate at test time so a
+    /// typo in any pattern is caught here instead of crashing the
+    /// daemon on the first temporal extraction.
+    #[test]
+    fn lazy_regexes_compile() {
+        let _ = WEEKDAY_RE.is_match("");
+        let _ = MONTH_RE.is_match("");
+        let _ = PHRASE_RE.is_match("");
+    }
 }

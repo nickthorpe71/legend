@@ -438,34 +438,52 @@ fn support_count_accumulates_across_sessions() {
     // support_count climbing across ticks. If support_count resets at
     // every session boundary, promotion would never fire for a
     // long-running multi-session conversation.
+    //
+    // support_count is bumped by `mint_or_reuse_base_relation`'s reuse
+    // path — i.e. when the same attribute list re-extracts. Driving the
+    // same sentence repeatedly is the simplest way to force reuse;
+    // realistic conversation also reuses (re-mentioning the same fact),
+    // but identical input is the test-stable version.
     let path = temp_path("support_count");
+    let text = "Carol started a project.";
     let mut hypergraph = load_seed_graph();
-    tick(&mut hypergraph, "Carol started a project.");
 
-    // Pick a minted relation involving "Carol" we can track.
-    let carol_rel = find_relation_subj_attr(&hypergraph, "Carol", "instance_of");
-    assert!(carol_rel.is_some());
-    let carol_rel_id = carol_rel.unwrap();
-    let support_after_tick_1 = hypergraph.relations[carol_rel_id.0 as usize].stats.support_count;
-    assert!(
-        support_after_tick_1 >= 1,
-        "first tick should bump support_count at least once"
+    // Tick 1 mints; tick 2 within the same session must hit reuse and
+    // bump support_count exactly once (mints start at 0).
+    tick(&mut hypergraph, text);
+    let carol_rel_id = find_relation_subj_attr(&hypergraph, "Carol", "instance_of")
+        .expect("tick 1 should mint a Carol instance_of relation");
+    assert_eq!(
+        hypergraph.relations[carol_rel_id.0 as usize].stats.support_count,
+        0,
+        "fresh mint starts at support_count=0",
     );
 
-    // Cross session, re-mention Carol.
+    tick(&mut hypergraph, text);
+    let support_pre_save = hypergraph.relations[carol_rel_id.0 as usize].stats.support_count;
+    assert_eq!(
+        support_pre_save, 1,
+        "in-session re-tick should bump support_count via the reuse path",
+    );
+
+    // Cross the session boundary. support_count must survive the
+    // save/load round-trip.
     let mut hypergraph2 = save_drop_load(hypergraph, &path);
     let support_after_load = hypergraph2.relations[carol_rel_id.0 as usize].stats.support_count;
     assert_eq!(
-        support_after_load, support_after_tick_1,
-        "support_count must survive save/load unchanged"
+        support_after_load, support_pre_save,
+        "support_count must survive save/load unchanged",
     );
 
-    tick(&mut hypergraph2, "Carol works in Rust.");
-    let support_after_tick_2 = hypergraph2.relations[carol_rel_id.0 as usize].stats.support_count;
-    assert!(
-        support_after_tick_2 > support_after_load,
-        "re-mentioning Carol across the session boundary should bump support_count further: \
-         before={support_after_load} after={support_after_tick_2}",
+    // Same input across the boundary should continue to bump — proving
+    // the cross-session accumulation the comment above promises.
+    tick(&mut hypergraph2, text);
+    let support_post_load = hypergraph2.relations[carol_rel_id.0 as usize].stats.support_count;
+    assert_eq!(
+        support_post_load,
+        support_after_load + 1,
+        "re-extraction after load must bump support_count: \
+         before={support_after_load} after={support_post_load}",
     );
 
     let _ = fs::remove_file(&path);
