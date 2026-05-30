@@ -452,13 +452,15 @@ mod tests {
     #[test]
     fn loads_expected_counts() {
         let hypergraph = load_seed_graph();
-        // 2 anchors + 32 attrs + 22 regions (14 signal + 8 void)
-        // + 8 frames + 2 classes + 440 prototypes (22 × 20)
-        // + 118 void members = 624.
-        assert_eq!(hypergraph.elements.len(), 624);
+        // 2 anchors + 33 attrs (incl. canonical_value)
+        // + 22 regions (14 signal + 8 void) + 8 frames + 2 classes
+        // + 440 prototypes (22 × 20) + 118 void members
+        // + 34 units (5 dimensions + 29 members) = 659.
+        assert_eq!(hypergraph.elements.len(), 659);
         // 22 region-class + 8 frame-class + 22 region-parent
-        // + 440 prototype-attach + 118 member instance_of = 610.
-        assert_eq!(hypergraph.relations.len(), 610);
+        // + 440 prototype-attach + 118 member instance_of
+        // + 29 unit→dimension pins = 639.
+        assert_eq!(hypergraph.relations.len(), 639);
     }
 
     #[test]

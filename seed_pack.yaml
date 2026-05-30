@@ -444,6 +444,20 @@ seeded_attribute_names:
       relational and forward-looking. Surface aliases: `blocks`,
       `stops`, `keeps from`, `precludes`.
 
+  # ----- Core-competence attribute names (L2) -----
+
+  - element_id: ATTR_CANONICAL_VALUE
+    names: ["canonical_value"]
+    rationale: >
+      consumed_by: quantity_arith. Meta-relation slot carrying a
+      quantity leaf's parsed canonical form (magnitude + base unit),
+      written at build time so it survives across ticks and makes
+      supersession value-aware — a `$90k`→`$120k` change flips the
+      cache, and `$1.2M` / `$1,200,000` consolidate instead of
+      double-counting. The value it points at is an ordinary
+      value-Element whose `names` hold a real surface form, never a
+      machine-readable "=" token (which would pollute `by_name`).
+
 # ---------------------------------------------------------------------
 # 3. Seed regions (14) — shape priors that bias §10.2 routing. Broad
 #    enough that any domain's inputs find a parent on first contact.
@@ -1340,6 +1354,63 @@ reference_frames:
       frame so they don't compete with substantive inputs for focus.
 
 # ---------------------------------------------------------------------
+# 4b. Units & dimensions (L2 core-competence knowledge) — consumed_by
+#     the quantity_arith kernel. Each unit Element's `names` hold REAL
+#     SURFACE FORMS ONLY; conversion factors + per-dimension Weber
+#     fractions live in the kernel's UnitIndex (#[serde(skip)], keyed
+#     by surface form), never in `names`. Increment 1 seeds the five
+#     multiplicative-factor dimensions; temperature (affine), area,
+#     power, and extra currencies (CAD/AUD/JPY/…) are a staged
+#     fast-follow. Bare ambiguous forms ("m", "in", "us") are omitted —
+#     they collide with words/pronouns in `by_name`.
+# ---------------------------------------------------------------------
+
+units:
+
+  dimensions:
+    - { element_id: DIM_CURRENCY, names: ["currency"] }
+    - { element_id: DIM_MASS,     names: ["mass", "weight"] }
+    - { element_id: DIM_LENGTH,   names: ["length", "distance"] }
+    - { element_id: DIM_DURATION, names: ["duration"] }
+    - { element_id: DIM_DATA,     names: ["data"] }
+
+  members:
+    # currency (distinct codes; no FX — compared within a code only)
+    - { element_id: UNIT_USD, names: ["usd", "$", "dollars", "dollar"] }
+    - { element_id: UNIT_EUR, names: ["eur", "€", "euros", "euro"] }
+    - { element_id: UNIT_GBP, names: ["gbp", "£", "pounds sterling"] }
+    # mass (base kg)
+    - { element_id: UNIT_KG,  names: ["kg", "kilogram", "kilograms"] }
+    - { element_id: UNIT_G,   names: ["gram", "grams"] }
+    - { element_id: UNIT_MG,  names: ["mg", "milligram", "milligrams"] }
+    - { element_id: UNIT_LB,  names: ["lb", "lbs", "pound", "pounds"] }
+    - { element_id: UNIT_OZ,  names: ["oz", "ounce", "ounces"] }
+    # length (base m) — bare "m"/"in" omitted (ambiguous)
+    - { element_id: UNIT_M,   names: ["meter", "meters", "metre"] }
+    - { element_id: UNIT_CM,  names: ["cm", "centimeter", "centimeters"] }
+    - { element_id: UNIT_MM,  names: ["mm", "millimeter", "millimeters"] }
+    - { element_id: UNIT_KM,  names: ["km", "kilometer", "kilometers"] }
+    - { element_id: UNIT_IN,  names: ["inch", "inches"] }
+    - { element_id: UNIT_FT,  names: ["ft", "feet", "foot"] }
+    - { element_id: UNIT_MI,  names: ["mi", "mile", "miles"] }
+    # duration (base s) — bare "us" omitted (pronoun collision)
+    - { element_id: UNIT_NS,  names: ["ns", "nanosecond", "nanoseconds"] }
+    - { element_id: UNIT_US,  names: ["µs", "microsecond", "microseconds"] }
+    - { element_id: UNIT_MS,  names: ["ms", "millisecond", "milliseconds"] }
+    - { element_id: UNIT_SEC, names: ["sec", "second", "seconds"] }
+    - { element_id: UNIT_MIN, names: ["min", "minute", "minutes"] }
+    - { element_id: UNIT_HR,  names: ["hr", "hour", "hours"] }
+    - { element_id: UNIT_DAY, names: ["day", "days"] }
+    - { element_id: UNIT_WK,  names: ["week", "weeks"] }
+    # data (base bytes; binary 1024 ladder)
+    - { element_id: UNIT_B,   names: ["byte", "bytes"] }
+    - { element_id: UNIT_KB,  names: ["kb", "kilobyte", "kilobytes"] }
+    - { element_id: UNIT_MB,  names: ["mb", "megabyte", "megabytes"] }
+    - { element_id: UNIT_GB,  names: ["gb", "gigabyte", "gigabytes"] }
+    - { element_id: UNIT_TB,  names: ["tb", "terabyte", "terabytes"] }
+    - { element_id: UNIT_PB,  names: ["pb", "petabyte", "petabytes"] }
+
+# ---------------------------------------------------------------------
 # 5. Seeded relations — bindings that pin seed elements into their
 #    structural roles.
 #
@@ -1437,6 +1508,43 @@ seeded_relations:
       - [REGION_AUXILIARIES,    parent_region, VOID,    1.0]
       - [REGION_PARTICLES,      parent_region, VOID,    1.0]
       - [REGION_INTERJECTIONS,  parent_region, VOID,    1.0]
+
+  unit_dimension_pins:
+    rationale: >
+      consumed_by: quantity_arith. Pin each seeded unit to its
+      dimension via `instance_of`, so the kernel's UnitIndex groups
+      units by dimension at load (rebuild_indices) and refuses
+      cross-dimension comparison. Same shape as region_class_pins.
+    relations:
+      - [UNIT_USD, instance_of, DIM_CURRENCY]
+      - [UNIT_EUR, instance_of, DIM_CURRENCY]
+      - [UNIT_GBP, instance_of, DIM_CURRENCY]
+      - [UNIT_KG,  instance_of, DIM_MASS]
+      - [UNIT_G,   instance_of, DIM_MASS]
+      - [UNIT_MG,  instance_of, DIM_MASS]
+      - [UNIT_LB,  instance_of, DIM_MASS]
+      - [UNIT_OZ,  instance_of, DIM_MASS]
+      - [UNIT_M,   instance_of, DIM_LENGTH]
+      - [UNIT_CM,  instance_of, DIM_LENGTH]
+      - [UNIT_MM,  instance_of, DIM_LENGTH]
+      - [UNIT_KM,  instance_of, DIM_LENGTH]
+      - [UNIT_IN,  instance_of, DIM_LENGTH]
+      - [UNIT_FT,  instance_of, DIM_LENGTH]
+      - [UNIT_MI,  instance_of, DIM_LENGTH]
+      - [UNIT_NS,  instance_of, DIM_DURATION]
+      - [UNIT_US,  instance_of, DIM_DURATION]
+      - [UNIT_MS,  instance_of, DIM_DURATION]
+      - [UNIT_SEC, instance_of, DIM_DURATION]
+      - [UNIT_MIN, instance_of, DIM_DURATION]
+      - [UNIT_HR,  instance_of, DIM_DURATION]
+      - [UNIT_DAY, instance_of, DIM_DURATION]
+      - [UNIT_WK,  instance_of, DIM_DURATION]
+      - [UNIT_B,   instance_of, DIM_DATA]
+      - [UNIT_KB,  instance_of, DIM_DATA]
+      - [UNIT_MB,  instance_of, DIM_DATA]
+      - [UNIT_GB,  instance_of, DIM_DATA]
+      - [UNIT_TB,  instance_of, DIM_DATA]
+      - [UNIT_PB,  instance_of, DIM_DATA]
 
 # ---------------------------------------------------------------------
 # 6. Intent prototype banks — Step 1's `Intent` vector (§11.2)

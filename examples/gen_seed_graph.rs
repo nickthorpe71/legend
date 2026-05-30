@@ -324,6 +324,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         region_to_members.insert(region_id, members);
     }
 
+    // ── 6c. Units & dimensions (L2 core-competence knowledge) ─────────
+    // The `quantity_arith` kernel reads these. Dimensions first (so the
+    // unit_dimension pins in §8c can resolve them), then units. Plain
+    // Signal Elements; the embedding is the bare-name vector — the
+    // kernel parses surface forms, not embeddings. Conversion factors
+    // live in the runtime UnitIndex, never in the seed graph.
+    for dim in &pack.units.dimensions {
+        mint_element(
+            &mut elements,
+            &mut symbol_to_id,
+            &dim.element_id,
+            dim.names.clone(),
+            embed_text(&dim.names[0]),
+            Polarity::Signal,
+        );
+    }
+    for unit in &pack.units.members {
+        mint_element(
+            &mut elements,
+            &mut symbol_to_id,
+            &unit.element_id,
+            unit.names.clone(),
+            embed_text(&unit.names[0]),
+            Polarity::Signal,
+        );
+    }
+
     // Cached attribute IDs the runtime will read from the bin header.
     let subject_attr_id = *name_to_attr_id
         .get("subject")
@@ -410,21 +437,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // ── 8c. Unit→dimension pins ───────────────────────────────────────
+    // `(UNIT_X, instance_of, DIM_Y)` — lets rebuild_indices group units
+    // by dimension and the kernel refuse cross-dimension comparison.
+    // Same shape as region_class_pins.
+    for entry in &pack.seeded_relations.unit_dimension_pins.relations {
+        let (a, attr, b, w) = unpack_tuple(entry);
+        mint_relation(
+            &mut relations,
+            subject_attr_id,
+            symbol_to_id[&a],
+            name_to_attr_id[&attr],
+            symbol_to_id[&b],
+            w.unwrap_or(1.0),
+        );
+    }
+
     // Sanity checks — fail loudly if the YAML's shape drifted.
     // Element budget:
-    //   2 anchors + 32 attrs + 22 regions (14 signal + 8 void)
+    //   2 anchors + 33 attrs (32 + canonical_value)
+    //   + 22 regions (14 signal + 8 void)
     //   + 8 frames + 2 classes
     //   + 440 prototypes (22 regions × 20 examples)
     //   + 118 void members
-    //   = 624.
+    //   + 34 units (5 dimensions + 29 unit members)
+    //   = 659.
     // Relation budget:
     //   22 region-class pins + 8 frame-class pins
     //   + 22 region-parent pins
     //   + 440 prototype-attach
     //   + 118 member instance_of
-    //   = 610.
-    assert_eq!(elements.len(), 624, "expected 624 elements");
-    assert_eq!(relations.len(), 610, "expected 610 relations");
+    //   + 29 unit→dimension pins
+    //   = 639.
+    assert_eq!(elements.len(), 659, "expected 659 elements");
+    assert_eq!(relations.len(), 639, "expected 639 relations");
 
     // ── 9. Serialize ──────────────────────────────────────────────────
     let mut buf: Vec<u8> = Vec::new();

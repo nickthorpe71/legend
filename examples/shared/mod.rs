@@ -33,8 +33,21 @@ pub struct SeedPack {
     pub seeded_attribute_names: Vec<RawSeededAttributeName>,
     pub regions: Vec<RawRegion>,
     pub reference_frames: Vec<RawElement>,
+    pub units: RawUnits,
     pub seeded_relations: RawSeededRelations,
     pub intent_prototypes: IntentPhrases,
+}
+
+/// L2 core-competence "units" block: dimension Elements (Currency,
+/// Mass, …) and the unit Elements that pin under them via `instance_of`.
+/// Both are plain [`RawNamedElement`]s — `{element_id, names}` — minted
+/// as ordinary Signal Elements; the `quantity_arith` kernel reads them
+/// to build its conversion `UnitIndex` at load. Conversion factors are
+/// NOT in the YAML: they live in the kernel, keyed by surface form.
+#[derive(Deserialize)]
+pub struct RawUnits {
+    pub dimensions: Vec<RawNamedElement>,
+    pub members: Vec<RawNamedElement>,
 }
 
 /// Anchors and reference frames share this shape: a symbolic ID, one
@@ -107,6 +120,7 @@ pub struct RawSeededRelations {
     pub region_class_pins: RawRelGroup,
     pub reference_frame_class_pins: RawRelGroup,
     pub region_parent_pins: RawRelGroup,
+    pub unit_dimension_pins: RawRelGroup,
 }
 
 #[derive(Deserialize)]
