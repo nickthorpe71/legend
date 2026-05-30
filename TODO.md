@@ -47,6 +47,7 @@ Full audit findings in `~/.claude/plans/iterative-mapping-puppy.md`. Grouped by 
 ### Cleanup
 - [ ] `examples/verify_seed_yaml.rs`, `score_input.rs`, `score_per_prototype.rs` — "Throwaway — toss before prod" comments. Either delete the comment (they're functional) or move under `examples/diagnostic/`
 - [ ] `src/tick_pipeline/build_relations.rs::mint_novelty_relation` vs `mint_pattern_relation` — consolidate into one parameterized helper OR accept the duplication with a comment
+- [ ] try to replace as many comments with code that reads as english as possible. Comments tend to get out of sync but are sometimes necessary.
 
 ## Phase 4 — Larger moves (pick when you want to)
 

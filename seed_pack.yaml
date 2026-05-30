@@ -1358,11 +1358,11 @@ reference_frames:
 #     the quantity_arith kernel. Each unit Element's `names` hold REAL
 #     SURFACE FORMS ONLY; conversion factors + per-dimension Weber
 #     fractions live in the kernel's UnitIndex (#[serde(skip)], keyed
-#     by surface form), never in `names`. Increment 1 seeds the five
+#     by surface form), never in `names`. This seeds the five
 #     multiplicative-factor dimensions; temperature (affine), area,
-#     power, and extra currencies (CAD/AUD/JPY/…) are a staged
-#     fast-follow. Bare ambiguous forms ("m", "in", "us") are omitted —
-#     they collide with words/pronouns in `by_name`.
+#     power, and extra currencies (CAD/AUD/JPY/…) are not yet included.
+#     Bare ambiguous forms ("m", "in", "us") are omitted — they collide
+#     with words/pronouns in `by_name`.
 # ---------------------------------------------------------------------
 
 units:

@@ -179,6 +179,18 @@ pub struct Hypergraph {
     #[serde(skip)]
     pub meta_relation_presence: HashMap<(RelationId, ElementId), bool>,
 
+    /// Surface-form → canonical unit conversion, consumed by the
+    /// `quantity` kernel. Keyed by lowercased unit surface form
+    /// (`"kg"`, `"$"`, `"kb"`); each entry carries the unit's dimension,
+    /// comparability base unit, and multiplicative factor to that base.
+    /// Factors live in `crate::quantity::UNIT_TABLE`, never in Element
+    /// `names` — this index is the load-time projection of that table,
+    /// rebuilt by `rebuild_indices` like every other `#[serde(skip)]`
+    /// cache. The seeded `UNIT_*`/`DIM_*` Elements are the graph
+    /// registry; a `quantity` test asserts the two agree.
+    #[serde(skip)]
+    pub unit_index: crate::quantity::UnitIndex,
+
     // ── Anchor IDs ─────────────────────────────────────────────────────
     //
     // Cached at seed-load time so hot-path lookups don't have to round-
@@ -254,6 +266,7 @@ impl Default for Hypergraph {
             attribute_value_counts: HashMap::new(),
             attribute_co_counts: HashMap::new(),
             meta_relation_presence: HashMap::new(),
+            unit_index: HashMap::new(),
             void: ElementId(u32::MAX),
             genesis: ElementId(u32::MAX),
             region_class: ElementId(u32::MAX),

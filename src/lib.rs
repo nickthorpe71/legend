@@ -7,6 +7,7 @@ pub mod lexical_features;
 pub mod math;
 pub mod merge;
 pub mod persistence;
+pub mod quantity;
 pub mod render;
 pub mod seed;
 pub mod tick_pipeline;

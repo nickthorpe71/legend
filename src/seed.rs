@@ -114,7 +114,11 @@ pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
 
     for e in &hypergraph.elements {
         for name in &e.names {
-            hypergraph.by_name.entry(name.clone()).or_default().push(e.id);
+            hypergraph
+                .by_name
+                .entry(name.clone())
+                .or_default()
+                .push(e.id);
         }
     }
 
@@ -144,13 +148,19 @@ pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
                 Term::Relation(_) => continue,
             };
             if attr.name == hypergraph.parent_region_attr {
-                hypergraph.region_children.entry(target).or_default().push(subject);
-                hypergraph.region_parents
+                hypergraph
+                    .region_children
+                    .entry(target)
+                    .or_default()
+                    .push(subject);
+                hypergraph
+                    .region_parents
                     .entry(subject)
                     .or_default()
                     .push((target, r.stats.confidence));
             } else if attr.name == hypergraph.prototype_attr {
-                hypergraph.region_prototypes
+                hypergraph
+                    .region_prototypes
                     .entry(subject)
                     .or_default()
                     .push(target);
@@ -165,24 +175,34 @@ pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
     for r in &hypergraph.relations {
         let mut parent_relations: Vec<RelationId> = Vec::new();
         for attr in &r.attributes {
-            hypergraph.relations_by_attribute_name
+            hypergraph
+                .relations_by_attribute_name
                 .entry(attr.name)
                 .or_default()
                 .push(r.id);
             match attr.value {
                 Term::Element(e) => {
-                    hypergraph.relations_by_element.entry(e).or_default().push(r.id);
-                    *hypergraph.attribute_value_counts.entry((attr.name, e)).or_insert(0) += 1;
+                    hypergraph
+                        .relations_by_element
+                        .entry(e)
+                        .or_default()
+                        .push(r.id);
+                    *hypergraph
+                        .attribute_value_counts
+                        .entry((attr.name, e))
+                        .or_insert(0) += 1;
                 }
                 Term::Relation(parent) => {
                     if attr.name == hypergraph.target_attr {
-                        hypergraph.meta_relations_by_subject
+                        hypergraph
+                            .meta_relations_by_subject
                             .entry(parent)
                             .or_default()
                             .push(r.id);
                         parent_relations.push(parent);
                     } else {
-                        hypergraph.meta_relations_by_object
+                        hypergraph
+                            .meta_relations_by_object
                             .entry(parent)
                             .or_default()
                             .push(r.id);
@@ -198,7 +218,9 @@ pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
         for &parent in &parent_relations {
             for attr in &r.attributes {
                 if attr.name != hypergraph.target_attr {
-                    hypergraph.meta_relation_presence.insert((parent, attr.name), true);
+                    hypergraph
+                        .meta_relation_presence
+                        .insert((parent, attr.name), true);
                 }
             }
         }
@@ -211,7 +233,8 @@ pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
                 if i == j {
                     continue;
                 }
-                *hypergraph.attribute_co_counts
+                *hypergraph
+                    .attribute_co_counts
                     .entry((r.attributes[i].name, r.attributes[j].name))
                     .or_insert(0) += 1;
             }
@@ -258,6 +281,12 @@ pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
             },
         );
     }
+
+    // Unit conversion index — the load-time projection of
+    // `crate::quantity::UNIT_TABLE`, keyed by surface form. The seeded
+    // `UNIT_*`/`DIM_*` Elements are the graph registry; the factors live
+    // in code. Reassigned (not mutated) since it derives from a constant.
+    hypergraph.unit_index = crate::quantity::build_unit_index();
 }
 
 fn find_subject(r: &Relation, subject_attr: ElementId) -> Option<ElementId> {
@@ -658,14 +687,17 @@ mod tests {
         );
 
         assert_eq!(
-            hypergraph.meta_relation_presence
+            hypergraph
+                .meta_relation_presence
                 .get(&(base, intervened_id))
                 .copied(),
             Some(true),
             "intervened should be marked present on the parent",
         );
         assert!(
-            !hypergraph.meta_relation_presence.contains_key(&(base, target_id)),
+            !hypergraph
+                .meta_relation_presence
+                .contains_key(&(base, target_id)),
             "target is the link itself; not a sibling — should NOT be indexed as present",
         );
     }
