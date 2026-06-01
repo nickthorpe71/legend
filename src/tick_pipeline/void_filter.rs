@@ -63,6 +63,8 @@ fn resolves_to_void(name: &str, hypergraph: &Hypergraph) -> bool {
     let Some(ids) = hypergraph.by_name.get(name) else {
         return false;
     };
+    // invariant: ids come from `by_name`, an index that only stores ids of
+    // elements present in `hypergraph.elements`.
     ids.iter()
         .any(|id| hypergraph.elements[id.0 as usize].polarity == Polarity::Void)
 }

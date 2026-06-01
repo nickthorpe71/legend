@@ -269,6 +269,9 @@ fn check_promotion(hypergraph: &Hypergraph, rid: RelationId, policy: &Policy) ->
         .find(|a| a.name != hypergraph.subject_attr)
         .map(|a| a.name);
     if let Some(attr_eid) = primary_attr {
+        // invariant: attr_eid is an attribute-NAME element id taken off a
+        // live relation; attribute names are minted before the relation
+        // that references them, so the element always exists.
         let attr = &hypergraph.elements[attr_eid.0 as usize];
         let age = hypergraph.clock.0.saturating_sub(attr.created_at.0);
         if age < policy.attribute_name_maturity_ticks as u64 {
@@ -290,6 +293,8 @@ fn has_live_supersedes_meta(hypergraph: &Hypergraph, rid: RelationId) -> bool {
         return false;
     };
     for &mid in metas {
+        // invariant: `meta_relations_by_object` is an index `supersede`
+        // maintains; every mid it stores is a minted meta-relation id.
         let m = &hypergraph.relations[mid.0 as usize];
         // Skip metas that have themselves been retracted.
         if matches!(m.status, RelationStatus::Retracted) {
@@ -418,6 +423,8 @@ pub fn derive_active_frame(
         // Reject pronouns and question words — they're sentence
         // machinery (subject of "I started a new project" or "What
         // language is Polaris in?") rather than topical content.
+        // invariant: `recent_focus` entries are pushed from live relations'
+        // element slots, so `entry.element` always indexes an element.
         let names = &hypergraph.elements[entry.element.0 as usize].names;
         for name in names {
             if is_frame_unsuitable(&name.to_ascii_lowercase()) {
