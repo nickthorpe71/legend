@@ -50,6 +50,10 @@ fn resolve_term(hypergraph: &Hypergraph, term: Term) -> ResolvedTerm {
 }
 
 fn resolve_relation(hypergraph: &Hypergraph, rid: RelationId) -> ResolvedRelation {
+    // invariant: every rid reaching this denormalizer was gathered this tick
+    // from a live source — `focused_relations` (the reinforcement set),
+    // `supporting_claims`/`history` (meta indices), `superseded`, or
+    // `current_state` (`relations_by_element`). All index live relations.
     let r = &hypergraph.relations[rid.0 as usize];
     let attributes = r
         .attributes
@@ -116,6 +120,117 @@ pub fn rrf_merge(ranked_lists: &[Vec<RelationId>], k: u32) -> Vec<(RelationId, f
     merged
 }
 
+/// Walk `meta_relations_by_subject[R]` for each focused R and split
+/// the metas into supporting-claims and history. A meta supports R
+/// when it carries a `derived_from` or `source` attribute; it's
+/// history when it carries `supersedes` (and the superseded relation
+/// it references gets pulled in too). Both output lists are deduped
+/// and ordered by first-encounter in `focused_relations` order.
+fn gather_supporting_claims_and_history(
+    hypergraph: &Hypergraph,
+    focused_relations: &[RelationActivation],
+) -> (Vec<RelationId>, Vec<RelationId>) {
+    let derived_from_attr = hypergraph
+        .by_name
+        .get("derived_from")
+        .and_then(|v| v.first().copied());
+    let source_attr = hypergraph.by_name.get("source").and_then(|v| v.first().copied());
+    let supersedes_attr = hypergraph
+        .by_name
+        .get("supersedes")
+        .and_then(|v| v.first().copied());
+
+    let mut supporting_seen: HashSet<RelationId> = HashSet::new();
+    let mut supporting_claims: Vec<RelationId> = Vec::new();
+    let mut history_seen: HashSet<RelationId> = HashSet::new();
+    let mut history: Vec<RelationId> = Vec::new();
+
+    for ra in focused_relations {
+        let Some(metas) = hypergraph.meta_relations_by_subject.get(&ra.relation.id) else {
+            continue;
+        };
+        for &mid in metas {
+            // invariant: mid comes from `meta_relations_by_subject`, an index
+            // `supersede` maintains over minted meta-relation ids.
+            let m = &hypergraph.relations[mid.0 as usize];
+            let mut is_supporting = false;
+            let mut is_history = false;
+            let mut history_target: Option<RelationId> = None;
+            for attr in &m.attributes {
+                if derived_from_attr == Some(attr.name) || source_attr == Some(attr.name) {
+                    is_supporting = true;
+                }
+                if supersedes_attr == Some(attr.name) {
+                    is_history = true;
+                    if let Term::Relation(r_old) = attr.value {
+                        history_target = Some(r_old);
+                    }
+                }
+            }
+            if is_supporting && supporting_seen.insert(mid) {
+                supporting_claims.push(mid);
+            }
+            if is_history {
+                if history_seen.insert(mid) {
+                    history.push(mid);
+                }
+                if let Some(r_old) = history_target
+                    && history_seen.insert(r_old)
+                {
+                    history.push(r_old);
+                }
+            }
+        }
+    }
+
+    (supporting_claims, history)
+}
+
+/// Map the tick's deduped uncertainty signals to advisory next
+/// actions. Per §5 of step_12_design.md. Dedup by kind so repeated
+/// DiffuseRouting / LowConfidence don't enqueue multiple identical
+/// replay jobs in one tick.
+fn process_uncertainty_signals(uncertainty: &[UncertaintySignal]) -> Vec<AttentionAction> {
+    let mut next_actions: Vec<AttentionAction> = Vec::new();
+    let mut replay_emitted = false;
+    let mut coref_emitted = false;
+    let mut contradiction_emitted = false;
+    for sig in uncertainty {
+        match sig {
+            UncertaintySignal::DiffuseRouting | UncertaintySignal::LowConfidence => {
+                if !replay_emitted {
+                    next_actions.push(AttentionAction::EnqueueReplay {
+                        kind: ReplayKind::BackgroundSweep,
+                    });
+                    replay_emitted = true;
+                }
+            }
+            UncertaintySignal::AmbiguousCoref => {
+                if !coref_emitted {
+                    next_actions.push(AttentionAction::FollowUpQuery(
+                        "Could you clarify what the referenced entity is?".to_string(),
+                    ));
+                    coref_emitted = true;
+                }
+            }
+            UncertaintySignal::Contradiction => {
+                if !contradiction_emitted {
+                    next_actions.push(AttentionAction::FollowUpQuery(
+                        "The new claim conflicts with a prior one; which is correct?".to_string(),
+                    ));
+                    contradiction_emitted = true;
+                }
+            }
+            UncertaintySignal::UngroundedTime => {
+                // v0: no action. chrono parsing isn't wired; the
+                // caller may still surface this from the uncertainty
+                // field directly.
+            }
+        }
+    }
+    next_actions
+}
+
 /// Assemble the tick's `ConsciousAttentionFrame`. Read-only over
 /// the Hypergraph — all structural mutation happened upstream.
 ///
@@ -147,6 +262,9 @@ pub fn assemble_frame(
     // descending) and path-reinforced (by stats.focus_success_count
     // descending). Status filter applied before ranking so
     // Superseded/Retracted never enter the RRF.
+    // invariant: `reinforced.reinforced` (and the `dense`/`path` clones of
+    // `live` derived from it below) hold reinforcement-set relation ids —
+    // every one a live index into `hypergraph.relations`.
     let live: Vec<RelationId> = reinforced
         .reinforced
         .iter()
@@ -204,67 +322,10 @@ pub fn assemble_frame(
     });
 
     // ── supporting_claims + history ─────────────────────────────
-    // Walk meta_relations_by_subject[R] for each focused R; filter
-    // by attribute name on each meta. Dedup the resulting flat lists.
-    let derived_from_attr = hypergraph
-        .by_name
-        .get("derived_from")
-        .and_then(|v| v.first().copied());
-    let source_attr = hypergraph.by_name.get("source").and_then(|v| v.first().copied());
-    let supersedes_attr = hypergraph
-        .by_name
-        .get("supersedes")
-        .and_then(|v| v.first().copied());
-
-    let mut supporting_seen: HashSet<RelationId> = HashSet::new();
-    let mut supporting_claims: Vec<RelationId> = Vec::new();
-    let mut history_seen: HashSet<RelationId> = HashSet::new();
-    let mut history: Vec<RelationId> = Vec::new();
-
-    for ra in &focused_relations {
-        let Some(metas) = hypergraph.meta_relations_by_subject.get(&ra.relation.id) else {
-            continue;
-        };
-        for &mid in metas {
-            let m = &hypergraph.relations[mid.0 as usize];
-            let mut is_supporting = false;
-            let mut is_history = false;
-            let mut history_target: Option<RelationId> = None;
-            for attr in &m.attributes {
-                if derived_from_attr == Some(attr.name) || source_attr == Some(attr.name) {
-                    is_supporting = true;
-                }
-                if supersedes_attr == Some(attr.name) {
-                    is_history = true;
-                    if let Term::Relation(r_old) = attr.value {
-                        history_target = Some(r_old);
-                    }
-                }
-            }
-            if is_supporting && supporting_seen.insert(mid) {
-                supporting_claims.push(mid);
-            }
-            if is_history {
-                if history_seen.insert(mid) {
-                    history.push(mid);
-                }
-                if let Some(r_old) = history_target
-                    && history_seen.insert(r_old)
-                {
-                    history.push(r_old);
-                }
-            }
-        }
-    }
+    let (supporting_claims, history) =
+        gather_supporting_claims_and_history(hypergraph, &focused_relations);
 
     // ── next_actions ────────────────────────────────────────────
-    // Per §5 of step_12_design.md: uncertainty signals → advisory
-    // actions. Dedup so repeated DiffuseRouting / LowConfidence
-    // don't enqueue multiple identical replay jobs in one tick.
-    let mut next_actions: Vec<AttentionAction> = Vec::new();
-    let mut replay_emitted = false;
-    let mut coref_emitted = false;
-    let mut contradiction_emitted = false;
     // Merge uncertainty signals from every step that raises them.
     // `route_regions` (route) raises DiffuseRouting; `build_relations` raises
     // LowConfidence on Defeasible mints; `supersede` raises Contradiction
@@ -281,39 +342,7 @@ pub fn assemble_frame(
             uncertainty.push(*sig);
         }
     }
-    for sig in &uncertainty {
-        match sig {
-            UncertaintySignal::DiffuseRouting | UncertaintySignal::LowConfidence => {
-                if !replay_emitted {
-                    next_actions.push(AttentionAction::EnqueueReplay {
-                        kind: ReplayKind::BackgroundSweep,
-                    });
-                    replay_emitted = true;
-                }
-            }
-            UncertaintySignal::AmbiguousCoref => {
-                if !coref_emitted {
-                    next_actions.push(AttentionAction::FollowUpQuery(
-                        "Could you clarify what the referenced entity is?".to_string(),
-                    ));
-                    coref_emitted = true;
-                }
-            }
-            UncertaintySignal::Contradiction => {
-                if !contradiction_emitted {
-                    next_actions.push(AttentionAction::FollowUpQuery(
-                        "The new claim conflicts with a prior one; which is correct?".to_string(),
-                    ));
-                    contradiction_emitted = true;
-                }
-            }
-            UncertaintySignal::UngroundedTime => {
-                // v0: no action. chrono parsing isn't wired; the
-                // caller may still surface this from the uncertainty
-                // field directly.
-            }
-        }
-    }
+    let next_actions = process_uncertainty_signals(&uncertainty);
 
     // ── current_state ──────────────────────────────────────────
     // For each element this tick referenced, gather every live
