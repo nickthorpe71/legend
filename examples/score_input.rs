@@ -1,5 +1,5 @@
 //! Score an input phrase against every GENESIS-child region's
-//! prototypes. Throwaway diagnostic for calibrating `route_regions` thresholds.
+//! prototypes. Diagnostic for calibrating `route_regions` thresholds.
 //!
 //! Run: `cargo run --release --example score_input -- "your phrase"`
 //!

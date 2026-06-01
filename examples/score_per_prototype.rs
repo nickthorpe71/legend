@@ -3,8 +3,6 @@
 //! pulled high by a single surface-overlap prototype.
 //!
 //! Run: `cargo run --release --example score_per_prototype -- <region_name> "phrase"`
-//!
-//! Throwaway diagnostic — toss before prod.
 
 use legend::embed::embed_text;
 use legend::math::dot;

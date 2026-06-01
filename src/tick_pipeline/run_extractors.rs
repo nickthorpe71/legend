@@ -1,6 +1,6 @@
-//! `run_extractors` of the tick pipeline — `run_extractors`. Orchestrates the
+//! `run_extractors`. Orchestrates the
 //! `relation_patterns/` extractors plus coref over the input text and
-//! returns an [`ExtractionOutput`] for `build_relations` (`build_relations`) to
+//! returns an [`ExtractionOutput`] for `build_relations` to
 //! convert into hypergraph relations.
 //!
 //! Every relation-shaped output is a
@@ -114,7 +114,7 @@ pub fn run_extractors(
         }
     };
 
-    // 0. the orthographic chunker — orthographic chunker (Phrase) plus void-filtered
+    // 0. Orthographic chunker (Phrase) plus void-filtered
     //    content tokens (Token). The chunker is pure-Rust and model-
     //    free; the content-token pass consults the hypergraph's
     //    `by_name` index and drops any token whose lowercase form

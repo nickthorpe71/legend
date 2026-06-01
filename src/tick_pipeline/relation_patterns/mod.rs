@@ -13,7 +13,7 @@
 //!   orthographic chunker's output. Model-free; always emits
 //!   `Defeasible` candidates.
 //!
-//! `run_extractors` (`run_extractors`) is responsible for calling each family
+//! `run_extractors` is responsible for calling each family
 //! and partitioning the results into three buckets:
 //!
 //! - **instance_of** — `ObjectRef::Label`-bearing candidates (span

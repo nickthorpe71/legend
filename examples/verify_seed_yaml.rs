@@ -4,8 +4,6 @@
 //! behavior — only the YAML's own structural sanity.
 //!
 //! Run: `cargo run --release --example verify_seed_yaml`
-//!
-//! Throwaway — toss before prod.
 
 #[path = "shared/mod.rs"]
 mod shared;
