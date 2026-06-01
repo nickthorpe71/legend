@@ -1,6 +1,6 @@
 //! `apply_region_delta` — apply the `RegionDelta` collected by `route_regions` routing.
 //!
-//! `route_regions` (`route_regions`) is read-only — it walks the region DAG,
+//! `route_regions` is read-only — it walks the region DAG,
 //! scores each child, and *collects* what would change without
 //! actually changing it. Everything it'd write lives in `RegionDelta`.
 //!
@@ -60,14 +60,15 @@ pub fn apply_region_delta(
     for (proto_id, target) in &delta.prototype_updates {
         let idx = proto_id.0 as usize;
         let proto = &mut hypergraph.elements[idx];
-        debug_assert_eq!(
-            proto.embedding.len(),
-            target.len(),
-            "prototype embedding dim must match target dim",
-        );
-
         let lr = proto.stats.plasticity * policy.hebbian_rate;
-        if lr > 0.0 {
+        // `target` is `None` exactly when `hebbian_rate == 0`, which
+        // forces `lr == 0` — so a missing target never costs a drift.
+        if let (true, Some(target)) = (lr > 0.0, target) {
+            debug_assert_eq!(
+                proto.embedding.len(),
+                target.len(),
+                "prototype embedding dim must match target dim",
+            );
             // EMA: new = old + lr * (target - old). Drifts old toward
             // target at rate lr. lr ∈ (0, 1] in practice.
             for (x, &t) in proto.embedding.iter_mut().zip(target.iter()) {
@@ -136,7 +137,7 @@ mod tests {
         let (mut hypergraph, proto_id) = synth_hypergraph_with_proto(initial.clone(), /*plasticity*/ 1.0);
 
         let delta = RegionDelta {
-            prototype_updates: vec![(proto_id, target.clone())],
+            prototype_updates: vec![(proto_id, Some(target.clone()))],
             ..Default::default()
         };
         apply_region_delta(&mut hypergraph, &delta, &Policy::default());
@@ -162,7 +163,7 @@ mod tests {
             ..Default::default()
         };
         let delta = RegionDelta {
-            prototype_updates: vec![(proto_id, target.clone())],
+            prototype_updates: vec![(proto_id, Some(target.clone()))],
             ..Default::default()
         };
         apply_region_delta(&mut hypergraph, &delta, &policy);
@@ -192,7 +193,7 @@ mod tests {
             ..Default::default()
         };
         let delta = RegionDelta {
-            prototype_updates: vec![(proto_id, target)],
+            prototype_updates: vec![(proto_id, Some(target))],
             ..Default::default()
         };
         apply_region_delta(&mut hypergraph, &delta, &policy);
@@ -217,7 +218,7 @@ mod tests {
             ..Default::default()
         };
         let delta = RegionDelta {
-            prototype_updates: vec![(proto_id, target)],
+            prototype_updates: vec![(proto_id, Some(target))],
             ..Default::default()
         };
         apply_region_delta(&mut hypergraph, &delta, &policy);
@@ -265,9 +266,9 @@ mod tests {
         };
         let delta = RegionDelta {
             prototype_updates: vec![
-                (ElementId(0), unit_e(5)),
-                (ElementId(1), unit_e(6)),
-                (ElementId(2), unit_e(7)),
+                (ElementId(0), Some(unit_e(5))),
+                (ElementId(1), Some(unit_e(6))),
+                (ElementId(2), Some(unit_e(7))),
             ],
             ..Default::default()
         };

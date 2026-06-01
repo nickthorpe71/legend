@@ -999,24 +999,32 @@ pub struct RegionActivation {
 /// Populated by `seed::rebuild_indices` after `region_prototypes` is
 /// built; consumed by `route_regions` routing for diagonal Mahalanobis scoring.
 ///
-/// Length invariant: `mean.len() == var.len() == EMBEDDING_DIM` (384).
-/// With `n == 1` the variance is all-zeros (a single point has no
-/// spread); `route_regions` applies a variance prior at use time so the
+/// `mean` / `var` are fixed `[f32; EMBEDDING_DIM]` — every embedding in
+/// the substrate is exactly `EMBEDDING_DIM` long, so the length is a
+/// compile-time constant, not a runtime invariant to defend. With
+/// `n == 1` the variance is all-zeros (a single point has no spread);
+/// `route_regions` applies a variance prior at use time so the
 /// Mahalanobis denominator never collapses.
+///
+/// No `Serialize` / `Deserialize`: the only field that holds a
+/// `RegionStats` (`Hypergraph.region_stats`) is `#[serde(skip)]` and
+/// rebuilt from `region_prototypes` on every load, so these stats never
+/// hit the wire — and plain serde derive can't encode arrays longer
+/// than 32 anyway.
 ///
 /// `PartialEq` is derived for the idempotency test in `seed::tests` —
 /// rebuild_indices over identical inputs yields bit-identical stats
 /// because the arithmetic is deterministic in iteration order.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RegionStats {
     /// Per-dimension mean of the prototype embeddings.
-    pub mean: Vec<f32>,
+    pub mean: [f32; crate::embed::EMBEDDING_DIM],
 
     /// Per-dimension variance of the prototype embeddings.
     /// Computed as `Σ(xᵢ − μ)² / n` (population variance — we treat
     /// the prototype set as the full population for this region, not
     /// a sample drawn from a larger population).
-    pub var: Vec<f32>,
+    pub var: [f32; crate::embed::EMBEDDING_DIM],
 
     /// Number of prototype embeddings folded into mean/var. `route_regions`
     /// uses this to weight the variance prior — small `n` → trust the
@@ -1041,7 +1049,14 @@ pub struct RegionDelta {
     /// where `lr = proto.stats.plasticity * policy.hebbian_rate`.
     /// `route_regions` stores only the target; `apply_region_delta` reads policy + plasticity
     /// and does the math.
-    pub prototype_updates: Vec<(ElementId, Vec<f32>)>,
+    ///
+    /// The target is `None` when `policy.hebbian_rate == 0` (the v0
+    /// default): `lr` is then guaranteed 0, so the drift target would
+    /// be unused, and copying the input embedding once per routed child
+    /// is pure waste. The entry is still recorded so `apply_region_delta`
+    /// bumps the prototype's `access_count` — routing touched it
+    /// regardless of whether drift fires.
+    pub prototype_updates: Vec<(ElementId, Option<Vec<f32>>)>,
 
     /// Empty in v0 `route_regions` — mid-path insertion (§10.3.5) needs span-
     /// level embeddings, which only exist after `coref` mints elements.

@@ -250,7 +250,7 @@ pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
             continue;
         }
         let n = proto_ids.len();
-        let mut mean = vec![0.0f32; EMBEDDING_DIM];
+        let mut mean = [0.0f32; EMBEDDING_DIM];
         for &p in proto_ids {
             let emb = &hypergraph.elements[p.0 as usize].embedding;
             for (i, &v) in emb.iter().enumerate() {
@@ -261,7 +261,7 @@ pub fn rebuild_indices(hypergraph: &mut Hypergraph) {
         for m in &mut mean {
             *m *= inv_n;
         }
-        let mut var = vec![0.0f32; EMBEDDING_DIM];
+        let mut var = [0.0f32; EMBEDDING_DIM];
         for &p in proto_ids {
             let emb = &hypergraph.elements[p.0 as usize].embedding;
             for (i, &v) in emb.iter().enumerate() {

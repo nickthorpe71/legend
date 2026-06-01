@@ -190,9 +190,12 @@ pub fn route_regions(embedding: &[f32], hypergraph: &Hypergraph, policy: &Policy
                 }
                 next_frontier.push(child);
                 delta.parent_attachments.push((child, current, cosine));
-                delta
-                    .prototype_updates
-                    .push((best_proto, embedding.to_vec()));
+                // Skip the per-child embedding copy when drift is off
+                // (v0 default `hebbian_rate == 0` → `lr == 0`): the
+                // target would never be read. Still record the entry so
+                // `apply_region_delta` bumps the prototype's access_count.
+                let target = (policy.hebbian_rate > 0.0).then(|| embedding.to_vec());
+                delta.prototype_updates.push((best_proto, target));
                 if mahalanobis >= policy.region_activation_threshold {
                     active_regions.push(RegionActivation {
                         region: child,
@@ -233,7 +236,6 @@ pub(crate) fn mahalanobis_similarity(
     variance_prior: f32,
 ) -> f32 {
     debug_assert_eq!(embedding.len(), stats.mean.len());
-    debug_assert_eq!(embedding.len(), stats.var.len());
     let mut d_squared = 0.0f32;
     #[allow(clippy::needless_range_loop)]
     for i in 0..embedding.len() {
@@ -408,8 +410,8 @@ mod tests {
     #[test]
     fn mahalanobis_similarity_perfect_match_is_one() {
         let stats = RegionStats {
-            mean: vec![0.5; EMBEDDING_DIM],
-            var: vec![0.1; EMBEDDING_DIM],
+            mean: [0.5; EMBEDDING_DIM],
+            var: [0.1; EMBEDDING_DIM],
             n: 20,
         };
         let x = vec![0.5; EMBEDDING_DIM];
@@ -426,8 +428,8 @@ mod tests {
     #[test]
     fn mahalanobis_similarity_uniform_offset_arithmetic() {
         let stats = RegionStats {
-            mean: vec![0.0; EMBEDDING_DIM],
-            var: vec![0.1; EMBEDDING_DIM],
+            mean: [0.0; EMBEDDING_DIM],
+            var: [0.1; EMBEDDING_DIM],
             n: 20,
         };
         let x = vec![0.1; EMBEDDING_DIM];
@@ -441,8 +443,8 @@ mod tests {
     #[test]
     fn mahalanobis_similarity_handles_zero_variance() {
         let stats = RegionStats {
-            mean: vec![0.0; EMBEDDING_DIM],
-            var: vec![0.0; EMBEDDING_DIM],
+            mean: [0.0; EMBEDDING_DIM],
+            var: [0.0; EMBEDDING_DIM],
             n: 1,
         };
         let mut x = vec![0.0; EMBEDDING_DIM];
