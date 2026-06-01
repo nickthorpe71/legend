@@ -38,7 +38,7 @@ use crate::embed::{embed_text, token_count};
 use crate::tick_pipeline::execute_tick;
 use crate::inference::deberta::tokenizer::BUNDLED_TOKENIZER;
 use crate::inference::deberta::weights_int8::WeightsDebertaInt8;
-use crate::persistence::{default_path, load_or_seed, save};
+use crate::persistence::{default_path, load_or_seed, save, sweep_orphan_tmp_files};
 use crate::seed::load_seed_graph;
 use crate::types::{ConsciousAttentionFrame, Hypergraph};
 
@@ -116,6 +116,13 @@ pub enum DaemonResponse {
         tick_count: u64,
         elements: usize,
         relations: usize,
+        /// `Some(tick)` when a `save` failed (e.g. the final `fs::rename`
+        /// could not land) and the in-RAM substrate is now ahead of the
+        /// on-disk snapshot. Carries the tick at which the *first* such
+        /// failure happened so the operator knows how much would be lost
+        /// on a crash. Cleared back to `None` by the next save that
+        /// succeeds.
+        save_failed_since_tick: Option<u64>,
     },
     /// Daemon acknowledged `Reset`. Reports the post-reset substrate
     /// sizes (which equal the freshly-loaded seed sizes).
@@ -202,6 +209,11 @@ pub fn serve() -> Result<(), Box<dyn std::error::Error>> {
     };
     let listener = bind_and_publish_port()?;
     let snapshot_path = default_path();
+    // We hold the exclusive lock now, so any leftover `.tmp.<pid>` files
+    // belong to crashed predecessors, not a live save — safe to clear.
+    for stranded in sweep_orphan_tmp_files(&snapshot_path) {
+        eprintln!("[daemon] swept orphan tmp file: {}", stranded.display());
+    }
     let mut hypergraph = load_or_seed(&snapshot_path)?;
     eprintln!(
         "[daemon] loaded substrate: {} elements, {} relations",
@@ -267,6 +279,10 @@ fn run_accept_loop(
     let started = Instant::now();
     let mut last_request = Instant::now();
     let mut tick_count: u64 = 0;
+    // `Some(tick)` once a `save` has failed and the in-RAM substrate is
+    // ahead of disk; the tick of the *first* failure. Survives across
+    // requests so `Status` can keep reporting it until a save succeeds.
+    let mut save_failed_since_tick: Option<u64> = None;
 
     loop {
         if last_request.elapsed() >= ttl {
@@ -280,7 +296,14 @@ fn run_accept_loop(
         match listener.accept() {
             Ok((stream, _)) => {
                 last_request = Instant::now();
-                let stop = handle_one(stream, hypergraph, snapshot_path, started, tick_count)?;
+                let stop = handle_one(
+                    stream,
+                    hypergraph,
+                    snapshot_path,
+                    started,
+                    tick_count,
+                    &mut save_failed_since_tick,
+                )?;
                 tick_count += 1;
                 if stop {
                     return Ok(());
@@ -303,6 +326,7 @@ fn handle_one(
     snapshot_path: &Path,
     started: Instant,
     tick_count_so_far: u64,
+    save_failed_since_tick: &mut Option<u64>,
 ) -> io::Result<bool> {
     stream.set_read_timeout(Some(HANDLE_TIMEOUT))?;
     stream.set_write_timeout(Some(HANDLE_TIMEOUT))?;
@@ -320,32 +344,38 @@ fn handle_one(
     };
     let mut stop = false;
     let resp = match req {
-        DaemonRequest::Tick { input } => match tick(hypergraph, &input, snapshot_path) {
-            Ok(frame) => DaemonResponse::Frame(Box::new(frame)),
-            Err(e) => DaemonResponse::Error {
-                message: format!("tick failed: {e}"),
-            },
-        },
+        DaemonRequest::Tick { input } => {
+            match tick(hypergraph, &input, snapshot_path, tick_count_so_far, save_failed_since_tick)
+            {
+                Ok(frame) => DaemonResponse::Frame(Box::new(frame)),
+                Err(e) => DaemonResponse::Error {
+                    message: format!("tick failed: {e}"),
+                },
+            }
+        }
         DaemonRequest::Status => DaemonResponse::Status {
             pid: std::process::id(),
             uptime_secs: started.elapsed().as_secs(),
             tick_count: tick_count_so_far,
             elements: hypergraph.elements.len(),
             relations: hypergraph.relations.len(),
+            save_failed_since_tick: *save_failed_since_tick,
         },
         DaemonRequest::Stop => {
             stop = true;
             DaemonResponse::Stopping
         }
-        DaemonRequest::Reset => match reset(hypergraph, snapshot_path) {
-            Ok(()) => DaemonResponse::Reset {
-                elements: hypergraph.elements.len(),
-                relations: hypergraph.relations.len(),
-            },
-            Err(e) => DaemonResponse::Error {
-                message: format!("reset failed: {e}"),
-            },
-        },
+        DaemonRequest::Reset => {
+            match reset(hypergraph, snapshot_path, tick_count_so_far, save_failed_since_tick) {
+                Ok(()) => DaemonResponse::Reset {
+                    elements: hypergraph.elements.len(),
+                    relations: hypergraph.relations.len(),
+                },
+                Err(e) => DaemonResponse::Error {
+                    message: format!("reset failed: {e}"),
+                },
+            }
+        }
     };
     let _ = write_frame(&mut stream, &resp);
     Ok(stop)
@@ -358,14 +388,39 @@ fn tick(
     hypergraph: &mut Hypergraph,
     input: &str,
     snapshot_path: &Path,
+    tick_count_so_far: u64,
+    save_failed_since_tick: &mut Option<u64>,
 ) -> Result<ConsciousAttentionFrame, Box<dyn std::error::Error>> {
     let n_tokens = token_count(input);
     if n_tokens > MAX_INPUT_TOKENS {
         return Err(format!("input too long: {n_tokens} tokens, max {MAX_INPUT_TOKENS}").into());
     }
     let frame = execute_tick(input, hypergraph);
-    save(hypergraph, snapshot_path)?;
+    persist_substrate(hypergraph, snapshot_path, tick_count_so_far, save_failed_since_tick)?;
     Ok(frame)
+}
+
+/// Persist the substrate and keep the daemon's save-failure marker in
+/// sync. On success the marker clears (disk has caught up); on failure
+/// it latches the *first* failing tick and the error still propagates
+/// to the caller so the client sees it. The next successful save —
+/// possibly several ticks later — clears the marker.
+fn persist_substrate(
+    hypergraph: &Hypergraph,
+    snapshot_path: &Path,
+    tick_count_so_far: u64,
+    save_failed_since_tick: &mut Option<u64>,
+) -> Result<(), crate::persistence::PersistError> {
+    match save(hypergraph, snapshot_path) {
+        Ok(()) => {
+            *save_failed_since_tick = None;
+            Ok(())
+        }
+        Err(e) => {
+            save_failed_since_tick.get_or_insert(tick_count_so_far);
+            Err(e)
+        }
+    }
 }
 
 /// Touch the heaviest model singletons so they're ready before the
@@ -390,9 +445,11 @@ fn warm_models() {
 fn reset(
     hypergraph: &mut Hypergraph,
     snapshot_path: &Path,
+    tick_count_so_far: u64,
+    save_failed_since_tick: &mut Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     *hypergraph = load_seed_graph();
-    save(hypergraph, snapshot_path)?;
+    persist_substrate(hypergraph, snapshot_path, tick_count_so_far, save_failed_since_tick)?;
     Ok(())
 }
 
@@ -509,6 +566,7 @@ mod tests {
             tick_count: 7,
             elements: 700,
             relations: 800,
+            save_failed_since_tick: Some(5),
         };
         let mut buf: Vec<u8> = Vec::new();
         write_frame(&mut buf, &resp).expect("write");
@@ -520,12 +578,14 @@ mod tests {
                 tick_count,
                 elements,
                 relations,
+                save_failed_since_tick,
             } => {
                 assert_eq!(pid, 12345);
                 assert_eq!(uptime_secs, 60);
                 assert_eq!(tick_count, 7);
                 assert_eq!(elements, 700);
                 assert_eq!(relations, 800);
+                assert_eq!(save_failed_since_tick, Some(5));
             }
             other => panic!("expected Status, got {other:?}"),
         }
@@ -541,6 +601,39 @@ mod tests {
         assert!(result.is_err());
         let e = result.unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn persist_substrate_latches_first_failure_then_clears_on_success() {
+        let hypergraph = load_seed_graph();
+
+        // A path whose parent is a *file*, not a directory: `create_dir_all`
+        // inside `save` fails, so the save fails deterministically without
+        // depending on filesystem permissions.
+        let mut blocker = std::env::temp_dir();
+        blocker.push(format!("legend_daemon_save_block_{}", std::process::id()));
+        std::fs::write(&blocker, b"not a dir").unwrap();
+        let bad_path = blocker.join("memory.lz4");
+
+        let mut marker: Option<u64> = None;
+
+        // First failing save at tick 3 latches the marker.
+        assert!(persist_substrate(&hypergraph, &bad_path, 3, &mut marker).is_err());
+        assert_eq!(marker, Some(3));
+        // A later failing save at tick 4 keeps the *first* failing tick.
+        assert!(persist_substrate(&hypergraph, &bad_path, 4, &mut marker).is_err());
+        assert_eq!(marker, Some(3));
+
+        // A successful save clears the marker.
+        let good_path = std::env::temp_dir().join(format!(
+            "legend_daemon_save_ok_{}.lz4",
+            std::process::id()
+        ));
+        assert!(persist_substrate(&hypergraph, &good_path, 5, &mut marker).is_ok());
+        assert_eq!(marker, None);
+
+        let _ = std::fs::remove_file(&blocker);
+        let _ = std::fs::remove_file(&good_path);
     }
 
     #[test]

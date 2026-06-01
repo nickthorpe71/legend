@@ -20,7 +20,9 @@
 //!
 //! Writes are atomic: encode → temp file in the destination dir →
 //! fsync → rename. A crashed process can leave `memory.lz4.tmp.<pid>`
-//! files; they are safe to delete.
+//! files; they are safe to delete. `TmpFileGuard` clears the current
+//! process's temp file on any early exit, and `sweep_orphan_tmp_files`
+//! clears ones stranded by *crashed* processes at daemon startup.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -234,6 +236,65 @@ fn atomic_tmp_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".tmp.{}", process::id()));
     path.with_file_name(name)
+}
+
+/// Filename infix `save` stamps onto its temp file: `<name>.tmp.<pid>`.
+const TMP_INFIX: &str = ".tmp.";
+
+/// Delete `<name>.tmp.<pid>` files orphaned by crashed daemons that
+/// died mid-`save` before their `TmpFileGuard` could fire.
+///
+/// `TmpFileGuard` only cleans up the current process's own temp file on
+/// an early exit; a process killed with SIGKILL (or the box losing
+/// power) leaves its temp file stranded forever. This sweep is the
+/// cross-process complement.
+///
+/// Safe because Legend is single-writer: the daemon calls this once at
+/// startup *after* acquiring the exclusive lock, so no other save can
+/// be in progress and every temp file in the directory is by definition
+/// an orphan. This runs before THIS process writes any temp file, so
+/// every matching file is another process's stranded orphan.
+///
+/// Returns the paths removed (for logging / tests). Never errors out:
+/// a stuck orphan is a warning, not a reason to refuse to start.
+pub(crate) fn sweep_orphan_tmp_files(snapshot_path: &Path) -> Vec<PathBuf> {
+    let Some(dir) = snapshot_path.parent() else {
+        return Vec::new();
+    };
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let Some(snapshot_name) = snapshot_path.file_name().and_then(|n| n.to_str()) else {
+        return Vec::new();
+    };
+    // Only sweep temp files belonging to *this* snapshot: `<name>.tmp.`.
+    let tmp_prefix = format!("{snapshot_name}{TMP_INFIX}");
+
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut removed = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(&tmp_prefix) {
+            continue;
+        }
+        let path = entry.path();
+        match fs::remove_file(&path) {
+            Ok(()) => removed.push(path),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!(
+                "[persistence] orphan tmp sweep failed: {e}, path={}",
+                path.display(),
+            ),
+        }
+    }
+    removed
 }
 
 /// Removes `path` on drop unless `disarm` is called first. Used by
@@ -484,5 +545,32 @@ mod tests {
     fn seed_fingerprint_is_stable() {
         // Same input → same hash on every call.
         assert_eq!(seed_fingerprint(), seed_fingerprint());
+    }
+
+    #[test]
+    fn sweep_removes_orphan_tmp_keeps_real_snapshot_and_other_snapshots() {
+        let snapshot = temp_path("sweep");
+        let dir = snapshot.parent().unwrap().to_path_buf();
+        let snapshot_name = snapshot.file_name().unwrap().to_str().unwrap().to_string();
+        fs::create_dir_all(&dir).unwrap();
+
+        // An orphan from a dead process (pid that isn't ours).
+        let orphan_pid = process::id().wrapping_add(1);
+        let orphan = dir.join(format!("{snapshot_name}.tmp.{orphan_pid}"));
+        fs::write(&orphan, b"stale").unwrap();
+        // The real snapshot and an unrelated file — must survive.
+        fs::write(&snapshot, b"snapshot").unwrap();
+        let unrelated = dir.join(format!("other_memory.lz4.tmp.{orphan_pid}"));
+        fs::write(&unrelated, b"other").unwrap();
+
+        let removed = sweep_orphan_tmp_files(&snapshot);
+
+        assert_eq!(removed, vec![orphan.clone()], "only the orphan is swept");
+        assert!(!orphan.exists());
+        assert!(snapshot.exists(), "the real snapshot is preserved");
+        assert!(unrelated.exists(), "a different snapshot's temp is preserved");
+
+        let _ = fs::remove_file(&snapshot);
+        let _ = fs::remove_file(&unrelated);
     }
 }

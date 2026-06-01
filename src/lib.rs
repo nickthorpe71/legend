@@ -216,11 +216,18 @@ fn daemon_status() -> Result<(), Box<dyn std::error::Error>> {
             tick_count,
             elements,
             relations,
+            save_failed_since_tick,
         }) => {
             println!(
                 "daemon  pid={pid}  uptime={uptime_secs}s  ticks={tick_count}  \
                  elements={elements}  relations={relations}",
             );
+            if let Some(tick) = save_failed_since_tick {
+                println!(
+                    "  WARNING: snapshot save has been failing since tick {tick}; \
+                     in-RAM substrate is ahead of disk and would be lost on a crash."
+                );
+            }
             Ok(())
         }
         Ok(other) => Err(format!("unexpected status response: {other:?}").into()),
