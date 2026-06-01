@@ -42,6 +42,28 @@ pub fn embed_text(text: &str) -> Vec<f32> {
     bert_int8::forward(weights, &ids, &mask)
 }
 
+/// A precomputed BERT forward pass over one tick's input: the
+/// per-token contextualized `sequence` (`seq_len * EMBEDDING_DIM`
+/// row-major) paired with each token's character `offsets`. Produced
+/// once per tick by `embed_sequence_with_offsets`, then borrowed by
+/// every span resolution so the forward pass isn't re-run. Borrows
+/// rather than owns so it threads through the tick pipeline as a
+/// cheap reference.
+#[derive(Clone, Copy)]
+pub struct SequenceContext<'a> {
+    pub sequence: &'a [f32],
+    pub offsets: &'a [(usize, usize)],
+}
+
+impl<'a> SequenceContext<'a> {
+    /// Mean-pool the span `[char_start, char_end)` out of this
+    /// precomputed sequence — see `embed_span_with_offsets`. No forward
+    /// pass; pure slice + pool.
+    pub fn embed_span(&self, char_start: usize, char_end: usize) -> Option<Vec<f32>> {
+        embed_span_with_offsets(self.sequence, self.offsets, char_start, char_end)
+    }
+}
+
 /// Run the forward pass and return the **per-token contextualized
 /// embeddings** together with each token's character offsets into the
 /// original `text`. Used to build span-level contextualized vectors
@@ -111,22 +133,30 @@ pub fn fold_streaming_centroid(current: &mut [f32], observation: &[f32], n_prev:
     }
 }
 
-/// Embed `text` once, then mean-pool the contextualized token vectors
-/// whose character offsets overlap `[char_start, char_end)`. Returns
-/// an L2-normalized `Vec<f32>` for cosine-as-dot, or `None` if the
-/// span doesn't intersect any non-special token (e.g., span sits
-/// inside a multi-byte character, or input is empty).
+/// Mean-pool the **already-computed** contextualized token vectors in
+/// `sequence` whose character offsets overlap `[char_start, char_end)`.
+/// Returns an L2-normalized `Vec<f32>` for cosine-as-dot, or `None` if
+/// the span doesn't intersect any non-special token (e.g., span sits
+/// inside a multi-byte character, or the sequence is empty).
+///
+/// This is the cheap half of span embedding: pure slice + pool, **no
+/// BERT forward pass**. `sequence` and `offsets` come from a single
+/// `embed_sequence_with_offsets(text)` call per tick, so the forward
+/// pass over the whole input runs once and every span resolution
+/// against it is a sub-millisecond pool. `sequence` is `seq_len *
+/// EMBEDDING_DIM` row-major; `offsets[t]` is token `t`'s char range.
 ///
 /// This is the substrate for description-rich element embeddings
 /// (see `contextualized_embeddings_plan.md`). Routing accuracy on
 /// the v3 18-case fixture: **83% top-1**, vs 44% for
 /// `embed_text(name)` and 78% for `mean(embed_text(member))`.
-pub fn embed_span_in_context(text: &str, char_start: usize, char_end: usize) -> Option<Vec<f32>> {
-    if char_end <= char_start {
-        return None;
-    }
-    let (sequence, offsets) = embed_sequence_with_offsets(text);
-    if sequence.is_empty() {
+pub fn embed_span_with_offsets(
+    sequence: &[f32],
+    offsets: &[(usize, usize)],
+    char_start: usize,
+    char_end: usize,
+) -> Option<Vec<f32>> {
+    if char_end <= char_start || sequence.is_empty() {
         return None;
     }
     let mut acc = vec![0.0f32; EMBEDDING_DIM];
@@ -159,6 +189,20 @@ pub fn embed_span_in_context(text: &str, char_start: usize, char_end: usize) -> 
         *x /= norm;
     }
     Some(acc)
+}
+
+/// Convenience wrapper: run the forward pass over `text` and pool the
+/// span `[char_start, char_end)` in one call. Equivalent to
+/// `embed_sequence_with_offsets(text)` followed by
+/// `embed_span_with_offsets(..)`, but re-runs the forward pass on every
+/// call — prefer the two-step form when resolving several spans over
+/// the same `text` so the forward pass runs once per tick.
+pub fn embed_span_in_context(text: &str, char_start: usize, char_end: usize) -> Option<Vec<f32>> {
+    if char_end <= char_start {
+        return None;
+    }
+    let (sequence, offsets) = embed_sequence_with_offsets(text);
+    embed_span_with_offsets(&sequence, &offsets, char_start, char_end)
 }
 
 // Same tokenizer.json as the embedder, but with truncation and

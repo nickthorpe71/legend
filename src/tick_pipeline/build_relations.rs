@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use crate::embed::{embed_span_in_context, embed_text, fold_streaming_centroid};
+use crate::embed::{SequenceContext, embed_sequence_with_offsets, embed_text, fold_streaming_centroid};
 use crate::tick_pipeline::coref::CorefDecision;
 use crate::tick_pipeline::orthographic::OrthographicChunk;
 use crate::tick_pipeline::relation_patterns::{ObjectRef, RelationCandidate};
@@ -55,6 +55,17 @@ pub struct MintedRelations {
     pub uncertainty: Vec<crate::types::UncertaintySignal>,
 }
 
+/// Read-only shared inputs threaded through the phase helpers. Bundled
+/// so each helper takes one `Copy` context instead of three loose
+/// borrows: the raw `input_text` (span offsets index into it), the
+/// tick's precomputed BERT `seq_ctx`, and the adjusted `policy`.
+#[derive(Clone, Copy)]
+struct RelationBuildContext<'a> {
+    input_text: &'a str,
+    seq_ctx: SequenceContext<'a>,
+    policy: &'a crate::types::Policy,
+}
+
 /// Build relations + events for one tick.
 ///
 /// - `input_text` — the raw input. Spans are character offsets into this.
@@ -78,33 +89,99 @@ pub fn build_relations(
 ) -> MintedRelations {
     let mut result = MintedRelations::default();
 
+    // Once-per-tick BERT forward pass over the whole input. Every span
+    // resolution below mean-pools out of this precomputed sequence
+    // instead of re-running the forward pass — span resolution fires
+    // 5–10× per tick over the same text, so this is the difference
+    // between one forward pass and one per span.
+    let (sequence, offsets) = embed_sequence_with_offsets(input_text);
+    let seq_ctx = SequenceContext {
+        sequence: &sequence,
+        offsets: &offsets,
+    };
+    let context = RelationBuildContext {
+        input_text,
+        seq_ctx,
+        policy,
+    };
+
     // Char-span → ElementId cache for this tick. Two proposals over
     // the same span resolve to the same element without re-running
     // mint/dedup and without bumping access_count twice for one mention.
     let mut span_cache: HashMap<(usize, usize), ElementId> = HashMap::new();
 
-    // ── §4a — Coref override ───────────────────────────────────────
-    // Pre-populate the span cache from coref decisions BEFORE any
-    // proposal-driven resolution runs. Each decision folds the
-    // pronoun's contextualized vector into the antecedent and pins
-    // the pronoun's char range to the antecedent's id. Downstream
+    // Base relations minted this tick, in mint order. Each phase below
+    // appends to this; §7 attaches a `source` companion to every entry
+    // and the uncertainty pass scans their statuses.
+    let mut base_rel_ids: Vec<RelationId> = Vec::new();
+
+    // §4a — Coref override. Pre-populate the span cache from coref
+    // decisions BEFORE any proposal-driven resolution runs. Each decision
+    // folds the pronoun's contextualized vector into the antecedent and
+    // pins the pronoun's char range to the antecedent's id. Downstream
     // `resolve_span` calls for that range short-circuit on the cache.
     // No-op behaviorally today (coref decisions is a stub), but the wiring
     // lands so once `recent_focus` lights up the override is live.
-    apply_coref_decisions(hypergraph, input_text, &out.known.coref, &mut span_cache);
+    apply_coref_decisions(hypergraph, seq_ctx, &out.known.coref, &mut span_cache);
+    build_pattern_relations(hypergraph, context, out, &mut span_cache, &mut base_rel_ids, &mut result);
+    build_novelty_relations(hypergraph, context, out, &mut span_cache, &mut base_rel_ids, &mut result);
+    if !emit_source_meta_relations(hypergraph, source, &base_rel_ids, &mut result) {
+        // Pack-shape error: `source` was requested but the seed pack has
+        // no `source` attribute name. Nothing more to do — bail before
+        // the uncertainty pass, matching the original early return.
+        return result;
+    }
 
+    // ── Uncertainty: LowConfidence ──────────────────────────────────
+    // Any minted base relation that landed `Defeasible` came from a
+    // sub-threshold extraction — surface that so `assemble_frame`'s frame can
+    // forward `LowConfidence` to the consumer. Single dedup'd signal
+    // per tick; the consumer doesn't need the count, just the flag.
+    if base_rel_ids
+        .iter()
+        .any(|&rid| hypergraph.relations[rid.0 as usize].status == RelationStatus::Defeasible)
+    {
+        result
+            .uncertainty
+            .push(crate::types::UncertaintySignal::LowConfidence);
+    }
+
+    result
+}
+
+// ─── §-phase helpers (the body of `build_relations`, named) ───────────
+
+/// §6.1–§6.3 — the known branch. Mints, in order:
+///
+/// - §6.1 binary `instance_of` proposals (NER + Temporal),
+/// - §6.2 binary pattern RE proposals, skipping any subsumed by an
+///   n-ary event merge,
+/// - §6.3 n-ary event relations, one per merge group.
+///
+/// Merge groups are computed up front so the §6.2 loop can skip the
+/// from/to proposals they subsume. Every minted base relation is
+/// appended to both `base_rel_ids` (for the §7 source companion + the
+/// uncertainty scan) and `result.minted_relations`.
+fn build_pattern_relations(
+    hypergraph: &mut Hypergraph,
+    context: RelationBuildContext,
+    out: &ExtractionOutput,
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+    base_rel_ids: &mut Vec<RelationId>,
+    result: &mut MintedRelations,
+) {
+    let RelationBuildContext { input_text, seq_ctx, policy } = context;
     // ── §6.1 — Binary instance_of proposals (NER + Temporal) ────────
-    let mut base_rel_ids: Vec<RelationId> = Vec::new();
     for p in &out.known.instance_of {
         let subj_text = &input_text[p.subject_char_start..p.subject_char_end];
         let subj_id = resolve_span(
             hypergraph,
-            input_text,
+            seq_ctx,
             p.subject_char_start,
             p.subject_char_end,
             subj_text,
-            &mut span_cache,
-            &mut result,
+            span_cache,
+            result,
         );
         let label = match &p.object {
             ObjectRef::Label(l) => l.as_str(),
@@ -114,9 +191,10 @@ pub fn build_relations(
                 continue;
             }
         };
-        let label_id = resolve_label_element(hypergraph, label, &mut result);
+        let label_id = resolve_label_element(hypergraph, label, result);
         let attr_ctx = pattern_attr_context(input_text, p);
-        let attr_id = resolve_attribute_name(hypergraph, &p.attribute_name, attr_ctx, policy, &mut result);
+        let attr_id =
+            resolve_attribute_name(hypergraph, seq_ctx, &p.attribute_name, attr_ctx, policy, result);
         let Some(rel_id) = mint_or_reuse_base_relation(
             hypergraph,
             vec![
@@ -158,7 +236,7 @@ pub fn build_relations(
             continue;
         }
         let Some(rel_id) =
-            mint_pattern_relation(hypergraph, input_text, p, policy, &mut span_cache, &mut result)
+            mint_candidate_relation(hypergraph, input_text, seq_ctx, p, policy, span_cache, result)
         else {
             // Self-referential extraction; drop.
             continue;
@@ -172,33 +250,39 @@ pub fn build_relations(
         if let Some(rel_id) = mint_event_relations(
             hypergraph,
             input_text,
+            seq_ctx,
             &out.known.relations,
             g,
             seq,
             policy,
-            &mut span_cache,
-            &mut result,
+            span_cache,
+            result,
         ) {
             base_rel_ids.push(rel_id);
         }
     }
+}
 
-    // ── §6.4 — Novelty branch ───────────────────────────────────────
-    // Mint an Element per novelty chunk (Phrase + Token) so spans
-    // NER missed still get substrate identities. Span cache dedups
-    // overlapping chunks against the spans the known branch already
-    // resolved. Then mint a Defeasible Relation per NoveltyRelation
-    // triple — these are candidates for replay confirmation.
-    mint_novelty_chunks(
-        hypergraph,
-        input_text,
-        &out.novelty.chunks,
-        &mut span_cache,
-        &mut result,
-    );
+/// §6.4 — Novelty branch. Mints an Element per novelty chunk (Phrase +
+/// Token) so spans NER missed still get substrate identities; the span
+/// cache dedups overlapping chunks against the spans the known branch
+/// already resolved. Then mints a `Defeasible` Relation per
+/// `NoveltyRelation` triple — candidates for replay confirmation. Each
+/// minted triple is appended to `base_rel_ids` and
+/// `result.minted_relations`.
+fn build_novelty_relations(
+    hypergraph: &mut Hypergraph,
+    context: RelationBuildContext,
+    out: &ExtractionOutput,
+    span_cache: &mut HashMap<(usize, usize), ElementId>,
+    base_rel_ids: &mut Vec<RelationId>,
+    result: &mut MintedRelations,
+) {
+    let RelationBuildContext { input_text, seq_ctx, policy } = context;
+    mint_novelty_chunks(hypergraph, seq_ctx, &out.novelty.chunks, span_cache, result);
     for nr in &out.novelty.relations {
         let Some(rel_id) =
-            mint_novelty_relation(hypergraph, input_text, nr, policy, &mut span_cache, &mut result)
+            mint_candidate_relation(hypergraph, input_text, seq_ctx, nr, policy, span_cache, result)
         else {
             // Self-referential novelty extraction; drop.
             continue;
@@ -206,48 +290,45 @@ pub fn build_relations(
         base_rel_ids.push(rel_id);
         result.minted_relations.push(rel_id);
     }
+}
 
-    // ── §7 — Source meta-relations ──────────────────────────────────
-    if let Some(source_id) = source {
-        let source_attr = match hypergraph.by_name.get("source").and_then(|v| v.first().copied()) {
-            Some(id) => id,
-            None => return result, // pack-shape error; nothing to do
-        };
-        for &base_id in &base_rel_ids {
-            let meta_id = mint_relation(
-                hypergraph,
-                vec![
-                    Attribute {
-                        name: hypergraph.target_attr,
-                        value: Term::Relation(base_id),
-                    },
-                    Attribute {
-                        name: source_attr,
-                        value: Term::Element(source_id),
-                    },
-                ],
-                RelationStatus::Entailed,
-                1.0,
-            );
-            result.minted_relations.push(meta_id);
-        }
+/// §7 — Source meta-relations. When the tick's source is `Some`, attach
+/// a companion `(target: base, source: source)` meta-relation to every
+/// base relation minted this tick. Returns `false` iff `source` was
+/// requested but the seed pack has no `source` attribute name — a
+/// pack-shape error the caller treats as a hard stop. Returns `true`
+/// when `source` is `None` (nothing to emit) or emission succeeded.
+fn emit_source_meta_relations(
+    hypergraph: &mut Hypergraph,
+    source: Option<ElementId>,
+    base_rel_ids: &[RelationId],
+    result: &mut MintedRelations,
+) -> bool {
+    let Some(source_id) = source else {
+        return true;
+    };
+    let Some(source_attr) = hypergraph.by_name.get("source").and_then(|v| v.first().copied()) else {
+        return false; // pack-shape error; nothing to do
+    };
+    for &base_id in base_rel_ids {
+        let meta_id = mint_relation(
+            hypergraph,
+            vec![
+                Attribute {
+                    name: hypergraph.target_attr,
+                    value: Term::Relation(base_id),
+                },
+                Attribute {
+                    name: source_attr,
+                    value: Term::Element(source_id),
+                },
+            ],
+            RelationStatus::Entailed,
+            1.0,
+        );
+        result.minted_relations.push(meta_id);
     }
-
-    // ── Uncertainty: LowConfidence ──────────────────────────────────
-    // Any minted base relation that landed `Defeasible` came from a
-    // sub-threshold extraction — surface that so `assemble_frame`'s frame can
-    // forward `LowConfidence` to the consumer. Single dedup'd signal
-    // per tick; the consumer doesn't need the count, just the flag.
-    if base_rel_ids
-        .iter()
-        .any(|&rid| hypergraph.relations[rid.0 as usize].status == RelationStatus::Defeasible)
-    {
-        result
-            .uncertainty
-            .push(crate::types::UncertaintySignal::LowConfidence);
-    }
-
-    result
+    true
 }
 
 /// Resolve a character span to an `ElementId`. Cached per tick.
@@ -256,7 +337,7 @@ pub fn build_relations(
 /// element's running centroid and bumps `access_count`.
 fn resolve_span(
     hypergraph: &mut Hypergraph,
-    input_text: &str,
+    seq_ctx: SequenceContext,
     char_start: usize,
     char_end: usize,
     span_text: &str,
@@ -264,11 +345,11 @@ fn resolve_span(
     result: &mut MintedRelations,
 ) -> ElementId {
     if let Some(&id) = span_cache.get(&(char_start, char_end)) {
-        push_referenced(result, id);
+        push_referenced_unique(result, id);
         return id;
     }
 
-    let observed = embed_span_in_context(input_text, char_start, char_end);
+    let observed = seq_ctx.embed_span(char_start, char_end);
 
     // 1. Exact-name lookup. If multiple IDs share the name, pick the
     //    one with highest cosine to the contextualized vector (or the
@@ -284,7 +365,7 @@ fn resolve_span(
         el.stats.access_count = el.stats.access_count.saturating_add(1);
         el.stats.last_seen = hypergraph.clock;
         span_cache.insert((char_start, char_end), id);
-        push_referenced(result, id);
+        push_referenced_unique(result, id);
         return id;
     }
 
@@ -292,23 +373,28 @@ fn resolve_span(
     //    back to surface-form text embedding (matches the seed-pack
     //    void-member fallback path).
     let embedding = observed.unwrap_or_else(|| embed_text(span_text));
+    // Mint-time confidence. The Policy isn't threaded into every mint
+    // site; reading the rest-state default off the Hypergraph is good
+    // enough — `assemble_frame`'s frame walker reads `stats.confidence`
+    // for ranking, not for truth-bearing.
+    let default_conf = hypergraph.policy.default_conf;
     let id = mint_element(
         hypergraph,
         vec![span_text.to_string()],
         embedding,
         Polarity::Signal,
-        policy_default_conf_or_one(hypergraph),
+        default_conf,
     );
     span_cache.insert((char_start, char_end), id);
     result.minted_elements.push(id);
-    push_referenced(result, id);
+    push_referenced_unique(result, id);
     id
 }
 
 /// Push `id` onto `result.referenced_elements` unless it's already
 /// present. O(N) lookup, but N is bounded by spans-per-tick (~10s)
 /// so a HashSet would cost more than it saves.
-pub(crate) fn push_referenced(result: &mut MintedRelations, id: ElementId) {
+pub(crate) fn push_referenced_unique(result: &mut MintedRelations, id: ElementId) {
     if !result.referenced_elements.contains(&id) {
         result.referenced_elements.push(id);
     }
@@ -321,6 +407,8 @@ pub(crate) fn push_referenced(result: &mut MintedRelations, id: ElementId) {
 /// relation's attributes looking for any attribute whose surface
 /// name starts with `"current_"`. O(attrs_per_relation).
 pub(crate) fn is_cache_relation(hypergraph: &Hypergraph, rid: RelationId) -> bool {
+    // invariant: attr.name is an attribute-name element minted before the
+    // relation that references it, so indexing `elements[attr.name]` is safe.
     let r = &hypergraph.relations[rid.0 as usize];
     for attr in &r.attributes {
         if attr.name == hypergraph.subject_attr || attr.name == hypergraph.target_attr {
@@ -388,18 +476,19 @@ fn resolve_label_element(hypergraph: &mut Hypergraph, label: &str, result: &mut 
         let el = &mut hypergraph.elements[id.0 as usize];
         el.stats.access_count = el.stats.access_count.saturating_add(1);
         el.stats.last_seen = hypergraph.clock;
-        push_referenced(result, id);
+        push_referenced_unique(result, id);
         return id;
     }
+    let default_conf = hypergraph.policy.default_conf;
     let id = mint_element(
         hypergraph,
         vec![label.to_string()],
         embed_text(label),
         Polarity::Signal,
-        policy_default_conf_or_one(hypergraph),
+        default_conf,
     );
     result.minted_elements.push(id);
-    push_referenced(result, id);
+    push_referenced_unique(result, id);
     id
 }
 
@@ -429,8 +518,9 @@ fn resolve_label_element(hypergraph: &mut Hypergraph, label: &str, result: &mut 
 /// populates it; canonical-name emitters pass `None`.
 fn resolve_attribute_name(
     hypergraph: &mut Hypergraph,
+    seq_ctx: SequenceContext,
     label: &str,
-    context: Option<(&str, usize, usize)>,
+    context: Option<(usize, usize)>,
     policy: &crate::types::Policy,
     result: &mut MintedRelations,
 ) -> ElementId {
@@ -458,9 +548,8 @@ fn resolve_attribute_name(
     }
 
     // ── Layer 3: embedding-knn over predicate centroids ────────────
-    let contextualized: Option<Vec<f32>> = context.and_then(|(text, s, e)| {
-        crate::embed::embed_span_in_context(text, s, e)
-    });
+    let contextualized: Option<Vec<f32>> =
+        context.and_then(|(s, e)| seq_ctx.embed_span(s, e));
     if let Some(ref query_vec) = contextualized
         && let Some(neighbor) = knn_attribute_name(hypergraph, query_vec, policy.attribute_name_dedup_threshold)
     {
@@ -471,29 +560,28 @@ fn resolve_attribute_name(
     // Prefer the contextualized embedding when we have it; fall back
     // to the bare-token embedding for canonical-name minters.
     let embedding = contextualized.unwrap_or_else(|| embed_text(label));
+    let default_conf = hypergraph.policy.default_conf;
     let id = mint_element(
         hypergraph,
         vec![label.to_string()],
         embedding,
         Polarity::Signal,
-        policy_default_conf_or_one(hypergraph),
+        default_conf,
     );
     result.minted_elements.push(id);
     result.attr_names_minted = result.attr_names_minted.saturating_add(1);
     id
 }
 
-/// Build the `(input_text, attr_start, attr_end)` context tuple
-/// `resolve_attribute_name` uses to contextualize a predicate's
-/// embedding. Returns `None` when the candidate's emitter didn't
-/// populate a char range (canonical-name patterns like NER-anchored
-/// templates and span-typing).
-fn pattern_attr_context<'a>(
-    input_text: &'a str,
-    p: &RelationCandidate,
-) -> Option<(&'a str, usize, usize)> {
+/// Build the `(attr_start, attr_end)` char range `resolve_attribute_name`
+/// uses to mean-pool a predicate's contextualized embedding out of the
+/// tick's precomputed sequence. Returns `None` when the candidate's
+/// emitter didn't populate a char range (canonical-name patterns like
+/// NER-anchored templates and span-typing). `input_text` is read only
+/// to bounds-check the range against the input length.
+fn pattern_attr_context(input_text: &str, p: &RelationCandidate) -> Option<(usize, usize)> {
     match (p.attribute_char_start, p.attribute_char_end) {
-        (Some(s), Some(e)) if e <= input_text.len() && s < e => Some((input_text, s, e)),
+        (Some(s), Some(e)) if e <= input_text.len() && s < e => Some((s, e)),
         _ => None,
     }
 }
@@ -541,7 +629,9 @@ fn knn_attribute_name(
         if el.polarity != Polarity::Signal {
             continue;
         }
-        let cos = cosine_unit(query, &el.embedding);
+        // Embeddings are L2-normalized (the substrate contract), so cosine
+        // reduces to a dot product — same path `pick_best_by_cosine` takes.
+        let cos = crate::math::dot(query, &el.embedding);
         if cos >= threshold && best.is_none_or(|(_, b)| cos > b) {
             best = Some((eid, cos));
         }
@@ -549,36 +639,40 @@ fn knn_attribute_name(
     best.map(|(eid, _)| eid)
 }
 
-/// Cosine similarity assuming both inputs are L2-normalized (the
-/// substrate's embedding contract). Reduces to a dot product.
-fn cosine_unit(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() {
-        return 0.0;
-    }
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
-fn mint_pattern_relation(
+/// Mint (or reuse) a binary base relation from a single
+/// `RelationCandidate`. The shared path for both §6.2 binary pattern
+/// RE proposals and §6.4 novelty triples — they're structurally
+/// identical: resolve subject span, resolve object, resolve the
+/// predicate's attribute-name element (contextualized when the
+/// candidate carries an attribute char range), then mint-or-reuse the
+/// `(subject, predicate, object)` triple stamped with the candidate's
+/// own status and `default_conf × candidate.confidence`. The only
+/// difference between the two callsites is the candidate's `status`
+/// (novelty triples arrive `Defeasible`), which the candidate already
+/// carries — so one helper covers both.
+fn mint_candidate_relation(
     hypergraph: &mut Hypergraph,
     input_text: &str,
-    p: &RelationCandidate,
+    seq_ctx: SequenceContext,
+    candidate: &RelationCandidate,
     policy: &crate::types::Policy,
     span_cache: &mut HashMap<(usize, usize), ElementId>,
     result: &mut MintedRelations,
 ) -> Option<RelationId> {
-    let subj_text = &input_text[p.subject_char_start..p.subject_char_end];
+    let subj_text = &input_text[candidate.subject_char_start..candidate.subject_char_end];
     let subj_id = resolve_span(
         hypergraph,
-        input_text,
-        p.subject_char_start,
-        p.subject_char_end,
+        seq_ctx,
+        candidate.subject_char_start,
+        candidate.subject_char_end,
         subj_text,
         span_cache,
         result,
     );
-    let obj_id = resolve_object(hypergraph, input_text, &p.object, span_cache, result);
-    let attr_ctx = pattern_attr_context(input_text, p);
-    let attr_id = resolve_attribute_name(hypergraph, &p.attribute_name, attr_ctx, policy, result);
+    let obj_id = resolve_object(hypergraph, input_text, seq_ctx, &candidate.object, span_cache, result);
+    let attr_ctx = pattern_attr_context(input_text, candidate);
+    let attr_id =
+        resolve_attribute_name(hypergraph, seq_ctx, &candidate.attribute_name, attr_ctx, policy, result);
     mint_or_reuse_base_relation(
         hypergraph,
         vec![
@@ -591,8 +685,8 @@ fn mint_pattern_relation(
                 value: Term::Element(obj_id),
             },
         ],
-        p.status,
-        confidence_for(p.confidence, policy),
+        candidate.status,
+        confidence_for(candidate.confidence, policy),
     )
 }
 
@@ -603,6 +697,7 @@ fn mint_pattern_relation(
 fn resolve_object(
     hypergraph: &mut Hypergraph,
     input_text: &str,
+    seq_ctx: SequenceContext,
     object: &ObjectRef,
     span_cache: &mut HashMap<(usize, usize), ElementId>,
     result: &mut MintedRelations,
@@ -615,7 +710,7 @@ fn resolve_object(
             let obj_text = &input_text[*char_start..*char_end];
             resolve_span(
                 hypergraph,
-                input_text,
+                seq_ctx,
                 *char_start,
                 *char_end,
                 obj_text,
@@ -938,6 +1033,8 @@ pub(crate) fn kind_of(hypergraph: &Hypergraph, value_id: ElementId) -> Option<St
             }
         }
         if is_subject && let Some(kid) = kind_value {
+            // invariant: kid is the Element value of an `instance_of` attribute
+            // on a live relation — minted before the relation, so it exists.
             return hypergraph.elements[kid.0 as usize].names.first().cloned();
         }
     }
@@ -998,14 +1095,6 @@ fn bucket_of(kind: Option<&str>) -> Option<&'static str> {
         "language" | "software" => Some("tech"),
         _ => None,
     }
-}
-
-/// Mint-time confidence for new Elements. The Policy isn't threaded
-/// into every mint site; reading the rest-state default off the
-/// Hypergraph is good enough — `assemble_frame`'s frame walker reads
-/// `stats.confidence` for ranking, not for truth-bearing.
-fn policy_default_conf_or_one(hypergraph: &Hypergraph) -> f32 {
-    hypergraph.policy.default_conf
 }
 
 // ─── §6.3 — N-ary event merging ───────────────────────────────────────
@@ -1074,6 +1163,7 @@ fn compute_event_merge_groups(relations: &[RelationCandidate]) -> Vec<EventMerge
 fn mint_event_relations(
     hypergraph: &mut Hypergraph,
     input_text: &str,
+    seq_ctx: SequenceContext,
     relations: &[RelationCandidate],
     g: &EventMergeGroup,
     seq: usize,
@@ -1089,26 +1179,27 @@ fn mint_event_relations(
     let subj_text = &input_text[from_p.subject_char_start..from_p.subject_char_end];
     let subj_id = resolve_span(
         hypergraph,
-        input_text,
+        seq_ctx,
         from_p.subject_char_start,
         from_p.subject_char_end,
         subj_text,
         span_cache,
         result,
     );
-    let from_val_id = resolve_object(hypergraph, input_text, &from_p.object, span_cache, result);
-    let to_val_id = resolve_object(hypergraph, input_text, &to_p.object, span_cache, result);
+    let from_val_id = resolve_object(hypergraph, input_text, seq_ctx, &from_p.object, span_cache, result);
+    let to_val_id = resolve_object(hypergraph, input_text, seq_ctx, &to_p.object, span_cache, result);
 
     // Event element — a fresh identity per merge. Name carries the
     // verb + tick + seq so it stays human-readable in dumps.
     let event_name = format!("{}_event_{}_{}", g.anchor, hypergraph.clock.0, seq);
     let event_emb = embed_text(&event_name);
+    let default_conf = hypergraph.policy.default_conf;
     let event_id = mint_element(
         hypergraph,
         vec![event_name],
         event_emb,
         Polarity::Signal,
-        policy_default_conf_or_one(hypergraph),
+        default_conf,
     );
     result.minted_elements.push(event_id);
 
@@ -1117,7 +1208,7 @@ fn mint_event_relations(
     // canonical kind is seeded.
     let kind_label = event_kind_for(&g.anchor);
     let kind_id = resolve_label_element(hypergraph, kind_label, result);
-    let instance_of_attr = resolve_attribute_name(hypergraph, "instance_of", None, policy, result);
+    let instance_of_attr = resolve_attribute_name(hypergraph, seq_ctx, "instance_of", None, policy, result);
     let typing_id = mint_relation(
         hypergraph,
         vec![
@@ -1142,9 +1233,9 @@ fn mint_event_relations(
     // re-walking value Elements' `instance_of` relations. Falls back
     // to the generic "value" kind when the values aren't typed.
     let target_attr = hypergraph.target_attr;
-    let from_attr = resolve_attribute_name(hypergraph, "from", None, policy, result);
-    let to_attr = resolve_attribute_name(hypergraph, "to", None, policy, result);
-    let property_attr = resolve_attribute_name(hypergraph, "property", None, policy, result);
+    let from_attr = resolve_attribute_name(hypergraph, seq_ctx, "from", None, policy, result);
+    let to_attr = resolve_attribute_name(hypergraph, seq_ctx, "to", None, policy, result);
+    let property_attr = resolve_attribute_name(hypergraph, seq_ctx, "property", None, policy, result);
     let property_kind_label = infer_property_kind(hypergraph, from_val_id, to_val_id);
     let property_kind_id = resolve_label_element(hypergraph, property_kind_label, result);
     let nary_conf = confidence_for(from_p.confidence.min(to_p.confidence), policy);
@@ -1187,7 +1278,7 @@ fn mint_event_relations(
     // value points at an Element capturing the verb itself, so future
     // ticks recognizing the same verb reuse the element.
     if is_intervention_verb(&g.anchor) {
-        let intervened_attr = resolve_attribute_name(hypergraph, "intervened", None, policy, result);
+        let intervened_attr = resolve_attribute_name(hypergraph, seq_ctx, "intervened", None, policy, result);
         let verb_id = resolve_label_element(hypergraph, &g.anchor, result);
         let meta_id = mint_relation(
             hypergraph,
@@ -1317,7 +1408,7 @@ fn is_intervention_verb(verb: &str) -> bool {
 /// defensive against incomplete coref output.
 fn apply_coref_decisions(
     hypergraph: &mut Hypergraph,
-    input_text: &str,
+    seq_ctx: SequenceContext,
     decisions: &[CorefDecision],
     span_cache: &mut HashMap<(usize, usize), ElementId>,
 ) {
@@ -1329,9 +1420,7 @@ fn apply_coref_decisions(
             },
             None => continue,
         };
-        if let Some(obs) =
-            embed_span_in_context(input_text, d.pronoun_char_start, d.pronoun_char_end)
-        {
+        if let Some(obs) = seq_ctx.embed_span(d.pronoun_char_start, d.pronoun_char_end) {
             let prev_n = hypergraph.elements[antecedent_id.0 as usize].stats.access_count;
             fold_streaming_centroid(
                 &mut hypergraph.elements[antecedent_id.0 as usize].embedding,
@@ -1353,7 +1442,7 @@ fn apply_coref_decisions(
 /// don't get two elements for the same character range.
 fn mint_novelty_chunks(
     hypergraph: &mut Hypergraph,
-    input_text: &str,
+    seq_ctx: SequenceContext,
     chunks: &[OrthographicChunk],
     span_cache: &mut HashMap<(usize, usize), ElementId>,
     result: &mut MintedRelations,
@@ -1361,7 +1450,7 @@ fn mint_novelty_chunks(
     for c in chunks {
         let _id = resolve_span(
             hypergraph,
-            input_text,
+            seq_ctx,
             c.char_start,
             c.char_end,
             &c.text,
@@ -1370,50 +1459,6 @@ fn mint_novelty_chunks(
         );
     }
 }
-
-/// Mint a binary `Defeasible` Relation from a novelty triple. The
-/// attribute text (the verbatim connective from the input — verb
-/// surface form plus any void words around it) is resolved against
-/// `by_name`; on miss, a new attribute-name element is minted and
-/// `attr_names_minted` bumps.
-fn mint_novelty_relation(
-    hypergraph: &mut Hypergraph,
-    input_text: &str,
-    nr: &RelationCandidate,
-    policy: &crate::types::Policy,
-    span_cache: &mut HashMap<(usize, usize), ElementId>,
-    result: &mut MintedRelations,
-) -> Option<RelationId> {
-    let subj_text = &input_text[nr.subject_char_start..nr.subject_char_end];
-    let subj_id = resolve_span(
-        hypergraph,
-        input_text,
-        nr.subject_char_start,
-        nr.subject_char_end,
-        subj_text,
-        span_cache,
-        result,
-    );
-    let obj_id = resolve_object(hypergraph, input_text, &nr.object, span_cache, result);
-    let attr_ctx = pattern_attr_context(input_text, nr);
-    let attr_id = resolve_attribute_name(hypergraph, &nr.attribute_name, attr_ctx, policy, result);
-    mint_or_reuse_base_relation(
-        hypergraph,
-        vec![
-            Attribute {
-                name: hypergraph.subject_attr,
-                value: Term::Element(subj_id),
-            },
-            Attribute {
-                name: attr_id,
-                value: Term::Element(obj_id),
-            },
-        ],
-        nr.status,
-        confidence_for(nr.confidence, policy),
-    )
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -1455,7 +1500,10 @@ mod tests {
             .copied()
             .find(|&id| hypergraph.elements[id.0 as usize].polarity == Polarity::Signal)
             .expect("seed should have a Signal-polarity `with`");
-        let resolved = resolve_attribute_name(&mut hypergraph, "uses", None, &policy, &mut result);
+        // `None` context never reads the sequence, so an empty one suffices.
+        let seq_ctx = SequenceContext { sequence: &[], offsets: &[] };
+        let resolved =
+            resolve_attribute_name(&mut hypergraph, seq_ctx, "uses", None, &policy, &mut result);
         assert_eq!(resolved, with_id, "`uses` should typed-lexicon-dedup to seed `with`");
         assert_eq!(result.attr_names_minted, 0, "lexicon hit should not mint");
     }
@@ -1822,7 +1870,9 @@ mod tests {
         }];
         let mut cache: HashMap<(usize, usize), ElementId> = HashMap::new();
         let prior_access = hypergraph.elements[sarah_id.0 as usize].stats.access_count;
-        apply_coref_decisions(&mut hypergraph, text, &decisions, &mut cache);
+        let (sequence, offsets) = embed_sequence_with_offsets(text);
+        let seq_ctx = SequenceContext { sequence: &sequence, offsets: &offsets };
+        apply_coref_decisions(&mut hypergraph, seq_ctx, &decisions, &mut cache);
 
         assert_eq!(
             cache.get(&(0, 3)).copied(),
@@ -1849,7 +1899,9 @@ mod tests {
             confidence: 0.9,
         }];
         let mut cache: HashMap<(usize, usize), ElementId> = HashMap::new();
-        apply_coref_decisions(&mut hypergraph, text, &decisions, &mut cache);
+        let (sequence, offsets) = embed_sequence_with_offsets(text);
+        let seq_ctx = SequenceContext { sequence: &sequence, offsets: &offsets };
+        apply_coref_decisions(&mut hypergraph, seq_ctx, &decisions, &mut cache);
         assert!(
             cache.is_empty(),
             "no binding should be created for unknown antecedent",

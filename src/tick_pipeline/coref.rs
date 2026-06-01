@@ -15,7 +15,7 @@
 //!
 //! See `new_foundation.md`.
 
-use crate::embed::embed_span_in_context;
+use crate::embed::{SequenceContext, embed_sequence_with_offsets};
 use crate::inference::deberta::predict::LabeledSpan;
 use crate::math::dot;
 use crate::types::{ElementId, Hypergraph, Policy, Tick};
@@ -84,6 +84,16 @@ pub fn resolve_coref(
         return Vec::new();
     }
 
+    // Once-per-tick BERT forward pass over the whole input. Every span's
+    // contextualized embedding is mean-pooled out of this — without it,
+    // the span × candidate loop below would re-run the forward pass for
+    // every candidate of every span.
+    let (sequence, offsets) = embed_sequence_with_offsets(input_text);
+    let seq_ctx = SequenceContext {
+        sequence: &sequence,
+        offsets: &offsets,
+    };
+
     // Max possible score: 1 (name) + 1 (embedding) + 0.5 (attr) +
     // 1 (recency) = 3.5. We divide by this for the published
     // confidence.
@@ -93,7 +103,7 @@ pub fn resolve_coref(
     for span in &spans {
         let mut best: Option<(&Candidate, f32)> = None;
         for cand in &candidates {
-            let s = score_candidate(span, input_text, hypergraph, cand);
+            let s = score_candidate(span, seq_ctx, hypergraph, cand);
             match best {
                 Some((_, b)) if s <= b => {}
                 _ => best = Some((cand, s)),
@@ -103,6 +113,9 @@ pub fn resolve_coref(
         if score < policy.coref_threshold {
             continue;
         }
+        // invariant: cand.element is collected from `recent_focus`, whose
+        // entries are pushed from live relations' element slots — it always
+        // indexes an element.
         let antecedent_name = hypergraph.elements[cand.element.0 as usize]
             .names
             .first()
@@ -317,11 +330,11 @@ pub(crate) fn name_overlap(span: &AmbiguousSpan, hypergraph: &Hypergraph, candid
 /// the span doesn't tokenize cleanly (no contextualized vector).
 pub(crate) fn embedding_similarity(
     span: &AmbiguousSpan,
-    input_text: &str,
+    seq_ctx: SequenceContext,
     hypergraph: &Hypergraph,
     candidate_id: ElementId,
 ) -> f32 {
-    let Some(span_emb) = embed_span_in_context(input_text, span.char_start, span.char_end) else {
+    let Some(span_emb) = seq_ctx.embed_span(span.char_start, span.char_end) else {
         return 0.0;
     };
     let cand_emb = &hypergraph.elements[candidate_id.0 as usize].embedding;
@@ -358,12 +371,12 @@ pub(crate) fn recency_bonus(candidate: &Candidate, now: Tick) -> f32 {
 /// score; the caller compares against `policy.coref_threshold`.
 pub(crate) fn score_candidate(
     span: &AmbiguousSpan,
-    input_text: &str,
+    seq_ctx: SequenceContext,
     hypergraph: &Hypergraph,
     candidate: &Candidate,
 ) -> f32 {
     name_overlap(span, hypergraph, candidate.element)
-        + embedding_similarity(span, input_text, hypergraph, candidate.element)
+        + embedding_similarity(span, seq_ctx, hypergraph, candidate.element)
         + attribute_overlap_hint(candidate)
         + recency_bonus(candidate, hypergraph.clock)
 }
@@ -731,7 +744,9 @@ mod tests {
             attributes: vec![Some(hypergraph.subject_attr)],
             freshest_tick: Tick(0),
         };
-        let s = score_candidate(&span, "the user replied.", &hypergraph, &cand);
+        let (sequence, offsets) = embed_sequence_with_offsets("the user replied.");
+        let seq_ctx = SequenceContext { sequence: &sequence, offsets: &offsets };
+        let s = score_candidate(&span, seq_ctx, &hypergraph, &cand);
         // name_overlap = 1.0; embedding_sim ∈ [0, 1]; attr hint = 0.5;
         // recency = 1.0 (same-tick). Lower bound ≈ 2.5.
         assert!(s >= 2.5, "expected >= 2.5; got {s}");
