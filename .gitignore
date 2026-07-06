@@ -63,3 +63,6 @@ __pycache__/
 benchmarks/longmemeval_oracle.json
 benchmarks/last_run_verbose.json
 benchmarks/venv/
+
+# Generated corpus ledger (regenerate: python3 harness/record_run.py)
+/corpus_run.md
