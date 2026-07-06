@@ -3212,28 +3212,14 @@ static void tier2_backfill(const Hypergraph *g, ScoredVec *cands, u32 cand_start
     scored_push(cands, roster.v[e].elem, 0.0);
 }
 
-/* Semantic miss-fallback: cosine the query against element embeddings (name +
- * summary) and append the nearest as candidates, score = cosine. Same element
- * filter as tier2_backfill. Returns 1 when embeddings ran, 0 when unavailable
- * (LEGEND_EMBED_DIR unset or model absent) so the caller uses the salience
- * backfill instead — the semantically-ranked list is the sharp form of the
- * blunt salience roster; both occupy the same "list for the caller to pick". */
-static int tier2_semantic(const Hypergraph *g, ScoredVec *cands, u32 cand_start,
-                          u32 cap, const char *query, u32 qlen) {
-  u32 e, n = 0, i;
-  u32 *idv, *rid;
-  char **txv;
-  float *rsc;
-  int r = -1;
-  u32 scap = cap < TIER2_SEMANTIC_CAP ? cap : TIER2_SEMANTIC_CAP;
-  if (!embed_available()) /* skip building the element list when disabled */
-    return 0;
-  idv = malloc((size_t)g->element_count * sizeof *idv);
-  txv = malloc((size_t)g->element_count * sizeof *txv);
-  rid = malloc((size_t)scap * sizeof *rid);
-  rsc = malloc((size_t)scap * sizeof *rsc);
-  if (!idv || !txv || !rid || !rsc)
-    goto done;
+/* Build the embeddable-element list (live, salient, named): each element's
+ * "name. summary" text + its id, the same filter tier2_backfill uses. Caller
+ * releases with free_embed_list. Returns count; idv,txv set NULL on alloc fail. */
+static u32 build_embed_list(const Hypergraph *g, u32 **out_idv, char ***out_txv) {
+  u32 e, n = 0;
+  u32 *idv = malloc((size_t)g->element_count * sizeof *idv);
+  char **txv = malloc((size_t)g->element_count * sizeof *txv);
+  if (!idv || !txv) { free(idv); free(txv); *out_idv = NULL; *out_txv = NULL; return 0; }
   for (e = 0; e < g->element_count; e++) {
     const Element *el = &g->elements[e];
     const char *nm, *sm;
@@ -3241,7 +3227,7 @@ static int tier2_semantic(const Hypergraph *g, ScoredVec *cands, u32 cand_start,
     char *t;
     if (el->redirect != NONE_U32)      /* merged-away tombstone */
       continue;
-    if (el->stats.salience <= 0.0)     /* vocab/meta: not worth listing */
+    if (el->stats.salience <= 0.0)     /* vocab/meta: not worth embedding */
       continue;
     if (el->names.count == 0)
       continue;
@@ -3260,13 +3246,41 @@ static int tier2_semantic(const Hypergraph *g, ScoredVec *cands, u32 cand_start,
     txv[n] = t;
     n++;
   }
-  r = embed_rank_elements(idv, (const char *const *)txv, (int)n, query,
-                          (int)qlen, rid, rsc, (int)scap);
-done:
-  for (i = 0; i < n; i++)
-    free(txv[i]);
+  *out_idv = idv;
+  *out_txv = txv;
+  return n;
+}
+
+static void free_embed_list(u32 *idv, char **txv, u32 n) {
+  u32 i;
+  if (txv)
+    for (i = 0; i < n; i++)
+      free(txv[i]);
   free(idv);
   free(txv);
+}
+
+/* Semantic miss-fallback: cosine the query against element embeddings (name +
+ * summary) and append the nearest as candidates, score = cosine. Returns 1 when
+ * embeddings ran, 0 when unavailable (model disabled/absent) so the caller uses
+ * the salience backfill instead — the semantically-ranked list is the sharp
+ * form of the blunt salience roster; both are "a list for the caller to pick". */
+static int tier2_semantic(const Hypergraph *g, ScoredVec *cands, u32 cand_start,
+                          u32 cap, const char *query, u32 qlen) {
+  u32 *idv, *rid, n, i;
+  char **txv;
+  float *rsc;
+  int r = -1;
+  u32 scap = cap < TIER2_SEMANTIC_CAP ? cap : TIER2_SEMANTIC_CAP;
+  if (!embed_available()) /* skip building the element list when disabled */
+    return 0;
+  n = build_embed_list(g, &idv, &txv);
+  rid = malloc((size_t)scap * sizeof *rid);
+  rsc = malloc((size_t)scap * sizeof *rsc);
+  if (idv && txv && rid && rsc)
+    r = embed_rank_elements(idv, (const char *const *)txv, (int)n, query,
+                            (int)qlen, rid, rsc, (int)scap);
+  free_embed_list(idv, txv, n);
   if (r < 0) { free(rid); free(rsc); return 0; }
   for (i = 0; i < (u32)r && (cands->count - cand_start) < scap; i++) {
     u32 k;
@@ -3279,6 +3293,20 @@ done:
   free(rid);
   free(rsc);
   return 1;
+}
+
+/* Eager embed: after a save, ensure every embeddable element has a current
+ * vector in the sidecar (only new/changed ones are computed), so the cost
+ * amortizes across saves and the first recall miss never rebuilds the cache. */
+static void tier2_sync(const Hypergraph *g) {
+  u32 *idv, n;
+  char **txv;
+  if (!embed_enabled()) /* cheap gate: no 23 MB load when nothing may need it */
+    return;
+  n = build_embed_list(g, &idv, &txv);
+  if (idv && txv)
+    embed_sync_elements(idv, (const char *const *)txv, (int)n);
+  free_embed_list(idv, txv, n);
 }
 
 /* Best pre-existing near match for a freshly minted write-position name:
@@ -8126,6 +8154,68 @@ static int cmd_init(int reset) {
   return 0;
 }
 
+static void dump_stats(const Stats *s) {
+  printf("\"conf\":%g,\"act\":%g,\"sal\":%g,\"stab\":%g,\"acc\":%u,\"fsc\":%u,"
+         "\"sup\":%u,\"div\":%u,\"seen\":%u",
+         s->confidence, s->activation, s->salience, s->stability,
+         s->access_count, s->focus_success_count, s->support_count,
+         s->support_diversity, s->last_seen);
+}
+
+/* Read-only full-graph dump as one JSON object: clock + every element (name,
+ * aliases, summary, kind, merge tombstone, stats) + every relation (attrs,
+ * status, stats). A debugging/export surface — no frame curation. */
+static void dump_graph(const Hypergraph *g) {
+  u32 e, r, i;
+  printf("{\"clock\":%u,\"elements\":[", g->clock);
+  for (e = 0; e < g->element_count; e++) {
+    const Element *el = &g->elements[e];
+    if (e)
+      fputc(',', stdout);
+    printf("{\"ref\":\"#%u\",\"name\":\"", e);
+    json_escape_fputs(elem_name(g, e), stdout);
+    fputc('"', stdout);
+    if (el->names.count > 1) {
+      fputs(",\"aliases\":[", stdout);
+      for (i = 1; i < el->names.count; i++) {
+        if (i > 1)
+          fputc(',', stdout);
+        fputc('"', stdout);
+        json_escape_fputs(str_ptr(&g->strs, el->names.v[i]), stdout);
+        fputc('"', stdout);
+      }
+      fputc(']', stdout);
+    }
+    if (el->summary != NONE_U32) {
+      fputs(",\"summary\":\"", stdout);
+      json_escape_fputs(str_ptr(&g->strs, el->summary), stdout);
+      fputc('"', stdout);
+    }
+    if (g->elem_kind[e] != NONE_U32) {
+      fputs(",\"kind\":\"", stdout);
+      json_escape_fputs(elem_name(g, g->elem_kind[e]), stdout);
+      fputc('"', stdout);
+    }
+    if (el->redirect != NONE_U32)
+      printf(",\"merged_into\":\"#%u\"", el->redirect);
+    fputs(",\"stats\":{", stdout);
+    dump_stats(&el->stats);
+    fputs("}}", stdout);
+  }
+  fputs("],\"relations\":[", stdout);
+  for (r = 0; r < g->relation_count; r++) {
+    if (r)
+      fputc(',', stdout);
+    printf("{\"ref\":\"rel:%u\",\"status\":\"%s\",\"attrs\":", r,
+           ST_NAMES[g->relations[r].status]);
+    frame_put_rel_attrs(g, r);
+    fputs(",\"stats\":{", stdout);
+    dump_stats(&g->relations[r].stats);
+    fputs("}}", stdout);
+  }
+  fputs("]}\n", stdout);
+}
+
 /* Parse argv, dispatch the verb, and run the one invocation. init creates or
  * reports the store; save/recall discover an existing store, lock it, load,
  * tick, save (unless observe), and print. Every error along the way funnels
@@ -8151,11 +8241,23 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   g_pretty = pretty;
   if (!verb)
     fail(ERR_PARSE, NULL,
-         "usage: legend save|recall|init [payload] [--pretty] [--reset]");
+         "usage: legend save|recall|init|dump [payload] [--pretty] [--reset]");
   if (strcmp(verb, "init") == 0) {
     if (inline_payload)
       fail(ERR_PARSE, NULL, "init takes no payload");
     return cmd_init(reset);
+  }
+  if (strcmp(verb, "dump") == 0) {
+    static char store[4200];
+    if (inline_payload)
+      fail(ERR_PARSE, NULL, "dump takes no payload");
+    if (!discover_store(store, sizeof store))
+      fail(ERR_NO_STORE, NULL,
+           "no .legend store found (set LEGEND_STATE_DIR or run legend init)");
+    if (!snapshot_load(&g_graph, store))
+      fail(ERR_NO_STORE, NULL, "no snapshot in %s — run legend init", store);
+    dump_graph(&g_graph);
+    return 0;
   }
   if (reset)
     fail(ERR_PARSE, NULL, "--reset applies to init only");
@@ -8191,6 +8293,7 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
         fail(ERR_NO_STORE, NULL, "no snapshot in %s — run legend init", store);
       tick_save(&g_graph, &sub, g_payload, &report);
       snapshot_write(&g_graph, store);
+      tier2_sync(&g_graph); /* eager: keep the vector sidecar warm per save */
       emit_frame(&g_graph, &report, store, 40, 2, -1);
       return 0;
     }

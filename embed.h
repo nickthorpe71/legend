@@ -16,8 +16,16 @@ int embed_text(const EmbedModel *m, const char *text, float *out);
 /* Tokenize into ids (incl [CLS]/[SEP]); returns token count. */
 int embed_tokenize(const EmbedModel *m, const char *text, int *ids, int max);
 
-/* Is the embedder usable this process? (LEGEND_EMBED_DIR set + model loads). */
+/* Cheap: embedder enabled + weight blob present? (env + one stat, no load). */
+int embed_enabled(void);
+
+/* Is the embedder usable this process? (default model dir + LEGEND_EMBED!=0).
+ * Loads the model on first call; embed_enabled() is the load-free predicate. */
 int embed_available(void);
+
+/* Embed any new/changed elements (ids[i]/texts[i], i<n) into the sidecar cache
+ * and persist. Call after a save so vectors are ready before the first recall. */
+void embed_sync_elements(const uint32_t *ids, const char *const *texts, int n);
 
 /* Rank elements (ids[i]/texts[i], i<n) by cosine of their embedding to `query`.
  * Fills out_ids/out_scores (desc, up to max); returns count, or -1 when the

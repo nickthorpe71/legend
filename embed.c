@@ -21,6 +21,13 @@
 
 #include "embed.h"
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#define EMBED_X86 1
+#else
+#define EMBED_X86 0
+#endif
+
 /* ---- fixed architecture (all-MiniLM-L6-v2) ---- */
 enum { HID = 384, NL = 6, NH = 12, DH = HID / NH, INTER = 1536,
        NVOCAB = 30522, MAXPOS = 512, TYPE_ID = 0 };
@@ -153,9 +160,47 @@ int embed_tokenize(const EmbedModel *m, const char *text, int *ids, int max) {
 
 /* ============================ math ============================ */
 
-/* y[o] = sum_i x[i]*W[o*in+i] + b[o], W row-major [out][in] */
+#if EMBED_X86 && !defined(EMBED_NO_SIMD)
+/* AVX2+FMA dot product, float accumulate (2 lanes). The target attribute
+ * compiles this for AVX2/FMA even under the default -O2 (no global -mavx2);
+ * a runtime __builtin_cpu_supports gate keeps pre-AVX2 CPUs on the scalar path.
+ * float accumulate matches the f32 reference within the cos>0.999 gate. */
+__attribute__((target("avx2,fma")))
+static float dot_avx2(const float *a, const float *b, int n) {
+    __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 16 <= n; i += 16) {
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), a0);
+        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 8), _mm256_loadu_ps(b + i + 8), a1);
+    }
+    for (; i + 8 <= n; i += 8)
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), a0);
+    __m256 s8 = _mm256_add_ps(a0, a1);
+    __m128 s4 = _mm_add_ps(_mm256_castps256_ps128(s8), _mm256_extractf128_ps(s8, 1));
+    s4 = _mm_hadd_ps(s4, s4);
+    s4 = _mm_hadd_ps(s4, s4);
+    float acc = _mm_cvtss_f32(s4);
+    for (; i < n; i++) acc += a[i] * b[i];
+    return acc;
+}
+
+static int embed_have_avx2(void) {
+    static int v = -1;
+    if (v < 0) v = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    return v;
+}
+#endif
+
+/* y[o] = sum_i x[i]*W[o*in+i] + b[o], W row-major [out][in]. */
 static void linear(const float *x, const float *W, const float *b,
                    float *y, int out, int in) {
+#if EMBED_X86 && !defined(EMBED_NO_SIMD)
+    if (embed_have_avx2()) {
+        for (int o = 0; o < out; o++)
+            y[o] = (b ? b[o] : 0.0f) + dot_avx2(x, W + (size_t)o * in, in);
+        return;
+    }
+#endif
     for (int o = 0; o < out; o++) {
         const float *wr = W + (size_t)o * in;
         double acc = b ? b[o] : 0.0;
@@ -389,28 +434,46 @@ typedef struct { uint32_t id; uint64_t hash; float vec[HID]; } VecEnt;
 static struct {
     EmbedModel *model;
     int tried;                /* model load attempted this process */
+    int probed, usable;       /* config resolved (cheap): enabled + blob present */
     VecEnt *ent; int n, cap;  /* vector cache */
     int dirty, loaded;
     uint64_t blob_sig;        /* blob size^mtime: invalidates a stale sidecar */
-    char sidecar[1200];
+    char binpath[1200], vocpath[1200], sidecar[1200];
 } EC;
+
+/* LEGEND_EMBED_TRACE!=0 -> one stderr line per embedding event (model load /
+ * recall rank / save sync). Diagnostic only; off by default, never on stdout. */
+static int ec_traced(void) {
+    static int on = -1;
+    if (on < 0) { const char *t = getenv("LEGEND_EMBED_TRACE"); on = (t && strcmp(t, "0") != 0); }
+    return on;
+}
+
+/* Resolve config once (cheap: env + one stat, no model load): is the embedder
+ * enabled (LEGEND_EMBED != 0) and the weight blob present? Records blob_sig so
+ * the sidecar can be validated — and staleness checked — without the load. */
+static int ec_probe(void) {
+    if (EC.probed) return EC.usable;
+    EC.probed = 1;
+    const char *off = getenv("LEGEND_EMBED");
+    if (off && strcmp(off, "0") == 0) return 0; /* explicit disable (fuzz/core gates) */
+    const char *dir = getenv("LEGEND_EMBED_DIR");
+    if (!dir || !*dir) dir = "models/all-MiniLM-L6-v2-q"; /* default: committed asset */
+    snprintf(EC.binpath, sizeof EC.binpath, "%s/minilm.int8.bin", dir);
+    snprintf(EC.vocpath, sizeof EC.vocpath, "%s/vocab.txt", dir);
+    struct stat st;
+    if (stat(EC.binpath, &st) != 0) return 0; /* no blob: graceful degrade */
+    EC.blob_sig = (uint64_t)st.st_size ^ ((uint64_t)st.st_mtime << 1);
+    EC.usable = 1;
+    return 1;
+}
 
 static void ec_load_model(void) {
     if (EC.tried) return;
     EC.tried = 1;
-    const char *off = getenv("LEGEND_EMBED");
-    if (off && strcmp(off, "0") == 0) return; /* explicit disable (fuzz/core gates) */
-    const char *dir = getenv("LEGEND_EMBED_DIR");
-    if (!dir || !*dir) dir = "models/all-MiniLM-L6-v2-q"; /* default: committed asset */
-    char binp[1200], vocp[1200];
-    snprintf(binp, sizeof binp, "%s/minilm.int8.bin", dir);
-    snprintf(vocp, sizeof vocp, "%s/vocab.txt", dir);
-    EC.model = embed_load(binp, vocp);
-    if (EC.model) {
-        struct stat st;
-        if (stat(binp, &st) == 0)
-            EC.blob_sig = (uint64_t)st.st_size ^ ((uint64_t)st.st_mtime << 1);
-    }
+    if (!ec_probe()) return;
+    EC.model = embed_load(EC.binpath, EC.vocpath);
+    if (EC.model && ec_traced()) fprintf(stderr, "[embed] model loaded\n");
 }
 
 static void ec_load_sidecar(void) {
@@ -471,11 +534,45 @@ static int rankcand_cmp(const void *a, const void *b) {
     return x->id < y->id ? -1 : x->id > y->id ? 1 : 0;
 }
 
-/* Cheap probe: is the embedder usable? (attempts the model load once, cached).
- * Lets callers skip building an element list when embeddings are disabled. */
+/* Cheap gate: embedder enabled + blob present? (env + one stat, no model load).
+ * Lets the save-time sync skip building an element list — and skip the 23 MB
+ * load — when embeddings are off. */
+int embed_enabled(void) {
+    return ec_probe();
+}
+
+/* Is the model in RAM? (attempts the load once, cached). Implies embed_enabled;
+ * callers that must embed a fresh query use this. */
 int embed_available(void) {
     ec_load_model();
     return EC.model != NULL;
+}
+
+/* Is (id,text) missing or stale in the sidecar? (hash check, no model). */
+static int ec_stale(uint32_t id, const char *text) {
+    uint64_t h = fnv64(text, (int)strlen(text));
+    for (int i = 0; i < EC.n; i++)
+        if (EC.ent[i].id == id) return EC.ent[i].hash != h;
+    return 1;
+}
+
+/* Eager sync: ensure every element (ids[i]/texts[i]) has an up-to-date vector
+ * in the sidecar, then persist. Embeds only new/changed elements, and loads the
+ * model only when at least one needs it — so an idempotent save stays cheap and
+ * the cost of real changes amortizes across saves instead of one lazy build. */
+void embed_sync_elements(const uint32_t *ids, const char *const *texts, int n) {
+    int i, work = 0;
+    if (!ec_probe()) return;
+    ec_load_sidecar();
+    for (i = 0; i < n; i++)
+        if (ec_stale(ids[i], texts[i])) work++;
+    if (!work) return; /* fully cached: no model load, no rewrite */
+    ec_load_model();
+    if (!EC.model) return;
+    for (i = 0; i < n; i++) ec_vec_for(ids[i], texts[i]);
+    ec_persist();
+    if (ec_traced())
+        fprintf(stderr, "[embed] sync: embedded %d new/changed of %d elements\n", work, n);
 }
 
 /* Rank elements (ids[i]/texts[i]) by cosine to `query`. Fills out_ids/out_scores
@@ -505,6 +602,8 @@ int embed_rank_elements(const uint32_t *ids, const char *const *texts, int n,
         c[m].id = ids[i]; c[m].s = (float)d; m++;
     }
     ec_persist();
+    if (ec_traced())
+        fprintf(stderr, "[embed] recall: embedded query, cosine-ranked %d candidates\n", m);
     qsort(c, (size_t)m, sizeof *c, rankcand_cmp);
     int r = m < max ? m : max;
     for (int i = 0; i < r; i++) { out_ids[i] = c[i].id; out_scores[i] = c[i].s; }
