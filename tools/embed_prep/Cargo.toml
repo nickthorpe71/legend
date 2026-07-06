@@ -1,0 +1,24 @@
+[package]
+name = "embed_prep"
+version = "0.1.0"
+edition = "2021"
+
+# One-time OFFLINE tool. NOT part of the shipped Legend build.
+# Produces, from fp32 all-MiniLM-L6-v2:
+#   models/all-MiniLM-L6-v2-q/minilm.f32.bin   flat fp32 weights (contract for embed.c)
+#   models/all-MiniLM-L6-v2-q/vocab.txt        id-ordered WordPiece vocab
+#   tools/embed_prep/golden.txt                sample string -> token ids + 384-d vector
+# Production (legend.c + embed.c) reads only the .bin + vocab.txt in pure C.
+
+[dependencies]
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+tokenizers = "0.20"
+hf-hub = "0.3"
+safetensors = "0.4"
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 2
