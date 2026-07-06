@@ -1,0 +1,94 @@
+{
+  "episode": "e01_scaffold",
+  "slice": "smoke",
+  "provenance": [
+    "commit e2a0ac0 Scaffold alchamancer2 (1780791631)",
+    "commit a6e7ccf Plan: defer macOS backend to Phase K (1780792649)",
+    "commit 6aa5f51 Plan: incorporate two adversarial reviews (1780793623)",
+    "README.md, DESIGN_PRD.md §1-2, PLAN.md §2.6 + decision table"
+  ],
+  "notes": "Session 1: project scaffold. Orientation on an empty store, then the project element, standing constraints, and the review-day decisions. The 60-90 minute run-length fact from the PRD is deliberately saved defeasible and retracted in step 4 when the adversarial review retunes it — a real correction arc.",
+  "steps": [
+    { "now": 1780791631, "verb": "recall", "payload": {},
+      "notes": "session boot on an empty store" },
+    { "now": 1780791800, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "Alchamancer 2", "kind": "project", "aliases": ["alchamancer2"],
+            "summary": "solo-mage tactical-grid roguelike in from-scratch C; Hades-style single player now, the original 1v1 duel later on the same sim core",
+            "salience": 0.9, "src": "README.md" },
+          { "name": "sim_apply", "kind": "function",
+            "summary": "the one mutation entry point: sim_apply(State, Command) -> Events; player input, AI, and future netcode all emit the same Commands",
+            "src": "src/sim/sim.c" },
+          { "name": "pure sim core", "kind": "constraint",
+            "attrs": { "applies_to": "sim_apply",
+                       "reason": "buys replays, undo, deterministic tests, and turn-based netcode from one discipline" },
+            "summary": "game state changes only via sim_apply; no I/O in the sim, integer math only",
+            "src": "README.md" },
+          { "name": "assets are text", "kind": "constraint",
+            "attrs": { "applies_to": "Alchamancer 2",
+                       "reason": "no binary art or audio in the repo; everything diffs" },
+            "summary": "sprites are .txt 16x16 palette grids; music and SFX are .mml chiptune text synthesized to PCM at runtime",
+            "src": "README.md" },
+          { "name": "no game engine", "kind": "constraint",
+            "attrs": { "applies_to": "Alchamancer 2",
+                       "reason": "Carmack methodology: thin hand-rolled per-OS backend behind one platform.h" },
+            "summary": "no engine, no SDL; Xlib+ALSA on Linux, Win32+WASAPI on Windows, everything above the line portable C",
+            "src": "README.md" }
+        ],
+        "facts": [
+          { "s": "Alchamancer 2", "p": "uses", "o": "sim_apply", "confidence": 0.9 },
+          { "s": "Alchamancer 2", "p": "target_run_length", "o": "60-90 minutes",
+            "status": "defeasible", "confidence": 0.6, "src": "DESIGN_PRD.md" }
+        ]
+      },
+      "notes": "core concepts + standing constraints from README/PRD" },
+    { "now": 1780792649, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "platform layer", "kind": "module", "aliases": ["platform.h"],
+            "summary": "one per-OS system layer behind platform.h; Linux Xlib+ALSA now, Windows in Phase J, macOS deferred",
+            "src": "src/platform/platform.h" },
+          { "name": "defer macOS backend", "kind": "decision",
+            "attrs": { "chose": "macOS (Cocoa+CoreAudio) waits for Phase K",
+                       "rejected": "building the macOS backend alongside Linux",
+                       "reason": "ship Linux and Windows/Steam first; a third backend now buys nothing",
+                       "about": "platform layer" },
+            "src": "commit a6e7ccf" }
+        ],
+        "facts": [
+          { "s": "platform layer", "p": "part_of", "o": "Alchamancer 2" }
+        ]
+      },
+      "notes": "commit a6e7ccf" },
+    { "now": 1780793623, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "damage formula", "kind": "mechanic",
+            "summary": "pinned integer math, fixed evaluation order: dmg = 22*power*atk/def/50, then field mod x100, then affinity x100, min 1; test-vector locked",
+            "salience": 0.8, "src": "PLAN.md" },
+          { "name": "small-power scale", "kind": "decision",
+            "attrs": { "chose": "PRD small-power scale: Spark about 5, hero 30 HP, enemies 4-18 HP",
+                       "rejected": "original Alchamancer 30-115 powers",
+                       "reason": "original powers were tuned for a gridless 1v1 with HP in the hundreds, untuned for grid enemies",
+                       "about": "damage formula" },
+            "src": "PLAN.md" },
+          { "name": "snappy run length", "kind": "decision",
+            "attrs": { "chose": "about 16-18 waves, 40-50 minutes, Act2 picks 2 schools",
+                       "rejected": "27 waves over 90 minutes",
+                       "reason": "27 waves fights the snappy pillar",
+                       "about": "Alchamancer 2" },
+            "src": "PLAN.md" }
+        ],
+        "retract": [
+          { "s": "Alchamancer 2", "p": "target_run_length", "o": "60-90 minutes" }
+        ],
+        "changes": [
+          { "target": "Alchamancer 2", "property": "run_length",
+            "from": "27 waves / 90 min", "to": "16-18 waves / 40-50 min",
+            "intervened": true, "src": "commit 6aa5f51" }
+        ]
+      },
+      "notes": "adversarial-review day: retract the stale PRD run-length fact, record the retune + the two big review decisions" }
+  ]
+}

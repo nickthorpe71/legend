@@ -1,0 +1,57 @@
+{
+  "episode": "e08_editor",
+  "slice": "smoke",
+  "provenance": [
+    "commit 000828d Level editor, Bark Imp, water/ground overhaul (1782145877)",
+    "commit 36f89a2 duel: play SP animations from duel commands (1782256227)"
+  ],
+  "notes": "Session 8: the editor era. Bark Imp is minted with range 3 as an attr — e09 then supersedes range via a change, the realistic attr-then-change wart the graph-health metrics should see. The merge folds e06's deliberate 'the rival'/'Vex' near-duplicate.",
+  "steps": [
+    { "now": 1782145700, "verb": "recall", "payload": {
+        "focus": ["campaign spine"] },
+      "notes": "orient before rebuilding the campaign in the editor" },
+    { "now": 1782145877, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "level editor", "kind": "system",
+            "summary": "in-game editor: paint tiles, units, hero and exits; ground-base picker, save/load slots, playtest that ends on reaching an exit",
+            "salience": 0.8, "src": "commit 000828d" },
+          { "name": "Bark Imp", "kind": "enemy",
+            "attrs": { "archetype": "ranged", "range": "3" },
+            "summary": "ranged enemy that throws rolling apples",
+            "src": "commit 000828d" },
+          { "name": "rebuild campaign in the editor", "kind": "decision",
+            "attrs": { "chose": "clear the placeholder campaign LevelDefs and author levels in the editor",
+                       "rejected": "keeping code-authored LevelDefs",
+                       "about": "campaign spine" },
+            "src": "commit 000828d" }
+        ],
+        "changes": [
+          { "target": "campaign spine", "property": "end_of_turn_mana_regen", "to": "disabled",
+            "intervened": true, "src": "commit 000828d" }
+        ]
+      },
+      "notes": "editor + Bark Imp land" },
+    { "now": 1782256227, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "duel animations from commands", "kind": "decision",
+            "attrs": { "chose": "play the single-player animations from duel commands",
+                       "rejected": "reimplementing animation for the duel",
+                       "reason": "one view pipeline, no reimplementation",
+                       "about": "duel mode" },
+            "src": "commit 36f89a2" }
+        ],
+        "facts": [
+          { "s": "duel mode", "p": "uses", "o": "sim_apply", "confidence": 0.8 }
+        ],
+        "merge": [
+          { "from": "the rival", "into": "Vex" }
+        ]
+      },
+      "notes": "duel work + folding the rival/Vex near-duplicate a prior frame surfaced" },
+    { "now": 1782256300, "verb": "recall", "payload": {
+        "focus": ["Bark Imp"] },
+      "notes": "check the new enemy's subgraph" }
+  ]
+}

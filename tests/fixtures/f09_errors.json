@@ -1,0 +1,101 @@
+{
+  "name": "f09_errors",
+  "notes": "One step per reachable error code (spec §9). lock_timeout and store_full are not fixturable — see README. Errors never advance the clock or mutate the store, so error steps interleave safely. corrupt_store must stay last.",
+  "steps": [
+    {
+      "now": 1782864000,
+      "verb": "save",
+      "no_store": true,
+      "payload": { "facts": [ { "s": "a", "p": "b", "o": "c" } ] },
+      "expect": { "error": { "code": "no_store" } },
+      "notes": "LEGEND_STATE_DIR points at a fresh empty dir; only init creates a store (spec §4)"
+    },
+    {
+      "now": 1782864001,
+      "verb": "init",
+      "payload": null,
+      "expect": null
+    },
+    {
+      "now": 1782864002,
+      "verb": "save",
+      "payload_raw": "{\"elements\": [",
+      "expect": { "error": { "code": "parse" } },
+      "notes": "malformed JSON"
+    },
+    {
+      "now": 1782864003,
+      "verb": "save",
+      "payload": { "focuss": ["jump"] },
+      "expect": { "error": { "code": "parse", "at": "focuss" } },
+      "notes": "unknown payload field is a hard parse error with at (plan §3.1)"
+    },
+    {
+      "now": 1782864004,
+      "verb": "save",
+      "payload": { "facts": [ { "s": "#9998", "p": "uses", "o": "widget" } ] },
+      "expect": { "error": { "code": "unknown_ref", "at": "facts[0].s" } },
+      "notes": "ids cannot be minted (spec §8)"
+    },
+    {
+      "now": 1782864005,
+      "verb": "save",
+      "payload": {
+        "elements": [
+          { "name": "Mercury", "kind": "planet" },
+          { "name": "Mercury", "kind": "god", "new": true },
+          { "name": "Hermes" }
+        ]
+      },
+      "expect": null,
+      "notes": "prelude: homonym pair via new:true. Assumed ids: #33 Mercury(planet), #34 planet, #35 Mercury(god), #36 god, #37 Hermes (README assumption 2)"
+    },
+    {
+      "now": 1782864006,
+      "verb": "save",
+      "payload": { "merge": [ { "from": "Mercury", "into": "Hermes" } ] },
+      "expect": {
+        "error": {
+          "code": "ambiguous_ref",
+          "at": "merge[0].from",
+          "candidates": [
+            { "ref": "#32", "name": "Mercury", "kind": "planet", "score": 1 },
+            { "ref": "#34", "name": "Mercury", "kind": "god", "score": 1 }
+          ]
+        }
+      },
+      "notes": "precise positions never act off a multi-match (spec §8); candidates score desc then id asc (plan §5), tier-1 exact score 1 (README assumption 20)"
+    },
+    {
+      "now": 1782864007,
+      "verb": "save",
+      "payload": {
+        "elements": [
+          { "name": "e01" }, { "name": "e02" }, { "name": "e03" }, { "name": "e04" }, { "name": "e05" },
+          { "name": "e06" }, { "name": "e07" }, { "name": "e08" }, { "name": "e09" }, { "name": "e10" },
+          { "name": "e11" }, { "name": "e12" }, { "name": "e13" }, { "name": "e14" }, { "name": "e15" },
+          { "name": "e16" }, { "name": "e17" }, { "name": "e18" }, { "name": "e19" }, { "name": "e20" },
+          { "name": "e21" }, { "name": "e22" }, { "name": "e23" }, { "name": "e24" }, { "name": "e25" },
+          { "name": "e26" }, { "name": "e27" }, { "name": "e28" }, { "name": "e29" }, { "name": "e30" },
+          { "name": "e31" }, { "name": "e32" }, { "name": "e33" }, { "name": "e34" }, { "name": "e35" },
+          { "name": "e36" }, { "name": "e37" }, { "name": "e38" }, { "name": "e39" }, { "name": "e40" },
+          { "name": "e41" }, { "name": "e42" }, { "name": "e43" }, { "name": "e44" }, { "name": "e45" },
+          { "name": "e46" }, { "name": "e47" }, { "name": "e48" }, { "name": "e49" }, { "name": "e50" },
+          { "name": "e51" }, { "name": "e52" }, { "name": "e53" }, { "name": "e54" }, { "name": "e55" },
+          { "name": "e56" }, { "name": "e57" }, { "name": "e58" }, { "name": "e59" }, { "name": "e60" },
+          { "name": "e61" }, { "name": "e62" }, { "name": "e63" }, { "name": "e64" }, { "name": "e65" }
+        ]
+      },
+      "expect": { "error": { "code": "limit_exceeded", "at": "elements" } },
+      "notes": "65 entries > the 64-per-list cap (spec §5); at is the offending list name (README assumption 19)"
+    },
+    {
+      "now": 1782864008,
+      "verb": "recall",
+      "corrupt_store": true,
+      "payload": { "focus": ["Hermes"] },
+      "expect": { "error": { "code": "snapshot_corrupt" } },
+      "notes": "runner garbles every store file except legend.lock before spawning; validating reader must fail clean (plan §3.11). LAST step: store is destroyed."
+    }
+  ]
+}

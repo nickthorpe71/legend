@@ -1,0 +1,91 @@
+{
+  "name": "f08_event_fact",
+  "notes": "A general-form fact with both `from` and `to` slots is event-shaped and triggers supersession exactly as a `changes` entry does (spec §5). Confidence 0.8 clears the supersession gate without `intervened` (the general fact form has no intervened option — spec §5 lists status/confidence/salience/src only). Event-shaped facts keep exactly their submitted slots (no implicit subject); the cache carries the superseding write's confidence. Ids (reconciled at M2, 0-based seeds): #32 max_speed, #33 value, #34 '5', #35 current_value, #36 '7'; rel:10 change event, rel:11 first cache, rel:13 fact event, rel:14 new cache (rel:12 is the derived_from meta).",
+  "steps": [
+    { "now": 1780272000, "verb": "init", "payload": null, "expect": null },
+    {
+      "now": 1781049600, "verb": "save",
+      "payload": { "changes": [ { "target": "max_speed", "property": "value", "to": "5" } ] },
+      "expect": null,
+      "notes": "no prior: cache minted with no flip (spec §5)"
+    },
+    {
+      "now": 1781913600, "verb": "save",
+      "payload": {
+        "facts": [
+          { "attrs": { "target": "max_speed", "property": "value", "from": "5", "to": "7" },
+            "confidence": 0.8 }
+        ]
+      },
+      "expect": {
+        "tick": 2,
+        "at": "2026-06-20T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [ { "ref": "#36", "name": "7" } ],
+          "reused_elements": [
+            { "ref": "#32", "name": "max_speed" },
+            { "ref": "#34", "name": "5" }
+          ],
+          "minted_relations": [ "rel:13", "rel:14" ],
+          "reused_relations": [],
+          "retracted": [],
+          "merged": []
+        },
+        "near_matches": [],
+        "conflicts": [],
+        "template_drift": []
+      },
+      "notes": "the property slot's value element folds into the attribute-vocabulary exclusion (README assumption 24); explicit from '5' is a write-position reuse; rel:13 the event, rel:14 the superseding cache"
+    },
+    {
+      "now": 1782777600, "verb": "recall",
+      "payload": { "focus": ["max_speed"], "history_depth": null },
+      "expect": {
+        "tick": 3,
+        "at": "2026-06-30T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [], "reused_elements": [],
+          "minted_relations": [], "reused_relations": [],
+          "retracted": [], "merged": []
+        },
+        "near_matches": [],
+        "conflicts": [],
+        "template_drift": [],
+        "focus": [ { "ref": "#32", "name": "max_speed" } ],
+        "state": [
+          { "ref": "rel:14",
+            "attrs": { "subject": "max_speed", "current_value": "7" },
+            "status": "asserted", "confidence": 0.8, "support_count": 1,
+            "date": "2026-06-20" }
+        ],
+        "decisions": [],
+        "constraints": [],
+        "open": [],
+        "recent": [
+          { "ref": "rel:13",
+            "attrs": { "target": "max_speed", "property": "value", "from": "5", "to": "7" },
+            "status": "asserted", "confidence": 0.8, "support_count": 1,
+            "date": "2026-06-20" },
+          { "ref": "rel:10",
+            "attrs": { "subject": "max_speed", "target": "max_speed", "property": "value", "to": "5" },
+            "status": "asserted", "confidence": 0.7, "support_count": 1,
+            "date": "2026-06-10" }
+        ],
+        "history": [
+          { "ref": "rel:11",
+            "attrs": { "subject": "max_speed", "current_value": "5" },
+            "asserted_at": 1, "asserted": "2026-06-10",
+            "superseded_by": "rel:14", "superseded_at": 2 }
+        ],
+        "related": [],
+        "pointers": [],
+        "sources": []
+      },
+      "notes": "change events stay live in recent forever (spec §7); all relation entries carry the pin §3.22 uniform shape — rel:13 keeps its submitted 0.8, rel:10 the 0.7 default; caches always live in state, never recent"
+    }
+  ]
+}

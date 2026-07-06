@@ -1,0 +1,94 @@
+{
+  "episode": "e05_feel",
+  "slice": "smoke",
+  "provenance": [
+    "commit bc67f83 Start waves with empty mana; add IDEAS.md backlog (1780839189)",
+    "commits 1bd71c6 crisp pixels, fe23544 time-based animation, 56186d6 mouse-first UI",
+    "commit b8e14c1 Battle feel: hit-flinch, death collapse, screen shake (1780852109)",
+    "commit 8bcb0a6 choreographed enemy attacks + harder melee (1780857405)",
+    "IDEAS.md (name-stealing boss)"
+  ],
+  "notes": "Session 4: game-feel day. Carries the starting_mana=0 change that e06's design-loop fixes later supersede, the open name-stealing question, and the real melee damage numbers (chargers 6, tank 9, kiter 4).",
+  "steps": [
+    { "now": 1780837100, "verb": "recall", "payload": {
+        "focus": ["mana economy"] },
+      "notes": "recall before changing how waves start" },
+    { "now": 1780839189, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "start waves with empty mana", "kind": "decision",
+            "attrs": { "chose": "every wave starts with 0 of every color",
+                       "rejected": "refilling a starting hand each wave",
+                       "reason": "the Alchamancer must forage from turn 1; where you walk and what you grab IS the build",
+                       "about": "mana economy" },
+            "src": "commit bc67f83" },
+          { "name": "name-stealing boss", "kind": "question",
+            "attrs": { "about": "Vex" },
+            "summary": "player names their Alchamancer; a boss that defeats you steals the name and wears it until you reclaim it - build it?",
+            "src": "IDEAS.md" }
+        ],
+        "changes": [
+          { "target": "mana economy", "property": "starting_mana", "to": "0",
+            "intervened": true, "src": "commit bc67f83" }
+        ]
+      },
+      "notes": "empty-mana start + the backlog question" },
+    { "now": 1780845485, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "crisp pixel rendering", "kind": "decision",
+            "attrs": { "chose": "integer-scale sprites, 32px native going forward",
+                       "rejected": "fractional scaling",
+                       "reason": "fractional scale smears pixels",
+                       "about": "Alchamancer 2" },
+            "src": "commit 1bd71c6" },
+          { "name": "time-based animation", "kind": "decision",
+            "attrs": { "chose": "animation clocks driven by elapsed time",
+                       "rejected": "frame-count animation",
+                       "reason": "frame-rate independence",
+                       "about": "Alchamancer 2" },
+            "src": "commit fe23544" },
+          { "name": "mouse-first UI", "kind": "decision",
+            "attrs": { "chose": "mouse-first contextual UI with land-on-tile foraging",
+                       "about": "Alchamancer 2" },
+            "src": "commit 56186d6" }
+        ]
+      },
+      "notes": "rendering/input direction locked" },
+    { "now": 1780852109, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "battle feel", "kind": "system",
+            "summary": "hit-flinch, death collapse, screen shake, spell projectile + impact VFX",
+            "src": "commit b8e14c1" }
+        ],
+        "facts": [
+          { "s": "battle feel", "p": "part_of", "o": "Alchamancer 2" }
+        ]
+      },
+      "notes": "battle feel pass" },
+    { "now": 1780857405, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "choreographed attacks", "kind": "decision",
+            "attrs": { "chose": "sim emits EVENT_ATTACK; the view holds the hit for windup then impact",
+                       "rejected": "folding the hero hit into EVENT_DAMAGE",
+                       "reason": "damage floaters and flinch should fire on impact, not on approach",
+                       "about": "battle feel" },
+            "src": "commit 8bcb0a6" }
+        ],
+        "changes": [
+          { "target": "Hollow", "property": "melee_damage", "to": "6",
+            "intervened": true, "src": "commit 8bcb0a6" },
+          { "target": "Stoneborn", "property": "melee_damage", "to": "9",
+            "intervened": true, "src": "commit 8bcb0a6" },
+          { "target": "Wraithling", "property": "melee_damage", "to": "4",
+            "intervened": true, "src": "commit 8bcb0a6" }
+        ]
+      },
+      "notes": "harder melee: chargers 6/hit, tank 9/hit (4 hits kills), kiter chips 4" },
+    { "now": 1780857500, "verb": "recall", "payload": {
+        "focus": ["Stoneborn", "Wraithling"] },
+      "notes": "verify the tuned enemies" }
+  ]
+}

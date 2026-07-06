@@ -1,0 +1,85 @@
+{
+  "name": "f07_new_homonym",
+  "notes": "new:true forces a homonym mint (spec §5/§8); a later bare-name write-position ref multi-matches and resolves prefer-kind-then-last_seen, reported in `resolution` with via 'homonym', score 1 (README assumption 10). A new:true mint is NOT reported in near_matches — the caller explicitly forced it (README assumption 11). Relation ids: rel:13/rel:14 are the two instance_of relations (never listed), rel:15 the orbits fact.",
+  "steps": [
+    { "now": 1781049600, "verb": "init", "payload": null, "expect": null },
+    {
+      "now": 1781049600,
+      "verb": "save",
+      "payload": { "elements": [ { "name": "Mercury", "kind": "planet" } ] },
+      "expect": {
+        "tick": 1,
+        "at": "2026-06-10T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [
+            { "ref": "#32", "name": "Mercury" },
+            { "ref": "#33", "name": "planet" }
+          ],
+          "reused_elements": [],
+          "minted_relations": [],
+          "reused_relations": [],
+          "retracted": [],
+          "merged": []
+        },
+        "near_matches": [],
+        "conflicts": [],
+        "template_drift": []
+      },
+      "notes": "instance_of is the only relation minted and it never appears in minted_relations (README assumption 5) — minted_relations is [] even though a relation was created"
+    },
+    {
+      "now": 1781136000,
+      "verb": "save",
+      "payload": { "elements": [ { "name": "Mercury", "kind": "person", "new": true } ] },
+      "expect": {
+        "tick": 2,
+        "at": "2026-06-11T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [ { "ref": "#34", "name": "Mercury" } ],
+          "reused_elements": [ { "ref": "#28", "name": "person" } ],
+          "minted_relations": [],
+          "reused_relations": [],
+          "retracted": [],
+          "merged": []
+        },
+        "near_matches": [],
+        "conflicts": [],
+        "template_drift": []
+      },
+      "notes": "#29 person is a seeded template kind (README assumption 2)"
+    },
+    {
+      "now": 1781222400,
+      "verb": "save",
+      "payload": { "facts": [ { "s": "Mercury", "p": "orbits", "o": "the Sun" } ] },
+      "expect": {
+        "tick": 3,
+        "at": "2026-06-12T00:00:00Z",
+        "store": "<store>",
+        "resolution": [
+          { "at": "facts[0].s", "submitted": "Mercury", "ref": "#34",
+            "name": "Mercury", "via": "homonym", "score": 1 }
+        ],
+        "writes": {
+          "minted_elements": [
+            { "ref": "#35", "name": "orbits" },
+            { "ref": "#36", "name": "the Sun" }
+          ],
+          "reused_elements": [ { "ref": "#34", "name": "Mercury" } ],
+          "minted_relations": [ "rel:12" ],
+          "reused_relations": [],
+          "retracted": [],
+          "merged": []
+        },
+        "near_matches": [],
+        "conflicts": [],
+        "template_drift": []
+      },
+      "notes": "no kind context in a fact slot, so the tiebreak is last_seen: #35 (tick 2) beats #33 (tick 1)"
+    }
+  ]
+}

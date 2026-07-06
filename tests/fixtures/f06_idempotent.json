@@ -1,0 +1,112 @@
+{
+  "name": "f06_idempotent",
+  "notes": "The three §9 idempotent no-ops all return normal frames: fact re-submit dedupes to reused_relations with a support bump; re-retracting a Retracted rel:id echoes in writes.retracted; re-merging an already-merged pair echoes in writes.merged (README assumption 15). Retries are the LLM norm. Ids (reconciled at M2, 0-based seeds): #32 alembic, #33 contains, #34 quicksilver, rel:10 the fact; #35 colour, #36 color variant.",
+  "steps": [
+    { "now": 1780272000, "verb": "init", "payload": null, "expect": null },
+    {
+      "now": 1780358400, "verb": "save",
+      "payload": { "facts": [ { "s": "alembic", "p": "contains", "o": "quicksilver" } ] },
+      "expect": null
+    },
+    {
+      "now": 1780444800, "verb": "save",
+      "payload": { "facts": [ { "s": "alembic", "p": "contains", "o": "quicksilver" } ] },
+      "expect": {
+        "tick": 2,
+        "at": "2026-06-03T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [],
+          "reused_elements": [
+            { "ref": "#32", "name": "alembic" },
+            { "ref": "#34", "name": "quicksilver" }
+          ],
+          "minted_relations": [],
+          "reused_relations": [ { "ref": "rel:10", "support_count": 2, "promoted": false } ],
+          "retracted": [],
+          "merged": []
+        },
+        "near_matches": [],
+        "conflicts": [],
+        "template_drift": []
+      },
+      "notes": "attribute-name 'contains' is vocabulary, excluded from reused_elements (spec §7); same source both times, so support_diversity stays 1 and promoted stays false"
+    },
+    {
+      "now": 1780531200, "verb": "save",
+      "payload": { "retract": ["rel:10"] },
+      "expect": {
+        "tick": 3,
+        "at": "2026-06-04T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [], "reused_elements": [],
+          "minted_relations": [], "reused_relations": [],
+          "retracted": [ "rel:10" ],
+          "merged": []
+        },
+        "near_matches": [], "conflicts": [], "template_drift": []
+      }
+    },
+    {
+      "now": 1780617600, "verb": "save",
+      "payload": { "retract": ["rel:10"] },
+      "expect": {
+        "tick": 4,
+        "at": "2026-06-05T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [], "reused_elements": [],
+          "minted_relations": [], "reused_relations": [],
+          "retracted": [ "rel:10" ],
+          "merged": []
+        },
+        "near_matches": [], "conflicts": [], "template_drift": []
+      },
+      "notes": "re-retract by rel:id is the one idempotent retract path (pin §3.16); still acknowledged"
+    },
+    {
+      "now": 1780704000, "verb": "save",
+      "payload": { "elements": [ { "name": "colour" }, { "name": "color variant" } ] },
+      "expect": null
+    },
+    {
+      "now": 1780790400, "verb": "save",
+      "payload": { "merge": [ { "from": "#36", "into": "#35" } ] },
+      "expect": {
+        "tick": 6,
+        "at": "2026-06-07T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [], "reused_elements": [],
+          "minted_relations": [], "reused_relations": [],
+          "retracted": [],
+          "merged": [ { "from": "#36", "into": "#35" } ]
+        },
+        "near_matches": [], "conflicts": [], "template_drift": []
+      }
+    },
+    {
+      "now": 1780876800, "verb": "save",
+      "payload": { "merge": [ { "from": "#36", "into": "#35" } ] },
+      "expect": {
+        "tick": 7,
+        "at": "2026-06-08T00:00:00Z",
+        "store": "<store>",
+        "resolution": [],
+        "writes": {
+          "minted_elements": [], "reused_elements": [],
+          "minted_relations": [], "reused_relations": [],
+          "retracted": [],
+          "merged": [ { "from": "#36", "into": "#35" } ]
+        },
+        "near_matches": [], "conflicts": [], "template_drift": []
+      },
+      "notes": "#36 follows its redirect tombstone to #35; merging an element into itself is the idempotent no-op (spec §9)"
+    }
+  ]
+}

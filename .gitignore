@@ -39,6 +39,17 @@ models/gliner2-fp32.bin
 # Claude Code local state — local-only, never check in.
 .claude/
 
+# Rust build dir for the offline embed-prep tool (regeneratable).
+/tools/embed_prep/target/
+
+# C build outputs (built by check.sh) + python bytecode
+/legend
+/legend.asan
+/legend.fuzz
+/legend_test
+/legend_test.asan
+__pycache__/
+
 # Atomic-write tempfiles from `src/persistence.rs`. The actual
 # snapshot file `.legend/memory.lz4` IS committed per CLAUDE.md.
 .legend/memory.lz4.tmp.*

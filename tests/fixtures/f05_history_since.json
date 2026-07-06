@@ -1,0 +1,137 @@
+{
+  "name": "f05_history_since",
+  "notes": "A 4-value supersession chain on (gauge, value): caches c1=rel:14, c2=rel:17, c3=rel:21, c4=rel:25 (live); events e1=rel:13, e2=rel:16, e3=rel:20, e4=rel:24 (change verb only, so ids are unchanged by the pin §3.17 attrs-before-facts order). history_depth counts hops back from the live cache: 1 -> [c3], 2 -> [c3,c2], null -> full chain (spec §6). `since` filters history by asserted date and recent by date, inclusive (README assumption 14). Relation entries carry the pin §3.22 uniform shape; change events stay live in recent forever. Recalls advance the clock (ticks 5-8). Meta relations (derived_from/supersedes) consume ids rel:15, rel:18-19, rel:22-23, rel:26-27 invisibly (assumption 4).",
+  "steps": [
+    { "now": 1780272000, "verb": "init", "payload": null, "expect": null },
+    { "now": 1780272000, "verb": "save",
+      "payload": { "changes": [ { "target": "gauge", "property": "value", "to": "1" } ] },
+      "expect": null },
+    { "now": 1780617600, "verb": "save",
+      "payload": { "changes": [ { "target": "gauge", "property": "value", "to": "2" } ] },
+      "expect": null },
+    { "now": 1781049600, "verb": "save",
+      "payload": { "changes": [ { "target": "gauge", "property": "value", "to": "3" } ] },
+      "expect": null },
+    { "now": 1781913600, "verb": "save",
+      "payload": { "changes": [ { "target": "gauge", "property": "value", "to": "4" } ] },
+      "expect": null },
+    {
+      "now": 1782777600, "verb": "recall",
+      "payload": { "focus": ["gauge"], "history_depth": 1 },
+      "expect": {
+        "tick": 5, "at": "2026-06-30T00:00:00Z", "store": "<store>",
+        "resolution": [],
+        "writes": { "minted_elements": [], "reused_elements": [], "minted_relations": [],
+                    "reused_relations": [], "retracted": [], "merged": [] },
+        "near_matches": [], "conflicts": [], "template_drift": [],
+        "focus": [ { "ref": "#32", "name": "gauge" } ],
+        "state": [
+          { "ref": "rel:22", "attrs": { "subject": "gauge", "current_value": "4" },
+            "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" }
+        ],
+        "decisions": [], "constraints": [], "open": [],
+        "recent": [
+          { "ref": "rel:21", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "3", "to": "4" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" },
+          { "ref": "rel:17", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "2", "to": "3" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-10" },
+          { "ref": "rel:13", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "1", "to": "2" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-05" },
+          { "ref": "rel:10", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "to": "1" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-01" }
+        ],
+        "history": [
+          { "ref": "rel:18", "attrs": { "subject": "gauge", "current_value": "3" },
+            "asserted_at": 3, "asserted": "2026-06-10", "superseded_by": "rel:22", "superseded_at": 4 }
+        ],
+        "related": [], "pointers": [], "sources": []
+      },
+      "notes": "e1 has no from slot (no prior cache existed); e2-e4 carry the cache-filled from"
+    },
+    {
+      "now": 1782864000, "verb": "recall",
+      "payload": { "focus": ["gauge"], "history_depth": 2 },
+      "expect": {
+        "tick": 6, "at": "2026-07-01T00:00:00Z", "store": "<store>",
+        "resolution": [],
+        "writes": { "minted_elements": [], "reused_elements": [], "minted_relations": [],
+                    "reused_relations": [], "retracted": [], "merged": [] },
+        "near_matches": [], "conflicts": [], "template_drift": [],
+        "focus": [ { "ref": "#32", "name": "gauge" } ],
+        "state": [
+          { "ref": "rel:22", "attrs": { "subject": "gauge", "current_value": "4" },
+            "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" }
+        ],
+        "decisions": [], "constraints": [], "open": [],
+        "recent": [
+          { "ref": "rel:21", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "3", "to": "4" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" },
+          { "ref": "rel:17", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "2", "to": "3" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-10" },
+          { "ref": "rel:13", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "1", "to": "2" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-05" },
+          { "ref": "rel:10", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "to": "1" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-01" }
+        ],
+        "history": [
+          { "ref": "rel:18", "attrs": { "subject": "gauge", "current_value": "3" },
+            "asserted_at": 3, "asserted": "2026-06-10", "superseded_by": "rel:22", "superseded_at": 4 },
+          { "ref": "rel:14", "attrs": { "subject": "gauge", "current_value": "2" },
+            "asserted_at": 2, "asserted": "2026-06-05", "superseded_by": "rel:18", "superseded_at": 3 }
+        ],
+        "related": [], "pointers": [], "sources": []
+      }
+    },
+    {
+      "now": 1782950400, "verb": "recall",
+      "payload": { "focus": ["gauge"], "history_depth": null },
+      "expect": {
+        "tick": 7, "at": "2026-07-02T00:00:00Z", "store": "<store>",
+        "resolution": [],
+        "writes": { "minted_elements": [], "reused_elements": [], "minted_relations": [],
+                    "reused_relations": [], "retracted": [], "merged": [] },
+        "near_matches": [], "conflicts": [], "template_drift": [],
+        "focus": [ { "ref": "#32", "name": "gauge" } ],
+        "state": [
+          { "ref": "rel:22", "attrs": { "subject": "gauge", "current_value": "4" },
+            "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" }
+        ],
+        "decisions": [], "constraints": [], "open": [],
+        "recent": [
+          { "ref": "rel:21", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "3", "to": "4" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" },
+          { "ref": "rel:17", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "2", "to": "3" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-10" },
+          { "ref": "rel:13", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "1", "to": "2" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-05" },
+          { "ref": "rel:10", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "to": "1" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-01" }
+        ],
+        "history": [
+          { "ref": "rel:18", "attrs": { "subject": "gauge", "current_value": "3" },
+            "asserted_at": 3, "asserted": "2026-06-10", "superseded_by": "rel:22", "superseded_at": 4 },
+          { "ref": "rel:14", "attrs": { "subject": "gauge", "current_value": "2" },
+            "asserted_at": 2, "asserted": "2026-06-05", "superseded_by": "rel:18", "superseded_at": 3 },
+          { "ref": "rel:11", "attrs": { "subject": "gauge", "current_value": "1" },
+            "asserted_at": 1, "asserted": "2026-06-01", "superseded_by": "rel:14", "superseded_at": 2 }
+        ],
+        "related": [], "pointers": [], "sources": []
+      }
+    },
+    {
+      "now": 1783036800, "verb": "recall",
+      "payload": { "focus": ["gauge"], "history_depth": null, "since": "2026-06-08" },
+      "expect": {
+        "tick": 8, "at": "2026-07-03T00:00:00Z", "store": "<store>",
+        "resolution": [],
+        "writes": { "minted_elements": [], "reused_elements": [], "minted_relations": [],
+                    "reused_relations": [], "retracted": [], "merged": [] },
+        "near_matches": [], "conflicts": [], "template_drift": [],
+        "focus": [ { "ref": "#32", "name": "gauge" } ],
+        "state": [
+          { "ref": "rel:22", "attrs": { "subject": "gauge", "current_value": "4" },
+            "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" }
+        ],
+        "decisions": [], "constraints": [], "open": [],
+        "recent": [
+          { "ref": "rel:21", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "3", "to": "4" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" },
+          { "ref": "rel:17", "attrs": { "subject": "gauge", "target": "gauge", "property": "value", "from": "2", "to": "3" }, "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-10" }
+        ],
+        "history": [
+          { "ref": "rel:18", "attrs": { "subject": "gauge", "current_value": "3" },
+            "asserted_at": 3, "asserted": "2026-06-10", "superseded_by": "rel:22", "superseded_at": 4 }
+        ],
+        "related": [], "pointers": [], "sources": []
+      },
+      "notes": "since 2026-06-08 drops e1/e2 from recent and c2/c1 from history (asserted 06-05/06-01 < cutoff); c3 stays (asserted 06-10); state is unaffected by since"
+    }
+  ]
+}

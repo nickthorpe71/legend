@@ -1,0 +1,54 @@
+{
+  "episode": "e04_reviews",
+  "slice": "smoke",
+  "provenance": [
+    "commits c1d6120..e820a80 review C1-C10 (1780848293-1780848745)",
+    "commit 3de7768 review E1: cache BFS (1780849023)"
+  ],
+  "notes": "Session 5: a code-review sweep. Correctness decisions with the reviewer's stated reasons, then the one performance decision. Only reasons the commits actually state are recorded.",
+  "steps": [
+    { "now": 1780848200, "verb": "recall", "payload": {
+        "focus": ["damage formula", "platform layer"] },
+      "notes": "orient before the review sweep touches combat + platform" },
+    { "now": 1780848293, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "int64 damage intermediate", "kind": "decision",
+            "attrs": { "chose": "compute damage in int64, saturate int16 event amounts",
+                       "reason": "overflow in the multiply-first formula order",
+                       "about": "damage formula" },
+            "src": "commit c1d6120" },
+          { "name": "require 32-bpp X visual", "kind": "decision",
+            "attrs": { "chose": "require a 32-bpp X visual, else fail clearly",
+                       "rejected": "silently rendering garbage on exotic visuals",
+                       "about": "platform layer" },
+            "src": "commit 1c1b75d" },
+          { "name": "guaranteed enemy placement", "kind": "decision",
+            "attrs": { "chose": "guarantee enemy placement each wave",
+                       "about": "run loop" },
+            "src": "commit 44a2b28" },
+          { "name": "rng stream seq mix", "kind": "decision",
+            "attrs": { "chose": "mix seq into rng_seed",
+                       "reason": "avoid stream aliasing between the sim and content-gen streams",
+                       "about": "PCG32 rng" },
+            "src": "commit e820a80" }
+        ]
+      },
+      "notes": "review C1/C6/C8/C10 as recorded decisions" },
+    { "now": 1780849023, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "BFS path cache", "kind": "decision",
+            "attrs": { "chose": "cache BFS results",
+                       "rejected": "recomputing BFS 3x every frame",
+                       "reason": "the recompute was pure waste on an unchanged board",
+                       "about": "the grid" },
+            "src": "commit 3de7768" }
+        ],
+        "facts": [
+          { "s": "BFS path cache", "p": "about", "o": "the grid" }
+        ]
+      },
+      "notes": "review E1" }
+  ]
+}

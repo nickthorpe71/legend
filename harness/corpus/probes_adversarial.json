@@ -1,0 +1,854 @@
+{
+    "slice": "adversarial",
+    "line_count": 58,
+    "current_state": [
+        {
+            "after_line": 58,
+            "target": "Alchamancer 2",
+            "property": "run_length",
+            "expect": "16-18 waves / 40-50 min",
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Alchamancer 2"
+                    ],
+                    "observe": true
+                }
+            },
+            "provenance": "commit 6aa5f51",
+            "notes": "set on day 1 (line 4), never touched again — a four-month-old value must still be current"
+        },
+        {
+            "after_line": 58,
+            "target": "forage",
+            "property": "per_turn_cap",
+            "expect": "2",
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "mana economy"
+                    ],
+                    "observe": true
+                }
+            },
+            "provenance": "PRD §5 via e02",
+            "notes": "early-corpus cache, months old, never superseded"
+        },
+        {
+            "after_line": 58,
+            "target": "mana economy",
+            "property": "overworld_per_color_cap",
+            "expect": "7",
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "mana economy"
+                    ],
+                    "observe": true
+                }
+            },
+            "provenance": "commit d461c8c"
+        },
+        {
+            "after_line": 58,
+            "target": "mana economy",
+            "property": "per_color_soft_cap",
+            "expect": "6",
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "mana economy"
+                    ],
+                    "observe": true
+                }
+            },
+            "provenance": "PRD §5 via e02",
+            "notes": "the near-namesake property: overworld_per_color_cap landing on the same target must not clobber this one"
+        },
+        {
+            "after_line": 58,
+            "target": "mana economy",
+            "property": "passive_refill",
+            "expect": "none - forage what you spend",
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "mana economy"
+                    ],
+                    "observe": true
+                }
+            },
+            "provenance": "commit d461c8c"
+        },
+        {
+            "after_line": 58,
+            "target": "enemy hp multiplier",
+            "property": "value",
+            "expect": "2.4x",
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "enemy hp multiplier"
+                    ],
+                    "observe": true
+                }
+            },
+            "provenance": "commit f91f75e",
+            "notes": "the balance-day flagship value, re-checked after the hiatus traffic"
+        },
+        {
+            "after_line": 51,
+            "target": "campaign spine",
+            "property": "starting_spells",
+            "expect": "0 - learned by pickup",
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "campaign spine"
+                    ],
+                    "observe": true
+                }
+            },
+            "provenance": "commit 15271d4"
+        }
+    ],
+    "recall_hits": [
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "spellbook"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_elements": [
+                "Spark",
+                "Riptide",
+                "Mend"
+            ],
+            "notes": "day-2 contains facts, ~110 ticks and four simulated months old — structural one-hop retrieval must not depend on freshness; Frost Lance surfaces under its post-rename canonical name Riptide (canonical-name-at-checkpoint rule)"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the rival"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_elements": [
+                "Vex"
+            ],
+            "notes": "merged-away name recalled months after the fold — must route to Vex through the redirect, not miss"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Deucler"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_elements": [
+                "tavern rest"
+            ],
+            "notes": "the offers fact from e10"
+        },
+        {
+            "after_line": 51,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "campaign spine"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_elements": [
+                "story-event engine",
+                "the shore"
+            ],
+            "notes": "the fresh e10 neighborhood"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Etande"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_elements": [
+                "300"
+            ],
+            "notes": "the pre-balance-day hp: a from-filled prior mints no history entry (§5 — no prior cache, no flip), so the old value is reachable only through the live change event, which outlives every depth cap"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "mana economy"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_elements": [
+                "10"
+            ],
+            "notes": "same shape as the Etande probe: the pre-tuning overworld cap lives only in the change event's from slot"
+        }
+    ],
+    "cold_caller": [
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the court fool lizard"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "Jestoad",
+            "notes": "mid: summary carries 'court-fool mutant' and 'jester-lizard'"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the forest tavern keeper"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "Deucler",
+            "notes": "mid: summary is 'keeper of the forest tavern' — but the Deucler's inn twin sits one trigram away"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "two headed bird enemy"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "Fenghu",
+            "notes": "mid: summary says 'two-headed chimera fowl' — fowl, not bird"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "carrying spells between screens"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "persistent run state",
+            "notes": "far: zero overlap with the stored name; the summary paraphrase ('carries HP, mana, and learned spells across screens') is the only bridge"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "healing at the inn"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "tavern rest",
+            "notes": "mid: summary 'inn door -> fade -> heal to full'"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "story scripting rules"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "story-event engine",
+            "notes": "mid: summary carries 'story flags + rules engine'"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the battlefield layout"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "the grid",
+            "notes": "far: zero-bridge — no lexical overlap with name or summary; only meaning connects the phrase to the target"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the caster's fuel supply"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "mana economy",
+            "notes": "far: zero-bridge — no lexical overlap with name or summary; only meaning connects the phrase to the target"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "choosing a reward after a fight"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "draft",
+            "notes": "far: zero-bridge — no lexical overlap with name or summary; only meaning connects the phrase to the target"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the repertoire of learned magic"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "spellbook",
+            "notes": "far: zero-bridge — no lexical overlap with name or summary; only meaning connects the phrase to the target"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "gathering power by walking around"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "forage",
+            "notes": "far: zero-bridge — no lexical overlap with name or summary; only meaning connects the phrase to the target"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the memory management strategy"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "arena allocator",
+            "notes": "far: zero-bridge — no lexical overlap with name or summary; only meaning connects the phrase to the target"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the random number source"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "PCG32 rng",
+            "notes": "far: zero-bridge — no lexical overlap with name or summary; only meaning connects the phrase to the target"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "how sound and images are stored"
+                    ],
+                    "observe": true
+                }
+            },
+            "expect_resolves_to": "assets are text",
+            "notes": "far: zero-bridge — no lexical overlap with name or summary; only meaning connects the phrase to the target"
+        }
+    ],
+    "orientation": [
+        {
+            "after_line": 51,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "observe": true
+                }
+            },
+            "expect": {
+                "scope": "Alchamancer 2",
+                "constraints_include": [
+                    "pure sim core",
+                    "assets are text",
+                    "no game engine"
+                ],
+                "open_include": [
+                    "name-stealing boss",
+                    "terrace count divergence"
+                ],
+                "recent_changes_include": [
+                    "campaign spine"
+                ],
+                "active_should_rank": [
+                    "campaign spine",
+                    "mana economy"
+                ]
+            },
+            "notes": "post-e10 boot: the two June sessions hung everything off the campaign and the mana economy; both old questions still stand"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "observe": true
+                }
+            },
+            "expect": {
+                "scope": "Alchamancer 2",
+                "constraints_include": [
+                    "pure sim core",
+                    "assets are text",
+                    "no game engine"
+                ],
+                "open_include": [
+                    "name-stealing boss",
+                    "terrace count divergence"
+                ],
+                "current_state_include": [
+                    [
+                        "mana economy",
+                        "overworld_per_color_cap",
+                        "7"
+                    ]
+                ],
+                "active_should_rank": [
+                    "Alchamancer 2",
+                    "Etande"
+                ]
+            },
+            "notes": "post-hiatus boot after the return session: constraints and the never-resolved questions survive four months; what the session re-checked (Etande) and re-asserted (the project spine) should top active"
+        }
+    ],
+    "absent": [
+        {
+            "after_line": 48,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "per level starting mana"
+                    ],
+                    "observe": true
+                }
+            },
+            "notes": "temporal absence: this exact concept enters the graph on line 50 — at line 48 it must not resolve, however tempting the starting_mana lexicon is"
+        },
+        {
+            "after_line": 10,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "enemy pathfinding"
+                    ],
+                    "observe": true
+                }
+            },
+            "notes": "early sparse store: enemies exist, pathfinding never stored"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "multiplayer netcode rollback"
+                    ],
+                    "observe": true
+                }
+            },
+            "notes": "never stored; 'turn-based netcode' lives inside a constraint reason, which may candidate but must not resolve"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "save file format"
+                    ],
+                    "observe": true
+                }
+            },
+            "notes": "never stored as a concept; e10 added story.sav and .lvl mentions in summaries — adjacency pressure without an anchor"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Alchamancer 1 duel balance"
+                    ],
+                    "observe": true
+                }
+            },
+            "notes": "the predecessor-project trap: heavy trigram overlap with 'Alchamancer 2' and 'original Alchamancer 30-115 powers'"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "the water realm"
+                    ],
+                    "observe": true
+                }
+            },
+            "notes": "never stored; lexically adjacent to 'the run starts on the water spell', tier 2's top candidate at 0.62 — one notch above the resolve line, also fired as live traffic on line 57. The regression this guards: resolution loosening until the wrong anchor wins"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "difficulty settings"
+                    ],
+                    "observe": true
+                }
+            },
+            "notes": "plausible game-project ask, never stored"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "controller support"
+                    ],
+                    "observe": true
+                }
+            },
+            "notes": "plausible game-project ask, never stored"
+        }
+    ],
+    "deep_history": [
+        {
+            "after_line": 58,
+            "target": "mana economy",
+            "property": "starting_mana",
+            "expect_current": "carries between rooms within a realm; reset on realm entry",
+            "expect_history": [
+                "0"
+            ],
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "mana economy"
+                    ],
+                    "history_depth": null,
+                    "observe": true
+                }
+            },
+            "provenance": "commits bc67f83, 26a878c",
+            "notes": "the prior is three months old at the probe — history must keep it behind the current value"
+        },
+        {
+            "after_line": 58,
+            "target": "enemy hp multiplier",
+            "property": "value",
+            "expect_current": "2.4x",
+            "expect_history": [
+                "2x"
+            ],
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "enemy hp multiplier"
+                    ],
+                    "history_depth": null,
+                    "observe": true
+                }
+            },
+            "provenance": "commits 151499b, f91f75e",
+            "notes": "history_depth null = the full chain"
+        },
+        {
+            "after_line": 58,
+            "target": "enemy hp multiplier",
+            "property": "value",
+            "expect_current": "2.4x",
+            "expect_history_empty": true,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "enemy hp multiplier"
+                    ],
+                    "history_depth": 0,
+                    "observe": true
+                }
+            },
+            "provenance": "commit f91f75e",
+            "notes": "history_depth 0 must fully suppress the chain while the current value stands"
+        },
+        {
+            "after_line": 58,
+            "target": "Etande",
+            "property": "hp",
+            "expect_current": "200",
+            "expect_history_empty": true,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Etande"
+                    ],
+                    "history_depth": null,
+                    "observe": true
+                }
+            },
+            "provenance": "commit 826c1a0",
+            "notes": "the change carried from: 300 but no prior cache existed — §5 mints the cache with no flip, so history must NOT fabricate a supersession; the 300 stays reachable via the event (see the recall_hits probe)"
+        },
+        {
+            "after_line": 58,
+            "target": "Mischief Maker",
+            "property": "range",
+            "expect_current": "5",
+            "expect_history": [
+                "3"
+            ],
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Mischief Maker"
+                    ],
+                    "history_depth": null,
+                    "observe": true
+                }
+            },
+            "provenance": "commits 826c1a0, c64de8c",
+            "notes": "old value behind a rename: the chain was written under 'Bark Imp', probed by the new canonical name months later"
+        }
+    ],
+    "exclusion": [
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Alchamancer 2"
+                    ],
+                    "limit": 1000,
+                    "observe": true
+                }
+            },
+            "forbid_names": [
+                "60-90 minutes"
+            ],
+            "notes": "retracted on day 1 (line 4); four months and an uncapped frame later it must not resurface in any content section"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Vex"
+                    ],
+                    "limit": 1000,
+                    "observe": true
+                }
+            },
+            "forbid_names": [
+                "the rival"
+            ],
+            "notes": "merged-away name: may survive inside summary prose, must not surface as an element name or attr value"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "mana economy"
+                    ],
+                    "observe": true
+                }
+            },
+            "forbid_state": [
+                [
+                    "mana economy",
+                    "starting_mana",
+                    "0"
+                ],
+                [
+                    "mana economy",
+                    "overworld_per_color_cap",
+                    "10"
+                ]
+            ],
+            "notes": "superseded values must never read as current, however old the supersession"
+        }
+    ],
+    "options": [
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Alchamancer 2"
+                    ],
+                    "limit": 6,
+                    "observe": true
+                }
+            },
+            "max_untyped": 6,
+            "expect_sections_nonempty": [
+                "state",
+                "decisions",
+                "constraints"
+            ],
+            "notes": "tight budget on the hub: typed sections are always included; recent/related/history fit the remainder"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Alchamancer 2"
+                    ],
+                    "limit": 1,
+                    "observe": true
+                }
+            },
+            "max_untyped": 1,
+            "expect_sections_nonempty": [
+                "state",
+                "decisions",
+                "constraints"
+            ],
+            "notes": "the minimum legal limit"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Alchamancer 2"
+                    ],
+                    "limit": null,
+                    "observe": true
+                }
+            },
+            "expect_recent_nonempty": true,
+            "notes": "null = uncapped"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "since": "2026-12-01",
+                    "observe": true
+                }
+            },
+            "expect_recent_empty": true,
+            "notes": "since after every write: the orientation frame's recent must drain"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Etande"
+                    ],
+                    "since": "2020-01-01",
+                    "observe": true
+                }
+            },
+            "expect_recent_nonempty": true,
+            "notes": "since before the corpus: a no-op window"
+        },
+        {
+            "after_line": 58,
+            "probe": {
+                "verb": "recall",
+                "payload": {
+                    "focus": [
+                        "Alchamancer 2"
+                    ],
+                    "since": "2026-09-01",
+                    "observe": true
+                }
+            },
+            "expect_recent_empty": true,
+            "notes": "the September re-assert dedup-reused June relations; since filters by assertion date, so nothing is 'new since I left' — support bumps do not re-date"
+        }
+    ]
+}

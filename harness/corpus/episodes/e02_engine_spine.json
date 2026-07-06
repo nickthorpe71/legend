@@ -1,0 +1,101 @@
+{
+  "episode": "e02_engine_spine",
+  "slice": "smoke",
+  "provenance": [
+    "commit e0e8291 Phase A: engine spine + M0 hello-grid (1780794365)",
+    "commit 9770ba5 Phase B: mana, terrain, spells, melee, enemy AI (1780795267)",
+    "commit 1ea50c1 Phase C part 2: starter spellbook (Spark/Frost Lance/Mend)",
+    "DESIGN_PRD.md §5 mana economy (forage 2/turn, per-color soft cap 6)"
+  ],
+  "notes": "Session 2: Phase A engine spine, then Phase B core combat. Recall before each work area. The 'spell' template is defined the moment the first spells are saved.",
+  "steps": [
+    { "now": 1780794300, "verb": "recall", "payload": {
+        "focus": ["sim_apply", "platform layer"] },
+      "notes": "orient on the engine spine before Phase A work" },
+    { "now": 1780794365, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "arena allocator", "kind": "module",
+            "summary": "bump allocator with mark/pop/reset; the sim's only allocation discipline",
+            "src": "src/sim/mem.c" },
+          { "name": "PCG32 rng", "kind": "module",
+            "summary": "explicit Rng* streams, no globals, unbiased rng_below",
+            "src": "src/sim/rng.c" },
+          { "name": "the grid", "kind": "mechanic", "aliases": ["board"],
+            "summary": "26x13 tactical grid: bounds, index, manhattan distance, adjacency",
+            "src": "src/sim/grid.c" }
+        ],
+        "facts": [
+          { "s": "the grid", "p": "part_of", "o": "pure sim core" },
+          { "s": "Alchamancer 2", "p": "uses", "o": "PCG32 rng" }
+        ],
+        "changes": [
+          { "target": "the grid", "property": "size", "to": "26x13",
+            "intervened": true, "src": "commit e0e8291" }
+        ]
+      },
+      "notes": "Phase A landed" },
+    { "now": 1780795100, "verb": "recall", "payload": {
+        "focus": ["damage formula"] },
+      "notes": "re-read the pinned formula before writing combat.c" },
+    { "now": 1780795267, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "mana economy", "kind": "system", "aliases": ["mana pool"],
+            "summary": "shared pool of six colors pulled from terrain; forage up to 2 a turn OR transmute up to 2 held; per-color soft cap forces spread",
+            "salience": 0.8, "src": "src/sim/mana.c" },
+          { "name": "forage", "kind": "mechanic",
+            "summary": "collect mana from element terrain entered this turn or orthogonally adjacent" },
+          { "name": "transmute", "kind": "mechanic",
+            "summary": "convert up to 2 held mana one-for-one into other colors instead of foraging" },
+          { "name": "element terrain", "kind": "mechanic",
+            "summary": "6 element tiles plus dirt; tiles deplete on forage and regen 1-2 cells a turn, biome-weighted",
+            "src": "src/sim/element_tile.c" }
+        ],
+        "facts": [
+          { "s": "forage", "p": "part_of", "o": "mana economy" },
+          { "s": "transmute", "p": "part_of", "o": "mana economy" },
+          { "s": "mana economy", "p": "uses", "o": "element terrain" }
+        ],
+        "changes": [
+          { "target": "forage", "property": "per_turn_cap", "to": "2",
+            "intervened": true, "src": "DESIGN_PRD.md" },
+          { "target": "mana economy", "property": "per_color_soft_cap", "to": "6",
+            "intervened": true, "src": "DESIGN_PRD.md" }
+        ]
+      },
+      "notes": "Phase B: the mana economy as designed + built" },
+    { "now": 1780795350, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "templates": [
+          { "kind": "spell", "expects": ["color", "tier", "cost", "effect"],
+            "summary": "a castable spell in the six-school book" }
+        ],
+        "elements": [
+          { "name": "Spark", "kind": "spell",
+            "attrs": { "color": "red", "tier": "1", "cost": "1R",
+                       "effect": "small single-target bolt" },
+            "summary": "red T1 starter bolt, power about 5",
+            "src": "src/data/spells_data.c" },
+          { "name": "Frost Lance", "kind": "spell",
+            "attrs": { "color": "blue", "tier": "1", "cost": "1B",
+                       "effect": "damage plus slow" },
+            "summary": "blue T1 starter",
+            "src": "src/data/spells_data.c" },
+          { "name": "Mend", "kind": "spell",
+            "attrs": { "color": "green", "tier": "1", "cost": "1G",
+                       "effect": "self-heal" },
+            "summary": "green T1 self-heal",
+            "src": "src/data/spells_data.c" },
+          { "name": "spellbook", "kind": "mechanic",
+            "summary": "the spells the hero currently knows; casting an unknown spell is rejected" }
+        ],
+        "facts": [
+          { "s": "spellbook", "p": "contains", "o": "Spark" },
+          { "s": "spellbook", "p": "contains", "o": "Frost Lance" },
+          { "s": "spellbook", "p": "contains", "o": "Mend" }
+        ]
+      },
+      "notes": "first spells + the spell template; starter book per commit 1ea50c1" }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "episode": "e11_hiatus_return",
+  "slice": "adversarial",
+  "provenance": [
+    "simulated session — no commit; timestamps deliberately placed ~3 months after 15271d4 (the one departure from real author dates in the corpus, documented in the README)",
+    "re-asserted facts are e01's own (commit e2a0ac0 / README.md)"
+  ],
+  "notes": "The return-after-hiatus session: an LLM coming back to a store it hasn't touched in three months. Traffic is recall-heavy and pessimistic on purpose — orientation on a stale store, recall options in live traffic (history_depth, since), two asks for things the graph has never held, and one spaced re-assert save whose facts dedup-reuse after months (a spaced touch for the dynamics metric). The wall-clock gap itself moves no dynamics (decay is tick-based); what it exercises is the since window, assertion-date stamping, and month-old current values.",
+  "steps": [
+    { "now": 1790614800, "verb": "recall", "payload": {},
+      "notes": "session boot after three months away" },
+    { "now": 1790614900, "verb": "recall", "payload": {
+        "focus": ["mana economy"], "history_depth": 3 },
+      "notes": "what are the mana rules now, and how did they get here — deep history requested in live traffic" },
+    { "now": 1790615000, "verb": "recall", "payload": {
+        "focus": ["Etande", "enemy hp multiplier"] },
+      "notes": "re-check the balance-day numbers before touching anything" },
+    { "now": 1790615100, "verb": "recall", "payload": {
+        "focus": ["campaign spine"], "since": "2026-06-26" },
+      "notes": "what changed in the campaign after I left mid-June" },
+    { "now": 1790615200, "verb": "recall", "payload": {
+        "focus": ["difficulty settings"] },
+      "notes": "never stored — a plausible ask the graph has no answer for" },
+    { "now": 1790615300, "verb": "recall", "payload": {
+        "focus": ["the water realm"] },
+      "notes": "never stored; lexically adjacent to 'the run starts on the water spell', which tier 2 surfaces as its top candidate at 0.62 — one notch above the resolve line. Left in as live traffic: if resolution semantics ever loosen, the wrong anchor gets reinforced here and the absent probe catches it" },
+    { "now": 1790615400, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "facts": [
+          { "s": "Alchamancer 2", "p": "uses", "o": "sim_apply", "confidence": 0.9 },
+          { "s": "platform layer", "p": "part_of", "o": "Alchamancer 2" }
+        ]
+      },
+      "notes": "consolidation: re-assert the two core facts the session just confirmed — both dedup-reuse from e01, a spaced touch three months after the massed early-corpus traffic" }
+  ]
+}

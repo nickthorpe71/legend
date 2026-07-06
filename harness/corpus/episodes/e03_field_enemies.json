@@ -1,0 +1,80 @@
+{
+  "episode": "e03_field_enemies",
+  "slice": "smoke",
+  "provenance": [
+    "commit 7600861 Phase C part 1: field/streak, enemy archetypes (1780795925)",
+    "commit 1ea50c1 Phase C part 2: run loop — multi-wave, draft, spellbook (1780796469)"
+  ],
+  "notes": "Session 3: the differentiator mechanic (field/streak with real x100 fixed-point mods), the three launch enemy archetypes under a fresh 'enemy' template, and the run loop.",
+  "steps": [
+    { "now": 1780795925, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "field and streak", "kind": "mechanic",
+            "aliases": ["field flip", "streak"],
+            "summary": "cast 3 same-color spells in a row and the field flips to that color; on-field spells hit x1.5, opposed x0.7; damage uses the pre-cast field",
+            "salience": 0.9, "src": "src/sim/field.c" }
+        ],
+        "facts": [
+          { "s": "field and streak", "p": "part_of", "o": "pure sim core" }
+        ],
+        "changes": [
+          { "target": "field and streak", "property": "same_field_mod_x100", "to": "150",
+            "intervened": true, "src": "commit 7600861" },
+          { "target": "field and streak", "property": "opposed_field_mod_x100", "to": "70",
+            "intervened": true, "src": "commit 7600861" }
+        ]
+      },
+      "notes": "the differentiator lands" },
+    { "now": 1780796000, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "templates": [
+          { "kind": "enemy", "expects": ["archetype", "range", "move", "melee_damage"],
+            "summary": "a hostile unit archetype" }
+        ],
+        "elements": [
+          { "name": "Hollow", "kind": "enemy",
+            "attrs": { "archetype": "charger" },
+            "summary": "melee charger, the baseline wave filler",
+            "src": "commit 7600861" },
+          { "name": "Wraithling", "kind": "enemy",
+            "attrs": { "archetype": "ranged kiter", "range": "3" },
+            "summary": "ranged kiter that keeps its distance and chips",
+            "src": "commit 7600861" },
+          { "name": "Stoneborn", "kind": "enemy",
+            "attrs": { "archetype": "slow tank" },
+            "summary": "slow heavy tank",
+            "src": "commit 7600861" }
+        ]
+      },
+      "notes": "enemy template + the three archetypes" },
+    { "now": 1780796469, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "run loop", "kind": "mechanic",
+            "summary": "multi-wave structure: clear the wave, draft, next wave; wave 1 has 3 enemies and the count scales 2+wave",
+            "src": "commit 1ea50c1" },
+          { "name": "draft", "kind": "mechanic",
+            "summary": "clearing a wave rolls a 3-card draft of unknown spells; picking one advances the wave",
+            "src": "commit 1ea50c1" },
+          { "name": "permadeath HP carry", "kind": "decision",
+            "attrs": { "chose": "HP persists across waves",
+                       "rejected": "healing between waves",
+                       "reason": "permadeath pressure is the roguelike spine",
+                       "about": "run loop" },
+            "src": "commit 1ea50c1" }
+        ],
+        "facts": [
+          { "s": "run loop", "p": "uses", "o": "draft" }
+        ],
+        "changes": [
+          { "target": "run loop", "property": "max_waves", "to": "5",
+            "intervened": true, "src": "commit 1ea50c1" }
+        ]
+      },
+      "notes": "run structure" },
+    { "now": 1780796600, "verb": "recall", "payload": {
+        "focus": ["run loop", "draft"] },
+      "notes": "verify the run-loop subgraph before closing the session" }
+  ]
+}

@@ -1,0 +1,145 @@
+{
+  "episode": "e06_campaign_story",
+  "slice": "smoke",
+  "provenance": [
+    "commit a6e5789 Campaign spine (1780887147)",
+    "commits 285263d 30-spell roster, 1569233 multi-phase bosses, adadd8b rival alchamancers",
+    "commit b8dcadb Secret Purgatory exits (1780889540)",
+    "commit 26a878c Design-loop fixes (1780891759) — supersedes empty-mana start; tempers Planet Splitter 18->11, Inferno 20->14, Eternal Tao full-heal -> heal 24",
+    "commit ae4e6e9 Purgatory terraces in STORY.md (1780924225); commit 1794870 body notes the 7-terrace vs 5-room divergence",
+    "commit f44df22 Only spawn mana for colors you can spend (1780925283)",
+    "STORY.md (Etande, Ligriv, Ecirtae, Purgatory)"
+  ],
+  "notes": "Session 6: campaign + story day. Deliberately mints 'the rival' AND 'Vex' as separate elements (the docs say rival, the commit says Vex) — e08 merges them, giving the dedup metrics a real near-duplicate. The design-loop save supersedes e05's starting_mana=0 and starts three spell-power chains.",
+  "steps": [
+    { "now": 1780887100, "verb": "recall", "payload": {},
+      "notes": "orientation at a session boundary, days later" },
+    { "now": 1780887147, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "campaign spine", "kind": "system",
+            "summary": "data-driven realms with a first-run fork between Heaven and Hell and thematic spell unlocks",
+            "salience": 0.8, "src": "commit a6e5789" },
+          { "name": "the fork", "kind": "mechanic",
+            "summary": "first-run branch after Purgatory: descend through Hell or ascend through Heaven" }
+        ],
+        "facts": [
+          { "s": "campaign spine", "p": "part_of", "o": "Alchamancer 2" },
+          { "s": "the fork", "p": "part_of", "o": "campaign spine" }
+        ]
+      },
+      "notes": "campaign spine lands" },
+    { "now": 1780888921, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "spell roster", "kind": "system",
+            "summary": "30 spells: 6 colors x 5 tiers, cast through a multi-target engine",
+            "src": "commit 285263d" },
+          { "name": "multi-phase bosses", "kind": "mechanic",
+            "summary": "bosses enrage and summon reinforcements at HP thresholds",
+            "src": "commit 1569233" },
+          { "name": "the rival", "kind": "character",
+            "summary": "kiting enemy mage that duels you mid-campaign, a PvP mock",
+            "src": "commit adadd8b" },
+          { "name": "Vex", "kind": "character",
+            "summary": "the rival alchamancer of the PRD, natural fit for the name-stealing idea",
+            "src": "DESIGN_PRD.md" }
+        ],
+        "facts": [
+          { "s": "multi-phase bosses", "p": "part_of", "o": "campaign spine" },
+          { "s": "Vex", "p": "duels", "o": "Etande" }
+        ]
+      },
+      "notes": "roster + bosses; 'the rival' and 'Vex' minted separately on purpose (merged in e08)" },
+    { "now": 1780889540, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "secret exits", "kind": "mechanic",
+            "aliases": ["Bent Path", "Two Rivers"],
+            "summary": "two hidden realms branch off the fork: the Bent Path grants Atlas Unbound (yellow), the Two Rivers grants World Tree (green); a 30/30 book needs both branches AND both secrets",
+            "src": "commit b8dcadb" }
+        ],
+        "facts": [
+          { "s": "secret exits", "p": "part_of", "o": "Purgatory" },
+          { "s": "Bent Path", "p": "grants", "o": "Atlas Unbound" },
+          { "s": "Two Rivers", "p": "grants", "o": "World Tree" }
+        ]
+      },
+      "notes": "the Yellow/Green capstone roads" },
+    { "now": 1780891759, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "persistence meta store", "kind": "decision",
+            "attrs": { "chose": "spells learned in any run persist in an in-memory meta store, re-applied after sim_init",
+                       "rejected": "runs that reset the book on death",
+                       "reason": "death is fuel: die, press R, restart Purgatory carrying everything unlocked",
+                       "about": "run loop" },
+            "src": "commit 26a878c" }
+        ],
+        "changes": [
+          { "target": "mana economy", "property": "starting_mana",
+            "from": "0",
+            "to": "carries between rooms within a realm; reset on realm entry",
+            "intervened": true, "src": "commit 26a878c" },
+          { "target": "campaign spine", "property": "hell_depth_offset", "to": "+7",
+            "intervened": true, "src": "commit 26a878c" },
+          { "target": "campaign spine", "property": "heaven_depth_offset", "to": "+5",
+            "intervened": true, "src": "commit 26a878c" },
+          { "target": "Planet Splitter", "property": "power", "from": "18", "to": "11",
+            "intervened": true, "src": "commit 26a878c" },
+          { "target": "Inferno", "property": "power", "from": "20", "to": "14",
+            "intervened": true, "src": "commit 26a878c" },
+          { "target": "Eternal Tao", "property": "effect", "from": "full heal", "to": "heal 24",
+            "intervened": true, "src": "commit 26a878c" }
+        ]
+      },
+      "notes": "design-loop fixes: mana carryover supersedes the empty-wave start; high tiers tempered so they stop trivializing the scaling enemy band" },
+    { "now": 1780924225, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "templates": [
+          { "kind": "character", "expects": ["role", "arc"],
+            "summary": "a person in the campaign story" }
+        ],
+        "elements": [
+          { "name": "Etande", "kind": "character",
+            "aliases": ["the Pilgrim"],
+            "attrs": { "role": "the one unit you play, a mage-duelist" },
+            "summary": "pilgrim-mage who reached too far into a forbidden art and woke in Purgatory",
+            "src": "STORY.md" },
+          { "name": "Ligriv", "kind": "character",
+            "attrs": { "role": "guide of Reason for Hell and Purgatory",
+                       "arc": "vanishes at the summit of Purgatory, no eulogy screen" },
+            "summary": "human wisdom at its peak and at its limit; runs the tutorial and fails at the right moments",
+            "src": "STORY.md" },
+          { "name": "Ecirtae", "kind": "character",
+            "attrs": { "role": "guide of Love and Revelation for Heaven" },
+            "summary": "takes over at the summit handoff; brighter, stricter, leans into White-spell mastery",
+            "src": "STORY.md" },
+          { "name": "Purgatory", "kind": "place",
+            "summary": "seven terraces laid out in STORY.md; the tutorial canticle and where every campaign starts",
+            "src": "STORY.md" },
+          { "name": "terrace count divergence", "kind": "question",
+            "attrs": { "about": "Purgatory" },
+            "summary": "STORY.md lays out seven terraces but the build has a 5-room Purgatory; sync deferred",
+            "src": "commit 1794870" }
+        ],
+        "facts": [
+          { "s": "Ligriv", "p": "guides", "o": "Etande" },
+          { "s": "Ecirtae", "p": "guides", "o": "Etande" }
+        ]
+      },
+      "notes": "story cast + the open terrace-count question; character template defined with same-save instances" },
+    { "now": 1780925283, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "changes": [
+          { "target": "element terrain", "property": "spawn_rule",
+            "to": "only spawn mana for colors you can spend",
+            "intervened": true, "src": "commit f44df22" }
+        ]
+      },
+      "notes": "terrain spawn rule tightened" },
+    { "now": 1780925400, "verb": "recall", "payload": {
+        "focus": ["Purgatory", "Etande"] },
+      "notes": "verify the story subgraph" }
+  ]
+}

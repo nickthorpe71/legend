@@ -1,0 +1,164 @@
+{
+  "episode": "e09_balance_day",
+  "slice": "smoke",
+  "provenance": [
+    "commit 151499b balance: double enemy HP (1782435757)",
+    "commit 826c1a0 balance: hero HP 200, faster lions, longer bark imp range (1782436405)",
+    "commit c64de8c content: rename Bark Imp -> Mischief Maker (1782436567)",
+    "commit f91f75e balance: +20% enemy HP (now 2.4x base) (1782436844)"
+  ],
+  "notes": "Session 9: the balance-tuning supersession chain the corpus exists for. enemy hp multiplier walks unset -> 2x -> 2.4x within one session; hero HP 300->200; Bark Imp range 3->5 (superseding the attr from e08) and its display-name rename. Every number is the commit's.",
+  "steps": [
+    {
+      "now": 1782435600,
+      "verb": "recall",
+      "payload": {},
+      "notes": "orientation at the session boundary"
+    },
+    {
+      "now": 1782435700,
+      "verb": "recall",
+      "payload": {
+        "focus": [
+          "Hollow",
+          "Bark Imp",
+          "Etande"
+        ]
+      },
+      "notes": "pull current combat numbers before tuning"
+    },
+    {
+      "now": 1782435757,
+      "verb": "save",
+      "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          {
+            "name": "enemy hp multiplier",
+            "kind": "parameter",
+            "summary": "global HP multiplier applied in make_enemy one line before hp_max, so every kind and every spawn path scales",
+            "salience": 0.9,
+            "src": "src/sim/sim.c"
+          }
+        ],
+        "changes": [
+          {
+            "target": "enemy hp multiplier",
+            "property": "value",
+            "to": "2x",
+            "intervened": true,
+            "src": "commit 151499b"
+          }
+        ]
+      },
+      "notes": "double every enemy's HP"
+    },
+    {
+      "now": 1782436405,
+      "verb": "save",
+      "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          {
+            "name": "Oakmane",
+            "kind": "enemy",
+            "attrs": {
+              "archetype": "lion charger"
+            },
+            "summary": "lion-type charger alongside Hollow",
+            "src": "commit 826c1a0"
+          }
+        ],
+        "changes": [
+          {
+            "target": "Etande",
+            "property": "hp",
+            "from": "300",
+            "to": "200",
+            "intervened": true,
+            "src": "commit 826c1a0"
+          },
+          {
+            "target": "Hollow",
+            "property": "move",
+            "from": "3",
+            "to": "5",
+            "intervened": true,
+            "src": "commit 826c1a0"
+          },
+          {
+            "target": "Oakmane",
+            "property": "move",
+            "from": "3",
+            "to": "5",
+            "intervened": true,
+            "src": "commit 826c1a0"
+          },
+          {
+            "target": "Bark Imp",
+            "property": "range",
+            "from": "3",
+            "to": "5",
+            "intervened": true,
+            "src": "commit 826c1a0"
+          }
+        ]
+      },
+      "notes": "hero HP 300->200, lions move 3->5, imp range 3->5"
+    },
+    {
+      "now": 1782436567,
+      "verb": "save",
+      "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          {
+            "name": "Bark Imp",
+            "summary": "ranged apple-thrower, display name Mischief Maker; barkimp sprite prefix and ENEMY_BARK_IMP enum unchanged",
+            "rename_to": "Mischief Maker"
+          }
+        ],
+        "changes": [
+          {
+            "target": "Bark Imp",
+            "property": "display_name",
+            "from": "Bark Imp",
+            "to": "Mischief Maker",
+            "intervened": true,
+            "src": "commit c64de8c"
+          }
+        ]
+      },
+      "notes": "display-name-only rename: alias + supersession"
+    },
+    {
+      "now": 1782436844,
+      "verb": "save",
+      "payload": {
+        "source": "claude-code:alchamancer2",
+        "changes": [
+          {
+            "target": "enemy hp multiplier",
+            "property": "value",
+            "from": "2x",
+            "to": "2.4x",
+            "intervened": true,
+            "src": "commit f91f75e"
+          }
+        ]
+      },
+      "notes": "the prior doubling plus ~20%"
+    },
+    {
+      "now": 1782436900,
+      "verb": "recall",
+      "payload": {
+        "focus": [
+          "enemy hp multiplier",
+          "Mischief Maker"
+        ]
+      },
+      "notes": "verify the chain; Mischief Maker must resolve via the fresh alias"
+    }
+  ]
+}

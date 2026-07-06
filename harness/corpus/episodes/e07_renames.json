@@ -1,0 +1,330 @@
+{
+  "episode": "e07_renames",
+  "slice": "smoke",
+  "provenance": [
+    "commit cd1a9ae make Frost Lance a real control pick (1780963409)",
+    "commit 5ae3f8d Start with water (1780968662)",
+    "commit 1794870 Rename 8 spells for Divine-Comedy resonance (1780969414)",
+    "commit 018a9ad Scale combined mana costs to ~tier total (1781042183)",
+    "commits 11d6c6b Berserk lock, 0e4421c Tears of Pain + Cleanse retune (1781714806, 1781740997)"
+  ],
+  "notes": "Session 7: the alias-heavy stretch. Four of the eight Divine-Comedy renames captured as aliases + display_name changes; the cost pass then targets spells BY their new alias (Hellfire, Cocytus...) \u2014 dedup must route those through the alias to the original element. Cleanse carries a from-value cost supersession.",
+  "steps": [
+    {
+      "now": 1780963300,
+      "verb": "recall",
+      "payload": {
+        "focus": [
+          "Frost Lance",
+          "spell roster"
+        ]
+      },
+      "notes": "recall before the control-pick rework"
+    },
+    {
+      "now": 1780968662,
+      "verb": "save",
+      "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          {
+            "name": "water start",
+            "kind": "decision",
+            "attrs": {
+              "chose": "the run starts on the water spell",
+              "rejected": "the red Spark start",
+              "reason": "reorder Purgatory to the earthly-first color path",
+              "about": "spellbook"
+            },
+            "src": "commit 5ae3f8d"
+          }
+        ],
+        "changes": [
+          {
+            "target": "Frost Lance",
+            "property": "effect",
+            "from": "damage plus slow",
+            "to": "damage plus a real slow, the T1 control pick",
+            "intervened": true,
+            "src": "commit cd1a9ae"
+          }
+        ]
+      },
+      "notes": "Frost Lance becomes a real control pick; water start locked"
+    },
+    {
+      "now": 1780969414,
+      "verb": "save",
+      "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          {
+            "name": "Divine-Comedy rename pass",
+            "kind": "decision",
+            "attrs": {
+              "chose": "rename 8 spells to Dante-resonant display names, SpellId enums kept stable",
+              "rejected": "original-Alchamancer canon names",
+              "reason": "drop the sci-fi names; the reskin is the Commedia",
+              "about": "spell roster"
+            },
+            "salience": 0.8,
+            "src": "commit 1794870"
+          },
+          {
+            "name": "Frost Lance",
+            "summary": "blue T1 water starter, now Riptide: undertow, not ice",
+            "rename_to": "Riptide"
+          },
+          {
+            "name": "Plasma Stream",
+            "kind": "spell",
+            "attrs": {
+              "color": "red",
+              "tier": "4"
+            },
+            "summary": "red T4 lance, now Hellfire: drop the sci-fi plasma",
+            "rename_to": "Hellfire"
+          },
+          {
+            "name": "Absolute Zero",
+            "kind": "spell",
+            "attrs": {
+              "color": "blue",
+              "tier": "5"
+            },
+            "summary": "blue T5, now Cocytus: Hell's frozen pit, pairs with Inferno",
+            "rename_to": "Cocytus"
+          },
+          {
+            "name": "Reaper's Toll",
+            "kind": "spell",
+            "attrs": {
+              "color": "black",
+              "tier": "5"
+            },
+            "summary": "black T5, now Malebolge",
+            "rename_to": "Malebolge"
+          },
+          {
+            "name": "World Tree",
+            "kind": "spell",
+            "attrs": {
+              "color": "green",
+              "tier": "5"
+            },
+            "summary": "green T5 capstone, now Tree of Life: Eden, not Norse",
+            "rename_to": "Tree of Life"
+          },
+          {
+            "name": "Eternal Tao",
+            "kind": "spell",
+            "attrs": {
+              "color": "white",
+              "tier": "5"
+            },
+            "summary": "white T5, now Empyrean: Dante's highest heaven",
+            "rename_to": "Empyrean"
+          }
+        ],
+        "changes": [
+          {
+            "target": "Frost Lance",
+            "property": "display_name",
+            "to": "Riptide",
+            "intervened": true,
+            "src": "commit 1794870"
+          },
+          {
+            "target": "Plasma Stream",
+            "property": "display_name",
+            "to": "Hellfire",
+            "intervened": true,
+            "src": "commit 1794870"
+          },
+          {
+            "target": "Absolute Zero",
+            "property": "display_name",
+            "to": "Cocytus",
+            "intervened": true,
+            "src": "commit 1794870"
+          },
+          {
+            "target": "Reaper's Toll",
+            "property": "display_name",
+            "to": "Malebolge",
+            "intervened": true,
+            "src": "commit 1794870"
+          },
+          {
+            "target": "World Tree",
+            "property": "display_name",
+            "to": "Tree of Life",
+            "intervened": true,
+            "src": "commit 1794870"
+          },
+          {
+            "target": "Eternal Tao",
+            "property": "display_name",
+            "to": "Empyrean",
+            "intervened": true,
+            "src": "commit 1794870"
+          }
+        ],
+        "facts": [
+          {
+            "s": "Absolute Zero",
+            "p": "pairs_with",
+            "o": "Inferno"
+          }
+        ]
+      },
+      "notes": "the rename pass: aliases + display_name supersessions"
+    },
+    {
+      "now": 1781042183,
+      "verb": "save",
+      "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          {
+            "name": "tier-total cost scale",
+            "kind": "decision",
+            "attrs": {
+              "chose": "combined mana costs land near the spell's tier, within about 1",
+              "rejected": "restored original costs, mostly 2-mana totals",
+              "reason": "2-mana totals are too cheap for high tiers",
+              "about": "spell roster"
+            },
+            "src": "commit 018a9ad"
+          }
+        ],
+        "changes": [
+          {
+            "target": "Hellfire",
+            "property": "cost",
+            "to": "3R 1W",
+            "intervened": true,
+            "src": "commit 018a9ad"
+          },
+          {
+            "target": "Cocytus",
+            "property": "cost",
+            "to": "3B 2W",
+            "intervened": true,
+            "src": "commit 018a9ad"
+          },
+          {
+            "target": "Malebolge",
+            "property": "cost",
+            "to": "2R 3K",
+            "intervened": true,
+            "src": "commit 018a9ad"
+          },
+          {
+            "target": "Empyrean",
+            "property": "cost",
+            "to": "2Y 3W",
+            "intervened": true,
+            "src": "commit 018a9ad"
+          },
+          {
+            "target": "Inferno",
+            "property": "cost",
+            "to": "3R 2K",
+            "intervened": true,
+            "src": "commit 018a9ad"
+          }
+        ]
+      },
+      "notes": "cost pass targets spells by their NEW names \u2014 alias resolution ground truth"
+    },
+    {
+      "now": 1781714700,
+      "verb": "recall",
+      "payload": {
+        "focus": [
+          "Berserk"
+        ]
+      },
+      "notes": "check for prior Berserk state before the T2 lock (nothing stored yet)"
+    },
+    {
+      "now": 1781740997,
+      "verb": "save",
+      "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          {
+            "name": "Berserk",
+            "kind": "spell",
+            "attrs": {
+              "color": "red",
+              "tier": "2",
+              "cost": "2R",
+              "effect": "the unit deals and takes +50% damage for 3 turns; castable on self or a foe"
+            },
+            "summary": "red T2, a flat damage multiplier status; field-scales to +75% on a red field",
+            "src": "commit 11d6c6b"
+          },
+          {
+            "name": "Berserk rework",
+            "kind": "decision",
+            "attrs": {
+              "chose": "flat damage multiplier status, +50% dealt and taken",
+              "rejected": "a +atk/-def stat buff",
+              "reason": "the stat buff diluted to about +12% through the atk/(atk+def) formula",
+              "about": "Berserk"
+            },
+            "src": "commit 11d6c6b"
+          },
+          {
+            "name": "Cleanse",
+            "kind": "spell",
+            "aliases": [
+              "Mirror Shield"
+            ],
+            "attrs": {
+              "color": "white",
+              "tier": "2"
+            },
+            "summary": "white T2, was Mirror Shield",
+            "src": "commit 0e4421c"
+          },
+          {
+            "name": "Tears of Pain",
+            "kind": "spell",
+            "attrs": {
+              "color": "black",
+              "tier": "2",
+              "cost": "1B 1G 1K",
+              "effect": "burst r2 damage plus heavy sustained attack-down across a cluster"
+            },
+            "summary": "the group-disabler of T2",
+            "src": "commit 0e4421c"
+          }
+        ],
+        "changes": [
+          {
+            "target": "Cleanse",
+            "property": "cost",
+            "from": "1B 1R 1Y",
+            "to": "1G 1W",
+            "intervened": true,
+            "src": "commit 0e4421c"
+          }
+        ]
+      },
+      "notes": "T2 row locked; Cleanse cost retuned with a known from-value"
+    },
+    {
+      "now": 1781741100,
+      "verb": "recall",
+      "payload": {
+        "focus": [
+          "Riptide"
+        ]
+      },
+      "notes": "recall by the NEW name \u2014 must resolve through the alias"
+    }
+  ]
+}

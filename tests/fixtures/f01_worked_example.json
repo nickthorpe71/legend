@@ -1,0 +1,181 @@
+{
+  "name": "f01_worked_example",
+  "notes": "The spec §5 submission against a constructed prelude (plan §6); the expected frame matches the §7 example field-for-field in shape and ordering, with prelude-derived ids/ticks/dates. Relation ids follow the ratified apply order (pin §3.17/§4): templates -> element attrs -> facts -> changes; relation entries use the pin §3.22 uniform shape. Spec-example -> prelude mapping: #87 jump_physics=#33, #42 player_jump=#35, #29 mechanic=#36, #9 decision=#23(seed), #93 open question=#50, #95=#51, #77 constraint=#37, #55/#58 beta_release/'August 2026'=#48/#49, #63/#71 jump_height/'3.5'=#40/#46; rel:501=rel:29, rel:502=rel:16, rel:640=rel:25, rel:512=rel:15; rel:733-740=rel:35-42; tick 1041=tick 5. The prelude also pre-mints the 'uses' predicate (via the throwaway rel:16 fact, doubling as the retract target) and the source string, so the final tick's writes arrays match the spec's exactly. The resolution score was reconciled at M3 (README assumption 9): 'jump feel' sits verbatim inside the jump_physics summary, so read-position trigram containment scores 1 (the spec's 0.83 was pedagogy).",
+  "steps": [
+    { "now": 1780272000, "verb": "init", "payload": null, "expect": null },
+    {
+      "now": 1781222400, "verb": "save",
+      "payload": {
+        "source": "claude-code:platformer",
+        "elements": [
+          { "name": "jump_physics", "kind": "concept",
+            "summary": "the platformer's jump feel system — variable height, coyote time, gravity tuning" },
+          { "name": "player_jump", "kind": "mechanic" },
+          { "name": "input latency stays under one frame", "kind": "constraint",
+            "attrs": { "applies_to": "player_jump" } }
+        ],
+        "facts": [
+          { "s": "jump_height", "p": "part_of", "o": "jump_physics" },
+          { "s": "debug_overlay", "p": "uses", "o": "frame_timer" }
+        ]
+      },
+      "expect": null,
+      "notes": "tick 1 (2026-06-12). Elements #33 jump_physics, #34 concept, #35 player_jump, #36 mechanic, #37 constraint instance, #38 current_standing, #39 active, #40 jump_height, #41 debug_overlay, #42 uses, #43 frame_timer, #44 source string. Relations (attrs before facts per amended pin §3.17): rel:13 applies_to, rel:14 standing cache, rel:15 part_of fact, rel:16 uses fact (future retract target), rel:17-19 instance_of, rel:20-23 source metas."
+    },
+    {
+      "now": 1781913600, "verb": "save",
+      "payload": {
+        "source": "claude-code:platformer",
+        "changes": [ { "target": "jump_height", "property": "value", "to": "3.5" } ]
+      },
+      "expect": null,
+      "notes": "tick 2 (2026-06-20). Elements #45 value, #46 '3.5', #47 current_value. rel:24 event, rel:25 cache (the spec's rel:640), rel:26-28 metas."
+    },
+    {
+      "now": 1782345600, "verb": "save",
+      "payload": {
+        "source": "claude-code:platformer",
+        "facts": [
+          { "s": "beta_release", "p": "at", "o": "August 2026",
+            "status": "defeasible", "confidence": 0.6 }
+        ]
+      },
+      "expect": null,
+      "notes": "tick 3 (2026-06-25). Elements #48 beta_release, #49 August 2026. rel:29 the fact at support 1 (the spec's rel:501), rel:30 source meta."
+    },
+    {
+      "now": 1782604800, "verb": "save",
+      "payload": {
+        "source": "claude-code:platformer",
+        "elements": [
+          { "name": "ground check: raycast or capsule?", "kind": "question" },
+          { "name": "tune fall gravity — floaty past apex", "kind": "question",
+            "attrs": { "about": "jump_physics" } }
+        ]
+      },
+      "expect": null,
+      "notes": "tick 4 (2026-06-28). Elements #50 (the spec's #93), #51 (the spec's #95). rel:31 about attr, rel:32-33 instance_of, rel:34 source meta."
+    },
+    {
+      "now": 1782942007, "verb": "save",
+      "payload": {
+        "source": "claude-code:platformer",
+        "elements": [
+          { "name": "coyote_time", "kind": "mechanic", "aliases": ["coyote frames"],
+            "summary": "grace window after leaving a ledge in which a jump still fires" },
+          { "name": "ground check via raycast", "kind": "decision", "salience": 0.8,
+            "attrs": { "chose": "raycast ground check", "rejected": "capsule cast",
+                       "reason": "cheaper per frame", "about": "player_jump",
+                       "resolves": "ground check: raycast or capsule?" } }
+        ],
+        "facts": [
+          { "s": "player_jump", "p": "uses", "o": "coyote_time", "confidence": 0.9 },
+          { "s": "beta_release", "p": "at", "o": "August 2026",
+            "status": "defeasible", "confidence": 0.6 }
+        ],
+        "changes": [
+          { "target": "jump_height", "property": "value", "to": "4.2",
+            "intervened": true, "src": "src/player/jump.rs:142" }
+        ],
+        "retract": ["rel:13"],
+        "focus": ["jump feel"]
+      },
+      "expect": {
+        "tick": 5,
+        "at": "2026-07-01T21:40:07Z",
+        "store": "<store>",
+        "resolution": [
+          { "at": "focus[0]", "submitted": "jump feel", "ref": "#32",
+            "name": "jump_physics", "via": "lexical", "score": 1 }
+        ],
+        "writes": {
+          "minted_elements": [
+            { "ref": "#51", "name": "coyote_time" },
+            { "ref": "#52", "name": "ground check via raycast" },
+            { "ref": "#53", "name": "raycast ground check" },
+            { "ref": "#54", "name": "capsule cast" },
+            { "ref": "#55", "name": "cheaper per frame" },
+            { "ref": "#56", "name": "4.2" },
+            { "ref": "#57", "name": "src/player/jump.rs:142" }
+          ],
+          "reused_elements": [
+            { "ref": "#35", "name": "mechanic" },
+            { "ref": "#22", "name": "decision" },
+            { "ref": "#34", "name": "player_jump" },
+            { "ref": "#49", "name": "ground check: raycast or capsule?" },
+            { "ref": "#47", "name": "beta_release" },
+            { "ref": "#48", "name": "August 2026" },
+            { "ref": "#39", "name": "jump_height" },
+            { "ref": "#45", "name": "3.5" }
+          ],
+          "minted_relations": [ "rel:32", "rel:33", "rel:34", "rel:35",
+                                "rel:36", "rel:37", "rel:38", "rel:39" ],
+          "reused_relations": [
+            { "ref": "rel:26", "support_count": 2, "promoted": false }
+          ],
+          "retracted": [ "rel:13" ],
+          "merged": []
+        },
+        "near_matches": [],
+        "conflicts": [],
+        "template_drift": [],
+        "focus": [
+          { "ref": "#32", "name": "jump_physics", "kind": "concept",
+            "summary": "the platformer's jump feel system — variable height, coyote time, gravity tuning" }
+        ],
+        "state": [
+          { "ref": "rel:39",
+            "attrs": { "subject": "jump_height", "current_value": "4.2" },
+            "status": "asserted", "confidence": 0.7, "support_count": 1,
+            "date": "2026-07-01" }
+        ],
+        "decisions": [
+          { "ref": "#52", "name": "ground check via raycast",
+            "chose": "raycast ground check", "rejected": "capsule cast",
+            "reason": "cheaper per frame", "about": "player_jump",
+            "resolves": "ground check: raycast or capsule?", "date": "2026-07-01" }
+        ],
+        "constraints": [
+          { "ref": "#36", "name": "input latency stays under one frame",
+            "applies_to": "player_jump", "standing": "active", "date": "2026-06-12" }
+        ],
+        "open": [
+          { "ref": "#50", "name": "tune fall gravity — floaty past apex",
+            "kind": "question", "about": "jump_physics", "date": "2026-06-28" }
+        ],
+        "recent": [
+          { "ref": "rel:38",
+            "attrs": { "subject": "jump_height", "target": "jump_height",
+                       "property": "value", "from": "3.5", "to": "4.2" },
+            "status": "asserted", "confidence": 0.7, "support_count": 1,
+            "date": "2026-07-01" },
+          { "ref": "rel:37",
+            "attrs": { "subject": "player_jump", "uses": "coyote_time" },
+            "status": "asserted", "confidence": 0.9, "support_count": 1,
+            "date": "2026-07-01" }
+        ],
+        "history": [
+          { "ref": "rel:22",
+            "attrs": { "subject": "jump_height", "current_value": "3.5" },
+            "asserted_at": 2, "asserted": "2026-06-20",
+            "superseded_by": "rel:39", "superseded_at": 5 }
+        ],
+        "related": [
+          { "ref": "rel:12",
+            "attrs": { "subject": "jump_height", "part_of": "jump_physics" },
+            "status": "asserted", "confidence": 0.7, "support_count": 1,
+            "date": "2026-06-12" }
+        ],
+        "pointers": [
+          { "src": "src/player/jump.rs:142", "rels": ["rel:38"] }
+        ],
+        "sources": [
+          { "source": "claude-code:platformer",
+            "rels": ["rel:32", "rel:33", "rel:34", "rel:35",
+                     "rel:36", "rel:37", "rel:38", "rel:39"] }
+        ]
+      },
+      "notes": "tick 5, apply order per the amended §7 walk: rel:35-39 decision attrs (chose/rejected/reason/about/resolves — the resolves closes #50, why open shows only #51), rel:40 uses fact, rel:41 change event, rel:42 cache; rel:43-44 instance_of and the metas follow unlisted. Every array's ordering reproduces the spec's §7 walk exactly."
+    }
+  ]
+}

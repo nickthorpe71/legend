@@ -1,0 +1,67 @@
+{
+  "episode": "e10_mana_enemies",
+  "slice": "adversarial",
+  "provenance": [
+    "commit d461c8c mana economy tuning + new enemies (Jestoad, Deucler) + level saves (1782491539)",
+    "commit 15271d4 Story-event engine, slot-linked campaign, persistent run state (1782595513)",
+    "assets/gen_src/jestoad/base_prompt.txt, assets/gen_src/deuclerman/base_prompt.txt, assets/gen_src/fenghu/base_prompt.txt"
+  ],
+  "notes": "The two real commits after the smoke slice's coverage window, at their real author dates. Adversarial seeds: 'overworld_per_color_cap' lands next to the existing 'per_color_soft_cap' on the same target (similar property names must not clobber each other); 'Deucler's' (the inn) mints beside 'Deucler' (its keeper) — a deliberate near-duplicate wart like the rival/Vex; Deucler enters as kind enemy but his summary describes an NPC, which is exactly how the commit frames him.",
+  "steps": [
+    { "now": 1782491439, "verb": "recall", "payload": { "focus": ["mana economy"] },
+      "notes": "session boot: the day's work is mana tuning, so orient on the economy first" },
+    { "now": 1782491539, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "Jestoad", "kind": "enemy",
+            "summary": "jester-lizard of the deep woods — a court-fool mutant quadruped, teal-blue body, ochre-yellow head; sprite set + wiring in progress",
+            "src": "assets/gen_src/jestoad" },
+          { "name": "Deucler", "kind": "enemy",
+            "summary": "keeper of the forest tavern (Deucler's inn) — a young vigorous man about 35; sprite set + wiring in progress",
+            "src": "assets/gen_src/deuclerman" },
+          { "name": "per-level starting mana", "kind": "mechanic",
+            "summary": "editor M cycles a level's starting mana — default floor / empty / full — shown in the header, saved as startmana in the .lvl",
+            "src": "commit d461c8c" }
+        ],
+        "facts": [
+          { "s": "level editor", "p": "provides", "o": "per-level starting mana" }
+        ],
+        "changes": [
+          { "target": "mana economy", "property": "overworld_per_color_cap",
+            "from": "10", "to": "7", "intervened": true, "src": "commit d461c8c" },
+          { "target": "mana economy", "property": "passive_refill",
+            "from": "demo end-of-turn top-up", "to": "none - forage what you spend",
+            "intervened": true, "src": "commit d461c8c" }
+        ]
+      },
+      "notes": "commit d461c8c: overworld/sandbox per-color cap 10 -> 7, passive refill removed, per-level startmana in the editor, two new enemy sprite sets" },
+    { "now": 1782595513, "verb": "save", "payload": {
+        "source": "claude-code:alchamancer2",
+        "elements": [
+          { "name": "story-event engine", "kind": "system",
+            "summary": "data-driven story flags + rules engine — WHEN trigger / IF conditions / DO actions; flags persist to story.sav; editor gets clickable story-flag toggles, playtests never write disk",
+            "salience": 0.8, "src": "src/view/story.c" },
+          { "name": "persistent run state", "kind": "system",
+            "summary": "start_room_transition carries HP, mana, and learned spells across screens",
+            "src": "commit 15271d4" },
+          { "name": "tavern rest", "kind": "mechanic",
+            "summary": "inn door -> fade -> heal to full",
+            "src": "commit 15271d4" },
+          { "name": "Fenghu", "kind": "enemy",
+            "summary": "two-headed chimera fowl — a Chinese fox-phoenix in the shape of a turkey; in-progress sprite set",
+            "src": "assets/gen_src/fenghu" }
+        ],
+        "facts": [
+          { "s": "campaign spine", "p": "uses", "o": "story-event engine" },
+          { "s": "campaign spine", "p": "starts_at", "o": "the shore" },
+          { "s": "Deucler", "p": "offers", "o": "tavern rest" },
+          { "s": "tavern rest", "p": "located_at", "o": "Deucler's" }
+        ],
+        "changes": [
+          { "target": "campaign spine", "property": "starting_spells",
+            "to": "0 - learned by pickup", "intervened": true, "src": "commit 15271d4" }
+        ]
+      },
+      "notes": "commit 15271d4: story-event engine, campaign walks the linked slot world from the shore, run state carries across screens, campaign starts spell-less, tavern rest at Deucler's" }
+  ]
+}
