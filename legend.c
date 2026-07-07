@@ -2209,7 +2209,7 @@ typedef struct {
   u32 cur_cap, cur_used;
 } Hypergraph;
 
-LEGEND_UNUSED static void graph_free(Hypergraph *g) {
+static void graph_free(Hypergraph *g) {
   u32 i;
   for (i = 0; i < g->element_count; i++)
     free(g->elements[i].names.v);
@@ -7979,6 +7979,16 @@ static void acquire_lock(const char *store) {
   }
 }
 
+/* Release the store lock. The CLI never needs this (process exit drops the
+ * flock), but the long-lived mcp-serve holds the lock only per tools/call so it
+ * coexists with other legend processes (e.g. a SessionStart hook). */
+static void release_lock(void) {
+  if (g_lock_fd >= 0) {
+    close(g_lock_fd); /* closing the fd releases the flock */
+    g_lock_fd = -1;
+  }
+}
+
 static Hypergraph
     g_graph; /* static: reachable when a trapped fail() longjmps */
 
@@ -8120,6 +8130,45 @@ static void emit_frame(const Hypergraph *g, const WriteReport *w,
   free(buf);
 }
 
+/* Convenience: `legend init` drops a Claude Code `.mcp.json` in the cwd so a
+ * session opened in this project launches `legend mcp-serve` against this
+ * store — one command sets a test folder up end to end. Never clobbers an
+ * existing file; a failure here never fails init. Fills out_path with the
+ * config path; returns 1 iff it wrote the file. */
+static int write_mcp_config(const char *store, char *out_path, size_t out_cap) {
+  char cwd[4096], exe[4096], abs_store[4200]; /* >= sizeof store; >= PATH_MAX */
+  struct stat st;
+  ssize_t exelen;
+  FILE *f;
+  out_path[0] = 0;
+  if (!getcwd(cwd, sizeof cwd))
+    return 0;
+  snprintf(out_path, out_cap, "%s/.mcp.json", cwd);
+  if (stat(out_path, &st) == 0)
+    return 0; /* already there: never overwrite a user's MCP config */
+  exelen = readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (exelen <= 0)
+    snprintf(exe, sizeof exe, "legend"); /* fall back to PATH lookup */
+  else
+    exe[exelen] = 0;
+  if (!realpath(store, abs_store))
+    snprintf(abs_store, sizeof abs_store, "%s", store);
+  f = fopen(out_path, "w");
+  if (!f) {
+    out_path[0] = 0;
+    return 0;
+  }
+  fputs("{\n  \"mcpServers\": {\n    \"legend\": {\n      \"command\": \"", f);
+  json_escape_fputs(exe, f);
+  fputs("\",\n      \"args\": [\"mcp-serve\"],\n      \"env\": {\n"
+        "        \"LEGEND_STATE_DIR\": \"",
+        f);
+  json_escape_fputs(abs_store, f);
+  fputs("\"\n      }\n    }\n  }\n}\n", f);
+  fclose(f);
+  return 1;
+}
+
 static int cmd_init(int reset) {
   char store[4200];
   const char *env = getenv("LEGEND_STATE_DIR");
@@ -8146,11 +8195,18 @@ static int cmd_init(int reset) {
     snapshot_write(&g_graph, store);
   }
   /* Idempotent status report (spec §4). */
-  fputs("{\"store\":\"", stdout);
-  json_escape_fputs(store, stdout);
-  printf("\",\"version\":%d,\"elements\":%u,\"relations\":%u,\"clock\":%u}\n",
-         SNAP_VERSION, g_graph.element_count, g_graph.relation_count,
-         g_graph.clock);
+  {
+    char cfg[4200];
+    int made = write_mcp_config(store, cfg, sizeof cfg);
+    fputs("{\"store\":\"", stdout);
+    json_escape_fputs(store, stdout);
+    printf("\",\"version\":%d,\"elements\":%u,\"relations\":%u,\"clock\":%u",
+           SNAP_VERSION, g_graph.element_count, g_graph.relation_count,
+           g_graph.clock);
+    fputs(",\"mcp_config\":\"", stdout);
+    json_escape_fputs(cfg, stdout);
+    printf("\",\"mcp_config_created\":%s}\n", made ? "true" : "false");
+  }
   return 0;
 }
 
@@ -8220,6 +8276,415 @@ static void dump_graph(const Hypergraph *g) {
  * reports the store; save/recall discover an existing store, lock it, load,
  * tick, save (unless observe), and print. Every error along the way funnels
  * through fail() to the single JSON error exit. */
+/* ========================================================================
+ * S12  MCP SERVER — `legend mcp-serve`
+ *
+ * A long-lived process speaking MCP (JSON-RPC 2.0 over newline-delimited
+ * stdio). One process keeps the embedding model (embed.c global) warm across
+ * every tools/call instead of paying ~55ms of reload per CLI spawn. Each call
+ * reloads the snapshot fresh (cheap) so a rejected write can never poison a
+ * later one. Tools reuse the exact CLI path — read_submission / read_recall ->
+ * tick_save / tick_recall -> emit_frame — over the tool `arguments` object
+ * (an Rd cursor points straight at that token subtree). The only new surface
+ * is the protocol envelope and capturing the frame emit_frame() prints to
+ * stdout (which is the protocol channel here) into the JSON-RPC result. A
+ * fail() mid-call is trapped and returned as an isError tool result rather
+ * than killing the server.
+ * ===================================================================== */
+
+static const char MCP_INSTRUCTIONS[] =
+    "Legend is your long-term memory across sessions: a deduplicated, revisable "
+    "knowledge graph, not a chat log. ELEMENTS are durable named things "
+    "(project, function, module, system, mechanic, parameter, constraint, "
+    "decision, spell, enemy, character, place, question); each has a canonical "
+    "name, a kind, optional aliases, and a one-line summary. FACTS are {s,p,o} "
+    "triples on elements. Discipline: (1) recall before you save, to find the "
+    "canonical name of anything that already exists and reuse it verbatim -- "
+    "never mint a second element for the same thing. (2) To change a current "
+    "value use `changes` {target, property, to}, not a new fact -- changes "
+    "supersede and keep history. (3) To correct something now false use "
+    "`retract`. (4) To fold a duplicate you made use `merge` {from, into}. "
+    "(5) To rename, set `rename_to` on the element. (6) Prefer few precise "
+    "elements and durable facts; over-extraction buries the signal. Recall "
+    "with no focus returns an orientation packet for session start.";
+
+static const char MCP_TOOLS_JSON[] =
+    "[{\"name\":\"legend_recall\",\"description\":\"Read memory. With `focus` "
+    "(entity names or topics) returns those elements, their current facts, and "
+    "related context. With NO focus returns a session-start orientation packet "
+    "(project, state, decisions, constraints, open questions). Call this BEFORE "
+    "saving to find the canonical name of anything that already exists.\","
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+    "\"focus\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
+    "\"description\":\"entity names or topics; omit for an orientation packet\"},"
+    "\"limit\":{\"type\":\"integer\",\"description\":\"max related items (default 40)\"},"
+    "\"history_depth\":{\"type\":\"integer\",\"description\":\"past values per fact (default 2)\"},"
+    "\"observe\":{\"type\":\"boolean\",\"description\":\"read-only; do not record the access\"}}}},"
+    "{\"name\":\"legend_save\",\"description\":\"Write to memory. Recall first, "
+    "then reuse canonical names verbatim. To CHANGE a current value use "
+    "`changes` (not a new fact) -- it supersedes and keeps history. To correct "
+    "something now false use `retract`. To fold a duplicate you made use "
+    "`merge`. To rename an element set `rename_to`. Prefer few precise "
+    "elements; over-extraction buries the signal. At least one write list is "
+    "required.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+    "\"source\":{\"type\":\"string\",\"description\":\"provenance for facts minted this call\"},"
+    "\"elements\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
+    "\"name\":{\"type\":\"string\"},"
+    "\"kind\":{\"type\":\"string\",\"description\":\"project|function|module|system|mechanic|"
+    "parameter|constraint|decision|spell|enemy|character|place|question|person|file|event|task|pointer\"},"
+    "\"summary\":{\"type\":\"string\",\"description\":\"one line\"},"
+    "\"aliases\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
+    "\"attrs\":{\"type\":\"object\",\"description\":\"structured properties (name -> value(s))\"},"
+    "\"rename_to\":{\"type\":\"string\",\"description\":\"new canonical name for this element\"},"
+    "\"src\":{\"type\":\"string\",\"description\":\"source pointer (file/url/id)\"}},"
+    "\"required\":[\"name\"]}},"
+    "\"facts\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
+    "\"s\":{\"type\":\"string\"},\"p\":{\"type\":\"string\"},\"o\":{\"type\":\"string\"},"
+    "\"status\":{\"type\":\"string\",\"enum\":[\"asserted\",\"defeasible\"],"
+    "\"description\":\"defeasible = tentative/uncertain\"}},"
+    "\"required\":[\"s\",\"p\",\"o\"]}},"
+    "\"changes\":{\"type\":\"array\",\"description\":\"supersede a current value (keeps history)\","
+    "\"items\":{\"type\":\"object\",\"properties\":{"
+    "\"target\":{\"type\":\"string\"},\"property\":{\"type\":\"string\"},"
+    "\"from\":{\"type\":\"string\",\"description\":\"prior value if known\"},"
+    "\"to\":{\"type\":\"string\"}},\"required\":[\"target\",\"property\",\"to\"]}},"
+    "\"retract\":{\"type\":\"array\",\"description\":\"mark a fact no longer true\","
+    "\"items\":{\"type\":\"object\",\"properties\":{"
+    "\"s\":{\"type\":\"string\"},\"p\":{\"type\":\"string\"},\"o\":{\"type\":\"string\"}},"
+    "\"required\":[\"s\",\"p\",\"o\"]}},"
+    "\"merge\":{\"type\":\"array\",\"description\":\"fold a duplicate element into the canonical one\","
+    "\"items\":{\"type\":\"object\",\"properties\":{"
+    "\"from\":{\"type\":\"string\"},\"into\":{\"type\":\"string\"}},"
+    "\"required\":[\"from\",\"into\"]}}}}}]";
+
+/* value token index of member `key` in object `obj`; -1 if absent */
+static long mcp_obj_get(const Json *j, u32 obj, const char *key) {
+  u32 k, m, klen = (u32)strlen(key);
+  if (j->toks[obj].type != J_OBJ)
+    return -1;
+  k = obj + 1;
+  for (m = 0; m < j->toks[obj].size; m++) {
+    u32 keyi = k, vali = k + 1; /* a key is a string: no subtree */
+    const Tok *kt = &j->toks[keyi];
+    if (kt->end - kt->start == klen &&
+        memcmp(j->buf + kt->start, key, klen) == 0)
+      return (long)vali;
+    k = tok_skip(j->toks, vali);
+  }
+  return -1;
+}
+
+static int mcp_streq(const Json *j, long i, const char *s) {
+  const Tok *t;
+  u32 n;
+  if (i < 0)
+    return 0;
+  t = &j->toks[i];
+  n = t->end - t->start;
+  return (u32)strlen(s) == n && memcmp(j->buf + t->start, s, n) == 0;
+}
+
+/* echo a request id verbatim: numbers/literals raw, strings re-quoted */
+static void mcp_put_id(const Json *j, long id_i) {
+  const Tok *t;
+  if (id_i < 0) {
+    fputs("null", stdout);
+    return;
+  }
+  t = &j->toks[id_i];
+  if (t->type == J_STR) {
+    char tmp[256];
+    u32 n = t->end - t->start;
+    if (n > sizeof tmp - 1)
+      n = sizeof tmp - 1;
+    memcpy(tmp, j->buf + t->start, n);
+    tmp[n] = 0;
+    fputc('"', stdout);
+    json_escape_fputs(tmp, stdout);
+    fputc('"', stdout);
+  } else {
+    fwrite(j->buf + t->start, 1, t->end - t->start, stdout);
+  }
+}
+
+/* frame capture: emit_frame() writes to stdout, which in server mode is the
+ * protocol channel, so redirect fd 1 to a temp file around the call. */
+static int mcp_cap_fd = -1;
+static FILE *mcp_cap_fp = NULL;
+
+static void mcp_cap_begin(void) {
+  fflush(stdout);
+  mcp_cap_fd = dup(1);
+  mcp_cap_fp = tmpfile();
+  if (mcp_cap_fp)
+    dup2(fileno(mcp_cap_fp), 1);
+}
+static void mcp_cap_restore(void) {
+  fflush(stdout);
+  if (mcp_cap_fd >= 0) {
+    dup2(mcp_cap_fd, 1);
+    close(mcp_cap_fd);
+    mcp_cap_fd = -1;
+  }
+}
+static char *mcp_cap_take(void) { /* restore stdout; return malloc'd frame */
+  char *out = NULL;
+  long sz;
+  mcp_cap_restore();
+  if (mcp_cap_fp) {
+    fseek(mcp_cap_fp, 0, SEEK_END);
+    sz = ftell(mcp_cap_fp);
+    fseek(mcp_cap_fp, 0, SEEK_SET);
+    out = (char *)malloc((size_t)(sz < 0 ? 0 : sz) + 1);
+    if (out) {
+      size_t got = sz > 0 ? fread(out, 1, (size_t)sz, mcp_cap_fp) : 0;
+      out[got] = 0;
+    }
+    fclose(mcp_cap_fp);
+    mcp_cap_fp = NULL;
+  }
+  return out;
+}
+static void mcp_cap_discard(void) { /* error path: restore, drop capture */
+  mcp_cap_restore();
+  if (mcp_cap_fp) {
+    fclose(mcp_cap_fp);
+    mcp_cap_fp = NULL;
+  }
+}
+
+static void mcp_reply_head(const Json *j, long id_i) {
+  fputs("{\"jsonrpc\":\"2.0\",\"id\":", stdout);
+  mcp_put_id(j, id_i);
+}
+static void mcp_initialize(const Json *j, long id_i) {
+  mcp_reply_head(j, id_i);
+  fputs(",\"result\":{\"protocolVersion\":\"2024-11-05\","
+        "\"capabilities\":{\"tools\":{}},"
+        "\"serverInfo\":{\"name\":\"legend\",\"version\":\"2.0\"},"
+        "\"instructions\":\"",
+        stdout);
+  json_escape_fputs(MCP_INSTRUCTIONS, stdout);
+  fputs("\"}}\n", stdout);
+  fflush(stdout);
+}
+static void mcp_tools_list(const Json *j, long id_i) {
+  mcp_reply_head(j, id_i);
+  fputs(",\"result\":{\"tools\":", stdout);
+  fputs(MCP_TOOLS_JSON, stdout);
+  fputs("}}\n", stdout);
+  fflush(stdout);
+}
+static void mcp_empty_result(const Json *j, long id_i) {
+  mcp_reply_head(j, id_i);
+  fputs(",\"result\":{}}\n", stdout);
+  fflush(stdout);
+}
+static void mcp_error(const Json *j, long id_i, int code, const char *msg) {
+  mcp_reply_head(j, id_i);
+  fprintf(stdout, ",\"error\":{\"code\":%d,\"message\":\"", code);
+  json_escape_fputs(msg, stdout);
+  fputs("\"}}\n", stdout);
+  fflush(stdout);
+}
+static void mcp_tool_result(const Json *j, long id_i, const char *text,
+                            int is_error) {
+  mcp_reply_head(j, id_i);
+  fputs(",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"", stdout);
+  json_escape_fputs(text, stdout);
+  fputs("\"}]", stdout);
+  if (is_error)
+    fputs(",\"isError\":true", stdout);
+  fputs("}}\n", stdout);
+  fflush(stdout);
+}
+
+/* ---- warm-graph gate ---------------------------------------------------- *
+ * The server keeps g_graph in memory across calls and reloads only when the
+ * on-disk snapshot changed under it. The per-call flock serializes writers, so
+ * a fingerprint taken under the lock cannot miss an external write; our own
+ * writes re-fingerprint so we never reload our own change. */
+static int g_graph_warm = 0;
+static i64 g_snap_size = -1, g_snap_mtime = 0, g_snap_mtime_ns = 0;
+
+static int snapshot_fingerprint(const char *store, i64 *size, i64 *mtime,
+                                i64 *ns) {
+  char path[4400];
+  struct stat st;
+  snprintf(path, sizeof path, "%s/legend.snapshot", store);
+  if (stat(path, &st) != 0)
+    return 0;
+  *size = (i64)st.st_size;
+  *mtime = (i64)st.st_mtim.tv_sec;
+  *ns = (i64)st.st_mtim.tv_nsec;
+  return 1;
+}
+
+/* Record that g_graph matches the on-disk snapshot — after a startup load or
+ * our own write — so the next gate does not reload what we just wrote. */
+static void graph_mark_synced(const char *store) {
+  g_graph_warm =
+      snapshot_fingerprint(store, &g_snap_size, &g_snap_mtime, &g_snap_mtime_ns);
+}
+
+static int graph_traced(void) {
+  static int on = -1;
+  if (on < 0) {
+    const char *t = getenv("LEGEND_TRACE");
+    on = (t && strcmp(t, "0") != 0);
+  }
+  return on;
+}
+
+/* Reload g_graph only when the snapshot changed on disk (or a prior call left
+ * it dirty). snapshot_load appends, so a reload resets the graph first. */
+static void graph_sync(const char *store) {
+  i64 size = -1, mtime = 0, ns = 0;
+  int present = snapshot_fingerprint(store, &size, &mtime, &ns);
+  if (g_graph_warm && present && size == g_snap_size && mtime == g_snap_mtime &&
+      ns == g_snap_mtime_ns) {
+    if (graph_traced())
+      fprintf(stderr, "[graph] warm hit (%u elements)\n", g_graph.element_count);
+    return; /* unchanged: keep the warm graph */
+  }
+  if (graph_traced())
+    fprintf(stderr, "[graph] reload (%s)\n",
+            g_graph_warm ? "snapshot changed on disk" : "cold or dirty");
+  graph_free(&g_graph);
+  if (!snapshot_load(&g_graph, store))
+    fail(ERR_NO_STORE, NULL, "no snapshot in %s", store);
+  g_snap_size = size;
+  g_snap_mtime = mtime;
+  g_snap_mtime_ns = ns;
+  g_graph_warm = 1;
+}
+
+static void mcp_tools_call(const Json *j, long id_i, const char *store) {
+  long params_i = mcp_obj_get(j, 0, "params");
+  long name_i = params_i >= 0 ? mcp_obj_get(j, (u32)params_i, "name") : -1;
+  long args_i = params_i >= 0 ? mcp_obj_get(j, (u32)params_i, "arguments") : -1;
+  int is_save, is_recall;
+  if (name_i < 0) {
+    mcp_error(j, id_i, -32602, "missing tool name");
+    return;
+  }
+  is_save = mcp_streq(j, name_i, "legend_save");
+  is_recall = mcp_streq(j, name_i, "legend_recall");
+  if (!is_save && !is_recall) {
+    mcp_error(j, id_i, -32602, "unknown tool");
+    return;
+  }
+  if (args_i < 0) {
+    mcp_error(j, id_i, -32602, "missing arguments");
+    return;
+  }
+  g_err_trap = 1;
+  if (setjmp(g_err_jmp) == 0) {
+    static Submission sub;
+    static Recall rec;
+    static WriteReport report;
+    Rd rd;
+    char *frame;
+    rd.t = &j->toks[args_i]; /* Rd navigates relative to its root token */
+    rd.buf = j->buf;
+    acquire_lock(store); /* brief per-call hold, released before we reply */
+    graph_sync(store);   /* warm: reload only when the snapshot changed on disk */
+    if (is_save) {
+      read_submission(&rd, &sub);
+      mcp_cap_begin();
+      tick_save(&g_graph, &sub, j->buf, &report);
+      snapshot_write(&g_graph, store);
+      graph_mark_synced(store); /* g_graph now matches what we just wrote */
+      tier2_sync(&g_graph);
+      emit_frame(&g_graph, &report, store, 40, 2, -1);
+    } else {
+      read_recall(&rd, &rec);
+      mcp_cap_begin();
+      tick_recall(&g_graph, &rec, j->buf, &report);
+      if (!rec.observe) {
+        snapshot_write(&g_graph, store);
+        graph_mark_synced(store);
+      }
+      emit_frame(&g_graph, &report, store, rec.limit, rec.history_depth,
+                 rec.since);
+    }
+    frame = mcp_cap_take();
+    release_lock();
+    g_err_trap = 0;
+    mcp_tool_result(j, id_i, frame ? frame : "{}", 0);
+    free(frame);
+  } else {
+    char msg[600];
+    g_err_trap = 0;
+    g_graph_warm = 0; /* a fail() may have left g_graph half-mutated: reload next call */
+    mcp_cap_discard();
+    release_lock(); /* a fail() may have longjmp'd while we held the lock */
+    snprintf(msg, sizeof msg, "%s%s%s", g_err.message,
+             g_err.at[0] ? " at " : "", g_err.at);
+    mcp_tool_result(j, id_i, msg, 1);
+  }
+}
+
+static void mcp_handle(char *buf, u32 len, const char *store) {
+  static Json j;
+  long method_i, id_i;
+  g_err_trap = 1;
+  if (setjmp(g_err_jmp)) { /* json_parse rejected the line */
+    g_err_trap = 0;
+    fputs("{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,"
+          "\"message\":\"parse error\"}}\n",
+          stdout);
+    fflush(stdout);
+    return;
+  }
+  json_parse(&j, buf, len);
+  g_err_trap = 0;
+  if (j.count == 0 || j.toks[0].type != J_OBJ)
+    return;
+  method_i = mcp_obj_get(&j, 0, "method");
+  id_i = mcp_obj_get(&j, 0, "id");
+  if (method_i < 0)
+    return; /* a response, not a request */
+  if (mcp_streq(&j, method_i, "initialize"))
+    mcp_initialize(&j, id_i);
+  else if (mcp_streq(&j, method_i, "tools/list"))
+    mcp_tools_list(&j, id_i);
+  else if (mcp_streq(&j, method_i, "tools/call"))
+    mcp_tools_call(&j, id_i, store);
+  else if (mcp_streq(&j, method_i, "ping"))
+    mcp_empty_result(&j, id_i);
+  else if (id_i >= 0)
+    mcp_error(&j, id_i, -32601, "method not found");
+  /* else: a notification (no id) we do not handle -- stay silent */
+}
+
+static int mcp_serve(void) {
+  static char store[4200];
+  char *line = NULL;
+  size_t cap = 0;
+  ssize_t n;
+  if (!discover_store(store, sizeof store))
+    fail(ERR_NO_STORE, NULL,
+         "no .legend store found (set LEGEND_STATE_DIR or run legend init)");
+  if (!snapshot_load(&g_graph, store))
+    fail(ERR_NO_STORE, NULL, "no snapshot in %s -- run legend init", store);
+  graph_mark_synced(store); /* fingerprint the startup load: g_graph is warm */
+  embed_warm();             /* load model + sidecar now, off the first call's path */
+  /* the lock is taken per tools/call (see mcp_tools_call), not for the whole
+   * session, so a SessionStart hook's `legend recall` never blocks on us */
+  while ((n = getline(&line, &cap, stdin)) > 0) {
+    u32 len = (u32)n;
+    while (len && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+      len--;
+    if (len == 0)
+      continue;
+    line[len] = 0;
+    mcp_handle(line, len, store); /* parses `line` in place */
+  }
+  free(line);
+  return 0;
+}
+
 LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   const char *verb = NULL, *inline_payload = NULL;
   int pretty = 0, reset = 0, i;
@@ -8241,7 +8706,8 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   g_pretty = pretty;
   if (!verb)
     fail(ERR_PARSE, NULL,
-         "usage: legend save|recall|init|dump [payload] [--pretty] [--reset]");
+         "usage: legend save|recall|init|dump|mcp-serve [payload] [--pretty] "
+         "[--reset]");
   if (strcmp(verb, "init") == 0) {
     if (inline_payload)
       fail(ERR_PARSE, NULL, "init takes no payload");
@@ -8258,6 +8724,11 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
       fail(ERR_NO_STORE, NULL, "no snapshot in %s — run legend init", store);
     dump_graph(&g_graph);
     return 0;
+  }
+  if (strcmp(verb, "mcp-serve") == 0) {
+    if (inline_payload)
+      fail(ERR_PARSE, NULL, "mcp-serve takes no payload");
+    return mcp_serve();
   }
   if (reset)
     fail(ERR_PARSE, NULL, "--reset applies to init only");
