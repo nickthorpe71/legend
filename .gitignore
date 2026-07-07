@@ -20,6 +20,13 @@ models/minilm-fp32.bin
 # shipped in production builds.
 models/gliner2-fp32.bin
 
+# BGE-small re-export source (~130 MB fp32 safetensors). The runtime uses
+# only the quantized blob (minilm.int8.bin) + vocab.txt, both committed.
+# Regenerate the blob via tools/embed_prep after fetching the source:
+#   curl -sL -o models/bge-small-en-v1.5/model.safetensors \
+#     https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/model.safetensors
+models/bge-small-en-v1.5/model.safetensors
+
 # Python venv + HF model cache used by the GLiNER2 oracle / weight
 # exporter. The oracle scripts themselves are tracked.
 /oracle/venv/
@@ -66,3 +73,8 @@ benchmarks/venv/
 
 # Generated corpus ledger (regenerate: python3 harness/record_run.py)
 /corpus_run.md
+
+# Generated agentic full-loop ledgers (regenerate: python3 harness/eval_agentic.py)
+/agentic_ledger_*.md
+/agentic_ledger_*.md.saves.json
+/mcp_ledger_*.md

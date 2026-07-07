@@ -23,6 +23,11 @@ int embed_enabled(void);
  * Loads the model on first call; embed_enabled() is the load-free predicate. */
 int embed_available(void);
 
+/* Load the model + vector sidecar up front (idempotent, safe no-op when
+ * embeddings are off). A long-lived server calls this at startup so the first
+ * request doesn't pay the load; one-shot CLI runs skip it and load lazily. */
+void embed_warm(void);
+
 /* Embed any new/changed elements (ids[i]/texts[i], i<n) into the sidecar cache
  * and persist. Call after a save so vectors are ready before the first recall. */
 void embed_sync_elements(const uint32_t *ids, const char *const *texts, int n);

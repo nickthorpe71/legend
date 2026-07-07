@@ -29,7 +29,7 @@
 #endif
 
 /* ---- fixed architecture (all-MiniLM-L6-v2) ---- */
-enum { HID = 384, NL = 6, NH = 12, DH = HID / NH, INTER = 1536,
+enum { HID = 384, NL = 12, NH = 12, DH = HID / NH, INTER = 1536,
        NVOCAB = 30522, MAXPOS = 512, TYPE_ID = 0 };
 static const double LN_EPS = 1e-12;
 
@@ -303,12 +303,9 @@ int embed_text(const EmbedModel *m, const char *text, float *out) {
         layernorm(x, n, L->olg, L->olb);
     }
 
-    /* mean-pool over all tokens (mask all ones), then L2 normalize */
-    for (int h = 0; h < HID; h++) out[h] = 0.0f;
-    for (int t = 0; t < n; t++)
-        for (int h = 0; h < HID; h++) out[h] += x[(size_t)t * HID + h];
+    /* CLS-pool: the [CLS] token (row 0) is the sentence vector, then L2 normalize */
     double nrm = 0.0;
-    for (int h = 0; h < HID; h++) { out[h] /= n; nrm += (double)out[h] * out[h]; }
+    for (int h = 0; h < HID; h++) { out[h] = x[h]; nrm += (double)out[h] * out[h]; }
     nrm = sqrt(nrm);
     if (nrm > 0) for (int h = 0; h < HID; h++) out[h] = (float)(out[h] / nrm);
 
@@ -458,7 +455,7 @@ static int ec_probe(void) {
     const char *off = getenv("LEGEND_EMBED");
     if (off && strcmp(off, "0") == 0) return 0; /* explicit disable (fuzz/core gates) */
     const char *dir = getenv("LEGEND_EMBED_DIR");
-    if (!dir || !*dir) dir = "models/all-MiniLM-L6-v2-q"; /* default: committed asset */
+    if (!dir || !*dir) dir = "models/bge-small-en-v1.5"; /* default: committed asset */
     snprintf(EC.binpath, sizeof EC.binpath, "%s/minilm.int8.bin", dir);
     snprintf(EC.vocpath, sizeof EC.vocpath, "%s/vocab.txt", dir);
     struct stat st;
@@ -548,6 +545,12 @@ int embed_available(void) {
     return EC.model != NULL;
 }
 
+void embed_warm(void) {
+    if (!ec_probe()) return; /* embeddings off: nothing to warm */
+    ec_load_model();
+    ec_load_sidecar();
+}
+
 /* Is (id,text) missing or stale in the sidecar? (hash check, no model). */
 static int ec_stale(uint32_t id, const char *text) {
     uint64_t h = fnv64(text, (int)strlen(text));
@@ -584,10 +587,15 @@ int embed_rank_elements(const uint32_t *ids, const char *const *texts, int n,
     if (!EC.model) return -1;
     ec_load_sidecar();
 
+    /* BGE asymmetric retrieval: the query carries a search instruction; the
+     * documents (element vectors) are embedded bare. */
+    static const char QPREFIX[] = "Represent this sentence for searching relevant passages: ";
+    const int pl = (int)sizeof QPREFIX - 1;
     char qbuf[2048];
     if (qlen < 0) qlen = 0;
-    if (qlen >= (int)sizeof qbuf) qlen = (int)sizeof qbuf - 1;
-    memcpy(qbuf, query, qlen); qbuf[qlen] = 0;
+    if (qlen >= (int)sizeof qbuf - pl - 1) qlen = (int)sizeof qbuf - pl - 1;
+    memcpy(qbuf, QPREFIX, pl);
+    memcpy(qbuf + pl, query, qlen); qbuf[pl + qlen] = 0;
     float qv[HID];
     if (embed_text(EC.model, qbuf, qv) != 0) return -1;
 
@@ -621,7 +629,7 @@ static double cosine(const float *a, const float *b, int n) {
     return d / (sqrt(na) * sqrt(nb) + 1e-12);
 }
 int main(int argc, char **argv) {
-    const char *dir = argc > 1 ? argv[1] : "models/all-MiniLM-L6-v2-q";
+    const char *dir = argc > 1 ? argv[1] : "models/bge-small-en-v1.5";
     const char *golden = argc > 2 ? argv[2] : "tools/embed_prep/golden.txt";
     char binp[512], vocp[512];
     snprintf(binp, sizeof binp, "%s/minilm.int8.bin", dir);

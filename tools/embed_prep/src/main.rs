@@ -1,7 +1,7 @@
 // One-time OFFLINE prep for the pure-C MiniLM embedder. Not shipped.
 // Emits fp32 weights (embed.c contract), id-ordered vocab, and golden vectors.
 use anyhow::{bail, Context, Result};
-use candle_core::{Device, Tensor};
+use candle_core::{Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use safetensors::SafeTensors;
@@ -9,7 +9,7 @@ use std::io::Write;
 use tokenizers::Tokenizer;
 
 const HIDDEN: usize = 384;
-const LAYERS: usize = 6;
+const LAYERS: usize = 12;
 const HEADS: usize = 12;
 const INTER: usize = 1536;
 const VOCAB: usize = 30522;
@@ -49,7 +49,7 @@ fn manifest(rel: &str) -> std::path::PathBuf {
 fn main() -> Result<()> {
     let device = Device::Cpu;
     // Local assets (config/tokenizer identical for fp32 and quantized); safetensors path via argv.
-    let base = manifest("../../models/all-MiniLM-L6-v2-q");
+    let base = manifest("../../models/bge-small-en-v1.5");
     let cfg_f = base.join("config.json");
     let tok_f = base.join("tokenizer.json");
     let w_f = std::path::PathBuf::from(
@@ -66,7 +66,7 @@ fn main() -> Result<()> {
     // ---- 1. weight blob (from the fp32 safetensors, in embed.c's order) ----
     let raw = std::fs::read(&w_f)?;
     let st = SafeTensors::deserialize(&raw)?;
-    let out_bin = manifest("../../models/all-MiniLM-L6-v2-q/minilm.int8.bin");
+    let out_bin = manifest("../../models/bge-small-en-v1.5/minilm.int8.bin");
     let mut bin = std::io::BufWriter::new(std::fs::File::create(&out_bin)?);
     bin.write_all(b"MINILM02")?;
     for v in [HIDDEN, LAYERS, HEADS, INTER, VOCAB, MAXPOS] {
@@ -121,7 +121,7 @@ fn main() -> Result<()> {
             by_id[id as usize] = tok;
         }
     }
-    let out_vocab = manifest("../../models/all-MiniLM-L6-v2-q/vocab.txt");
+    let out_vocab = manifest("../../models/bge-small-en-v1.5/vocab.txt");
     let mut vf = std::io::BufWriter::new(std::fs::File::create(&out_vocab)?);
     for tok in &by_id {
         writeln!(vf, "{tok}")?;
@@ -146,10 +146,9 @@ fn main() -> Result<()> {
         let ttype = input.zeros_like()?;
         let mask = Tensor::ones((1, n), DTYPE, &device)?;
         let hidden = model.forward(&input, &ttype, Some(&mask))?; // [1, n, HIDDEN]
-        let mean = (hidden.sum(1)? / n as f64)?; // mask is all ones -> plain mean
-        let mean = mean.squeeze(0)?; // [HIDDEN]
-        let norm = mean.sqr()?.sum_all()?.sqrt()?.to_scalar::<f32>()?;
-        let vec: Vec<f32> = (mean / norm as f64)?.to_vec1()?;
+        let cls = hidden.i((0, 0))?; // [CLS] token (row 0) -> [HIDDEN]
+        let norm = cls.sqr()?.sum_all()?.sqrt()?.to_scalar::<f32>()?;
+        let vec: Vec<f32> = (cls / norm as f64)?.to_vec1()?;
         let idstr = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let vstr = vec.iter().map(|x| format!("{x:.6}")).collect::<Vec<_>>().join(",");
         writeln!(gf, "{s}\t{idstr}\t{vstr}")?;
