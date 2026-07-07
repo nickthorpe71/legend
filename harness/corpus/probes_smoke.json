@@ -17,40 +17,8 @@
         }
       },
       "provenance": "commit 7600861",
-      "notes": "early-corpus cache mint, never superseded"
-    },
-    {
-      "after_line": 15,
-      "target": "mana economy",
-      "property": "starting_mana",
-      "expect": "0",
-      "probe": {
-        "verb": "recall",
-        "payload": {
-          "focus": [
-            "mana economy"
-          ],
-          "observe": true
-        }
-      },
-      "provenance": "commit bc67f83"
-    },
-    {
-      "after_line": 27,
-      "target": "mana economy",
-      "property": "starting_mana",
-      "expect": "carries between rooms within a realm; reset on realm entry",
-      "probe": {
-        "verb": "recall",
-        "payload": {
-          "focus": [
-            "mana economy"
-          ],
-          "observe": true
-        }
-      },
-      "provenance": "commit 26a878c",
-      "notes": "supersedes the line-15 value; history must show 0 as the prior"
+      "notes": "early-corpus cache mint, never superseded",
+      "question": "In the 'field and streak' mechanic, what is same_field_mod_x100 (the same-field damage modifier, x100)?"
     },
     {
       "after_line": 27,
@@ -101,7 +69,7 @@
         }
       },
       "provenance": "commit 018a9ad",
-      "notes": "the change targeted 'Hellfire' \u2014 it must have routed through the alias to Plasma Stream, not minted a twin"
+      "notes": "the change targeted 'Hellfire' — it must have routed through the alias to Plasma Stream, not minted a twin"
     },
     {
       "after_line": 36,
@@ -119,22 +87,6 @@
       },
       "provenance": "commit 0e4421c",
       "notes": "change carried an explicit from: 1B 1R 1Y"
-    },
-    {
-      "after_line": 44,
-      "target": "enemy hp multiplier",
-      "property": "value",
-      "expect": "2x",
-      "probe": {
-        "verb": "recall",
-        "payload": {
-          "focus": [
-            "enemy hp multiplier"
-          ],
-          "observe": true
-        }
-      },
-      "provenance": "commit 151499b"
     },
     {
       "after_line": 45,
@@ -167,7 +119,7 @@
         }
       },
       "provenance": "commit 826c1a0",
-      "notes": "line 39 wrote range 3 as an element attr; the change must win as current state \u2014 the attr-then-change wart is deliberate"
+      "notes": "line 39 wrote range 3 as an element attr; the change must win as current state — the attr-then-change wart is deliberate"
     },
     {
       "after_line": 46,
@@ -185,23 +137,6 @@
       },
       "provenance": "commit c64de8c",
       "notes": "probe by the brand-new alias"
-    },
-    {
-      "after_line": 48,
-      "target": "enemy hp multiplier",
-      "property": "value",
-      "expect": "2.4x",
-      "probe": {
-        "verb": "recall",
-        "payload": {
-          "focus": [
-            "enemy hp multiplier"
-          ],
-          "observe": true
-        }
-      },
-      "provenance": "commit f91f75e",
-      "notes": "end of the unset -> 2x -> 2.4x chain; history_depth default must show 2x as the prior"
     }
   ],
   "recall_hits": [
@@ -320,7 +255,7 @@
         }
       },
       "expect_resolves_to": "field and streak",
-      "notes": "far: the summary says 'cast 3 same-color spells in a row' \u2014 paraphrase, shared trigrams only via 'cast'/'in a row'"
+      "notes": "far: the summary says 'cast 3 same-color spells in a row' — paraphrase, shared trigrams only via 'cast'/'in a row'"
     },
     {
       "after_line": 48,
@@ -347,8 +282,8 @@
           "observe": true
         }
       },
-      "expect_resolves_to": "Bark Imp",
-      "notes": "mid: summary 'throws rolling apples' joins the lexical corpus (\u00a75/\u00a78), so tier 2 has a real shot"
+      "expect_resolves_to": "Mischief Maker",
+      "notes": "mid: summary 'throws rolling apples' joins the lexical corpus (§5/§8), so tier 2 has a real shot [renamed from Bark Imp in e09; current canonical is Mischief Maker]"
     },
     {
       "after_line": 48,
@@ -466,6 +401,46 @@
         ]
       },
       "notes": "fresh-session boot after balance day: neither question was ever resolved; the just-tuned elements should dominate 'active'"
+    }
+  ],
+  "deep_history": [
+    {
+      "target": "mana economy",
+      "property": "starting_mana",
+      "expect_current": "carries between rooms within a realm; reset on realm entry",
+      "expect_history": [
+        "0"
+      ],
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "mana economy"
+          ],
+          "history_depth": 3,
+          "observe": true
+        }
+      },
+      "notes": "e05 set 0 -> e06 superseded to carry-between-rooms; history must still show 0"
+    },
+    {
+      "target": "enemy hp multiplier",
+      "property": "value",
+      "expect_current": "2.4x",
+      "expect_history": [
+        "2x"
+      ],
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "enemy hp multiplier"
+          ],
+          "history_depth": 3,
+          "observe": true
+        }
+      },
+      "notes": "unset -> 2x -> 2.4x within e09; current 2.4x, prior 2x"
     }
   ]
 }
