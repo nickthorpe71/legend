@@ -21,6 +21,12 @@ design and its rationale live in the root spec.
   plus how to re-export the model blob.
 - [harness.md](harness.md) — `check.sh`, the replay corpus, fixtures, and probes.
 
+## Live deployment
+
+- [alchamancer-trial.md](alchamancer-trial.md) — the weeks-long real-world
+  trial in `~/Code/alchamancer2`: every path, the journal format, and the
+  diagnosis playbook (replay determinism check, rejection log, store health).
+
 ## Style
 
 - [`../C-STAR.md`](../C-STAR.md) — the C style guide this codebase follows.
