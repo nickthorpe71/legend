@@ -118,7 +118,8 @@ is `harness/eval_session.py` / `eval_mcp.py` / `eval_agentic.py`; the
 journal's real payloads can seed a probe slice the same way `harness/corpus/`
 slices do. Controlled baseline: `eval_session.py --slice adversarial`
 (dry-run projected ~$0.04 on haiku for 45 questions; the live pin is still
-pending — needs ANTHROPIC_API_KEY).
+pending). The API key goes in the repo-root `.env` (gitignored; the eval
+scripts read it automatically when the env var is unset).
 
 **Token cost (measured 2026-07-08, day one):** ~50k tokens/day across 5 dev
 sessions (~10k/session): recall frames ~2/3 of it, hooks ~1/4, save payloads

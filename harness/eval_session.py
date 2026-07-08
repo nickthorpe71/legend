@@ -24,6 +24,20 @@ sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _here]
 import argparse, json, re, subprocess, tempfile, urllib.request, urllib.error
 from pathlib import Path
 
+def _key_from_dotenv():
+    """ANTHROPIC_API_KEY fallback: the repo-root .env (gitignored)."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    try:
+        for ln in open(p):
+            if ln.startswith("ANTHROPIC_API_KEY=") and ln.split("=", 1)[1].strip():
+                os.environ["ANTHROPIC_API_KEY"] = ln.split("=", 1)[1].strip()
+    except OSError:
+        pass
+_key_from_dotenv()
+
+
 ROOT = Path(__file__).resolve().parent.parent
 PRICES = {  # $/MTok (input, output) — VERIFY vs current pricing; token counts are exact.
     "claude-haiku-4-5-20251001": (1.00, 5.00),

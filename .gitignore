@@ -82,3 +82,6 @@ benchmarks/venv/
 # Local Legend store + generated MCP config (machine-specific; `legend init` recreates both)
 /.legend/
 /.mcp.json
+
+# Secrets (eval harness API key)
+/.env
