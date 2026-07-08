@@ -8,6 +8,9 @@ cd "$(dirname "$0")"
 CC="${CC:-cc}"
 CFLAGS="-std=c99 -Wall -Wextra -Werror"  # no -ffast-math, ever (plan §1: §3.7 needs strict IEEE)
 SAN="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=undefined,float-cast-overflow -fno-omit-frame-pointer"
+ROOT="$(pwd)"
+BUILD_ID="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+STAMP=-DLEGEND_BUILD=\"$BUILD_ID\"   # journal + init report record the building sha
 
 fails=0
 fail() { echo "FAIL: $*"; fails=$((fails+1)); }
@@ -15,10 +18,10 @@ pass() { echo "  ok: $*"; }
 
 echo "== build =="
 # -lm: S7's stability soft cap uses tanh (pin 6)
-$CC $CFLAGS -O2 legend.c      embed.c -o legend      -lm || { echo "FATAL: legend build failed"; exit 1; }
-$CC $CFLAGS -O2 legend_test.c embed.c -o legend_test -lm || { echo "FATAL: legend_test build failed"; exit 1; }
-$CC $CFLAGS -g -O1 $SAN legend.c      embed.c -o legend.asan      -lm || { echo "FATAL: legend asan build failed"; exit 1; }
-$CC $CFLAGS -g -O1 $SAN legend_test.c embed.c -o legend_test.asan -lm || { echo "FATAL: legend_test asan build failed"; exit 1; }
+$CC $CFLAGS $STAMP -O2 legend.c      embed.c -o legend      -lm || { echo "FATAL: legend build failed"; exit 1; }
+$CC $CFLAGS $STAMP -O2 legend_test.c embed.c -o legend_test -lm || { echo "FATAL: legend_test build failed"; exit 1; }
+$CC $CFLAGS $STAMP -g -O1 $SAN legend.c      embed.c -o legend.asan      -lm || { echo "FATAL: legend asan build failed"; exit 1; }
+$CC $CFLAGS $STAMP -g -O1 $SAN legend_test.c embed.c -o legend_test.asan -lm || { echo "FATAL: legend_test asan build failed"; exit 1; }
 pass "4 binaries built with -Werror"
 
 # Embeddings are ON by default in the binary (committed blob). The core gates
@@ -44,16 +47,32 @@ else
     fail "no store: exit=$rc out=$out"
 fi
 
-# init, then init again -> idempotent status report with the seeded ontology
+# init from a scratch cwd (generated configs land beside the store): the
+# first run creates .mcp.json + .claude/settings.json, and init is then
+# idempotent -- the second and third reports must be byte-identical
 S1="$TMPROOT/store1"
+out0="$(LEGEND_STATE_DIR="$S1" ./legend init)"; rc0=$?
 out1="$(LEGEND_STATE_DIR="$S1" ./legend init)"; rc1=$?
 out2="$(LEGEND_STATE_DIR="$S1" ./legend init)"; rc2=$?
-if [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ "$out1" = "$out2" ] \
+if [ $rc0 -eq 0 ] && [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ "$out1" = "$out2" ] \
+   && printf '%s' "$out0" | grep -q '"mcp_config_created":true' \
+   && printf '%s' "$out0" | grep -q '"hooks_created":true' \
+   && printf '%s' "$out1" | grep -q '"hooks_created":false' \
    && printf '%s' "$out1" | grep -q "\"store\":\"$S1\"" \
-   && printf '%s' "$out1" | grep -q '"version":1,"elements":32,"relations":10,"clock":0'; then
-    pass "init is idempotent (32 ontology elements, 10 expects relations)"
+   && printf '%s' "$out1" | grep -q '"version":1' \
+   && printf '%s' "$out1" | grep -q '"elements":32,"relations":10,"clock":0' \
+   && [ -s "$TMPROOT/.mcp.json" ] && [ -s "$TMPROOT/.claude/settings.json" ] \
+   && python3 -c 'import json,sys; json.load(open(sys.argv[1])); json.load(open(sys.argv[2]))' \
+        "$TMPROOT/.mcp.json" "$TMPROOT/.claude/settings.json"; then
+    pass "init: configs created beside the store once, then idempotent (32 ontology elements)"
 else
-    fail "init: rc1=$rc1 rc2=$rc2 out1=$out1 out2=$out2"
+    fail "init: rc0=$rc0 rc1=$rc1 rc2=$rc2 out0=$out0 out1=$out1 out2=$out2"
+fi
+# every invocation journals: 3 inits so far -> 3 ok init lines
+if [ "$(grep -c '"verb":"init","ok":true' "$S1/journal.jsonl" 2>/dev/null)" = 3 ]; then
+    pass "init journals one line per invocation"
+else
+    fail "init journal: $(cat "$S1/journal.jsonl" 2>/dev/null)"
 fi
 
 # oversize stdin -> limit_exceeded before parsing

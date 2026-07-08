@@ -168,6 +168,13 @@ typedef int64_t i64;
 
 #define NONE_U32 0xFFFFFFFFu
 
+/* Build identity, stamped into the invocation journal and the init report so
+ * a weeks-old store records which binary wrote each line. check.sh passes the
+ * git short sha; a plain `cc legend.c embed.c` builds as "dev". */
+#ifndef LEGEND_BUILD
+#define LEGEND_BUILD "dev"
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 #define LEGEND_UNUSED __attribute__((unused))
 #define LEGEND_NORETURN __attribute__((noreturn))
@@ -310,6 +317,8 @@ static char g_err_candidates[2048];
 
 static int g_pretty; /* --pretty: human rendering of frames and errors (S10) */
 
+static void journal_fail(void); /* S10 sidecar journal: record the error line */
+
 /* Raise an error and never return. `at` is an optional payload path
  * ("facts[2].s") pinpointing the offending input; the format args build the
  * human message. Emits the §9 error envelope as JSON (or a --pretty block),
@@ -330,6 +339,7 @@ LEGEND_NORETURN static void fail(int code, const char *at, const char *fmt,
   g_err_candidates[0] = 0;
   if (g_err_trap)
     longjmp(g_err_jmp, 1);
+  journal_fail();
   if (g_pretty) {
     printf("error: %s\n  %s\n", ERR_CODE_NAMES[code], g_err.message);
     if (g_err.at[0])
@@ -7844,6 +7854,67 @@ static int snapshot_load(Hypergraph *g, const char *store) {
 static char g_payload[LEGEND_PAYLOAD_CAP +
                       2]; /* cap + 1 overflow-detection byte + NUL */
 
+/* Pristine copy of the payload as submitted: the tokenizer unescapes strings
+ * IN PLACE in g_payload, so the journal keeps the original bytes. */
+static char g_payload_orig[LEGEND_PAYLOAD_CAP + 2];
+
+/* ---- invocation journal (sidecar diagnostics) ----
+ * One JSONL line per invocation appended to <store>/journal.jsonl: the wall
+ * time the tick stamped, the build that ran, the verb, and the submitted
+ * payload verbatim; ok:false lines carry the error code. Over a long
+ * deployment the journal is the record of what callers ACTUALLY submitted —
+ * a replayable corpus, a determinism check (replaying it from init must
+ * reproduce the live snapshot byte-for-byte), and the rejection log. It never
+ * touches frames or snapshots, and a journal write failure never fails the
+ * invocation. Armed once the store is known and locked; disarmed by the one
+ * append so no invocation writes twice. */
+static char g_journal_dir[4300];
+static const char *g_journal_verb = "";
+static const char *g_journal_payload; /* pristine bytes; NULL = no payload */
+static u32 g_journal_payload_len;
+static int g_journal_observe;
+static int g_journal_armed;
+
+static void journal_arm(const char *store, const char *verb,
+                        const char *payload, u32 len) {
+  snprintf(g_journal_dir, sizeof g_journal_dir, "%s", store);
+  g_journal_verb = verb;
+  g_journal_payload = payload;
+  g_journal_payload_len = len;
+  g_journal_observe = 0;
+  g_journal_armed = 1;
+}
+
+static void journal_append(i64 ts, int ok, int errcode) {
+  char path[4400];
+  FILE *f;
+  if (!g_journal_armed)
+    return;
+  g_journal_armed = 0;
+  snprintf(path, sizeof path, "%s/journal.jsonl", g_journal_dir);
+  f = fopen(path, "a");
+  if (!f)
+    return;
+  fprintf(f, "{\"ts\":%lld,\"build\":\"" LEGEND_BUILD "\",\"verb\":\"%s\"",
+          (long long)ts, g_journal_verb);
+  if (g_journal_observe)
+    fputs(",\"observe\":true", f);
+  fprintf(f, ",\"ok\":%s", ok ? "true" : "false");
+  if (!ok)
+    fprintf(f, ",\"code\":\"%s\"", ERR_CODE_NAMES[errcode]);
+  if (g_journal_payload) {
+    fputs(",\"payload\":\"", f);
+    json_escape_fwrite(g_journal_payload, g_journal_payload_len, f);
+    fputc('"', f);
+  }
+  fputs("}\n", f);
+  fclose(f);
+}
+
+/* fail()'s journal line. Real wall clock, not now_unix_seconds(): a malformed
+ * LEGEND_NOW reaches here THROUGH fail(), and no tick was stamped anyway. */
+static void journal_fail(void) { journal_append((i64)time(NULL), 0, g_err.code); }
+
 /* fread to EOF, at most bufcap bytes (plan §3.13: the binary is EOF-delimited;
  * the harness spawns one process per payload and closes the pipe). The caller
  * classifies bufcap bytes arriving as limit_exceeded before any parsing. */
@@ -7863,6 +7934,7 @@ static u32 payload_from_stdin(void) {
   if (n == 0)
     fail(ERR_PARSE, NULL, "empty payload");
   g_payload[n] = 0;
+  memcpy(g_payload_orig, g_payload, n + 1);
   return n;
 }
 
@@ -7875,6 +7947,7 @@ static u32 payload_from_arg(const char *arg) {
   if (n == 0)
     fail(ERR_PARSE, NULL, "empty payload");
   memcpy(g_payload, arg, n + 1);
+  memcpy(g_payload_orig, arg, n + 1);
   return (u32)n;
 }
 
@@ -8098,27 +8171,52 @@ static void emit_frame(const Hypergraph *g, const WriteReport *w,
   free(buf);
 }
 
-/* Convenience: `legend init` drops a Claude Code `.mcp.json` in the cwd so a
- * session opened in this project launches `legend mcp-serve` against this
- * store — one command sets a test folder up end to end. Never clobbers an
- * existing file; a failure here never fails init. Fills out_path with the
- * config path; returns 1 iff it wrote the file. */
+/* The project dir a store belongs to: the store's parent (the normal flow is
+ * <project>/.legend). Generated configs land beside the store — never in an
+ * unrelated cwd — so a harness init against a temp store cannot write configs
+ * into the repo it runs from. */
+static void store_project_dir(const char *store, char *out, size_t cap) {
+  char abs[4200];
+  const char *slash;
+  if (!realpath(store, abs))
+    snprintf(abs, sizeof abs, "%s", store);
+  slash = strrchr(abs, '/');
+  if (!slash || slash == abs) {
+    snprintf(out, cap, "/");
+    return;
+  }
+  {
+    size_t n = (size_t)(slash - abs);
+    if (n >= cap)
+      n = cap - 1;
+    memcpy(out, abs, n);
+    out[n] = 0;
+  }
+}
+
+static void self_exe_path(char *exe, size_t cap) {
+  ssize_t n = readlink("/proc/self/exe", exe, cap - 1);
+  if (n <= 0)
+    snprintf(exe, cap, "legend"); /* fall back to PATH lookup */
+  else
+    exe[n] = 0;
+}
+
+/* Convenience: `legend init` drops a Claude Code `.mcp.json` beside the store
+ * so a session opened in this project launches `legend mcp-serve` against it —
+ * one command sets a project up end to end. Never clobbers an existing file;
+ * a failure here never fails init. Fills out_path with the config path;
+ * returns 1 iff it wrote the file. */
 static int write_mcp_config(const char *store, char *out_path, size_t out_cap) {
-  char cwd[4096], exe[4096], abs_store[4200]; /* >= sizeof store; >= PATH_MAX */
+  char proj[4096], exe[4096], abs_store[4200];
   struct stat st;
-  ssize_t exelen;
   FILE *f;
   out_path[0] = 0;
-  if (!getcwd(cwd, sizeof cwd))
-    return 0;
-  snprintf(out_path, out_cap, "%s/.mcp.json", cwd);
+  store_project_dir(store, proj, sizeof proj);
+  snprintf(out_path, out_cap, "%s/.mcp.json", proj);
   if (stat(out_path, &st) == 0)
     return 0; /* already there: never overwrite a user's MCP config */
-  exelen = readlink("/proc/self/exe", exe, sizeof exe - 1);
-  if (exelen <= 0)
-    snprintf(exe, sizeof exe, "legend"); /* fall back to PATH lookup */
-  else
-    exe[exelen] = 0;
+  self_exe_path(exe, sizeof exe);
   if (!realpath(store, abs_store))
     snprintf(abs_store, sizeof abs_store, "%s", store);
   f = fopen(out_path, "w");
@@ -8133,6 +8231,79 @@ static int write_mcp_config(const char *store, char *out_path, size_t out_cap) {
         f);
   json_escape_fputs(abs_store, f);
   fputs("\"\n      }\n    }\n  }\n}\n", f);
+  fclose(f);
+  return 1;
+}
+
+/* `legend init` also seeds Claude Code hooks (ported from Legend v1's set) so
+ * sessions in this project use memory without having to remember to:
+ *   SessionStart      — inject the orientation packet as session context
+ *   UserPromptSubmit  — rate-limited ambient recall: focus on the prompt text,
+ *                       observe:true (a passive lookup must not train the
+ *                       store), injected as context
+ *   Stop              — when the session changed files, remind the model to
+ *                       save durable decisions before finishing
+ * v1 also nagged after EVERY file edit (PostToolUse); dropped — the Stop
+ * reminder covers it without polluting each edit. Never clobbers an existing
+ * settings.json; a failure never fails init. Returns 1 iff written. */
+static int write_hooks_config(const char *store, char *out_path,
+                              size_t out_cap) {
+  char proj[4096], dir[4300], exe[4096], cmd[8704];
+  struct stat st;
+  FILE *f;
+  out_path[0] = 0;
+  store_project_dir(store, proj, sizeof proj);
+  snprintf(out_path, out_cap, "%s/.claude/settings.json", proj);
+  if (stat(out_path, &st) == 0)
+    return 0; /* never overwrite a user's settings */
+  snprintf(dir, sizeof dir, "%s/.claude", proj);
+  if (mkdir(dir, 0777) != 0 && errno != EEXIST) {
+    out_path[0] = 0;
+    return 0;
+  }
+  self_exe_path(exe, sizeof exe);
+  f = fopen(out_path, "w");
+  if (!f) {
+    out_path[0] = 0;
+    return 0;
+  }
+  fputs("{\n  \"hooks\": {\n"
+        "    \"SessionStart\": [{\"matcher\": \"*\", \"hooks\": "
+        "[{\"type\": \"command\", \"command\": \"",
+        f);
+  snprintf(cmd, sizeof cmd,
+           "%s recall '{}' --pretty 2>/dev/null | head -c 4000", exe);
+  json_escape_fputs(cmd, f);
+  fputs("\"}]}],\n"
+        "    \"UserPromptSubmit\": [{\"matcher\": \"*\", \"hooks\": "
+        "[{\"type\": \"command\", \"command\": \"",
+        f);
+  snprintf(cmd, sizeof cmd,
+           "input=$(cat); now=$(date +%%s); d=${CLAUDE_PROJECT_DIR:-.}; "
+           "stamp=\"$d/.legend/.last_hook_recall\"; "
+           "last=$(cat \"$stamp\" 2>/dev/null || echo 0); "
+           "[ $((now-last)) -lt 20 ] && exit 0; "
+           "p=$(printf %%s \"$input\" | "
+           "sed -n 's/.*\"prompt\" *: *\"\\([^\"]*\\)\".*/\\1/p' | "
+           "tr -cd 'A-Za-z0-9 _.,:()/-' | head -c 120); "
+           "[ -z \"$p\" ] && exit 0; echo \"$now\" > \"$stamp\"; "
+           "%s recall \"{\\\"focus\\\":[\\\"$p\\\"],\\\"observe\\\":true}\" "
+           "--pretty 2>/dev/null | head -c 1500",
+           exe);
+  json_escape_fputs(cmd, f);
+  fputs("\"}]}],\n"
+        "    \"Stop\": [{\"matcher\": \"*\", \"hooks\": "
+        "[{\"type\": \"command\", \"command\": \"",
+        f);
+  snprintf(cmd, sizeof cmd,
+           "changed=$(git diff --name-only 2>/dev/null | head -5); "
+           "[ -z \"$changed\" ] && exit 0; "
+           "n=$(printf '%%s\\n' \"$changed\" | wc -l | tr -d ' '); "
+           "printf '{\"additionalContext\":\"[Legend] %%s file(s) changed "
+           "this session. Save durable decisions/facts/changes via "
+           "legend_save before finishing.\"}' \"$n\"");
+  json_escape_fputs(cmd, f);
+  fputs("\"}]}]\n  }\n}\n", f);
   fclose(f);
   return 1;
 }
@@ -8152,6 +8323,7 @@ static int cmd_init(int reset) {
     fail(ERR_NO_STORE, NULL, "cannot create store %s: %s", store,
          strerror(errno));
   acquire_lock(store);
+  journal_arm(store, "init", NULL, 0);
   sweep_orphan_tmps(store);
   if (reset) {
     char snap[4300];
@@ -8164,17 +8336,23 @@ static int cmd_init(int reset) {
   }
   /* Idempotent status report (spec §4). */
   {
-    char cfg[4200];
+    char cfg[4400], hooks[4400];
     int made = write_mcp_config(store, cfg, sizeof cfg);
+    int hooks_made = write_hooks_config(store, hooks, sizeof hooks);
     fputs("{\"store\":\"", stdout);
     json_escape_fputs(store, stdout);
-    printf("\",\"version\":%d,\"elements\":%u,\"relations\":%u,\"clock\":%u",
+    printf("\",\"version\":%d,\"build\":\"" LEGEND_BUILD
+           "\",\"elements\":%u,\"relations\":%u,\"clock\":%u",
            SNAP_VERSION, g_graph.element_count, g_graph.relation_count,
            g_graph.clock);
     fputs(",\"mcp_config\":\"", stdout);
     json_escape_fputs(cfg, stdout);
-    printf("\",\"mcp_config_created\":%s}\n", made ? "true" : "false");
+    printf("\",\"mcp_config_created\":%s", made ? "true" : "false");
+    fputs(",\"hooks_config\":\"", stdout);
+    json_escape_fputs(hooks, stdout);
+    printf("\",\"hooks_created\":%s}\n", hooks_made ? "true" : "false");
   }
+  journal_append((i64)time(NULL), 1, -1);
   return 0;
 }
 
@@ -8331,36 +8509,44 @@ static const char MCP_TOOLS_JSON[] =
  * (clients surface it as a slash command) so the flow travels with the binary
  * into any project `legend init` touches. */
 static const char MCP_ONBOARD_PROMPT[] =
-    "Onboard Legend onto this EXISTING project. The store is fresh; seed it "
-    "with a real understanding -- especially the WHY only the humans know -- "
-    "so any future session can orient instantly.\n\n"
-    "Phase 1 -- EXPLORE (no questions yet). Read the README, any docs/design "
-    "files, the build config, and skim the git history (the first and the "
-    "most recent commits). Draft privately:\n"
-    "- the project: name, one-line purpose\n"
-    "- the 3-8 main systems/modules and what each does\n"
-    "- constraints stated in docs or implied by the stack\n"
-    "- choices that look deliberate (language, framework, storage, protocol, "
-    "algorithms)\n\n"
-    "Phase 2 -- INTERVIEW. Ask the user 3-6 short questions, each grounded in "
-    "something specific you found. Ask only what the code cannot tell you:\n"
+    "Onboard Legend onto this EXISTING project. The store is fresh; build it "
+    "a real understanding of the WHOLE project -- docs, code, and git "
+    "history -- and capture the WHY only the humans know, so any future "
+    "session can orient instantly.\n\n"
+    "Phase 1 -- INVENTORY. List every documentation file, every top-level "
+    "source module/directory, the build and test setup, and the git history "
+    "(commit count, the first commits, the subjects of major milestones). "
+    "This is your reading list; do not skip items because they look minor.\n\n"
+    "Phase 2 -- READ. Work through the inventory: every doc fully; every "
+    "module far enough to state its purpose in one line; the git log for "
+    "turning points (rewrites, pivots, renames, reverts). Note as you go: "
+    "the systems and what each does; choices that look deliberate (what was "
+    "the alternative?); constraints; places where docs and code disagree; "
+    "anything parked, dead, or experimental.\n\n"
+    "Phase 3 -- INTERVIEW. Ask the user grounded questions, a few at a time, "
+    "as many rounds as it takes. Ask only what the artifacts cannot tell "
+    "you:\n"
     "- what is this for, and who is it for?\n"
-    "- for each major visible choice: \"I see X rather than Y -- deliberate? "
-    "what was rejected, and why?\"\n"
+    "- for each major choice: \"I see X rather than Y -- deliberate? what "
+    "was rejected, and why?\"\n"
     "- which constraints still hold, and what is the current focus?\n"
-    "- what in the tree is dead, legacy, or experimental?\n"
-    "- what questions or tasks are open right now?\n\n"
-    "Phase 3 -- SAVE. Submit via legend_save: the project element (kind "
-    "project, one-line summary); the main systems as elements with summaries; "
-    "each deliberate choice as a decision (chose / rejected / reason / about); "
-    "constraints (applies_to / reason); open questions and tasks; src pointers "
-    "(file paths, commits) on everything that has one. Discipline: at most "
-    "~15 elements this first round -- over-extraction buries the signal; the "
-    "rest accrues in normal sessions.\n\n"
-    "Phase 4 -- CONFIRM. Run legend_recall with no focus and show the user "
-    "the orientation packet verbatim. Ask what reads wrong; fix with merge / "
-    "retract / changes / rename_to. Done when the user says the packet reads "
-    "true.";
+    "- confirm every place the docs and code disagree\n"
+    "- what is dead or legacy? what questions and tasks are open?\n\n"
+    "Phase 4 -- SAVE, in batches. One legend_save per area -- project + "
+    "systems, then decisions, then constraints, then tasks/questions, then "
+    "doc pointers -- recalling between batches to reuse canonical names. "
+    "Include: the project element; EVERY real system/module as an element "
+    "with a one-line summary; each deliberate choice as a decision (chose / "
+    "rejected / reason / about); constraints (applies_to / reason); open "
+    "questions and tasks; a pointer element per key document. Everything "
+    "gets a src pointer (file path or commit). Save durable facts, not "
+    "narration of your reading: if a future session would not need it, do "
+    "not save it.\n\n"
+    "Phase 5 -- CONFIRM. Run legend_recall with no focus and show the user "
+    "the orientation packet verbatim; then spot-check 2-3 specific systems "
+    "with focused recalls and confirm those frames read true. Fix problems "
+    "with merge / retract / changes / rename_to. Done when the user signs "
+    "off.";
 
 /* value token index of member `key` in object `obj`; -1 if absent */
 static long mcp_obj_get(const Json *j, u32 obj, const char *key) {
@@ -8587,7 +8773,8 @@ static void graph_sync(const char *store) {
   g_graph_warm = 1;
 }
 
-static void mcp_tools_call(const Json *j, long id_i, const char *store) {
+static void mcp_tools_call(const Json *j, long id_i, const char *store,
+                           const char *pristine) {
   long params_i = mcp_obj_get(j, 0, "params");
   long name_i = params_i >= 0 ? mcp_obj_get(j, (u32)params_i, "name") : -1;
   long args_i = params_i >= 0 ? mcp_obj_get(j, (u32)params_i, "arguments") : -1;
@@ -8616,6 +8803,11 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store) {
     rd.t = &j->toks[args_i]; /* Rd navigates relative to its root token */
     rd.buf = j->buf;
     acquire_lock(store); /* brief per-call hold, released before we reply */
+    /* container-token start/end are original read offsets, so the slice of
+     * the pristine line is the arguments subtree exactly as submitted */
+    journal_arm(store, is_save ? "save" : "recall",
+                pristine + j->toks[args_i].start,
+                j->toks[args_i].end - j->toks[args_i].start);
     graph_sync(store);   /* warm: reload only when the snapshot changed on disk */
     if (is_save) {
       read_submission(&rd, &sub);
@@ -8627,6 +8819,7 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store) {
       emit_frame(&g_graph, &report, store, 40, 2, -1);
     } else {
       read_recall(&rd, &rec);
+      g_journal_observe = rec.observe;
       mcp_cap_begin();
       tick_recall(&g_graph, &rec, j->buf, &report);
       if (!rec.observe) {
@@ -8637,6 +8830,7 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store) {
                  rec.since);
     }
     frame = mcp_cap_take();
+    journal_append(report.at_secs, 1, -1);
     release_lock();
     g_err_trap = 0;
     mcp_tool_result(j, id_i, frame ? frame : "{}", 0);
@@ -8646,6 +8840,7 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store) {
     g_err_trap = 0;
     g_graph_warm = 0; /* a fail() may have left g_graph half-mutated: reload next call */
     mcp_cap_discard();
+    journal_append((i64)time(NULL), 0, g_err.code);
     release_lock(); /* a fail() may have longjmp'd while we held the lock */
     snprintf(msg, sizeof msg, "%s%s%s", g_err.message,
              g_err.at[0] ? " at " : "", g_err.at);
@@ -8655,7 +8850,19 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store) {
 
 static void mcp_handle(char *buf, u32 len, const char *store) {
   static Json j;
+  static char *pristine; /* the line before in-place unescaping (journal) */
+  static size_t pristine_cap;
   long method_i, id_i;
+  if (pristine_cap < (size_t)len + 1) {
+    free(pristine);
+    pristine_cap = (size_t)len + 1;
+    pristine = (char *)malloc(pristine_cap);
+    if (!pristine) {
+      fprintf(stderr, "legend: out of memory\n");
+      exit(1);
+    }
+  }
+  memcpy(pristine, buf, (size_t)len + 1);
   g_err_trap = 1;
   if (setjmp(g_err_jmp)) { /* json_parse rejected the line */
     g_err_trap = 0;
@@ -8678,7 +8885,7 @@ static void mcp_handle(char *buf, u32 len, const char *store) {
   else if (mcp_streq(&j, method_i, "tools/list"))
     mcp_tools_list(&j, id_i);
   else if (mcp_streq(&j, method_i, "tools/call"))
-    mcp_tools_call(&j, id_i, store);
+    mcp_tools_call(&j, id_i, store, pristine);
   else if (mcp_streq(&j, method_i, "prompts/list"))
     mcp_prompts_list(&j, id_i);
   else if (mcp_streq(&j, method_i, "prompts/get"))
@@ -8783,6 +8990,7 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
     payload_len = inline_payload ? payload_from_arg(inline_payload)
                                  : payload_from_stdin();
     acquire_lock(store);
+    journal_arm(store, verb, g_payload_orig, payload_len);
     json_parse(&json, g_payload, payload_len);
     rd.t = json.toks;
     rd.buf = g_payload;
@@ -8798,9 +9006,11 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
       snapshot_write(&g_graph, store);
       tier2_sync(&g_graph); /* eager: keep the vector sidecar warm per save */
       emit_frame(&g_graph, &report, store, 40, 2, -1);
+      journal_append(report.at_secs, 1, -1);
       return 0;
     }
     read_recall(&rd, &rec);
+    g_journal_observe = rec.observe;
     {
       static WriteReport report;
       sweep_orphan_tmps(store);
@@ -8811,6 +9021,7 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
         snapshot_write(&g_graph, store);
       emit_frame(&g_graph, &report, store, rec.limit, rec.history_depth,
                  rec.since);
+      journal_append(report.at_secs, 1, -1);
       return 0;
     }
   }
