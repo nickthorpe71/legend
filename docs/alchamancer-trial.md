@@ -102,11 +102,28 @@ Legend misbehaves, the session saves a `question` element named
 `legend trial issue: ...`. So the first read on any check-in is the
 orientation packet's `open` section — timestamped problems surface there.
 
-**6. Scoring (when a read-out is wanted).** The episodic eval machinery is
-`harness/eval_session.py` / `eval_mcp.py` / `eval_agentic.py`; the journal's
-real payloads can seed a probe slice the same way `harness/corpus/` slices do.
-There is no `journal_report.py` yet — write it against the journal + `dump`
-when the first read-out is due.
+**6. Weekly health read-out:**
+
+```sh
+python3 harness/journal_report.py ~/Code/alchamancer2/.legend
+```
+
+Sessions with per-session activity/save volume, build switchovers, the
+rejection log, the double-fire diagnosis rule, and store hygiene (duplicates,
+kind histogram, paragraph-named elements, summary-less typed elements).
+Read-only.
+
+**7. Scoring (when a full read-out is wanted).** The episodic eval machinery
+is `harness/eval_session.py` / `eval_mcp.py` / `eval_agentic.py`; the
+journal's real payloads can seed a probe slice the same way `harness/corpus/`
+slices do. Controlled baseline: `eval_session.py --slice adversarial`
+(dry-run projected ~$0.04 on haiku for 45 questions; the live pin is still
+pending — needs ANTHROPIC_API_KEY).
+
+**Token cost (measured 2026-07-08, day one):** ~50k tokens/day across 5 dev
+sessions (~10k/session): recall frames ~2/3 of it, hooks ~1/4, save payloads
+(output) ~5%. The cost lever if frames bloat with store growth: the MCP
+default `limit` (the model already used `limit:12` unprompted once).
 
 ## Findings log (running)
 
@@ -127,8 +144,9 @@ Day one, 2026-07-08 — five dev sessions, five findings, five fixes:
 5. **Measurements saved without provenance** (session-4 self-play stats had no
    pointer to how the games were run; session 5 rebuilt the arena from
    scratch) → agent self-closed with a `duel ai arena harness` pointer.
-   Instruction candidate for the next deploy batch: "save what code cannot
-   hold — next levers, negative results, reproduction recipes."
+   Instructions batch deployed as `6017f32`: (8) save what code cannot hold
+   (next levers, negative results, decisions with reasons), (9) a measurement
+   without its method is half lost. Watch sessions 6+ for both behaviors.
 
 Session-5 agent testimony (verbatim value assessment): ~30–45 min of
 rediscovery avoided + one likely design regression avoided; caveat that ~half
