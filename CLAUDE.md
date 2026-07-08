@@ -8,4 +8,5 @@ This is a from-scratch v2 rewrite. The v1 implementation lives at `../legend-v1`
 
 - `new_foundation.md` — full v2 design
 - `new_foundation_v0_core.md` — v0 scope (build this first)
-- `R-STAR.md` — Rust style guide for this repo (data first, concrete then compress)
+- `C-STAR.md` — C style guide for this repo (data first, concrete then compress)
+- `docs/` — operational reference (CLI, MCP server, embeddings, test harness)

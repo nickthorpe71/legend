@@ -1,94 +1,79 @@
 # Legend
 
-Long-term memory for LLMs. v2 rewrite in Rust.
+Long-term memory for LLMs. Legend is a single-file C oracle that a calling model
+drives over MCP (or the CLI): it ingests structured `save` payloads into a
+deduplicated reality graph and answers `recall` with a focused frame. LLM
+sessions are fleeting by default — Legend is the substrate that carries
+continuity across them.
 
-## Status
-
-v0 end-to-end. One tick runs `execute_tick` over a 622-element /
-610-relation seeded substrate: `detect_intent` → `adjust_policy` →
-`derive_active_frame` → `route_regions` → `run_extractors` →
-`apply_region_delta` → `build_relations` → `supersede` →
-`hebbian_and_salience` → `focus_radius_decay` → `assemble_frame`.
-Source-of-truth design: `new_foundation.md`, `new_foundation_v0_core.md`.
+This is the **v2 rewrite**: pure C99, no runtime dependencies beyond `libm` and
+a bundled embedding model. (The v1 Rust implementation lives at `../legend-v1`.)
 
 ## Build
 
 ```bash
-cargo build --release
+./check.sh        # build + full gate: unit tests, fixtures, replay slices, fuzz
 ```
 
-Baked into the binary via `include_bytes!` — no network access or
-external files at runtime:
-
-- all-MiniLM-L6-v2 INT8 weights (~22 MB) + GLiNER1 INT8 weights
-- Four trained intent classifiers
-- Seed hypergraph (`src/seed/graph.bin`, ~1 MB)
-
-## Try it
+or just the binary:
 
 ```bash
-# Daemon auto-starts on first call and amortizes the ~190 ms model
-# warmup across subsequent ticks.
-./target/release/legend "I am absolutely certain that the meeting is at 3pm"
-# Prints the rendered ConsciousAttentionFrame.
-
-./target/release/legend start    # launch daemon in the background
-./target/release/legend status   # pid, uptime, substrate sizes
-./target/release/legend reset    # wipe in-RAM substrate back to seed, persist
-./target/release/legend stop     # graceful shutdown
+cc -std=c99 -O2 legend.c embed.c -o legend -lm
 ```
 
-The daemon listens on TCP loopback; clients discover the port via
-`.legend/legend.port`. A `fs2` exclusive flock on `.legend/legend.lock`
-guarantees single-writer. Idle TTL is 5 minutes (override with
-`LEGEND_DAEMON_TTL=<secs>`); the workspace state directory can be
-relocated with `LEGEND_STATE_DIR=...`. `LEGEND_TIME=1` enables
-per-extractor timing inside `run_extractors`.
+No network, no package manager, no codegen. The only runtime asset is the
+bundled embedder under `models/bge-small-en-v1.5/` (an int8 blob + vocab).
 
-## Persistence + git merge driver
-
-The substrate is saved to `./.legend/memory.lz4` after every tick and
-loaded at the top of the next run, so memory carries forward across
-process restarts. To wipe the substrate back to seed:
+## Use it — CLI
 
 ```bash
-./target/release/legend reset
+legend init                              # create a .legend store here (+ writes .mcp.json)
+echo '{"elements":[...]}' | legend save  # ingest a payload; prints the resulting frame
+echo '{"focus":["..."]}'  | legend recall  # query; prints the focused frame
+legend dump                              # human-readable graph dump
+legend mcp-serve                         # long-lived MCP server over stdio
 ```
 
-`.legend/memory.lz4` is committed alongside source. When two branches
-both mutate it, git can't text-merge a binary file — register the
-substrate-aware merge driver in a fresh clone:
+Payloads and frames are JSON; add `--pretty` for readable output. Full reference
+in [docs/cli.md](docs/cli.md).
 
-```bash
-./target/release/legend init
-```
+## Use it — MCP (the primary path)
 
-That writes `git config --local merge.legend.driver` and adds the
-`.gitattributes` rule. After it, `git merge` reconciles `.legend/memory.lz4`
-automatically: elements unify by `(name, polarity)`, relations dedup
-after id-remap, and conflicting statuses resolve as Retracted >
-Superseded > Asserted > Entailed > Defeasible.
+`legend init` writes a project `.mcp.json` pointing at the binary and store,
+exposing two tools — `legend_save` and `legend_recall` — to any MCP client
+(e.g. Claude Code). The server is long-lived and warm: the embedding model loads
+once at startup, and the graph reloads only when the snapshot changes on disk.
+See [docs/mcp-server.md](docs/mcp-server.md).
 
-## Tests / benchmarks
+## How it works
 
-```bash
-cargo test --lib                                # unit tests
-cargo test --test v0_acceptance                 # end-to-end tick acceptance
-cargo run --release --example test_intent       # held-out intent accuracy
-cargo run --release --example audit_classifiers # classifier diagnostics
-cargo run --release --example dump_hypergraph_md  # snapshot to inspect/seed.md
-cargo bench                                     # criterion benches
-```
+A `save` runs one **tick**: the payload is parsed, resolved against existing
+elements (reuse canonical names, don't duplicate), folded into the graph
+(new elements/relations, value supersessions, retractions, merges), persisted to
+a binary snapshot, and the vector sidecar is refreshed. A `recall` resolves the
+requested focus through a tiered index (exact name → alias → lexical → embedding)
+and returns a frame: the focused subgraph plus supporting bands (current state,
+decisions, constraints, history, related). The design is in
+[`new_foundation.md`](new_foundation.md).
 
-## Regenerate baked artifacts
+## Store & environment
 
-```bash
-cargo run --release --example gen_intent_classifiers  # → src/seed/intent_classifiers/*.bin
-cargo run --release --example gen_seed_graph          # → src/seed/graph.bin
-```
+- `.legend/legend.snapshot` — the binary graph snapshot; written atomically after
+  every `save`. `.legend/legend.lock` is the per-store single-writer flock.
+- `LEGEND_STATE_DIR` — override the store location (default: `.legend` discovered
+  from the cwd).
+- `LEGEND_NOW` — inject a fixed clock (epoch seconds) for deterministic replay.
+- `LEGEND_EMBED` — `0`/`1` to disable/enable the embedder (tier-2/3 recall).
+- `LEGEND_EMBED_DIR` — model directory (default `models/bge-small-en-v1.5`).
+- `LEGEND_TRACE`, `LEGEND_EMBED_TRACE` — diagnostic tracing to stderr.
 
 ## Docs
 
-- `new_foundation.md` / `new_foundation_v0_core.md` — design (source of truth)
-- `R-STAR.md` — Rust style guide for this repo
-- `docs/` — operate notes (seed graph, inference engine, intent detection, inspection)
+- [`new_foundation.md`](new_foundation.md) / [`new_foundation_v0_core.md`](new_foundation_v0_core.md)
+  — the design (source of truth)
+- [`docs/`](docs/) — operational reference (CLI, MCP server, embeddings, harness)
+- [`C-STAR.md`](C-STAR.md) — the C style guide for this repo
+
+## License
+
+See [LICENSE](LICENSE).
