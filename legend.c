@@ -148,6 +148,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -8453,9 +8454,12 @@ static const char MCP_INSTRUCTIONS[] =
     "(5) To rename, set `rename_to` on the element. (6) To close an open "
     "question or task, save the fact {s: <what resolved it>, p: resolves, "
     "o: <the question/task>} -- rewriting its summary does NOT close it. "
-    "(7) Prefer few precise elements and durable facts; over-extraction "
-    "buries the signal. Recall with no focus returns an orientation packet "
-    "for session start.";
+    "(7) To update an element's summary, resubmit the element with the new "
+    "summary (latest write wins); `changes` is for domain property VALUES "
+    "(a fact object becomes an element named by it, so never pass prose as "
+    "a value -- prose belongs in summaries). (8) Prefer few precise "
+    "elements and durable facts; over-extraction buries the signal. Recall "
+    "with no focus returns an orientation packet for session start.";
 
 static const char MCP_TOOLS_JSON[] =
     "[{\"name\":\"legend_recall\",\"description\":\"Read memory. With `focus` "
@@ -8475,7 +8479,10 @@ static const char MCP_TOOLS_JSON[] =
     "something now false use `retract`. To fold a duplicate you made use "
     "`merge`. To rename an element set `rename_to`. To CLOSE an open "
     "question/task save a fact {s: <resolver>, p: resolves, o: <the task>} -- "
-    "editing its summary does not close it. Prefer few precise "
+    "editing its summary does not close it. To UPDATE a summary resubmit the "
+    "element (latest write wins) -- `changes` is for domain property values, "
+    "and fact objects become element names, so keep them short (prose goes "
+    "in summaries). Prefer few precise "
     "elements; over-extraction buries the signal. At least one write list is "
     "required.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"source\":{\"type\":\"string\",\"description\":\"provenance for facts minted this call\"},"
@@ -8932,6 +8939,9 @@ static int mcp_serve(void) {
 LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   const char *verb = NULL, *inline_payload = NULL;
   int pretty = 0, reset = 0, i;
+  /* a truncating consumer (a hook's `head -c`) closing stdout must not kill
+   * the process — writes fail with EPIPE instead and the invocation finishes */
+  signal(SIGPIPE, SIG_IGN);
   for (i = 1; i < argc; i++) {
     const char *a = argv[i];
     if (strcmp(a, "--pretty") == 0)
@@ -9010,8 +9020,11 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
       tick_save(&g_graph, &sub, g_payload, &report);
       snapshot_write(&g_graph, store);
       tier2_sync(&g_graph); /* eager: keep the vector sidecar warm per save */
-      emit_frame(&g_graph, &report, store, 40, 2, -1);
+      /* journal BEFORE the frame: the journal records the applied mutation,
+       * and a consumer that truncates the frame (a hook's `head -c`) can
+       * kill this process mid-emit — the store must never move unjournaled */
       journal_append(report.at_secs, 1, -1);
+      emit_frame(&g_graph, &report, store, 40, 2, -1);
       return 0;
     }
     read_recall(&rd, &rec);
@@ -9024,9 +9037,9 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
       tick_recall(&g_graph, &rec, g_payload, &report);
       if (!rec.observe)
         snapshot_write(&g_graph, store);
+      journal_append(report.at_secs, 1, -1);
       emit_frame(&g_graph, &report, store, rec.limit, rec.history_depth,
                  rec.since);
-      journal_append(report.at_secs, 1, -1);
       return 0;
     }
   }

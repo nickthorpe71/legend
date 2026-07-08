@@ -49,6 +49,10 @@ One JSONL line per invocation, appended under the store lock:
 - `ok:false` lines carry the error `code` — they mutated nothing.
 - The journal is sidecar-only: it never influences frames or snapshots, and a
   failed journal write never fails an invocation.
+- Ordering guarantee (since the trial's first replay divergence, 2026-07-08):
+  the line is written after the snapshot but BEFORE the frame is emitted, and
+  SIGPIPE is ignored — a consumer that truncates the frame (the SessionStart
+  hook's `head -c`) cannot kill the process between mutation and journal.
 
 ## Diagnosis playbook
 
