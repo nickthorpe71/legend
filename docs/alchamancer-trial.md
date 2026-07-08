@@ -108,6 +108,37 @@ real payloads can seed a probe slice the same way `harness/corpus/` slices do.
 There is no `journal_report.py` yet — write it against the journal + `dump`
 when the first read-out is due.
 
+## Findings log (running)
+
+Day one, 2026-07-08 — five dev sessions, five findings, five fixes:
+
+1. **No documented way to close a task** → resolves rule added to MCP
+   instructions (`5859fbf`); verified untested so far (nothing finished since).
+2. **`changes` misused on a summary** → summary-update + prose-object rules
+   added (`2f8a860`); verified fixed in session 3 (correct `changes` use) and
+   session 4 (correct summary resubmit).
+3. **SessionStart looked silent / ghost tick broke replay** → one root cause:
+   hook's `head -c` SIGPIPE-killed the CLI between snapshot and journal.
+   Fixed `2f8a860` (SIGPIPE ignored, journal-before-frame); journal repaired
+   with the reconstructed line; verified in production session 3.
+4. **Ambient hook fired on `<task-notification>` system blobs** → leading-`<`
+   guard in the hook; live settings.json patched in place, generator fixed
+   (`223ab1c`). No redeploy needed (config-side).
+5. **Measurements saved without provenance** (session-4 self-play stats had no
+   pointer to how the games were run; session 5 rebuilt the arena from
+   scratch) → agent self-closed with a `duel ai arena harness` pointer.
+   Instruction candidate for the next deploy batch: "save what code cannot
+   hold — next levers, negative results, reproduction recipes."
+
+Session-5 agent testimony (verbatim value assessment): ~30–45 min of
+rediscovery avoided + one likely design regression avoided; caveat that ~half
+of recalled gotchas were redundant with code comments in this high-discipline
+codebase. Distilled into the legend repo's own store under
+`trial value evidence`.
+
+Watch items: SessionStart double-fire (one same-second `{}` pair, 17:30:52;
+diagnosis rule lives in the trial store's watch element).
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
