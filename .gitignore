@@ -78,3 +78,7 @@ benchmarks/venv/
 /agentic_ledger_*.md
 /agentic_ledger_*.md.saves.json
 /mcp_ledger_*.md
+
+# Local Legend store + generated MCP config (machine-specific; `legend init` recreates both)
+/.legend/
+/.mcp.json
