@@ -8284,6 +8284,11 @@ static int write_hooks_config(const char *store, char *out_path,
            "stamp=\"$d/.legend/.last_hook_recall\"; "
            "last=$(cat \"$stamp\" 2>/dev/null || echo 0); "
            "[ $((now-last)) -lt 20 ] && exit 0; "
+           /* system-injected blocks (task notifications, reminders) arrive
+            * as prompts too; a leading '<' marks them — skip, not recall */
+           "p0=$(printf %%s \"$input\" | "
+           "sed -n 's/.*\"prompt\" *: *\"\\(.\\{1,4\\}\\).*/\\1/p'); "
+           "case \"$p0\" in \"<\"*|\"\\\\u003c\"*) exit 0;; esac; "
            "p=$(printf %%s \"$input\" | "
            "sed -n 's/.*\"prompt\" *: *\"\\([^\"]*\\)\".*/\\1/p' | "
            "tr -cd 'A-Za-z0-9 _.,:()/-' | head -c 120); "
