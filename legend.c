@@ -8450,9 +8450,12 @@ static const char MCP_INSTRUCTIONS[] =
     "value use `changes` {target, property, to}, not a new fact -- changes "
     "supersede and keep history. (3) To correct something now false use "
     "`retract`. (4) To fold a duplicate you made use `merge` {from, into}. "
-    "(5) To rename, set `rename_to` on the element. (6) Prefer few precise "
-    "elements and durable facts; over-extraction buries the signal. Recall "
-    "with no focus returns an orientation packet for session start.";
+    "(5) To rename, set `rename_to` on the element. (6) To close an open "
+    "question or task, save the fact {s: <what resolved it>, p: resolves, "
+    "o: <the question/task>} -- rewriting its summary does NOT close it. "
+    "(7) Prefer few precise elements and durable facts; over-extraction "
+    "buries the signal. Recall with no focus returns an orientation packet "
+    "for session start.";
 
 static const char MCP_TOOLS_JSON[] =
     "[{\"name\":\"legend_recall\",\"description\":\"Read memory. With `focus` "
@@ -8470,7 +8473,9 @@ static const char MCP_TOOLS_JSON[] =
     "then reuse canonical names verbatim. To CHANGE a current value use "
     "`changes` (not a new fact) -- it supersedes and keeps history. To correct "
     "something now false use `retract`. To fold a duplicate you made use "
-    "`merge`. To rename an element set `rename_to`. Prefer few precise "
+    "`merge`. To rename an element set `rename_to`. To CLOSE an open "
+    "question/task save a fact {s: <resolver>, p: resolves, o: <the task>} -- "
+    "editing its summary does not close it. Prefer few precise "
     "elements; over-extraction buries the signal. At least one write list is "
     "required.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"source\":{\"type\":\"string\",\"description\":\"provenance for facts minted this call\"},"
