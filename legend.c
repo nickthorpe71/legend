@@ -8463,7 +8463,11 @@ static const char MCP_INSTRUCTIONS[] =
     "summary (latest write wins); `changes` is for domain property VALUES "
     "(a fact object becomes an element named by it, so never pass prose as "
     "a value -- prose belongs in summaries). (8) Prefer few precise "
-    "elements and durable facts; over-extraction buries the signal. Recall "
+    "elements and durable facts; over-extraction buries the signal. The "
+    "highest-value saves are what the code cannot hold: next levers, "
+    "negative results, decisions with reasons. (9) A saved measurement "
+    "without its method is half lost -- record how to reproduce it (a src "
+    "pointer or a harness/pointer element). Recall "
     "with no focus returns an orientation packet for session start.";
 
 static const char MCP_TOOLS_JSON[] =
@@ -8487,7 +8491,9 @@ static const char MCP_TOOLS_JSON[] =
     "editing its summary does not close it. To UPDATE a summary resubmit the "
     "element (latest write wins) -- `changes` is for domain property values, "
     "and fact objects become element names, so keep them short (prose goes "
-    "in summaries). Prefer few precise "
+    "in summaries). Best saves: what code cannot hold (next levers, negative "
+    "results, reasons); measurements include how to reproduce them. Prefer "
+    "few precise "
     "elements; over-extraction buries the signal. At least one write list is "
     "required.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"source\":{\"type\":\"string\",\"description\":\"provenance for facts minted this call\"},"
