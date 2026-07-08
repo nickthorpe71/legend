@@ -56,7 +56,6 @@ struct EmbedModel {
     float *emb_lg, *emb_lb;       /* embeddings LayerNorm [HID] */
     Layer layer[NL];
     Vocab vocab;
-    char **id2tok;                /* [NVOCAB] owned, for debugging */
     int cls, sep, unk;           /* special ids */
 };
 
@@ -236,7 +235,12 @@ int embed_text(const EmbedModel *m, const char *text, float *out) {
     int n = embed_tokenize(m, text, ids, MAXPOS);
     if (n <= 0) return -1;
 
-    float *x = malloc((size_t)n * HID * sizeof *x);
+    /* one allocation for the whole forward pass */
+    size_t nh = (size_t)n * HID;
+    float *buf = malloc((6 * nh + (size_t)n * INTER + (size_t)n) * sizeof *buf);
+    if (!buf) return -1;
+    float *x = buf, *Q = x + nh, *K = Q + nh, *V = K + nh, *ctx = V + nh,
+          *tmp = ctx + nh, *inter = tmp + nh, *scores = inter + (size_t)n * INTER;
     /* embeddings = word + pos + type, then LayerNorm */
     for (int t = 0; t < n; t++) {
         const float *we = m->word_emb + (size_t)ids[t] * HID;
@@ -246,14 +250,6 @@ int embed_text(const EmbedModel *m, const char *text, float *out) {
         for (int h = 0; h < HID; h++) r[h] = we[h] + pe[h] + te[h];
     }
     layernorm(x, n, m->emb_lg, m->emb_lb);
-
-    float *Q = malloc((size_t)n * HID * sizeof *Q);
-    float *K = malloc((size_t)n * HID * sizeof *K);
-    float *V = malloc((size_t)n * HID * sizeof *V);
-    float *ctx = malloc((size_t)n * HID * sizeof *ctx);
-    float *tmp = malloc((size_t)n * HID * sizeof *tmp);
-    float *inter = malloc((size_t)n * INTER * sizeof *inter);
-    float *scores = malloc((size_t)n * sizeof *scores);
 
     for (int l = 0; l < NL; l++) {
         const Layer *L = &m->layer[l];
@@ -309,7 +305,7 @@ int embed_text(const EmbedModel *m, const char *text, float *out) {
     nrm = sqrt(nrm);
     if (nrm > 0) for (int h = 0; h < HID; h++) out[h] = (float)(out[h] / nrm);
 
-    free(x); free(Q); free(K); free(V); free(ctx); free(tmp); free(inter); free(scores);
+    free(buf);
     return 0;
 }
 
@@ -348,14 +344,12 @@ EmbedModel *embed_load(const char *bin_path, const char *vocab_path) {
     m->vocab.cap = 65536;
     m->vocab.key = calloc(m->vocab.cap, sizeof *m->vocab.key);
     m->vocab.val = calloc(m->vocab.cap, sizeof *m->vocab.val);
-    m->id2tok = calloc(NVOCAB, sizeof *m->id2tok);
     char line[256];
     int id = 0;
     while (id < NVOCAB && fgets(line, sizeof line, vf)) {
         size_t l = strlen(line);
         while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
         vocab_put(&m->vocab, line, id);
-        m->id2tok[id] = strdup(line);
         id++;
     }
     fclose(vf);
@@ -402,8 +396,6 @@ void embed_free(EmbedModel *m) {
     if (!m) return;
     for (uint32_t i = 0; i < m->vocab.cap; i++) free(m->vocab.key ? m->vocab.key[i] : NULL);
     free(m->vocab.key); free(m->vocab.val);
-    if (m->id2tok) for (int i = 0; i < NVOCAB; i++) free(m->id2tok[i]);
-    free(m->id2tok);
     free(m->word_emb); free(m->pos_emb); free(m->type_emb); free(m->emb_lg); free(m->emb_lb);
     for (int l = 0; l < NL; l++) {
         Layer *L = &m->layer[l];

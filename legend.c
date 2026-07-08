@@ -3331,6 +3331,35 @@ static u32 tier2_best_near(const Hypergraph *g, const char *q, u32 qlen,
   return best;
 }
 
+/* The tier-2 focus-miss policy, shared by the save-path focus walk and
+ * tick_recall: auto-resolve only a slam-dunk (a unique, strong lexical match —
+ * containment saturates on shared summary words, so a moderate score is not
+ * confidence) and return the element with *out_score set. Anything weaker or
+ * ambiguous returns NONE_U32 after appending the caller's candidate list to
+ * cands: lexical near-matches down to 0.3, then the semantic ranking or, when
+ * embeddings are unavailable, the salience backfill. */
+static u32 tier2_focus_miss(const Hypergraph *g, const char *q, u32 qlen,
+                            ScoredVec *cands, u32 *out_cand_count,
+                            double *out_score) {
+  static ScoredVec scan;
+  u32 c, start = cands->count;
+  int slam;
+  tier2_scan_read(g, q, qlen, 0.3, &scan);
+  slam = scan.count > 0 && scan.v[0].score >= TIER2_AUTO_SCORE &&
+         (scan.count == 1 ||
+          scan.v[0].score - scan.v[1].score >= TIER2_AUTO_MARGIN);
+  if (slam) {
+    *out_score = scan.v[0].score;
+    return scan.v[0].elem;
+  }
+  for (c = 0; c < scan.count && c < TIER2_CAND_CAP; c++)
+    scored_push(cands, scan.v[c].elem, scan.v[c].score);
+  if (!tier2_semantic(g, cands, start, TIER2_LIST_CAP, q, qlen))
+    tier2_backfill(g, cands, start, TIER2_LIST_CAP);
+  *out_cand_count = cands->count - start;
+  return NONE_U32;
+}
+
 /* ============================= S7 — dynamics ==============================
  *
  * The "physics" of memory, in plain words: touch something and it warms up
@@ -4369,26 +4398,36 @@ static u32 plan_change_state(Plan *pl, u32 event_idx, u32 target_pend,
 
 /* current_<property> is literal (plan §3.3): "current_" + the property
  * element's first name (its canonical form when it already exists, the
- * submitted surface when this save mints it). */
-static u32 plan_curname_pend(Plan *pl, u32 property_pend, const char *path) {
+ * submitted surface when this save mints it). Returns a shared scratch
+ * pointer valid until the next call. */
+static const char *plan_current_name(Plan *pl, u32 property_pend,
+                                     u32 *out_len) {
   static char *buf;
   static u32 buf_cap;
+  const PendElem *p = &pl->pends[property_pend];
   const char *pname;
   u32 plen;
-  if (pl->pends[property_pend].existing != NONE_U32) {
-    pname = elem_name(pl->g, pl->pends[property_pend].existing);
-    plen = elem_name_l(pl->g, pl->pends[property_pend].existing);
-  } else if (pl->pends[property_pend].raw != NONE_U32) {
-    pname = str_ptr(&pl->raw, pl->pends[property_pend].raw);
-    plen = str_len(&pl->raw, pl->pends[property_pend].raw);
+  if (p->existing != NONE_U32) {
+    pname = elem_name(pl->g, p->existing);
+    plen = elem_name_l(pl->g, p->existing);
+  } else if (p->raw != NONE_U32) {
+    pname = str_ptr(&pl->raw, p->raw);
+    plen = str_len(&pl->raw, p->raw);
   } else {
-    pname = pl->buf + pl->pends[property_pend].surface.off;
-    plen = pl->pends[property_pend].surface.len;
+    pname = pl->buf + p->surface.off;
+    plen = p->surface.len;
   }
   buf = (char *)xgrow(buf, plen + 9, &buf_cap, 1);
   memcpy(buf, "current_", 8);
   memcpy(buf + 8, pname, plen);
-  return plan_ref_raw(pl, buf, plen + 8, path, 0);
+  *out_len = plen + 8;
+  return buf;
+}
+
+static u32 plan_curname_pend(Plan *pl, u32 property_pend, const char *path) {
+  u32 len;
+  const char *name = plan_current_name(pl, property_pend, &len);
+  return plan_ref_raw(pl, name, len, path, 0);
 }
 
 /* A staged relation as a meta slot value: the real id when it dedup-reused,
@@ -4496,27 +4535,12 @@ typedef struct {
 } CurNamePeek;
 
 static CurNamePeek plan_curname_peek(Plan *pl, u32 property_pend) {
-  static char *nb;
-  static u32 nb_cap;
   CurNamePeek out;
-  const char *pname;
-  u32 plen, nlen;
+  u32 len, nlen;
+  const char *name = plan_current_name(pl, property_pend, &len);
   out.pend = NONE_U32;
   out.elem = NONE_U32;
-  if (pl->pends[property_pend].existing != NONE_U32) {
-    pname = elem_name(pl->g, pl->pends[property_pend].existing);
-    plen = elem_name_l(pl->g, pl->pends[property_pend].existing);
-  } else if (pl->pends[property_pend].raw != NONE_U32) {
-    pname = str_ptr(&pl->raw, pl->pends[property_pend].raw);
-    plen = str_len(&pl->raw, pl->pends[property_pend].raw);
-  } else {
-    pname = pl->buf + pl->pends[property_pend].surface.off;
-    plen = pl->pends[property_pend].surface.len;
-  }
-  nb = (char *)xgrow(nb, plen + 9, &nb_cap, 1);
-  memcpy(nb, "current_", 8);
-  memcpy(nb + 8, pname, plen);
-  nlen = normalize_into_scratch(nb, plen + 8);
+  nlen = normalize_into_scratch(name, len);
   if (nlen == 0)
     return out;
   out.pend = smap_get(&pl->pend_by_norm, &pl->scratch, g_norm_buf, nlen);
@@ -5199,58 +5223,26 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
           u32 count;
           u32 e = resolve_tier1_n(g, g_norm_buf, nlen, NONE_U32, &count);
           if (e == NONE_U32) {
-            /* tier 2: auto-resolve only a slam-dunk (unique + strong, reported
-             * via "lexical"); anything weaker or ambiguous -> resolved:false
-             * with a candidate list (candidates down to 0.3) for the caller to
-             * pick from. */
-            static ScoredVec scan;
-            u32 c;
-            int slam;
-            tier2_scan_read(g, buf + s.off, s.len, 0.3, &scan);
-            slam = scan.count > 0 && scan.v[0].score >= TIER2_AUTO_SCORE &&
-                   (scan.count == 1 ||
-                    scan.v[0].score - scan.v[1].score >= TIER2_AUTO_MARGIN);
-            if (slam) {
-              ResOp *op;
-              ResOp jf;
-              pl->resops = (ResOp *)xgrow(pl->resops, pl->resop_count + 1,
-                                          &pl->resop_cap, sizeof *pl->resops);
-              op = &pl->resops[pl->resop_count++];
-              snprintf(op->at, sizeof op->at, "%s", path);
-              op->submitted = s;
-              op->is_pend = 0;
-              op->resolved = 1;
-              op->id = scan.v[0].elem;
-              op->via = VIA_LEXICAL;
-              op->score = scan.v[0].score;
-              op->cand_start = op->cand_count = 0;
-              memset(&jf, 0, sizeof jf);
-              jf.is_pend = 0;
-              jf.resolved = 1;
-              jf.id = scan.v[0].elem;
-              pl->focus_ops =
-                  (ResOp *)xgrow(pl->focus_ops, pl->focus_op_count + 1,
-                                 &pl->focus_op_cap, sizeof *pl->focus_ops);
-              pl->focus_ops[pl->focus_op_count++] = jf;
-            } else {
-              ResOp *op;
-              pl->resops = (ResOp *)xgrow(pl->resops, pl->resop_count + 1,
-                                          &pl->resop_cap, sizeof *pl->resops);
-              op = &pl->resops[pl->resop_count++];
-              snprintf(op->at, sizeof op->at, "%s", path);
-              op->submitted = s;
-              op->is_pend = 0;
-              op->resolved = 0;
-              op->id = NONE_U32;
-              op->cand_start = pl->cands.count;
-              for (c = 0; c < scan.count && c < TIER2_CAND_CAP; c++)
-                scored_push(&pl->cands, scan.v[c].elem, scan.v[c].score);
-              if (!tier2_semantic(g, &pl->cands, op->cand_start, TIER2_LIST_CAP,
-                                  buf + s.off, s.len))
-                tier2_backfill(g, &pl->cands, op->cand_start, TIER2_LIST_CAP);
-              op->cand_count = pl->cands.count - op->cand_start;
-            }
-            continue;
+            ResOp *op;
+            double score = 0.0;
+            u32 cand_count = 0, cand_start = pl->cands.count;
+            u32 hit = tier2_focus_miss(g, buf + s.off, s.len, &pl->cands,
+                                       &cand_count, &score);
+            pl->resops = (ResOp *)xgrow(pl->resops, pl->resop_count + 1,
+                                        &pl->resop_cap, sizeof *pl->resops);
+            op = &pl->resops[pl->resop_count++];
+            snprintf(op->at, sizeof op->at, "%s", path);
+            op->submitted = s;
+            op->is_pend = 0;
+            op->resolved = hit != NONE_U32;
+            op->id = hit;
+            op->via = VIA_LEXICAL;
+            op->score = score;
+            op->cand_start = cand_start;
+            op->cand_count = cand_count;
+            if (hit == NONE_U32)
+              continue; /* unresolved: candidates only, no focus walk */
+            e = hit;    /* slam-dunk: joins the walk like a tier-1 hit */
           }
           if (count > 1) {
             ResOp *op;
@@ -6003,43 +5995,23 @@ static void tick_recall(Hypergraph *g, const Recall *rec,
         fail(ERR_PARSE, path, "name is empty after normalization");
       id = resolve_tier1_n(g, g_norm_buf, nlen, NONE_U32, &count);
       if (id == NONE_U32) {
-        /* tier 2: auto-resolve only a slam-dunk (unique + strong, via
-         * "lexical"); weaker or ambiguous -> resolved:false with a candidate
-         * list (down to 0.3) for the caller to pick from. */
-        static ScoredVec scan;
-        u32 c;
-        int slam;
-        tier2_scan_read(g, payload_buf + s.off, s.len, 0.3, &scan);
-        slam = scan.count > 0 && scan.v[0].score >= TIER2_AUTO_SCORE &&
-               (scan.count == 1 ||
-                scan.v[0].score - scan.v[1].score >= TIER2_AUTO_MARGIN);
-        if (slam) {
-          ResEntry e;
-          memset(&e, 0, sizeof e);
-          snprintf(e.at, sizeof e.at, "%s", path);
-          e.submitted = s;
-          e.resolved = 1;
-          e.elem = scan.v[0].elem;
-          e.via = VIA_LEXICAL;
-          e.score = scan.v[0].score;
-          report_push_res(out, &e);
-          u32vec_push_unique(&out->focus_elems, scan.v[0].elem);
-        } else {
-          ResEntry e;
-          memset(&e, 0, sizeof e);
-          snprintf(e.at, sizeof e.at, "%s", path);
-          e.submitted = s;
-          e.resolved = 0;
-          e.elem = NONE_U32;
-          e.cand_start = out->cands.count;
-          for (c = 0; c < scan.count && c < TIER2_CAND_CAP; c++)
-            scored_push(&out->cands, scan.v[c].elem, scan.v[c].score);
-          if (!tier2_semantic(g, &out->cands, e.cand_start, TIER2_LIST_CAP,
-                              payload_buf + s.off, s.len))
-            tier2_backfill(g, &out->cands, e.cand_start, TIER2_LIST_CAP);
-          e.cand_count = out->cands.count - e.cand_start;
-          report_push_res(out, &e);
-        }
+        ResEntry e;
+        double score = 0.0;
+        u32 cand_count = 0, cand_start = out->cands.count;
+        u32 hit = tier2_focus_miss(g, payload_buf + s.off, s.len, &out->cands,
+                                   &cand_count, &score);
+        memset(&e, 0, sizeof e);
+        snprintf(e.at, sizeof e.at, "%s", path);
+        e.submitted = s;
+        e.resolved = hit != NONE_U32;
+        e.elem = hit;
+        e.via = VIA_LEXICAL;
+        e.score = score;
+        e.cand_start = cand_start;
+        e.cand_count = cand_count;
+        report_push_res(out, &e);
+        if (hit != NONE_U32)
+          u32vec_push_unique(&out->focus_elems, hit);
         continue;
       }
       if (count > 1) {
@@ -6576,32 +6548,55 @@ static void frame_put_candidate(const Hypergraph *g, u32 e, double score,
   printf(",\"score\":%s}", sc);
 }
 
-/* related ranking (pin §3.4): RRF k=60 fusing rank-by-activation and
- * rank-by-focus_success_count (competition ranking, so all-equal stats tie
- * instead of leaking id order through ordinal ranks); ties last_seen desc,
- * then id asc. */
+/* Reciprocal-rank fusion, shared by rank_related and rank_recent_novelty:
+ * each contributing list adds rrf_term(rank), so being #1 in a list is worth
+ * much more than #2, and lists simply add. k=60 is the standard RRF damping
+ * constant; a large k keeps any single list from dominating. No score
+ * magnitudes, only ordinal ranks, so incomparable stat scales fuse cleanly.
+ * Ranks are competition ranks (1 + count strictly better), so all-equal
+ * stats tie instead of leaking id order through ordinal ranks. */
 typedef struct {
   u32 rid;
   double rrf;
-  u32 last_seen;
-} RelRank;
+  i64 tie; /* recency tie-break, desc: last_seen (related) or day (recent) */
+} RRFEntry;
 
-static int rel_rank_cmp(const void *pa, const void *pb) {
-  const RelRank *a = (const RelRank *)pa, *b = (const RelRank *)pb;
+static double rrf_term(u32 rank) { return 1.0 / (60.0 + (double)rank); }
+
+/* Final id tie-break direction: related follows candidate order (plan §5,
+ * id asc); recent follows section recency order (pin §3.18, id desc). */
+static int g_rrf_id_desc;
+static int rrf_cmp(const void *pa, const void *pb) {
+  const RRFEntry *a = (const RRFEntry *)pa, *b = (const RRFEntry *)pb;
   if (a->rrf != b->rrf)
     return a->rrf > b->rrf ? -1 : 1;
-  if (a->last_seen != b->last_seen)
-    return a->last_seen > b->last_seen ? -1 : 1;
-  return a->rid < b->rid ? -1 : a->rid > b->rid ? 1 : 0;
+  if (a->tie != b->tie)
+    return a->tie > b->tie ? -1 : 1;
+  if (a->rid == b->rid)
+    return 0;
+  if (g_rrf_id_desc)
+    return a->rid > b->rid ? -1 : 1;
+  return a->rid < b->rid ? -1 : 1;
 }
 
+/* Sort rr by (rrf desc, tie desc, id) and write the order back into rels. */
+static void rrf_apply(U32Vec *rels, RRFEntry *rr, int id_desc) {
+  u32 i;
+  g_rrf_id_desc = id_desc;
+  qsort(rr, rels->count, sizeof *rr, rrf_cmp);
+  for (i = 0; i < rels->count; i++)
+    rels->v[i] = rr[i].rid;
+}
+
+/* related ranking (pin §3.4): fuse rank-by-activation and rank-by-
+ * focus_success_count; ties last_seen desc, then id asc. */
 static void rank_related(const Hypergraph *g, U32Vec *rels) {
-  static RelRank *rr;
+  static RRFEntry *rr;
   static u32 rr_cap;
   u32 i, j, n = rels->count;
   if (n < 2)
     return;
-  rr = (RelRank *)xgrow(rr, n, &rr_cap, sizeof *rr);
+  rr = (RRFEntry *)xgrow(rr, n, &rr_cap, sizeof *rr);
   for (i = 0; i < n; i++) {
     const Stats *si = &g->relations[rels->v[i]].stats;
     u32 rank_act = 1, rank_fsc = 1;
@@ -6613,50 +6608,26 @@ static void rank_related(const Hypergraph *g, U32Vec *rels) {
         rank_fsc++;
     }
     rr[i].rid = rels->v[i];
-    /* Reciprocal-rank fusion: each ranking contributes 1/(k+rank), so
-     * being #1 in a list is worth much more than #2, and the two lists
-     * (by activation, by focus_success_count) simply add. k=60 is the
-     * standard RRF damping constant; a large k keeps any single list from
-     * dominating. No score magnitudes, only ordinal ranks, so the two
-     * incomparable stat scales fuse cleanly. */
-    rr[i].rrf =
-        1.0 / (60.0 + (double)rank_act) + 1.0 / (60.0 + (double)rank_fsc);
-    rr[i].last_seen = si->last_seen;
+    rr[i].rrf = rrf_term(rank_act) + rrf_term(rank_fsc);
+    rr[i].tie = (i64)si->last_seen;
   }
-  qsort(rr, n, sizeof *rr, rel_rank_cmp);
-  for (i = 0; i < n; i++)
-    rels->v[i] = rr[i].rid;
+  rrf_apply(rels, rr, 0);
 }
 
 /* recent-band novelty bias (intent curiosity): the recent band is recency by
  * default, but a submitted curiosity > 0 fuses in two novelty rankings —
  * coldness (low activation) and under-exploration (low focus_success_count) —
- * so unfamiliar neighbors climb into the capped band. Same RRF machinery as
- * rank_related; curiosity weights the novelty lists, so it dials continuously
- * from pure recency (0) toward the unfamiliar. */
-typedef struct {
-  u32 rid;
-  double rrf;
-  i64 day;
-} RecRank;
-
-static int rec_rank_cmp(const void *pa, const void *pb) {
-  const RecRank *a = (const RecRank *)pa, *b = (const RecRank *)pb;
-  if (a->rrf != b->rrf)
-    return a->rrf > b->rrf ? -1 : 1;
-  if (a->day != b->day)
-    return a->day > b->day ? -1 : 1;
-  return a->rid > b->rid ? -1 : a->rid < b->rid ? 1 : 0;
-}
-
+ * so unfamiliar neighbors climb into the capped band. curiosity weights the
+ * novelty lists, so it dials continuously from pure recency (0) toward the
+ * unfamiliar; ties day desc, then id desc. */
 static void rank_recent_novelty(const Hypergraph *g, U32Vec *rels,
                                 double curiosity) {
-  static RecRank *rr;
+  static RRFEntry *rr;
   static u32 rr_cap;
   u32 i, j, n = rels->count;
   if (n < 2)
     return;
-  rr = (RecRank *)xgrow(rr, n, &rr_cap, sizeof *rr);
+  rr = (RRFEntry *)xgrow(rr, n, &rr_cap, sizeof *rr);
   for (i = 0; i < n; i++) {
     const Stats *si = &g->relations[rels->v[i]].stats;
     i64 day_i = frame_tick_day(g, g->relations[rels->v[i]].created_at);
@@ -6672,14 +6643,11 @@ static void rank_recent_novelty(const Hypergraph *g, U32Vec *rels,
         rank_under++;
     }
     rr[i].rid = rels->v[i];
-    rr[i].rrf = 1.0 / (60.0 + (double)rank_rec) +
-                curiosity * (1.0 / (60.0 + (double)rank_cold) +
-                             1.0 / (60.0 + (double)rank_under));
-    rr[i].day = day_i;
+    rr[i].rrf = rrf_term(rank_rec) +
+                curiosity * (rrf_term(rank_cold) + rrf_term(rank_under));
+    rr[i].tie = day_i;
   }
-  qsort(rr, n, sizeof *rr, rec_rank_cmp);
-  for (i = 0; i < n; i++)
-    rels->v[i] = rr[i].rid;
+  rrf_apply(rels, rr, 1);
 }
 
 typedef struct {
