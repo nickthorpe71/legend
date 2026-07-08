@@ -8325,6 +8325,43 @@ static const char MCP_TOOLS_JSON[] =
     "\"from\":{\"type\":\"string\"},\"into\":{\"type\":\"string\"}},"
     "\"required\":[\"from\",\"into\"]}}}}}]";
 
+/* `prompts/get onboard` — the discovery script for starting Legend on an
+ * EXISTING project: the client LLM explores the repo, interviews the user for
+ * the why the code cannot tell, then seeds the store. Served over MCP prompts
+ * (clients surface it as a slash command) so the flow travels with the binary
+ * into any project `legend init` touches. */
+static const char MCP_ONBOARD_PROMPT[] =
+    "Onboard Legend onto this EXISTING project. The store is fresh; seed it "
+    "with a real understanding -- especially the WHY only the humans know -- "
+    "so any future session can orient instantly.\n\n"
+    "Phase 1 -- EXPLORE (no questions yet). Read the README, any docs/design "
+    "files, the build config, and skim the git history (the first and the "
+    "most recent commits). Draft privately:\n"
+    "- the project: name, one-line purpose\n"
+    "- the 3-8 main systems/modules and what each does\n"
+    "- constraints stated in docs or implied by the stack\n"
+    "- choices that look deliberate (language, framework, storage, protocol, "
+    "algorithms)\n\n"
+    "Phase 2 -- INTERVIEW. Ask the user 3-6 short questions, each grounded in "
+    "something specific you found. Ask only what the code cannot tell you:\n"
+    "- what is this for, and who is it for?\n"
+    "- for each major visible choice: \"I see X rather than Y -- deliberate? "
+    "what was rejected, and why?\"\n"
+    "- which constraints still hold, and what is the current focus?\n"
+    "- what in the tree is dead, legacy, or experimental?\n"
+    "- what questions or tasks are open right now?\n\n"
+    "Phase 3 -- SAVE. Submit via legend_save: the project element (kind "
+    "project, one-line summary); the main systems as elements with summaries; "
+    "each deliberate choice as a decision (chose / rejected / reason / about); "
+    "constraints (applies_to / reason); open questions and tasks; src pointers "
+    "(file paths, commits) on everything that has one. Discipline: at most "
+    "~15 elements this first round -- over-extraction buries the signal; the "
+    "rest accrues in normal sessions.\n\n"
+    "Phase 4 -- CONFIRM. Run legend_recall with no focus and show the user "
+    "the orientation packet verbatim. Ask what reads wrong; fix with merge / "
+    "retract / changes / rename_to. Done when the user says the packet reads "
+    "true.";
+
 /* value token index of member `key` in object `obj`; -1 if absent */
 static long mcp_obj_get(const Json *j, u32 obj, const char *key) {
   u32 k, m, klen = (u32)strlen(key);
@@ -8428,7 +8465,7 @@ static void mcp_reply_head(const Json *j, long id_i) {
 static void mcp_initialize(const Json *j, long id_i) {
   mcp_reply_head(j, id_i);
   fputs(",\"result\":{\"protocolVersion\":\"2024-11-05\","
-        "\"capabilities\":{\"tools\":{}},"
+        "\"capabilities\":{\"tools\":{},\"prompts\":{}},"
         "\"serverInfo\":{\"name\":\"legend\",\"version\":\"2.0\"},"
         "\"instructions\":\"",
         stdout);
@@ -8448,11 +8485,34 @@ static void mcp_empty_result(const Json *j, long id_i) {
   fputs(",\"result\":{}}\n", stdout);
   fflush(stdout);
 }
+static void mcp_prompts_list(const Json *j, long id_i) {
+  mcp_reply_head(j, id_i);
+  fputs(",\"result\":{\"prompts\":[{\"name\":\"onboard\",\"description\":"
+        "\"Start Legend on an existing project: explore the repo, interview "
+        "the user for the why, seed the store, confirm the packet.\"}]}}\n",
+        stdout);
+  fflush(stdout);
+}
 static void mcp_error(const Json *j, long id_i, int code, const char *msg) {
   mcp_reply_head(j, id_i);
   fprintf(stdout, ",\"error\":{\"code\":%d,\"message\":\"", code);
   json_escape_fputs(msg, stdout);
   fputs("\"}}\n", stdout);
+  fflush(stdout);
+}
+static void mcp_prompts_get(const Json *j, long id_i) {
+  long params_i = mcp_obj_get(j, 0, "params");
+  long name_i = params_i >= 0 ? mcp_obj_get(j, (u32)params_i, "name") : -1;
+  if (!mcp_streq(j, name_i, "onboard")) {
+    mcp_error(j, id_i, -32602, "unknown prompt");
+    return;
+  }
+  mcp_reply_head(j, id_i);
+  fputs(",\"result\":{\"messages\":[{\"role\":\"user\",\"content\":"
+        "{\"type\":\"text\",\"text\":\"",
+        stdout);
+  json_escape_fputs(MCP_ONBOARD_PROMPT, stdout);
+  fputs("\"}}]}}\n", stdout);
   fflush(stdout);
 }
 static void mcp_tool_result(const Json *j, long id_i, const char *text,
@@ -8619,6 +8679,10 @@ static void mcp_handle(char *buf, u32 len, const char *store) {
     mcp_tools_list(&j, id_i);
   else if (mcp_streq(&j, method_i, "tools/call"))
     mcp_tools_call(&j, id_i, store);
+  else if (mcp_streq(&j, method_i, "prompts/list"))
+    mcp_prompts_list(&j, id_i);
+  else if (mcp_streq(&j, method_i, "prompts/get"))
+    mcp_prompts_get(&j, id_i);
   else if (mcp_streq(&j, method_i, "ping"))
     mcp_empty_result(&j, id_i);
   else if (id_i >= 0)
