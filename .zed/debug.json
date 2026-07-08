@@ -1,0 +1,40 @@
+// Zed debug scenarios for the corpus replay (bundled vscode-js-debug adapter).
+// sourceMaps:false is the key — we run legend.ts directly via Node's in-place
+// type-stripping (no compiled .js, no source map), so the adapter must NOT wait
+// for or resolve source maps. If Zed still forces them, use node inspect or
+// trace_corpus.mjs instead.
+[
+  {
+    "label": "Replay corpus (all steps)",
+    "adapter": "JavaScript",
+    "request": "launch",
+    "program": "$ZED_WORKTREE_ROOT/replay_debug.ts",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "console": "integratedTerminal",
+    "sourceMaps": false,
+    "pauseForSourceMap": false,
+    "resolveSourceMapLocations": []
+  },
+  {
+    "label": "Replay corpus (steps 12–15)",
+    "adapter": "JavaScript",
+    "request": "launch",
+    "program": "$ZED_WORKTREE_ROOT/replay_debug.ts",
+    "args": ["", "12", "15"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "console": "integratedTerminal",
+    "sourceMaps": false,
+    "pauseForSourceMap": false,
+    "resolveSourceMapLocations": []
+  },
+  {
+    "label": "Attach to  node --inspect-brk  (port 9229)",
+    "adapter": "JavaScript",
+    "request": "attach",
+    "port": 9229,
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "sourceMaps": false,
+    "pauseForSourceMap": false,
+    "resolveSourceMapLocations": []
+  }
+]
