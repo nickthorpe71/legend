@@ -1,0 +1,446 @@
+{
+  "slice": "smoke",
+  "line_count": 48,
+  "current_state": [
+    {
+      "after_line": 10,
+      "target": "field and streak",
+      "property": "same_field_mod_x100",
+      "expect": "150",
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "field and streak"
+          ],
+          "observe": true
+        }
+      },
+      "provenance": "commit 7600861",
+      "notes": "early-corpus cache mint, never superseded",
+      "question": "In the 'field and streak' mechanic, what is same_field_mod_x100 (the same-field damage modifier, x100)?"
+    },
+    {
+      "after_line": 27,
+      "target": "Inferno",
+      "property": "power",
+      "expect": "14",
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Inferno"
+          ],
+          "observe": true
+        }
+      },
+      "provenance": "commit 26a878c",
+      "notes": "Inferno was only ever minted implicitly (as a fact object and change target)"
+    },
+    {
+      "after_line": 33,
+      "target": "Riptide",
+      "property": "display_name",
+      "expect": "Riptide",
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Riptide"
+          ],
+          "observe": true
+        }
+      },
+      "provenance": "commit 1794870",
+      "notes": "probe uses the alias; the chain hangs off the original element"
+    },
+    {
+      "after_line": 34,
+      "target": "Hellfire",
+      "property": "cost",
+      "expect": "3R 1W",
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Plasma Stream"
+          ],
+          "observe": true
+        }
+      },
+      "provenance": "commit 018a9ad",
+      "notes": "the change targeted 'Hellfire' — it must have routed through the alias to Plasma Stream, not minted a twin"
+    },
+    {
+      "after_line": 36,
+      "target": "Cleanse",
+      "property": "cost",
+      "expect": "1G 1W",
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Cleanse"
+          ],
+          "observe": true
+        }
+      },
+      "provenance": "commit 0e4421c",
+      "notes": "change carried an explicit from: 1B 1R 1Y"
+    },
+    {
+      "after_line": 45,
+      "target": "Etande",
+      "property": "hp",
+      "expect": "200",
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Etande"
+          ],
+          "observe": true
+        }
+      },
+      "provenance": "commit 826c1a0"
+    },
+    {
+      "after_line": 45,
+      "target": "Bark Imp",
+      "property": "range",
+      "expect": "5",
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Bark Imp"
+          ],
+          "observe": true
+        }
+      },
+      "provenance": "commit 826c1a0",
+      "notes": "line 39 wrote range 3 as an element attr; the change must win as current state — the attr-then-change wart is deliberate"
+    },
+    {
+      "after_line": 46,
+      "target": "Mischief Maker",
+      "property": "display_name",
+      "expect": "Mischief Maker",
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Mischief Maker"
+          ],
+          "observe": true
+        }
+      },
+      "provenance": "commit c64de8c",
+      "notes": "probe by the brand-new alias"
+    }
+  ],
+  "recall_hits": [
+    {
+      "after_line": 9,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "spellbook"
+          ],
+          "observe": true
+        }
+      },
+      "expect_elements": [
+        "Spark",
+        "Frost Lance",
+        "Mend"
+      ],
+      "notes": "one-hop over the contains facts"
+    },
+    {
+      "after_line": 29,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "mana economy"
+          ],
+          "observe": true
+        }
+      },
+      "expect_elements": [
+        "forage",
+        "transmute",
+        "element terrain"
+      ],
+      "notes": "part_of/uses neighborhood"
+    },
+    {
+      "after_line": 30,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Purgatory"
+          ],
+          "observe": true
+        }
+      },
+      "expect_elements": [
+        "secret exits",
+        "terrace count divergence"
+      ],
+      "notes": "a part_of fact and an open question about the focus"
+    },
+    {
+      "after_line": 41,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "Vex"
+          ],
+          "observe": true
+        }
+      },
+      "expect_elements": [
+        "Etande",
+        "name-stealing boss"
+      ],
+      "notes": "post-merge: 'the rival' folded into Vex at line 40; the duels fact and the open question must both surface"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "campaign spine"
+          ],
+          "observe": true
+        }
+      },
+      "expect_elements": [
+        "the fork",
+        "multi-phase bosses"
+      ],
+      "notes": ""
+    }
+  ],
+  "cold_caller": [
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "spell resource costs"
+          ],
+          "observe": true
+        }
+      },
+      "expect_resolves_to": "mana economy",
+      "notes": "far: near-zero trigram overlap with the stored name, summary, or aliases; a tier-3 target"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "casting the same school three times in a row"
+          ],
+          "observe": true
+        }
+      },
+      "expect_resolves_to": "field and streak",
+      "notes": "far: the summary says 'cast 3 same-color spells in a row' — paraphrase, shared trigrams only via 'cast'/'in a row'"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "the playable hero"
+          ],
+          "observe": true
+        }
+      },
+      "expect_resolves_to": "Etande",
+      "notes": "far: stored as 'the one unit you play' (attr) / 'pilgrim-mage' (summary); tier 3 territory"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "apple throwing enemy"
+          ],
+          "observe": true
+        }
+      },
+      "expect_resolves_to": "Mischief Maker",
+      "notes": "mid: summary 'throws rolling apples' joins the lexical corpus (§5/§8), so tier 2 has a real shot [renamed from Bark Imp in e09; current canonical is Mischief Maker]"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "enemy health scaling knob"
+          ],
+          "observe": true
+        }
+      },
+      "expect_resolves_to": "enemy hp multiplier",
+      "notes": "mid: 'enemy' overlaps the name; 'health' vs 'hp' does not"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "wave reward spell pick"
+          ],
+          "observe": true
+        }
+      },
+      "expect_resolves_to": "draft",
+      "notes": "mid: zero name overlap; summary carries wave/spells/picking"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "in-game map maker"
+          ],
+          "observe": true
+        }
+      },
+      "expect_resolves_to": "level editor",
+      "notes": "mid: summary starts 'in-game editor: paint tiles'"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "the big slow tank monster"
+          ],
+          "observe": true
+        }
+      },
+      "expect_resolves_to": "Stoneborn",
+      "notes": "mid: summary is 'slow heavy tank'"
+    }
+  ],
+  "orientation": [
+    {
+      "after_line": 30,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "observe": true
+        }
+      },
+      "expect": {
+        "scope": "Alchamancer 2",
+        "constraints_include": [
+          "pure sim core",
+          "assets are text",
+          "no game engine"
+        ],
+        "open_include": [
+          "name-stealing boss",
+          "terrace count divergence"
+        ],
+        "current_state_include": [
+          [
+            "mana economy",
+            "starting_mana",
+            "carries between rooms within a realm; reset on realm entry"
+          ]
+        ]
+      },
+      "notes": "mid-corpus session boot: both questions are open, all three constraints stand active"
+    },
+    {
+      "after_line": 48,
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "observe": true
+        }
+      },
+      "expect": {
+        "scope": "Alchamancer 2",
+        "constraints_include": [
+          "pure sim core",
+          "assets are text",
+          "no game engine"
+        ],
+        "open_include": [
+          "name-stealing boss",
+          "terrace count divergence"
+        ],
+        "recent_changes_include": [
+          "enemy hp multiplier",
+          "Mischief Maker"
+        ],
+        "active_should_rank": [
+          "enemy hp multiplier",
+          "Mischief Maker"
+        ]
+      },
+      "notes": "fresh-session boot after balance day: neither question was ever resolved; the just-tuned elements should dominate 'active'"
+    }
+  ],
+  "deep_history": [
+    {
+      "target": "mana economy",
+      "property": "starting_mana",
+      "expect_current": "carries between rooms within a realm; reset on realm entry",
+      "expect_history": [
+        "0"
+      ],
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "mana economy"
+          ],
+          "history_depth": 3,
+          "observe": true
+        }
+      },
+      "notes": "e05 set 0 -> e06 superseded to carry-between-rooms; history must still show 0"
+    },
+    {
+      "target": "enemy hp multiplier",
+      "property": "value",
+      "expect_current": "2.4x",
+      "expect_history": [
+        "2x"
+      ],
+      "probe": {
+        "verb": "recall",
+        "payload": {
+          "focus": [
+            "enemy hp multiplier"
+          ],
+          "history_depth": 3,
+          "observe": true
+        }
+      },
+      "notes": "unset -> 2x -> 2.4x within e09; current 2.4x, prior 2x"
+    }
+  ]
+}
