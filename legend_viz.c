@@ -815,6 +815,11 @@ int main(int argc, char **argv) {
                      StructureNotifyMask);
     XMapWindow(dpy, win);
   }
+  {
+    /* close button = clean exit, not a killed X connection */
+    Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+    XSetWMProtocols(dpy, win, &wm_delete, 1);
+  }
   col_bg = xcolor(0x14161A);
   col_panel = xcolor(0x1D2026);
   col_fg = xcolor(0xE8E6E3);
@@ -836,6 +841,9 @@ int main(int argc, char **argv) {
         XEvent ev;
         XNextEvent(dpy, &ev);
         switch (ev.type) {
+        case ClientMessage:
+          running = 0;
+          break;
         case ButtonPress:
           if (ev.xbutton.button == Button1) {
             dragging = 1;
