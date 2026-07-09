@@ -396,7 +396,7 @@ static int panel_line(int y, unsigned long col, int target_kind, u32 target_id,
     }
     if (fit <= 0)
       fit = 1;
-    if (y > 24 && y < WIN_H - 4)
+    if (y >= 16 && y < WIN_H - 4)
       draw_text(x0, y, col, s + start, fit);
     y += 15;
     start += fit;
@@ -483,6 +483,22 @@ static int panel_relation(int y, u32 rid) {
            r->created_at, r->stats.confidence, r->stats.support_count,
            r->stats.support_diversity);
   y = panel_line(y, col_dim, 0, 0, buf);
+  /* the enclosed elements, plainly, before the slot detail */
+  y = panel_line(y + 8, col_sel, 0, 0, "-- elements in this relation --");
+  for (k = 0; k < vr[rid].member_count; k++) {
+    u32 m = vr[rid].members[k];
+    if (m & 0x80000000u) {
+      snprintf(buf, sizeof buf, "rel:%u (relation)", m & 0x7FFFFFFFu);
+      y = panel_line(y, col_fg, 2, m & 0x7FFFFFFFu, buf);
+    } else {
+      u32 kk = g_graph.elem_kind[m];
+      snprintf(buf, sizeof buf, "#%u %s%s%s%s", m, elem_name(&g_graph, m),
+               kk != NONE_U32 ? "  [" : "",
+               kk != NONE_U32 ? elem_name(&g_graph, kk) : "",
+               kk != NONE_U32 ? "]" : "");
+      y = panel_line(y, col_fg, 1, m, buf);
+    }
+  }
   y = panel_line(y + 8, col_sel, 0, 0, "-- slots (click to jump) --");
   for (k = 0; k < r->attr_count; k++) {
     const Term *t = &r->attrs[k].value;
