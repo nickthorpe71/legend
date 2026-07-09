@@ -85,3 +85,6 @@ benchmarks/venv/
 
 # Secrets (eval harness API key)
 /.env
+
+# viz binary (build with: cc -std=c99 -O2 legend_viz.c embed.c -o legend-viz -lX11 -lm)
+/legend-viz
