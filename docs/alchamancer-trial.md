@@ -155,8 +155,57 @@ of recalled gotchas were redundant with code comments in this high-discipline
 codebase. Distilled into the legend repo's own store under
 `trial value evidence`.
 
-Watch items: SessionStart double-fire (one same-second `{}` pair, 17:30:52;
-diagnosis rule lives in the trial store's watch element).
+## Watch list
+
+Checked at every check-in; most are measured by `journal_report.py`. Each has
+its trigger and its response so a future session doesn't re-derive them.
+
+1. **Predicate proliferation** — the LLM mints its own relation predicates
+   (19 by day two, 15 single-use; `validates`/`validated by` already an
+   inverse-pair near-duplicate, `is` too vague). Dedup only catches exact
+   names, so a fragmenting vocabulary silently weakens retrieval.
+   *Measure:* the report's minted-predicates histogram. *Trigger:* the same
+   concept under two names, or steady single-use growth. *Response:* one-line
+   instruction nudge ("reuse an existing predicate; prefer short verbs") +
+   a merge pass.
+2. **SessionStart double-fire** — one same-second `{}` pair seen (07-08
+   17:30), cause unresolved (possible client re-fire). *Measure:* the
+   report's same-second boot pairs. *Trigger:* recurrence when only one
+   session was started. *Response:* investigate the hook matcher.
+3. **Frame-size / token-cost growth** — recall frames are ~2/3 of Legend's
+   token cost and grow with the store. *Measure:* today only by re-running
+   recalls; the planned `bytes_out` journal field (next binary batch) makes
+   it free. *Trigger:* orientation packet regularly past the hook's 4000-byte
+   cap or deliberate frames past ~20KB. *Response:* lower the MCP default
+   `limit`; frame curation.
+4. **Resolves discipline** — finished work must close its task via a
+   `resolves` fact, not a summary edit. *Measure:* open-list items whose
+   summary claims done/RESOLVED. *Trigger:* any recurrence. *Response:*
+   instruction wording pass.
+5. **Duplicates & paragraph-named elements** — exact-name dups (report),
+   plus prose-as-value mints paragraph names (8 as of day two, pre-fix).
+   *Trigger:* dup pair surviving a session, or paragraph-name count growing
+   after the instructions fix. *Response:* merge/retract repair + wording.
+6. **Truth drift** — summaries going stale against the repo (counter-example
+   so far: the RL removal was recorded exemplarily, `supersedes` fact and
+   all). *Measure:* spot-check 2–3 old elements against the code at
+   check-ins. *Response:* repair saves; consider a "verify on recall" nudge.
+7. **Write-only store growth** — elements never reached by any focus walk
+   (`fsc == 0`; 195/202 at day two — young store, watch the trend not the
+   level). *Trigger:* ratio not falling as the store ages. *Response:*
+   retrieval tuning, or acceptance (insurance memory has value).
+8. **Hook noise ratio** — ambient recalls on prompts where the packet adds
+   nothing ("still running"). *Measure:* ambient-vs-deliberate counts per
+   session. *Trigger:* ambient ≫ deliberate with no behavioral sign of use.
+   *Response:* raise the rate-limit interval / smarter prompt filter.
+9. **Compounding vs plateau** — the strategic question. *Measure:* the
+   session-5-style meta-question ("how useful was Legend this session?")
+   asked every ~5 sessions; attributable wins vs cost. *Response:* decides
+   week-two investment (breadth vs retrieval depth).
+10. **Journal/store integrity** — replay determinism at every check-in
+    (`replay_journal.py`; byte-identical at every check so far). *Trigger:*
+    any divergence. *Response:* stop, bisect by truncating the journal —
+    this one is a hard gate, not a trend.
 
 ## What the store was seeded with (baseline)
 

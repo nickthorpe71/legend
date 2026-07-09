@@ -84,3 +84,17 @@ print(f"  paragraph-named elements (>120 chars): {len(longnames)}")
 nosum = sum(1 for e in els if e.get("kind") in ("system", "mechanic", "decision", "constraint")
             and not e.get("summary"))
 print(f"  typed elements missing a summary: {nosum}")
+
+# predicate vocabulary: slot names split seed (elements #0-31) vs minted —
+# the predicate-proliferation watch (near-synonyms fragment retrieval)
+idx = {e["name"]: i for i, e in enumerate(d["elements"])}
+use = collections.Counter(s for r in d["relations"] for s in r["attrs"])
+minted = [(s, n) for s, n in use.most_common() if idx.get(s, 9999) >= 32]
+print(f"  minted predicates: {len(minted)}")
+for s, n in minted:
+    flag = " (single-use)" if n == 1 else ""
+    print(f"    {n:3}  {s}{flag}")
+
+# write-only ratio: elements never reached by any focus walk since creation
+cold = sum(1 for e in els if e["stats"]["fsc"] == 0)
+print(f"  never-focused elements: {cold}/{len(els)}")
