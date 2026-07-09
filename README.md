@@ -37,6 +37,26 @@ legend mcp-serve                         # long-lived MCP server over stdio
 Payloads and frames are JSON; add `--pretty` for readable output. Full reference
 in [docs/cli.md](docs/cli.md).
 
+## Use it — visualize the graph
+
+`legend-viz` is a native X11 viewer: elements are circles colored by kind, and
+every relation is a boundary drawn *around* its member elements. Click an
+element or a boundary for a details panel (rows are clickable and jump the
+selection); drag or arrow keys pan, the wheel zooms, `d`/`m`/`v` toggle dead
+relations, meta relations, and seed vocabulary, `r` reshakes the layout,
+`q` quits.
+
+```bash
+cc -std=c99 -O2 legend_viz.c embed.c -o legend-viz -lX11 -lm   # build once
+
+./legend-viz                          # store discovered from the cwd (run it inside a project)
+./legend-viz path/to/.legend          # a specific store
+./legend-viz path/to/legend.snapshot  # any saved state file
+```
+
+(A `legend view` verb that opens this straight from the main binary is planned;
+for now the viewer is its own small binary.)
+
 ## Use it — MCP (the primary path)
 
 `legend init` writes a project `.mcp.json` pointing at the binary and store,
