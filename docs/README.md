@@ -20,6 +20,9 @@ design and its rationale live in the root spec.
 - [embeddings.md](embeddings.md) — the bundled BGE embedder and tiered recall,
   plus how to re-export the model blob.
 - [harness.md](harness.md) — `check.sh`, the replay corpus, fixtures, and probes.
+- `../legend_viz.c` — native X11 hypergraph viewer: `./legend-viz <store-dir |
+  snapshot>` draws elements as kind-colored circles and each relation as a
+  boundary enclosing its members; click to inspect. Build line in its header.
 
 ## Live deployment
 
