@@ -164,6 +164,18 @@ of recalled gotchas were redundant with code comments in this high-discipline
 codebase. Distilled into the legend repo's own store under
 `trial value evidence`.
 
+7. **Save-side miss: a decision disguised as a detail** (2026-07-10, caught
+   by Nick's audit question "did you use legend after that last prompt?"):
+   the agent skipped saving the tier-is-rarity decision because it arrived
+   framed as a UI-polish request, reasoning "the plan file already records
+   it" — but the plan file records the *what*; the *why* (rarity vocabulary,
+   green-not-purple ramp, school-vs-rarity independence) was Legend material.
+   Agent self-remediated: saved the decision with the miss noted in its
+   provenance, and patched the design doc gap it exposed. First finding in
+   the *missing-save* class — unmeasurable by the report, only auditable.
+   Instruction candidate (batched): "a choice that settles a design question
+   is a decision even when the request looks cosmetic."
+
 Testimony 2 (adventure-mode session, 2026-07-10): recall self-rated ~3/10 —
 a cold-start feature gives recall little to bite on — but the orientation
 packet was load-bearing (the RL do-not-reintroduce guard shaped behavior);
@@ -220,6 +232,19 @@ its trigger and its response so a future session doesn't re-derive them.
    session-5-style meta-question ("how useful was Legend this session?")
    asked every ~5 sessions; attributable wins vs cost. *Response:* decides
    week-two investment (breadth vs retrieval depth).
+   Companion ritual (proved out 2026-07-10, finding 7): the **audit
+   question** — "did you use legend after that last prompt?" — is the only
+   instrument that catches *missing* saves; ask it occasionally right after
+   a design-flavored exchange that looked cosmetic.
+11. **Stale point-in-time facts** — plain facts used for changing values
+    (e.g. `spellgen phase 0 build --status--> "M0+M1+M3a green"` saved
+    mid-build, while the element's summary later says COMPLETE through M4).
+    `changes` is the right verb for status-like properties; a plain fact
+    accretes and goes stale. *Measure:* spot-check status/progress-flavored
+    facts against their element summaries at check-ins. *Trigger:*
+    contradictions surfacing in recall frames. *Response:* repair with
+    `changes`/retract + an instruction line ("status-like values go through
+    changes, not facts").
 10. **Journal/store integrity** — replay determinism at every check-in
     (`replay_journal.py`; byte-identical at every check so far). *Trigger:*
     any divergence. *Response:* stop, bisect by truncating the journal —
