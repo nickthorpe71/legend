@@ -149,11 +149,29 @@ Day one, 2026-07-08 — five dev sessions, five findings, five fixes:
    (next levers, negative results, decisions with reasons), (9) a measurement
    without its method is half lost. Watch sessions 6+ for both behaviors.
 
+6. **Resolves fact minted a phantom** (2026-07-10, filed in-band by the agent
+   itself): a `resolves` whose object never existed silently minted a bare
+   leaf — nothing was closed, and the signal (the target listed in the
+   frame's `writes.minted_elements`) went unread. Store repaired (rel
+   retracted, decision annotated); instructions now state the target must
+   already exist and to check `minted_elements` for it. Meta-note: my own
+   first attempt to record this lesson minted a paragraph-named element the
+   same way — the class catches careful writers.
+
 Session-5 agent testimony (verbatim value assessment): ~30–45 min of
 rediscovery avoided + one likely design regression avoided; caveat that ~half
 of recalled gotchas were redundant with code comments in this high-discipline
 codebase. Distilled into the legend repo's own store under
 `trial value evidence`.
+
+Testimony 2 (adventure-mode session, 2026-07-10): recall self-rated ~3/10 —
+a cold-start feature gives recall little to bite on — but the orientation
+packet was load-bearing (the RL do-not-reintroduce guard shaped behavior);
+save value deferred to next session by design. Verified fixed: summary
+resubmit reused cleanly (finding 2 regression-free). New friction for the
+watch list: ambient ranking separates poorly (~0.6 relevant beside ~0.4
+postmortem noise; short prompts topped by in-band trial-diagnostic questions
+— the trial's own bookkeeping pollutes game-prompt candidates).
 
 ## Watch list
 
