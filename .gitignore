@@ -88,3 +88,10 @@ benchmarks/venv/
 
 # viz binary (build with: cc -std=c99 -O2 legend_viz.c embed.c -o legend-viz -lX11 -lm)
 /legend-viz
+
+# SimpleQA distillation eval — generated artifacts (regenerate via run_all.sh)
+benchmarks/simpleqa/corpus/
+benchmarks/simpleqa/store/
+benchmarks/simpleqa/runs/
+benchmarks/simpleqa/results/
+benchmarks/simpleqa/.venv/

@@ -1,0 +1,3 @@
+openai>=1.40
+trafilatura>=1.8
+rapidfuzz>=3.0
