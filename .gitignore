@@ -95,3 +95,9 @@ benchmarks/simpleqa/store/
 benchmarks/simpleqa/runs/
 benchmarks/simpleqa/results/
 benchmarks/simpleqa/.venv/
+
+# conflict_resolution eval — generated artifacts
+benchmarks/conflictqa/store/
+benchmarks/conflictqa/runs/
+benchmarks/conflictqa/results/
+benchmarks/conflictqa/*.log
