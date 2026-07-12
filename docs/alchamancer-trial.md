@@ -185,6 +185,33 @@ watch list: ambient ranking separates poorly (~0.6 relevant beside ~0.4
 postmortem noise; short prompts topped by in-band trial-diagnostic questions
 — the trial's own bookkeeping pollutes game-prompt candidates).
 
+8. **Two competing memory surfaces** (2026-07-12, legend-dev session; Testimony 3,
+   saved as element `#48`): a full session of benchmark work went to the colocated
+   Claude file-memory (`MEMORY.md`, auto-injected) and NONE to Legend — one
+   orientation recall that didn't cover the task, zero saves — leaving the graph
+   silently stale. Same "value capped by whoever isn't writing to it" class as an
+   outside tool, but self-inflicted. Root cause: this dev repo has no
+   `.claude/settings.json`, so none of Legend's hooks fire here, even though
+   `legend init`'s `write_hooks_config` already writes all three (SessionStart
+   orientation-inject, UserPromptSubmit ambient recall, Stop save-reminder). Fix
+   filed as the `install legend hooks in legend dev repo` task (`#51`): run
+   `legend init` at the repo root (no `--reset`). Principle: the always-on
+   orientation index + a save-nudge (the hooks) are what let Legend win against a
+   colocated file-memory.
+
+**Dev-binary batch deployed 2026-07-12** (pending a deliberate trial-binary
+upgrade): three instruction lines — finding 7 (missing-save decisions), watch #11
+(status-via-changes), watch #1 (predicate-reuse) — into `MCP_INSTRUCTIONS` +
+`legend_save`; a `bytes_out` recall-journal field (watch #3). Predicate dedup
+(watch #1) resolved as instruction + merge-pass, NOT auto-fold: near-dup
+predicates ≥0.6 Jaccard already surface in `near_matches` (the merge-pass signal),
+while the real sub-0.6 near-dups (`validates`/`validated by`) can't be auto-folded
+without false-merging distinct predicates. Retrieval separation (Testimony 2
+friction, watch #8) deferred: the offline corpus already scores separation-perfect
+(`retrieval.found`, `exclusion.leaks`, `absent.false_resolutions` all maxed), so a
+cosine floor can only risk the pinned gate, not improve it — C1/C2 must be
+developed against the live store where the symptom exists.
+
 ## Watch list
 
 Checked at every check-in; most are measured by `journal_report.py`. Each has
@@ -204,8 +231,8 @@ its trigger and its response so a future session doesn't re-derive them.
    session was started. *Response:* investigate the hook matcher.
 3. **Frame-size / token-cost growth** — recall frames are ~2/3 of Legend's
    token cost and grow with the store. *Measure:* today only by re-running
-   recalls; the planned `bytes_out` journal field (next binary batch) makes
-   it free. *Trigger:* orientation packet regularly past the hook's 4000-byte
+   recalls; the `bytes_out` journal field (landed 2026-07-12 in the dev
+   binary, on recall lines) makes it free. *Trigger:* orientation packet regularly past the hook's 4000-byte
    cap or deliberate frames past ~20KB. *Response:* lower the MCP default
    `limit`; frame curation.
 4. **Resolves discipline** — finished work must close its task via a
