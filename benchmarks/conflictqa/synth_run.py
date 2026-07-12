@@ -23,8 +23,8 @@ from common.legend_io import Legend  # noqa: E402
 from common.util import Journal  # noqa: E402
 
 sys.path.insert(0, str(HERE))
-from run import arm_a, arm_b, grade, cfg_load, cost, OUTCOMES  # noqa: E402
-from synth import generate  # noqa: E402
+from run import arm_a, arm_b, grade, cfg_load, cost, OUTCOMES, ingest  # noqa: E402
+from synth import generate, to_factlist  # noqa: E402
 
 STORE = "store_synth/.legend"
 
@@ -54,7 +54,7 @@ def pick(questions, n):
     return out
 
 
-def report(cfg, graded, n_facts, n_conf, arms_usage):
+def report(cfg, graded, n_facts, n_conf, arms_usage, ingest_usage=None, ingest_counts=None):
     per_arm = {a: {o: 0 for o in OUTCOMES} for a in ("A", "B")}
     per_hop = {h: {"A": 0, "B": 0, "n": 0} for h in ("multi", "single")}
     table = {a: {b: 0 for b in OUTCOMES} for a in OUTCOMES}
@@ -71,8 +71,13 @@ def report(cfg, graded, n_facts, n_conf, arms_usage):
             broken.append(g)
     n = len(graded)
     c_arm = cost(arms_usage, cfg["pricing_per_mtok"]["consumer"])
+    if ingest_counts is not None:
+        build = (f"LLM ingester `{cfg['models']['ingester']}` "
+                 f"({ingest_counts['saves']} saves, {ingest_counts['changes']} conflict updates)")
+    else:
+        build = "built deterministically (no ingester)"
     L = ["# conflict_resolution (synthetic entities) — results\n",
-         f"- questions: **{n}**  ·  consumer `{cfg['models']['consumer']}`  ·  store built deterministically (no ingester)",
+         f"- questions: **{n}**  ·  consumer `{cfg['models']['consumer']}`  ·  store {build}",
          f"- store: {n_facts} facts, {n_conf} latest-wins conflicts\n",
          "## Headline",
          f"- arm A (no store) correct: **{per_arm['A']['correct']}/{n}**",
@@ -85,7 +90,11 @@ def report(cfg, graded, n_facts, n_conf, arms_usage):
     L += ["\n## A → B transition", "| A \\ B | correct | incorrect | not_attempted |", "|---|---|---|---|"]
     for a in OUTCOMES:
         L.append(f"| **{a}** | " + " | ".join(str(table[a][b]) for b in OUTCOMES) + " |")
-    L.append(f"\n## Cost\n- arms: **${c_arm:.3f}** (store build free)\n")
+    if ingest_usage is not None:
+        c_ing = cost(ingest_usage, cfg["pricing_per_mtok"]["ingester"])
+        L.append(f"\n## Cost\n- ingest: ${c_ing:.3f}  ·  arms: ${c_arm:.3f}  ·  **total ${c_ing + c_arm:.3f}**\n")
+    else:
+        L.append(f"\n## Cost\n- arms: **${c_arm:.3f}** (store build free)\n")
     if broken:
         L.append("## Broken flips (store hurt)")
         for g in broken[:20]:
@@ -99,15 +108,36 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--n", type=int, default=4, help="questions per hop")
+    ap.add_argument("--ingest", action="store_true",
+                    help="build the store via the LLM ingester (Sol) instead of deterministically")
+    ap.add_argument("--chunk", type=int, default=0,
+                    help="ingest chunk size; 0 = boundary at n_base (every correction cross-chunk)")
     args = ap.parse_args()
     cfg = cfg_load()
     corpus = generate()
     questions = pick(corpus["questions"], args.n)
     lg = Legend(cfg["legend_binary"], HERE / STORE, now=cfg.get("legend_now"),
                 embed=cfg.get("legend_embed", 1))
-    n_facts, n_conf = load_store(lg, corpus)
-    print(f"loaded synthetic store: {n_facts} facts, {n_conf} conflicts, "
-          f"{len(lg.dump().get('elements', []))} elements")
+    n_conf = len(corpus["changes"])
+    ingest_usage = ingest_counts = None
+
+    if args.ingest and not args.dry_run:
+        if not cfg["models"].get("models_verified"):
+            print("models_verified is false — verify model IDs first.")
+            sys.exit(2)
+        context, n_base = to_factlist(corpus)
+        cfg["ingest_chunk_facts"] = args.chunk or n_base
+        lg.init(reset=True)
+        (HERE / "runs_synth").mkdir(exist_ok=True)
+        with Journal(HERE / "runs_synth" / "ingest.jsonl") as journal:
+            ingest_usage, ingest_counts, n_facts = ingest(lg, context, cfg, journal)
+        print(f"LLM-ingested: {n_facts} statements (chunk={cfg['ingest_chunk_facts']}) -> "
+              f"{len(lg.dump().get('elements', []))} elements, "
+              f"{ingest_counts['changes']} conflict updates, saves={ingest_counts['saves']}")
+    else:
+        n_facts, _ = load_store(lg, corpus)
+        print(f"loaded synthetic store: {n_facts} facts, {n_conf} conflicts, "
+              f"{len(lg.dump().get('elements', []))} elements")
 
     if args.dry_run:
         graded = [{**q, "A_response": "I don't know", "B_response": q["gold"][0],
@@ -138,7 +168,7 @@ def main():
             ans.write(row)
             print(f"  {q['qid']}: A={row['A_outcome'][:4]} B={row['B_outcome'][:4]}  "
                   f"gold={q['gold']}  B_ans={b['response'][:40]!r}")
-    report(cfg, graded, n_facts, n_conf, arms_usage)
+    report(cfg, graded, n_facts, n_conf, arms_usage, ingest_usage, ingest_counts)
 
 
 if __name__ == "__main__":

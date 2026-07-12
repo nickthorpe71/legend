@@ -112,6 +112,31 @@ def generate(seed=7, n_clusters=6):
             "changes": changes, "questions": questions}
 
 
+# English templates for the LLM-ingester path (mirror the famous corpus wording).
+_TPL = {
+    P_AUTHOR: "The author of {s} is {o}.",
+    P_SPOUSE: "{s} is married to {o}.",
+    P_CITIZEN: "{s} is a citizen of {o}.",
+    P_DIED: "{s} died in the city of {o}.",
+    P_SPORT: "{s} is associated with the sport of {o}.",
+    P_INVENTED: "{s} was created in the country of {o}.",
+    P_CAPITAL: "The capital of {s} is {o}.",
+}
+
+
+def to_factlist(corpus):
+    """Serialize to a numbered fact-list for the LLM ingester: all base facts
+    (old values for conflicted edges) first, then all corrections (new values).
+    Returns (context, n_base) so the caller can set the chunk boundary at n_base,
+    putting every correction in a later chunk than its original — the hardest
+    cross-chunk conflict case."""
+    base = [_TPL[f["p"]].format(s=f["s"], o=f["o"]) for f in corpus["base_facts"]]
+    corr = [_TPL[c["property"]].format(s=c["target"], o=c["to"]) for c in corpus["changes"]]
+    lines = base + corr
+    ctx = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(lines))
+    return ctx, len(base)
+
+
 if __name__ == "__main__":
     d = generate()
     print(f"elements={len(d['elements'])} base_facts={len(d['base_facts'])} "
