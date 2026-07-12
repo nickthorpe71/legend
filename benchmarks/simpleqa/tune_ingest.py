@@ -37,6 +37,7 @@ def main():
     ap.add_argument("page", help="path to a corpus page .md (relative to benchmarks/simpleqa or absolute)")
     ap.add_argument("--src", default=None, help="src label (default: page filename stem)")
     ap.add_argument("--expect", default=None, help="gold value that should be findable after ingest")
+    ap.add_argument("--model", default=None, help="override ingester model (default: config ingester)")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -61,7 +62,7 @@ def main():
     lg.init(reset=True)
 
     counters = new_counters()
-    model = cfg["models"]["ingester"]
+    model = args.model or cfg["models"]["ingester"]
     jpath = d(TUNE_JOURNAL)
     jpath.write_text("")
     with Journal(jpath) as journal:
@@ -72,7 +73,8 @@ def main():
     el_names = [e.get("name", "") for e in dump.get("elements", [])[32:]]
     long_names = [n for n in el_names if len(n) > 45]
 
-    price = cfg["pricing_per_mtok"]["ingester"]
+    role = next((r for r in ("ingester", "consumer", "grader") if cfg["models"].get(r) == model), "ingester")
+    price = cfg["pricing_per_mtok"][role]
     c = cost(counters["usage"], price)
 
     print("\n================ TUNE RESULT ================")

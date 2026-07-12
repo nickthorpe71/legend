@@ -36,19 +36,25 @@ RULES
 - Objects are atomic. No sentences, no lists, no semicolons, no "and"-joined clauses.
   If a value has several parts (e.g. a personal-best row "27:02 — Doha — 2002"),
   either record the ONE part a reader would ask about, or skip it.
-- Be THOROUGH: record every specific, checkable claim in the chunk, not just the
-  ones you judge important — you do not know what a reader will ask about. A dense
-  page may yield many facts; that is fine, as long as each object is atomic and
-  each element is a real entity.
-- Record SUMMARY / AGGREGATE claims, not only their parts. If the text says
-  "In 2005, Haile went undefeated in all of his road races. This included a win
-  at the Amsterdam Marathon and a 10-mile world best," record BOTH the summary
-  (Haile Gebrselassie, undefeated in road races, 2005) AND the notable parts.
-  The summary claim is often exactly what gets asked — never drop it in favour of
-  its constituents.
+- FIRST, capture the HEADLINE claims — superlatives, firsts, records, streaks,
+  totals, sole/only facts. These are what fact-seeking questions ask about, and
+  they are the easiest to miss because each is stated once, in a single prose
+  sentence, and reads like narration. Scan every prose sentence for words like:
+  first, only, sole, undefeated, unbeaten, record, world record, best, most,
+  oldest, youngest, fastest, largest, longest, won every, swept, all of, entire,
+  streak, total of, became the. Each such sentence is a fact — record it with the
+  atomic anchor (usually a year, number, place, or name) as the object, BEFORE you
+  record the individual details, and never drop it in favour of its constituents.
+    "In 2005 he went undefeated in all of his road races."
+        -> (Haile Gebrselassie, undefeated in road races, 2005)
+    "She was the first woman to head the Library of Congress."
+        -> (Carla Hayden, first woman Librarian of Congress, true)
+- THEN be thorough with the specifics: record every other checkable claim (dates,
+  places, numbers, roles, results), not just the ones you judge important — you do
+  not know what will be asked. A dense page may yield many facts; that is fine, as
+  long as each object is atomic and each element is a real entity.
 - The only things to skip are vague characterisations with no checkable value:
-  descriptions, mission statements, "purpose"/"capabilities". If a sentence
-  contains a specific who/what/when/where/how-many, it has a fact in it — extract it.
+  descriptions, mission statements, "purpose"/"capabilities".
 - Elements are real-world named things (people, places, organizations, works,
   events) with short proper names. NEVER create an element for a table row, a
   citation, or a reference (no "X: performance table … row", no "X, reference
