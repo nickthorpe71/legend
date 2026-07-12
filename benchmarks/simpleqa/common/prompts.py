@@ -7,25 +7,61 @@ CORRECT / INCORRECT / NOT_ATTEMPTED.
 """
 
 INGESTER_SYSTEM = """\
-You are building a durable knowledge base from reference pages, one chunk at a time.
-Read the chunk and record what it says as structured knowledge in Legend.
+You are building a durable, deduplicated knowledge base from reference pages, one
+chunk at a time. Read the whole chunk, but record only the facts worth keeping.
+Quality over coverage: a small clean graph beats an exhaustive noisy one.
 
-Method:
-- Before writing an entity, call legend_recall to see whether it already exists.
-  If it does, reuse its canonical name EXACTLY — do not create a second element
-  for the same thing (e.g. do not add "J.F. Kennedy" if "John F. Kennedy" exists).
-- Extract a few precise elements (people, places, organizations, works, events,
-  concepts) and the durable facts about them as subject-property-object triples.
-  Favour the specific, checkable facts a reader might later ask about (dates,
-  places, numbers, roles, relationships) over vague prose.
-- Ground every fact: put the page title/id in each fact's `src`.
-- If this chunk states a value that supersedes one already stored, use `changes`,
-  not a new fact. If it contradicts a stored fact that is now false, `retract`.
-- Do not invent facts that are not supported by the text in front of you.
+WHAT A FACT IS
+A fact is a subject-property-object triple whose OBJECT is a single atomic value:
+a name, a date, a number, a place, or a short label (at most a few words). The
+object is the kind of thing a quiz question has as its answer.
 
-Call legend_save (possibly after one or more legend_recall calls) to commit what
-this chunk contains, then stop. It is fine to make no save if the chunk has no
-durable facts.
+  GOOD (record these):
+    (Marie Curie, born, 1867)
+    (Hall of Fame, founded by, David A. Klingshirm)
+    (Hall of Fame, executive director, Nina Perlove)
+    (Haile Gebrselassie, nationality, Ethiopian)
+    (Haile Gebrselassie, undefeated road races year, 2005)
+
+  BAD (never record these — the object is a phrase/sentence, not a value):
+    (Hall of Fame, purpose, "celebrates past and present individuals and
+       institutions that have made significant contributions to classical music")
+    (Classical Walk of Fame, mobile app capabilities, "provides inductee
+       biographies, music samples, related pictures...")
+    (Samuel Adler, role, "co-chairman of the Hall of Fame's first artistic directorate")
+  If the object would be a sentence, a description, or a list, it is NOT a fact —
+  skip it. Do not invent a one-off property to hold a paragraph.
+
+RULES
+- Objects are atomic. No sentences, no lists, no semicolons, no "and"-joined clauses.
+  If a value has several parts (e.g. a personal-best row "27:02 — Doha — 2002"),
+  either record the ONE part a reader would ask about, or skip it.
+- Be THOROUGH: record every specific, checkable claim in the chunk, not just the
+  ones you judge important — you do not know what a reader will ask about. A dense
+  page may yield many facts; that is fine, as long as each object is atomic and
+  each element is a real entity.
+- Record SUMMARY / AGGREGATE claims, not only their parts. If the text says
+  "In 2005, Haile went undefeated in all of his road races. This included a win
+  at the Amsterdam Marathon and a 10-mile world best," record BOTH the summary
+  (Haile Gebrselassie, undefeated in road races, 2005) AND the notable parts.
+  The summary claim is often exactly what gets asked — never drop it in favour of
+  its constituents.
+- The only things to skip are vague characterisations with no checkable value:
+  descriptions, mission statements, "purpose"/"capabilities". If a sentence
+  contains a specific who/what/when/where/how-many, it has a fact in it — extract it.
+- Elements are real-world named things (people, places, organizations, works,
+  events) with short proper names. NEVER create an element for a table row, a
+  citation, or a reference (no "X: performance table … row", no "X, reference
+  titled …"). Put a table's notable value in a fact on the real entity instead.
+
+DEDUP
+- Recall ONCE per chunk: call legend_recall with all the entity names you are
+  about to use, then reuse any canonical name it returns EXACTLY (do not add
+  "J.F. Kennedy" if "John F. Kennedy" exists). Then make a single legend_save.
+- Use `changes` (not a new fact) to supersede a value; `retract` for something now false.
+
+Do not invent facts unsupported by the text. It is fine to save nothing if the
+chunk has no atomic facts. Ground each fact with the provided src label.
 """
 
 # Shared across both arms — identical wording so `not_attempted` is comparable.
@@ -38,8 +74,12 @@ or are not sure, reply exactly: I don't know.
 # The only delta arm B sees: the recall tool exists and should be used first.
 ARM_B_PREAMBLE = """\
 You have a legend_recall tool backed by a knowledge base built from reference pages.
-Before answering, use it to look up the entities and facts the question is about.
-You may call it up to a few times. Then answer using what it returned.
+Before answering, use it to look up the facts the question is about.
+Pass SHORT, SPECIFIC focus terms — the entity name and the key noun/phrase from
+the question, as separate terms — not the whole question sentence. For example,
+for "what year did Haile Gebrselassie go undefeated in his road races?" focus on
+["Haile Gebrselassie", "undefeated road races"]. You may call recall a few times
+with different terms. Then answer using what it returned.
 """
 
 GRADER_TEMPLATE = """

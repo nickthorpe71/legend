@@ -49,8 +49,8 @@ LEGEND_SAVE_TOOL = {
                         "type": "object",
                         "properties": {
                             "s": {"type": "string", "description": "Subject element (canonical name)."},
-                            "p": {"type": "string", "description": "Property/relation name."},
-                            "o": {"type": "string", "description": "Object value (an element name or a literal)."},
+                            "p": {"type": "string", "description": "Property/relation name (reuse existing ones)."},
+                            "o": {"type": "string", "description": "ATOMIC object: a name, date, number, place, or short label (a few words at most). Never a sentence, description, or list — if the value is a phrase, do not record the fact."},
                             "confidence": {"type": "number", "description": "0..1 confidence this fact is correct."},
                             "src": {"type": "string", "description": "Where this fact came from — page id/title and locus. REQUIRED for grounding."},
                         },

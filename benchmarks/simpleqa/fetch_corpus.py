@@ -85,6 +85,14 @@ def download_dataset(cfg):
     return dst
 
 
+def canon_url(u):
+    """Drop the #fragment. SimpleQA sometimes ships `#:~:text=<answer sentence>`
+    anchors that quote the answer verbatim — ingesting those leaks the answer
+    into the store. Stripping the fragment also collapses duplicate fetches of
+    the same page."""
+    return u.split("#", 1)[0]
+
+
 def load_rows(csv_path):
     rows = []
     with csv_path.open(encoding="utf-8") as fh:
@@ -92,6 +100,7 @@ def load_rows(csv_path):
             md = ast.literal_eval(r["metadata"])  # single-quoted python literal
             urls = []
             for u in md.get("urls", []):
+                u = canon_url(u)
                 if u not in urls:
                     urls.append(u)
             rows.append(
@@ -120,6 +129,23 @@ def sample(rows, cfg):
     return picked
 
 
+_APPENDIX_RE = re.compile(
+    r"^#+\s*(references|notes|external links|see also|further reading|"
+    r"bibliography|citations|sources|footnotes)\b", re.I)
+
+
+def strip_appendix(md):
+    """Drop the trailing References / External links / Notes sections. They hold
+    no answerable facts and are where the 'reference titled …' blob elements come
+    from — often a third of a Wikipedia page."""
+    out = []
+    for line in md.splitlines():
+        if _APPENDIX_RE.match(line.strip()):
+            break
+        out.append(line)
+    return "\n".join(out).rstrip()
+
+
 def fetch_and_extract(url, cfg):
     req = urllib.request.Request(url, headers={"User-Agent": cfg["http_user_agent"]})
     html = urllib.request.urlopen(req, timeout=60).read().decode("utf-8", errors="replace")
@@ -132,7 +158,7 @@ def fetch_and_extract(url, cfg):
         output_format="markdown",
         url=url,
     )
-    return text
+    return strip_appendix(text) if text else text
 
 
 def build_corpus(cfg):

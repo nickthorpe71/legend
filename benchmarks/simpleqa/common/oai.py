@@ -1,10 +1,14 @@
 """OpenAI client: one place for every GPT-5.6 call.
 
-Everything the harness sends to OpenAI goes through here so the API shape lives
-in a single file. If GPT-5.6 turns out to need the Responses API or a different
-parameter name, this is the only module to change. We deliberately do NOT send
-`temperature` or `max_tokens`: newer reasoning models reject non-default
-temperature and renamed the token cap, and Phase 0 does not need either.
+Uses the Responses API (`client.responses.create`). GPT-5.6 is a reasoning model
+and rejects function tools on /v1/chat/completions unless reasoning is disabled;
+the Responses API is the only way to keep reasoning AND tools, which the
+ingestion step depends on. Tool loops continue via `previous_response_id` so the
+server preserves reasoning state between turns.
+
+Usage is normalized to {prompt_tokens, completion_tokens, total_tokens} (the
+Responses API reports input_tokens/output_tokens) so downstream cost accounting
+is API-agnostic. We do not send `temperature` or `max_tokens`.
 """
 
 import json
@@ -63,25 +67,57 @@ def _retryable():
     return tuple(getattr(openai, n) for n in names if hasattr(openai, n))
 
 
-def _create(model, messages, tools=None, tool_choice=None, seed=None, max_retries=6):
-    """One chat.completions call with exponential backoff on transient errors."""
-    kwargs = {"model": model, "messages": messages}
+def _to_responses_tools(tools):
+    """Flatten chat-style {type:function, function:{...}} into the Responses
+    shape {type:function, name, description, parameters}."""
+    out = []
+    for t in tools or []:
+        if t.get("type") == "function" and "function" in t:
+            fn = t["function"]
+            out.append({
+                "type": "function",
+                "name": fn["name"],
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {}),
+            })
+        else:
+            out.append(t)
+    return out
+
+
+def _norm_usage(u):
+    if not u:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    d = u.model_dump() if hasattr(u, "model_dump") else dict(u)
+    pt = d.get("input_tokens", d.get("prompt_tokens", 0)) or 0
+    ct = d.get("output_tokens", d.get("completion_tokens", 0)) or 0
+    tt = d.get("total_tokens", 0) or (pt + ct)
+    return {"prompt_tokens": int(pt), "completion_tokens": int(ct), "total_tokens": int(tt)}
+
+
+def _create(model, *, instructions=None, input=None, tools=None, previous_response_id=None, max_retries=6):
+    """One responses.create call with exponential backoff on transient errors."""
+    kwargs = {"model": model}
+    if instructions is not None:
+        kwargs["instructions"] = instructions
+    if input is not None:
+        kwargs["input"] = input
     if tools:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = tool_choice or "auto"
-    if seed is not None:
-        kwargs["seed"] = seed
+        kwargs["tools"] = _to_responses_tools(tools)
+    if previous_response_id:
+        kwargs["previous_response_id"] = previous_response_id
+
     retryable = _retryable()
     delay = 2.0
     for attempt in range(max_retries):
         try:
-            return client().chat.completions.create(**kwargs)
-        except retryable as e:
+            return client().responses.create(**kwargs)
+        except retryable:
             if attempt == max_retries - 1:
                 raise
             time.sleep(delay)
             delay = min(delay * 2, 60.0)
-        except openai.APIStatusError as e:  # 5xx that isn't one of the above
+        except openai.APIStatusError as e:
             if e.status_code and 500 <= e.status_code < 600 and attempt < max_retries - 1:
                 time.sleep(delay)
                 delay = min(delay * 2, 60.0)
@@ -89,83 +125,53 @@ def _create(model, messages, tools=None, tool_choice=None, seed=None, max_retrie
             raise
 
 
-def _usage(resp):
-    u = getattr(resp, "usage", None)
-    if not u:
-        return {}
-    try:
-        return u.model_dump()
-    except AttributeError:
-        return dict(u) if isinstance(u, dict) else {}
+def _function_calls(resp):
+    return [it for it in (resp.output or []) if getattr(it, "type", None) == "function_call"]
 
 
 def complete(model, system, user, seed=None):
     """Single-shot completion, no tools. Returns (text, usage)."""
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": user})
-    resp = _create(model, messages, seed=seed)
-    text = resp.choices[0].message.content or ""
-    return text.strip(), _usage(resp)
-
-
-def _assistant_dict(msg):
-    d = {"role": "assistant", "content": msg.content}
-    if msg.tool_calls:
-        d["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-            }
-            for tc in msg.tool_calls
-        ]
-    return d
+    resp = _create(model, instructions=(system or None), input=user)
+    return (resp.output_text or "").strip(), _norm_usage(resp.usage)
 
 
 def run_tool_loop(model, system, user, tools, dispatch, max_calls=8, seed=None):
     """Drive a tool-calling conversation until the model stops calling tools.
 
-    `dispatch(name, args_dict) -> result_str` executes one tool call.
-    Returns dict: {answer, messages, trace, usage_total, tool_calls_made,
-    stop_reason}. The loop is bounded by max_calls; if the model is still
-    calling tools at the cap we return the last assistant content (possibly
-    empty) with stop_reason="max_calls".
+    `dispatch(name, args_dict) -> result_str` executes one tool call. Continues
+    via previous_response_id so reasoning state is preserved across turns.
+    Returns {answer, trace, usage_total, tool_calls_made, stop_reason}. Bounded
+    by max_calls; at the cap we do one final tool-free turn so the model answers
+    with what it has (stop_reason="max_calls").
     """
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": user})
-
-    trace = []
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    trace = []
     calls_made = 0
 
     def _accumulate(u):
+        nu = _norm_usage(u)
         for k in usage_total:
-            usage_total[k] += int(u.get(k, 0) or 0)
+            usage_total[k] += nu[k]
+
+    resp = _create(model, instructions=(system or None),
+                   input=[{"role": "user", "content": user}], tools=tools)
+    _accumulate(resp.usage)
 
     while True:
-        resp = _create(model, messages, tools=tools, seed=seed)
-        _accumulate(_usage(resp))
-        msg = resp.choices[0].message
-        messages.append(_assistant_dict(msg))
-
-        if not msg.tool_calls:
+        fcalls = _function_calls(resp)
+        if not fcalls:
             return {
-                "answer": (msg.content or "").strip(),
-                "messages": messages,
+                "answer": (resp.output_text or "").strip(),
                 "trace": trace,
                 "usage_total": usage_total,
                 "tool_calls_made": calls_made,
                 "stop_reason": "stop",
             }
 
-        for tc in msg.tool_calls:
-            name = tc.function.name
+        outputs = []
+        for fc in fcalls:
             try:
-                args = json.loads(tc.function.arguments or "{}")
+                args = json.loads(fc.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
             calls_made += 1
@@ -174,26 +180,26 @@ def run_tool_loop(model, system, user, tools, dispatch, max_calls=8, seed=None):
                 result = json.dumps({"error": "tool-call budget exhausted; answer now with what you have"})
             else:
                 try:
-                    result = dispatch(name, args)
-                except Exception as e:  # dispatch failure must not kill the loop
+                    result = dispatch(fc.name, args)
+                except Exception as e:
                     result = json.dumps({"error": f"{type(e).__name__}: {e}"})
-            trace.append({"call": name, "args": args, "result": result, "over_cap": over_cap})
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            trace.append({"call": fc.name, "args": args, "result": result, "over_cap": over_cap})
+            outputs.append({"type": "function_call_output", "call_id": fc.call_id, "output": result})
 
         if calls_made >= max_calls:
-            # One more turn to let the model answer with what it has, no tools.
-            resp = _create(model, messages, seed=seed)
-            _accumulate(_usage(resp))
-            final = resp.choices[0].message
-            messages.append(_assistant_dict(final))
+            # final turn without tools so the model must answer
+            resp = _create(model, previous_response_id=resp.id, input=outputs)
+            _accumulate(resp.usage)
             return {
-                "answer": (final.content or "").strip(),
-                "messages": messages,
+                "answer": (resp.output_text or "").strip(),
                 "trace": trace,
                 "usage_total": usage_total,
                 "tool_calls_made": calls_made,
                 "stop_reason": "max_calls",
             }
+
+        resp = _create(model, previous_response_id=resp.id, input=outputs, tools=tools)
+        _accumulate(resp.usage)
 
 
 def list_models(prefix=None):
