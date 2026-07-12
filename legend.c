@@ -7875,6 +7875,7 @@ static const char *g_journal_payload; /* pristine bytes; NULL = no payload */
 static u32 g_journal_payload_len;
 static int g_journal_observe;
 static int g_journal_armed;
+static i64 g_journal_bytes_out = -1; /* recall frame bytes; <0 = not recorded */
 
 static void journal_arm(const char *store, const char *verb,
                         const char *payload, u32 len) {
@@ -7883,6 +7884,7 @@ static void journal_arm(const char *store, const char *verb,
   g_journal_payload = payload;
   g_journal_payload_len = len;
   g_journal_observe = 0;
+  g_journal_bytes_out = -1;
   g_journal_armed = 1;
 }
 
@@ -7903,6 +7905,8 @@ static void journal_append(i64 ts, int ok, int errcode) {
   fprintf(f, ",\"ok\":%s", ok ? "true" : "false");
   if (!ok)
     fprintf(f, ",\"code\":\"%s\"", ERR_CODE_NAMES[errcode]);
+  if (g_journal_bytes_out >= 0)
+    fprintf(f, ",\"bytes_out\":%lld", (long long)g_journal_bytes_out);
   if (g_journal_payload) {
     fputs(",\"payload\":\"", f);
     json_escape_fwrite(g_journal_payload, g_journal_payload_len, f);
@@ -8866,6 +8870,8 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store,
                  rec.since);
     }
     frame = mcp_cap_take();
+    if (is_recall)
+      g_journal_bytes_out = frame ? (i64)strlen(frame) : 0;
     journal_append(report.at_secs, 1, -1);
     release_lock();
     g_err_trap = 0;
@@ -9061,9 +9067,23 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
       tick_recall(&g_graph, &rec, g_payload, &report);
       if (!rec.observe)
         snapshot_write(&g_graph, store);
-      journal_append(report.at_secs, 1, -1);
-      emit_frame(&g_graph, &report, store, rec.limit, rec.history_depth,
-                 rec.since);
+      /* journal BEFORE the frame (durability, see the save path above); buffer
+       * the compact frame first so bytes_out records the emitted size without
+       * breaking the journal-before-emit invariant. --pretty is a human
+       * surface, not the token-cost path, so it streams as before. */
+      if (g_pretty) {
+        journal_append(report.at_secs, 1, -1);
+        emit_frame(&g_graph, &report, store, rec.limit, rec.history_depth,
+                   rec.since);
+      } else {
+        u32 flen;
+        char *fbuf = capture_frame_json(&g_graph, &report, store, rec.limit,
+                                        rec.history_depth, rec.since, &flen);
+        g_journal_bytes_out = (i64)flen;
+        journal_append(report.at_secs, 1, -1);
+        fwrite(fbuf, 1, flen, stdout);
+        free(fbuf);
+      }
       return 0;
     }
   }
