@@ -3099,6 +3099,14 @@ enum { TIER2_CAND_CAP = 8 }; /* unresolved-ref candidate list bound */
  * confidence). */
 static const double TIER2_AUTO_SCORE = 0.7;   /* min top score to auto-resolve */
 static const double TIER2_AUTO_MARGIN = 0.15; /* min lead over the 2nd candidate */
+/* An ambient recall (the passive hook sweep, observe:true) over a lived-in store
+ * competes with its own in-band process records — testimonies, tasks, open
+ * questions, doc pointers — whose names share vocabulary with real content, so
+ * they crowd the candidate list ahead of the domain graph. On an ambient miss
+ * only, scale these bookkeeping kinds' candidate scores down so domain content
+ * leads; deliberate recalls (observe:false) are untouched, and nothing is
+ * dropped — the frame still lists them, just lower. */
+static const double TIER2_AMBIENT_BOOKKEEPING_FACTOR = 0.5;
 enum { TIER2_LIST_CAP = 100 }; /* miss candidate list bound after salience backfill */
 enum { TIER2_SEMANTIC_CAP = 30 }; /* shorter list when semantic: the target ranks high,
                                      so a fraction of the salience roster suffices */
@@ -3342,16 +3350,41 @@ static u32 tier2_best_near(const Hypergraph *g, const char *q, u32 qlen,
   return best;
 }
 
+/* True when an element is ambient-recall noise rather than domain content:
+ * either it carries no instance_of kind — a relation predicate (subject, to,
+ * resolves…) or a prose-object mint — or its kind is explicit process
+ * bookkeeping (event, task, question, pointer). Both flood a lived-in store's
+ * candidate lists ahead of the game graph. Kind is the first live instance_of,
+ * cached in elem_kind; the kind element's name is compared by length (the
+ * string arena is not NUL-terminated). decision and constraint are deliberately
+ * content — a design decision or a constraint is real. */
+static int elem_is_ambient_noise(const Hypergraph *g, u32 e) {
+  u32 k = g->elem_kind[e];
+  const char *n;
+  u32 nl;
+  if (k == NONE_U32)                     /* predicate label or prose-object mint */
+    return 1;
+  if (g->elements[k].names.count == 0)   /* kinded but unnamed: treat as content */
+    return 0;
+  n = str_ptr(&g->strs, g->elements[k].names.v[0]);
+  nl = str_len(&g->strs, g->elements[k].names.v[0]);
+  return (nl == 5 && memcmp(n, "event", 5) == 0) ||
+         (nl == 4 && memcmp(n, "task", 4) == 0) ||
+         (nl == 8 && memcmp(n, "question", 8) == 0) ||
+         (nl == 7 && memcmp(n, "pointer", 7) == 0);
+}
+
 /* The tier-2 focus-miss policy, shared by the save-path focus walk and
  * tick_recall: auto-resolve only a slam-dunk (a unique, strong lexical match —
  * containment saturates on shared summary words, so a moderate score is not
  * confidence) and return the element with *out_score set. Anything weaker or
  * ambiguous returns NONE_U32 after appending the caller's candidate list to
  * cands: lexical near-matches down to 0.3, then the semantic ranking or, when
- * embeddings are unavailable, the salience backfill. */
+ * embeddings are unavailable, the salience backfill. On an ambient recall
+ * (observe:true) bookkeeping kinds are demoted so domain content leads. */
 static u32 tier2_focus_miss(const Hypergraph *g, const char *q, u32 qlen,
                             ScoredVec *cands, u32 *out_cand_count,
-                            double *out_score) {
+                            double *out_score, int ambient) {
   static ScoredVec scan;
   u32 c, start = cands->count;
   int slam;
@@ -3367,6 +3400,17 @@ static u32 tier2_focus_miss(const Hypergraph *g, const char *q, u32 qlen,
     scored_push(cands, scan.v[c].elem, scan.v[c].score);
   if (!tier2_semantic(g, cands, start, TIER2_LIST_CAP, q, qlen))
     tier2_backfill(g, cands, start, TIER2_LIST_CAP);
+  /* Ambient miss: demote bookkeeping kinds, then re-sort the whole pool
+   * (lexical + semantic together) by the adjusted score. Reorder only — no
+   * candidate is dropped, so presence-based recall is unchanged and deliberate
+   * recalls skip this path entirely. */
+  if (ambient) {
+    for (c = start; c < cands->count; c++)
+      if (elem_is_ambient_noise(g, cands->v[c].elem))
+        cands->v[c].score *= TIER2_AMBIENT_BOOKKEEPING_FACTOR;
+    if (cands->count - start > 1)
+      qsort(cands->v + start, cands->count - start, sizeof *cands->v, scored_cmp);
+  }
   *out_cand_count = cands->count - start;
   return NONE_U32;
 }
@@ -5238,7 +5282,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
             double score = 0.0;
             u32 cand_count = 0, cand_start = pl->cands.count;
             u32 hit = tier2_focus_miss(g, buf + s.off, s.len, &pl->cands,
-                                       &cand_count, &score);
+                                       &cand_count, &score, 0);
             pl->resops = (ResOp *)xgrow(pl->resops, pl->resop_count + 1,
                                         &pl->resop_cap, sizeof *pl->resops);
             op = &pl->resops[pl->resop_count++];
@@ -6010,7 +6054,7 @@ static void tick_recall(Hypergraph *g, const Recall *rec,
         double score = 0.0;
         u32 cand_count = 0, cand_start = out->cands.count;
         u32 hit = tier2_focus_miss(g, payload_buf + s.off, s.len, &out->cands,
-                                   &cand_count, &score);
+                                   &cand_count, &score, rec->observe);
         memset(&e, 0, sizeof e);
         snprintf(e.at, sizeof e.at, "%s", path);
         e.submitted = s;

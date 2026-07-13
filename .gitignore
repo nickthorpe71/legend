@@ -82,6 +82,8 @@ benchmarks/venv/
 # Local Legend store + generated MCP config (machine-specific; `legend init` recreates both)
 /.legend/
 /.mcp.json
+# Stray embed sidecar a bare `./legend` run drops in cwd (regeneratable)
+/vectors.bin
 # legend init also scaffolds Codex (machine-local, absolute paths)
 /.codex/
 /AGENTS.md

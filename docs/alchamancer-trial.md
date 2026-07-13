@@ -212,6 +212,26 @@ friction, watch #8) deferred: the offline corpus already scores separation-perfe
 cosine floor can only risk the pinned gate, not improve it — C1/C2 must be
 developed against the live store where the symptom exists.
 
+9. **A "read-only" harness mutated the live store** (2026-07-13, self-inflicted
+   while building the C2 measurement). The retrieval-separation harness replayed
+   the journal's focuses as recalls with `observe:false`, on the belief that was
+   the read-only path. It is the opposite: `observe:false` is a *mutating* tick
+   (advances the clock, reinforces, persists); `observe:true` is the read-only
+   path — and the only one that fires the C2 ambient penalty, so the harness both
+   corrupted the store and measured nothing. Damage: clock 121→774, 649 junk
+   journal lines, activations perturbed — but **zero content lost** (recalls
+   never mint; every save in the journal was real). Restore
+   (`scratchpad/restore_trial_store.py`): drop the `build=="dev"` lines (an exact
+   discriminator; each verified a recall), replay the real-only journal to
+   rebuild the snapshot, keep `vectors.bin` (real element ids are unchanged since
+   no dropped line was a save). Restored to clock 126 / 410 elements, replay
+   byte-identical. It **self-healed into the still-live session**: the warm MCP
+   server fingerprints the snapshot (size+mtime) and reloads on external change
+   (`legend.c` warm-graph gate), so its next call picked up the clean snapshot —
+   no clobber. Fix: the harness now runs `observe:true` against an isolated copy
+   of the store, never the live one. Lesson for any future measurement — isolate
+   to a copy; the live trial store is read-only-by-copy, not read-only-by-flag.
+
 ## Watch list
 
 Checked at every check-in; most are measured by `journal_report.py`. Each has
@@ -276,6 +296,82 @@ its trigger and its response so a future session doesn't re-derive them.
     (`replay_journal.py`; byte-identical at every check so far). *Trigger:*
     any divergence. *Response:* stop, bisect by truncating the journal —
     this one is a hard gate, not a trend.
+
+## Roadmap & go/no-go criterion (locked 2026-07-13)
+
+**Store-health check + wipe decision (2026-07-13).** Before continuing the
+trial, the store was checked read-only: `replay_journal.py` reproduced the live
+snapshot **byte-identical across all 265 ok lines — spanning five binary builds**
+(`ad49797`, `5859fbf`, `2f8a860`, `6017f32`, `1e1d5b8`). 387 elements / 694
+relations / clock 121; real domain content (33 decisions, 18 events, 12
+mechanics, 8 constraints). Hygiene noise present but non-corrupting: ~15%
+paragraph-named elements (watch #5), 66 predicates / 39 single-use (watch #1).
+**Decision: do NOT wipe.** Three reasons: (a) the pending dev-binary upgrade
+needs no wipe — the journal already replays clean across five builds, and the
+batched changes (3 instruction lines + `bytes_out` + Codex init) touch no
+snapshot format; (b) the accumulated bookkeeping noise IS the test corpus for
+the retrieval-separation fix below — wiping deletes what we're measuring; (c) the
+trial's entire value is longitudinal accumulation (`#37`) — a reset zeroes the
+hypothesis. The store is journal-backed and committed, so it's never "lost."
+
+**Retrieval separation — build sequence (Plan #2).** Develop against the live
+store (the symptom only exists there; the offline corpus already scores
+separation-perfect). Order: (1) **baseline measurement, no code — DONE
+2026-07-13** (`harness/retrieval_separation.py`, a dedicated read-only script —
+NOT folded into `journal_report.py`, whose contract is one `dump`; it replays
+every journal `focus` at `observe:false` against the current store with
+`LEGEND_EMBED=1` and scores the ranking). Then (2) **C1 margin/centering** in
+`tier2_semantic`/`embed_rank_elements`; (3) **C2 bookkeeping down-weight** in
+`build_embed_list`/`tier2_backfill`, **ambient recalls only**, kind resolved via
+the `instance_of` relation (kind is not a struct field); (4) **dual-validate** —
+the live baseline must improve AND `probes_adversarial.json` (`LEGEND_EMBED=1`)
+re-pinned by inspecting the diff, better-not-different. C3 optional/last; B2
+predicate-dedup starts report-only.
+
+**Baseline result (2026-07-13, 128 ambient focus-sets / 130 terms replayed on
+the 387-element store).** Ambient recalls barely resolve (10/130, all lexical) —
+120 fall to candidate ranking, where the pollution lives:
+- **C2 is severe.** The #1 candidate is trial bookkeeping **78%** of the time;
+  META kinds (`event`/`task`/`question`/`pointer`) fill **6.4 of the top-10**;
+  the first real game-content element (`system`/`mechanic`/…) doesn't appear
+  until **rank ~5.6**. `event` alone dominates (541 top-10 appearances vs 68
+  `system` + 55 `mechanic`) — the testimonies and session-marker events bury the
+  game graph.
+- **C2 is ambient-specific** (confirms watch #8): on the 6 *deliberate*
+  canonical-focus recalls, rank-1-is-META drops to **0%** and first-domain-rank
+  to 1.7. Precise focus → clean; short/conversational focus → buried.
+- **C1 design correction.** A fixed cosine *floor* is the wrong tool: only ~1%
+  of candidates sit below 0.5. BGE cosines compress into a narrow 0.5–0.7 band
+  (197 @0.5, 631 @0.6, 254 @0.7) with a razor-thin **0.03** top1–top2 margin — so
+  C1 must **center/rescale to spread that band**, not floor it. The baseline
+  renamed the lever from "floor" to "margin/centering."
+
+Baseline JSON is regeneratable (rerun the harness); headline numbers pinned here
+are the pre-C1/C2 comparison point.
+
+**C2 landed + validated (2026-07-13).** `legend.c`: `elem_is_ambient_noise` +
+an ambient-only reorder in `tier2_focus_miss` (gated on `rec->observe`). On an
+ambient miss, bookkeeping kinds (`event`/`task`/`question`/`pointer`) **and**
+no-kind elements (relation predicates + prose-object mints — 238 of the store's
+410) are scaled ×0.5 and the candidate pool is re-sorted. Honest A/B on the live
+store (observe:true, isolated copy): **rank-1-is-noise 82.4% → 0%,
+first-domain-rank 3.92 → 1.0, noise-in-top-10 7.6 → 3.3.** Reorder-only (no
+cull) — so every pinned metric (presence/resolution-based; `exclusion` even skips
+`resolution`) is unaffected: **check.sh stayed green with zero re-pin.** C1
+(cosine floor/centering) deferred: cosmetic here (concatenated runs, only ~1%
+below 0.5 pre-penalty), and a cull would risk the presence-based gate for only a
+token trim. Ships to the trial in the next binary upgrade.
+
+**Go/no-go verdict criterion.** Render the `#37` verdict **after C1+C2 lands and
+~3 more real alchamancer sessions run on the upgraded binary** — ties the
+judgement causally to the retrieval fix we're about to ship. Candidate branches:
+**GO-deepen** (more MCP surface), **GO-breadth** (more host projects / the
+Claude-vs-Codex axis), **WIND-DOWN**. The **PIVOT-to-distilled-store** branch
+(pre-baked composable stores, trial demoted to eval-only) is **parked as a
+separate track**, not gated on this verdict — so the go/no-go stays a clean test
+of the live-capture hypothesis specifically. Instrumentation: testimony ritual
+each substantive session (watch #9), `journal_report.py` pre/post the C1+C2
+landing, and the Claude-vs-Codex axis once both agents drive the shared store.
 
 ## What the store was seeded with (baseline)
 
