@@ -360,7 +360,15 @@ cull) — so every pinned metric (presence/resolution-based; `exclusion` even sk
 `resolution`) is unaffected: **check.sh stayed green with zero re-pin.** C1
 (cosine floor/centering) deferred: cosmetic here (concatenated runs, only ~1%
 below 0.5 pre-penalty), and a cull would risk the presence-based gate for only a
-token trim. Ships to the trial in the next binary upgrade.
+token trim.
+
+**Deployed to the trial 2026-07-13 (`fcbb707`).** The pinned binary was upgraded
+from `1e1d5b8`, bundling the whole undeployed C batch: the 3 MCP instruction
+lines, the `bytes_out` recall field, the Codex `init` scaffold, and C2. Verified:
+the new binary stamps `build=fcbb707` and carries all three instruction lines;
+the store carried forward untouched (clock 126). The next alchamancer session
+records the switchover in the journal. **This starts the go/no-go countdown** —
+~3 real sessions on `fcbb707`, then render the `#37` verdict.
 
 **Go/no-go verdict criterion.** Render the `#37` verdict **after C1+C2 lands and
 ~3 more real alchamancer sessions run on the upgraded binary** — ties the
