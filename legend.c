@@ -8318,6 +8318,81 @@ static int write_hooks_config(const char *store, char *out_path,
   return 1;
 }
 
+/* `legend init` also drops a Codex CLI `.codex/config.toml` so a Codex session in
+ * this project gets the legend_recall/legend_save MCP tools. Codex has no
+ * SessionStart/UserPromptSubmit/Stop hooks (only Bash PreToolUse/PostToolUse), so
+ * its recall/save nudge lives in AGENTS.md (write_agents_md) instead — the one
+ * channel Codex injects on the first turn. Never clobbers; a failure never fails
+ * init. Returns 1 iff it wrote the file. */
+static int write_codex_config(const char *store, char *out_path, size_t out_cap) {
+  char proj[4096], dir[4200], exe[4096], abs_store[4200];
+  struct stat st;
+  FILE *f;
+  out_path[0] = 0;
+  store_project_dir(store, proj, sizeof proj);
+  snprintf(out_path, out_cap, "%s/.codex/config.toml", proj);
+  if (stat(out_path, &st) == 0)
+    return 0; /* never overwrite a user's Codex config */
+  snprintf(dir, sizeof dir, "%s/.codex", proj);
+  if (mkdir(dir, 0777) != 0 && errno != EEXIST) {
+    out_path[0] = 0;
+    return 0;
+  }
+  self_exe_path(exe, sizeof exe);
+  if (!realpath(store, abs_store))
+    snprintf(abs_store, sizeof abs_store, "%s", store);
+  f = fopen(out_path, "w");
+  if (!f) {
+    out_path[0] = 0;
+    return 0;
+  }
+  fputs("[mcp_servers.legend]\ncommand = \"", f);
+  json_escape_fputs(exe, f); /* JSON escaping is a valid subset of TOML basic-string escaping */
+  fputs("\"\nargs = [\"mcp-serve\"]\nenv = { LEGEND_STATE_DIR = \"", f);
+  json_escape_fputs(abs_store, f);
+  fputs("\" }\n\n"
+        "[mcp_servers.legend.tools.legend_recall]\napproval_mode = \"approve\"\n\n"
+        "[mcp_servers.legend.tools.legend_save]\napproval_mode = \"approve\"\n",
+        f);
+  fclose(f);
+  return 1;
+}
+
+/* `legend init` seeds a minimal AGENTS.md so a Codex session — which has no
+ * session/prompt hooks — still gets a first-turn nudge to recall at start and
+ * save durable facts before finishing (Codex injects AGENTS.md guidance on the
+ * first turn, the static analog of Claude's SessionStart + Stop hooks). Only
+ * when absent: never clobber a project's own AGENTS.md. Returns 1 iff written. */
+static int write_agents_md(const char *store, char *out_path, size_t out_cap) {
+  char proj[4096];
+  struct stat st;
+  FILE *f;
+  out_path[0] = 0;
+  store_project_dir(store, proj, sizeof proj);
+  snprintf(out_path, out_cap, "%s/AGENTS.md", proj);
+  if (stat(out_path, &st) == 0)
+    return 0; /* never overwrite a project's own AGENTS.md */
+  f = fopen(out_path, "w");
+  if (!f) {
+    out_path[0] = 0;
+    return 0;
+  }
+  fputs("# AGENTS.md\n\n"
+        "## Legend — long-term memory\n\n"
+        "This project uses **Legend**, a persistent deduplicated knowledge graph, "
+        "as long-term memory across sessions, via the `legend_recall` and "
+        "`legend_save` MCP tools.\n\n"
+        "- At the **start** of a session, call `legend_recall` with no focus to "
+        "load an orientation packet (project state, decisions, open questions).\n"
+        "- **Recall before you save**, and reuse canonical names verbatim.\n"
+        "- Before **finishing**, `legend_save` the durable results — decisions "
+        "with reasons, next levers, negative results, and any `changes` to current "
+        "values. Save what the code cannot hold.\n",
+        f);
+  fclose(f);
+  return 1;
+}
+
 static int cmd_init(int reset) {
   char store[4200];
   const char *env = getenv("LEGEND_STATE_DIR");
@@ -8346,9 +8421,11 @@ static int cmd_init(int reset) {
   }
   /* Idempotent status report (spec §4). */
   {
-    char cfg[4400], hooks[4400];
+    char cfg[4400], hooks[4400], codex[4400], agents[4400];
     int made = write_mcp_config(store, cfg, sizeof cfg);
     int hooks_made = write_hooks_config(store, hooks, sizeof hooks);
+    int codex_made = write_codex_config(store, codex, sizeof codex);
+    int agents_made = write_agents_md(store, agents, sizeof agents);
     fputs("{\"store\":\"", stdout);
     json_escape_fputs(store, stdout);
     printf("\",\"version\":%d,\"build\":\"" LEGEND_BUILD
@@ -8360,7 +8437,13 @@ static int cmd_init(int reset) {
     printf("\",\"mcp_config_created\":%s", made ? "true" : "false");
     fputs(",\"hooks_config\":\"", stdout);
     json_escape_fputs(hooks, stdout);
-    printf("\",\"hooks_created\":%s}\n", hooks_made ? "true" : "false");
+    printf("\",\"hooks_created\":%s", hooks_made ? "true" : "false");
+    fputs(",\"codex_config\":\"", stdout);
+    json_escape_fputs(codex, stdout);
+    printf("\",\"codex_config_created\":%s", codex_made ? "true" : "false");
+    fputs(",\"agents_md\":\"", stdout);
+    json_escape_fputs(agents, stdout);
+    printf("\",\"agents_created\":%s}\n", agents_made ? "true" : "false");
   }
   journal_append((i64)time(NULL), 1, -1);
   return 0;

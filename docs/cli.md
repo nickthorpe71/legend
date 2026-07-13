@@ -14,9 +14,17 @@ formats output for humans; without it, output is compact single-line JSON.
 
 ### `init [--reset]`
 Creates a `.legend` store in the target directory (idempotent — re-running is a
-no-op that re-prints the status) and writes a project `.mcp.json` if one does not
-already exist. The fresh store seeds the built-in ontology (32 elements, 10
-relations). `--reset` wipes an existing store back to seed.
+no-op that re-prints the status). The fresh store seeds the built-in ontology (32
+elements, 10 relations). `--reset` wipes an existing store back to seed.
+
+It also scaffolds the project for both agents, each written only if absent (never
+clobbers): for **Claude Code** a `.mcp.json` (the `legend` MCP server) and
+`.claude/settings.json` (SessionStart orientation-inject, UserPromptSubmit ambient
+recall, Stop save-reminder); for **Codex CLI** a `.codex/config.toml`
+(`[mcp_servers.legend]` + per-tool `approval_mode`) and a minimal `AGENTS.md`
+(recall-at-start / save-durable-facts nudge — Codex has no session/prompt/stop
+hooks, so AGENTS.md, injected on the first turn, is its only always-on channel).
+The `init` status JSON reports each path and whether it was created.
 
 ### `save [payload]`
 Runs one tick over the payload and prints the resulting frame. The graph is
