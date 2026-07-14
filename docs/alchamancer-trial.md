@@ -232,6 +232,32 @@ developed against the live store where the symptom exists.
    of the store, never the live one. Lesson for any future measurement — isolate
    to a copy; the live trial store is read-only-by-copy, not read-only-by-flag.
 
+Testimony 4 (alchamancer session, 2026-07-14; **countdown session 1 on
+`fcbb707`**; agent-saved in-band as `#422`). Orientation packet + saving
+(decisions `#417` multi-school-summons, mechanics, the commit) solid and trusted
+— the real payoff. Ambient per-prompt recall low-signal: every turn resolved
+`false` with the SAME top-salience candidates regardless of prompt. Two readings,
+both true: (a) **C2 landed in the wild** — those candidates were game content
+(color-signature summons, cast-fizzle toast, procedural spell drops), NOT the
+trial bookkeeping that topped the list pre-upgrade; (b) **the residual is a
+different, deeper problem** — on an ~80%-art/animation/build-bug session, lexical
+misses and BGE cosines are undifferentiated (~0.5–0.6 for everything), so the
+same salient elements surface no matter what was typed. That motivates the next
+lever (below). Recurring split: the session's most reusable lessons (the Sora
+"prompt motion BIG or it renders static" rule; the asset-arena-OOM segfault
+recipe) went to `.claude/` auto-memory, not Legend — procedural/debugging
+knowledge is the two-surface boundary (finding 8) the verdict must rule on.
+
+**Next lever — ambient abstention (`#63`).** The fix for "mostly clutter" is
+knowing when to say nothing, not better ranking. NOT the deferred cosine floor
+(BGE too compressed for an absolute threshold to separate a relevant 0.6 from an
+irrelevant 0.6). Leading idea: require a **lexical anchor** — if nothing scores
+above ~0.4 trigram, the prompt shares no vocabulary with the store, so suppress
+the ambient block instead of offering salience defaults. Would go quiet on
+"voodoo in tmp"/the segfault, stay active on "color signature summons." Prototype
++ measure on an isolated copy (observe:true); this is post-verdict unless it
+blocks usefulness.
+
 ## Watch list
 
 Checked at every check-in; most are measured by `journal_report.py`. Each has
