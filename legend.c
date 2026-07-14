@@ -5222,10 +5222,17 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     vids[1] = pl->srcops[i].ptr_pend;
     plan_relation(pl, names, tags, vids, 2, ST_ASSERTED, 1.0, 0.0, 0, 0);
   }
+  /* source is provenance FOR facts minted this call; with nothing to attach it
+   * to it must not mint a lone element named after the provenance sentence (a
+   * recurring phantom footgun). Only reify it once a listed relation exists. */
   if (!span_absent(sub->source)) {
     u32 r;
-    pl->source_pend = plan_ref(pl, sub->source, "source", NONE_U32, 0, 0);
-    for (r = 0; r < pl->rel_count; r++) {
+    int any_listed = 0;
+    for (r = 0; r < pl->rel_count; r++)
+      if (pl->rels[r].listed) { any_listed = 1; break; }
+    if (any_listed)
+      pl->source_pend = plan_ref(pl, sub->source, "source", NONE_U32, 0, 0);
+    for (r = 0; any_listed && r < pl->rel_count; r++) {
       u32 names[2], vids[2];
       u8 tags[2];
       if (!pl->rels[r].listed)
