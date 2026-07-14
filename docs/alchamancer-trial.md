@@ -258,6 +258,31 @@ the ambient block instead of offering salience defaults. Would go quiet on
 + measure on an isolated copy (observe:true); this is post-verdict unless it
 blocks usefulness.
 
+Testimony 5 (alchamancer trap-spell session, 2026-07-14; **countdown session 2
+on `fcbb707`**; agent-saved in-band as `#433`). **Strongest positive datapoint
+yet.** Resumed from compaction; the orientation packet's DEFERRED/NEXT-LEVERS
+list recorded "EFF_BANISH built + priced + labelled but NOT yet rolled — no
+teleport-trap yet," so when the user asked for the teleport trap the agent
+already knew banish was 95 % wired and which function to touch. That is the "what
+code cannot hold" value — code alone can't distinguish a deliberate deferred
+lever from dead code. Recall accurate, nothing stale. Set against Testimony 4
+(same day, low-signal on an uncovered art/debug domain) it's a clean controlled
+contrast: **recall value tracks domain coverage.** Two issues raised, both now
+addressed dev-side: (a) the source phantom-mint footgun (finding 10); (b) `#424`
+summary bloat → split into children (`#66`, next-batch nudge).
+
+10. **`source` without facts minted a phantom element** (2026-07-13/14, filed
+    in-band as `#431`/`#432`; same class as the resolves-phantom `#221`/finding
+    6, and it bit this Claude too via short source labels). `source` is
+    provenance *for* facts minted in the call; the save path reified it
+    unconditionally, so a `source` with no facts (elements-only, or nothing)
+    minted a lone element named after the whole provenance sentence, costing a
+    merge + a round-trip each time. **Fixed `ec197d7`**: the source is reified
+    only once a listed relation exists to attach it to; `source` + facts is
+    unchanged, `source` alone is now a clean no-op. check.sh green (the corpus
+    only ever passes `source` with facts, so no metric moved). Ships in the next
+    trial-binary upgrade.
+
 ## Watch list
 
 Checked at every check-in; most are measured by `journal_report.py`. Each has
