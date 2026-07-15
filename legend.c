@@ -3380,6 +3380,37 @@ static int elem_is_ambient_noise(const Hypergraph *g, u32 e) {
          (nl == 7 && memcmp(n, "pointer", 7) == 0);
 }
 
+/* Best NAME-only trigram containment of the query across live elements — the
+ * ambient-abstention anchor. Names are content-specific; a match against a
+ * summary's prose (which shares common words with any prompt) is not a real
+ * anchor, so abstention uses this stricter signal rather than the scan score
+ * (which also counts summary containment). */
+static double tier2_name_anchor(const Hypergraph *g, const char *q, u32 qlen) {
+  static U32Vec qtri;
+  double best = 0.0;
+  u32 e, k;
+  tier2_trigrams(q, qlen, &qtri);
+  for (e = 0; e < g->element_count; e++) {
+    const Element *el = &g->elements[e];
+    if (el->redirect != NONE_U32)
+      continue;
+    for (k = 0; k < el->names.count; k++) {
+      double s;
+      tier2_trigrams(str_ptr(&g->strs, el->names.v[k]),
+                     str_len(&g->strs, el->names.v[k]), &g_t2_target);
+      /* name-coverage: what fraction of the NAME's trigrams the prompt contains
+       * — i.e. does the prompt mention (most of) this element's name. The other
+       * direction (query-coverage) would abstain a long prompt that names an
+       * entity in passing. */
+      s = trigram_containment(g_t2_target.v, g_t2_target.count, qtri.v,
+                              qtri.count);
+      if (s > best)
+        best = s;
+    }
+  }
+  return best;
+}
+
 /* The tier-2 focus-miss policy, shared by the save-path focus walk and
  * tick_recall: auto-resolve only a slam-dunk (a unique, strong lexical match —
  * containment saturates on shared summary words, so a moderate score is not
@@ -3406,7 +3437,7 @@ static u32 tier2_focus_miss(const Hypergraph *g, const char *q, u32 qlen,
    * anchor shares no real vocabulary with the store — an off-domain prompt whose
    * candidate list would just be clutter. Surface nothing there; a deliberate
    * recall always gets the full list (lexical + semantic/backfill). */
-  if (!ambient || (scan.count > 0 && scan.v[0].score >= TIER2_AMBIENT_ANCHOR)) {
+  if (!ambient || tier2_name_anchor(g, q, qlen) >= TIER2_AMBIENT_ANCHOR) {
     for (c = 0; c < scan.count && c < TIER2_CAND_CAP; c++)
       scored_push(cands, scan.v[c].elem, scan.v[c].score);
     if (!tier2_semantic(g, cands, start, TIER2_LIST_CAP, q, qlen))
@@ -8621,7 +8652,9 @@ static const char MCP_INSTRUCTIONS[] =
     "(7) To update an element's summary, resubmit the element with the new "
     "summary (latest write wins); `changes` is for domain property VALUES "
     "(a fact object becomes an element named by it, so never pass prose as "
-    "a value -- prose belongs in summaries). (8) Prefer few precise "
+    "a value -- prose belongs in summaries). When a summary outgrows a line, "
+    "split the detail into child elements and keep a short core -- an "
+    "everything-dump summary buries the signal. (8) Prefer few precise "
     "elements and durable facts; over-extraction buries the signal. The "
     "highest-value saves are what the code cannot hold: next levers, "
     "negative results, decisions with reasons. A choice that settles a design "
@@ -8656,7 +8689,9 @@ static const char MCP_TOOLS_JSON[] =
     "phantom, retract it). To UPDATE a summary resubmit the "
     "element (latest write wins) -- `changes` is for domain property values, "
     "and fact objects become element names, so keep them short (prose goes "
-    "in summaries). Best saves: what code cannot hold (next levers, negative "
+    "in summaries); when a summary outgrows a line, split the detail into "
+    "child elements and keep a short core. Best saves: what code cannot hold "
+    "(next levers, negative "
     "results, reasons); a choice that settles a design question is a decision "
     "even when the request looked cosmetic; measurements include how to "
     "reproduce them. Prefer "
