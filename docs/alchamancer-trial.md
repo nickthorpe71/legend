@@ -432,6 +432,30 @@ of the live-capture hypothesis specifically. Instrumentation: testimony ritual
 each substantive session (watch #9), `journal_report.py` pre/post the C1+C2
 landing, and the Claude-vs-Codex axis once both agents drive the shared store.
 
+## VERDICT RENDERED 2026-07-15 — GO (deepen) · `#68`
+
+Three `fcbb707` countdown sessions (T4/T5/T6). **Legend earns its cost → GO, not
+wind-down.** The evidence is consistent across all six testimonies:
+
+- **What reliably delivers:** the orientation packet + durable saved knowledge —
+  decisions, mechanics, **deferred levers**, **procedural recipes**. The trial's
+  two highest-value moments (T5 deferred-banish lever → next request; T6 icon
+  recipe → drove gen + the blur fix) both came from here and saved rediscovery
+  the code *and* the compaction summary could not provide.
+- **Where the value isn't:** in-flight state (the summary carries it better),
+  uncovered domains (T4), and ambient per-prompt recall — the weakest surface.
+- **Question the trial resolved:** the two-surface boundary is *durable-and-
+  cross-session (→ Legend) vs in-flight (→ summary)*, NOT procedural-vs-domain.
+- **Ceiling named:** recall quality ≠ utilization (T6 flood-fill under-applied).
+
+**Branch: GO-DEEPEN** — polish the proven core, fix the known weak spots on
+alchamancer, defer breadth (more projects / Codex axis) until the core is solid.
+GO-deepen backlog: (1) **ambient abstention** (`#63`/task 11) — lexical-anchor
+gating so ambient goes quiet off-domain; (2) **save papercuts** — `source`
+phantom fixed (`ec197d7`), `changes.from` mismatch phantom queued (`legend.c`
+~5037, reuse-only for `from`); (3) **summary-split nudge** (`#66`/task 12, next
+instruction batch); (4) bundle all into the next deliberate trial-binary upgrade.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
