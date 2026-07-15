@@ -3107,6 +3107,12 @@ static const double TIER2_AUTO_MARGIN = 0.15; /* min lead over the 2nd candidate
  * leads; deliberate recalls (observe:false) are untouched, and nothing is
  * dropped — the frame still lists them, just lower. */
 static const double TIER2_AMBIENT_BOOKKEEPING_FACTOR = 0.5;
+/* Ambient abstention: a passive sweep whose best lexical match is below this
+ * shares no real vocabulary with the store — almost certainly an off-domain
+ * prompt (an art critique, a stack trace) whose semantic ranking is just the
+ * top-salience defaults as clutter. Below it, an ambient recall skips the
+ * semantic/backfill append and stays quiet; deliberate recalls never abstain. */
+static const double TIER2_AMBIENT_ANCHOR = 0.6;
 enum { TIER2_LIST_CAP = 100 }; /* miss candidate list bound after salience backfill */
 enum { TIER2_SEMANTIC_CAP = 30 }; /* shorter list when semantic: the target ranks high,
                                      so a fraction of the salience roster suffices */
@@ -3396,10 +3402,16 @@ static u32 tier2_focus_miss(const Hypergraph *g, const char *q, u32 qlen,
     *out_score = scan.v[0].score;
     return scan.v[0].elem;
   }
-  for (c = 0; c < scan.count && c < TIER2_CAND_CAP; c++)
-    scored_push(cands, scan.v[c].elem, scan.v[c].score);
-  if (!tier2_semantic(g, cands, start, TIER2_LIST_CAP, q, qlen))
-    tier2_backfill(g, cands, start, TIER2_LIST_CAP);
+  /* Ambient abstention: a passive sweep whose best lexical hit doesn't clear the
+   * anchor shares no real vocabulary with the store — an off-domain prompt whose
+   * candidate list would just be clutter. Surface nothing there; a deliberate
+   * recall always gets the full list (lexical + semantic/backfill). */
+  if (!ambient || (scan.count > 0 && scan.v[0].score >= TIER2_AMBIENT_ANCHOR)) {
+    for (c = 0; c < scan.count && c < TIER2_CAND_CAP; c++)
+      scored_push(cands, scan.v[c].elem, scan.v[c].score);
+    if (!tier2_semantic(g, cands, start, TIER2_LIST_CAP, q, qlen))
+      tier2_backfill(g, cands, start, TIER2_LIST_CAP);
+  }
   /* Ambient miss: demote bookkeeping kinds, then re-sort the whole pool
    * (lexical + semantic together) by the adjusted score. Reorder only — no
    * candidate is dropped, so presence-based recall is unchanged and deliberate
