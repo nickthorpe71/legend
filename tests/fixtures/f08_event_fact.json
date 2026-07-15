@@ -1,6 +1,6 @@
 {
   "name": "f08_event_fact",
-  "notes": "A general-form fact with both `from` and `to` slots is event-shaped and triggers supersession exactly as a `changes` entry does (spec §5). Confidence 0.8 clears the supersession gate without `intervened` (the general fact form has no intervened option — spec §5 lists status/confidence/salience/src only). Event-shaped facts keep exactly their submitted slots (no implicit subject); the cache carries the superseding write's confidence. Ids (reconciled at M2, 0-based seeds): #32 max_speed, #33 value, #34 '5', #35 current_value, #36 '7'; rel:10 change event, rel:11 first cache, rel:13 fact event, rel:14 new cache (rel:12 is the derived_from meta).",
+  "notes": "A general-form fact with both `from` and `to` slots is event-shaped and triggers supersession exactly as a `changes` entry does (spec §5). Confidence 0.8 clears the supersession gate without `intervened` (the general fact form has no intervened option — spec §5 lists status/confidence/salience/src only). Event-shaped facts keep exactly their submitted slots (no implicit subject); the cache carries the superseding write's confidence. Ids (reconciled at M2, 0-based seeds): #42 max_speed, #43 value, #44 '5', #45 current_value, #46 '7'; rel:10 change event, rel:11 first cache, rel:13 fact event, rel:14 new cache (rel:12 is the derived_from meta).",
   "steps": [
     { "now": 1780272000, "verb": "init", "payload": null, "expect": null },
     {
@@ -23,10 +23,10 @@
         "store": "<store>",
         "resolution": [],
         "writes": {
-          "minted_elements": [ { "ref": "#36", "name": "7" } ],
+          "minted_elements": [ { "ref": "#46", "name": "7" } ],
           "reused_elements": [
-            { "ref": "#32", "name": "max_speed" },
-            { "ref": "#34", "name": "5" }
+            { "ref": "#42", "name": "max_speed" },
+            { "ref": "#44", "name": "5" }
           ],
           "minted_relations": [ "rel:13", "rel:14" ],
           "reused_relations": [],
@@ -55,7 +55,7 @@
         "near_matches": [],
         "conflicts": [],
         "template_drift": [],
-        "focus": [ { "ref": "#32", "name": "max_speed" } ],
+        "focus": [ { "ref": "#42", "name": "max_speed" } ],
         "state": [
           { "ref": "rel:14",
             "attrs": { "subject": "max_speed", "current_value": "7" },

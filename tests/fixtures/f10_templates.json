@@ -1,6 +1,6 @@
 {
   "name": "f10_templates",
-  "notes": "Create-on-save template (spec §5): the character template and an instance using it land in the same save; templates lead the payload walk and relation-id assignment (amended pin §3.17, ratified). Missing 'arc' on Maren is fine (descriptive, never enforced); Ilex's 'theme_song' triggers template_drift. Multi-value attr 'wants' = one relation per value, reads back as an array (§5 shape rule, README assumption 23). A template-kind instance gets a frame section keyed by its kind name (spec §7). Ids: #33 character, #34-#37 role/wants/flaw/arc, #38 Maren, #39 mentor, #40 find successor, #41 atonement, #42 pride, #43 Ilex, #44 rival, #45 theme_song, #46 storm coda. Rels: rel:13-16 expects, rel:17-20 Maren attrs, rel:21 instance_of, rel:22-23 Ilex attrs, rel:24 instance_of.",
+  "notes": "Create-on-save template (spec §5): the character template and an instance using it land in the same save; templates lead the payload walk and relation-id assignment (amended pin §3.17, ratified). Missing 'arc' on Maren is fine (descriptive, never enforced); Ilex's 'theme_song' triggers template_drift. Multi-value attr 'wants' = one relation per value, reads back as an array (§5 shape rule, README assumption 23). A template-kind instance gets a frame section keyed by its kind name (spec §7). Ids: #43 character, #44-#47 role/wants/flaw/arc, #48 Maren, #49 mentor, #50 find successor, #51 atonement, #52 pride, #53 Ilex, #54 rival, #55 theme_song, #56 storm coda. Rels: rel:13-16 expects, rel:17-20 Maren attrs, rel:21 instance_of, rel:22-23 Ilex attrs, rel:24 instance_of.",
   "steps": [
     { "now": 1780272000, "verb": "init", "payload": null, "expect": null },
     {
@@ -24,16 +24,16 @@
         "resolution": [],
         "writes": {
           "minted_elements": [
-            { "ref": "#32", "name": "character" },
-            { "ref": "#33", "name": "role" },
-            { "ref": "#34", "name": "wants" },
-            { "ref": "#35", "name": "flaw" },
-            { "ref": "#36", "name": "arc" },
-            { "ref": "#37", "name": "Maren" },
-            { "ref": "#38", "name": "mentor" },
-            { "ref": "#39", "name": "find successor" },
-            { "ref": "#40", "name": "atonement" },
-            { "ref": "#41", "name": "pride" }
+            { "ref": "#42", "name": "character" },
+            { "ref": "#43", "name": "role" },
+            { "ref": "#44", "name": "wants" },
+            { "ref": "#45", "name": "flaw" },
+            { "ref": "#46", "name": "arc" },
+            { "ref": "#47", "name": "Maren" },
+            { "ref": "#48", "name": "mentor" },
+            { "ref": "#49", "name": "find successor" },
+            { "ref": "#50", "name": "atonement" },
+            { "ref": "#51", "name": "pride" }
           ],
           "reused_elements": [],
           "minted_relations": [ "rel:10", "rel:11", "rel:12", "rel:13",
@@ -63,12 +63,12 @@
         "resolution": [],
         "writes": {
           "minted_elements": [
-            { "ref": "#42", "name": "Ilex" },
-            { "ref": "#43", "name": "rival" },
-            { "ref": "#44", "name": "theme_song" },
-            { "ref": "#45", "name": "storm coda" }
+            { "ref": "#52", "name": "Ilex" },
+            { "ref": "#53", "name": "rival" },
+            { "ref": "#54", "name": "theme_song" },
+            { "ref": "#55", "name": "storm coda" }
           ],
-          "reused_elements": [ { "ref": "#32", "name": "character" } ],
+          "reused_elements": [ { "ref": "#42", "name": "character" } ],
           "minted_relations": [ "rel:19", "rel:20" ],
           "reused_relations": [],
           "retracted": [],
@@ -77,10 +77,10 @@
         "near_matches": [],
         "conflicts": [],
         "template_drift": [
-          { "instance": "#42", "kind": "character", "unexpected": ["theme_song"] }
+          { "instance": "#52", "kind": "character", "unexpected": ["theme_song"] }
         ]
       },
-      "notes": "#45 theme_song is an attribute-name mint (audit-listed in minted_elements); 'role' is now vocabulary so its reuse is excluded"
+      "notes": "#55 theme_song is an attribute-name mint (audit-listed in minted_elements); 'role' is now vocabulary so its reuse is excluded"
     },
     {
       "now": 1781222400, "verb": "recall",
@@ -98,13 +98,13 @@
         "near_matches": [],
         "conflicts": [],
         "template_drift": [],
-        "focus": [ { "ref": "#37", "name": "Maren", "kind": "character" } ],
+        "focus": [ { "ref": "#47", "name": "Maren", "kind": "character" } ],
         "state": [],
         "decisions": [],
         "constraints": [],
         "open": [],
         "character": [
-          { "ref": "#37", "name": "Maren", "role": "mentor",
+          { "ref": "#47", "name": "Maren", "role": "mentor",
             "wants": ["find successor", "atonement"], "flaw": "pride",
             "date": "2026-06-10" }
         ],

@@ -60,7 +60,7 @@ if [ $rc0 -eq 0 ] && [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ "$out1" = "$out2" ] \
    && printf '%s' "$out1" | grep -q '"hooks_created":false' \
    && printf '%s' "$out1" | grep -q "\"store\":\"$S1\"" \
    && printf '%s' "$out1" | grep -q '"version":1' \
-   && printf '%s' "$out1" | grep -q '"elements":32,"relations":10,"clock":0' \
+   && printf '%s' "$out1" | grep -q '"elements":42,"relations":10,"clock":0' \
    && [ -s "$TMPROOT/.mcp.json" ] && [ -s "$TMPROOT/.claude/settings.json" ] \
    && python3 -c 'import json,sys; json.load(open(sys.argv[1])); json.load(open(sys.argv[2]))' \
         "$TMPROOT/.mcp.json" "$TMPROOT/.claude/settings.json"; then
@@ -120,7 +120,7 @@ if [ $rc -eq 0 ] && printf '%s' "$out" | python3 -c '
 import json, sys
 f = json.load(sys.stdin)
 ov = f["overview"]
-assert ov["elements"] == 32 and ov["relations"] == 10 and ov["clock"] == 1, ov
+assert ov["elements"] == 42 and ov["relations"] == 10 and ov["clock"] == 1, ov
 assert ov["scope"] is None and ov["active"] == [], ov
 assert "focus" not in f
 assert f["state"] == [] and f["recent"] == [] and f["related"] == []

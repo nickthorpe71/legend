@@ -14,7 +14,7 @@
         "facts": [ { "s": "jump_height", "p": "part_of", "o": "jump_physics" } ]
       },
       "expect": null,
-      "notes": "prelude ids: #33 jump_physics, #34 concept, #35 jump_height; rel:13 part_of fact, rel:14 instance_of"
+      "notes": "prelude ids: #43 jump_physics, #44 concept, #45 jump_height; rel:13 part_of fact, rel:14 instance_of"
     },
     {
       "now": 1782864000,
@@ -37,7 +37,7 @@
         "conflicts": [],
         "template_drift": [],
         "focus": [
-          { "ref": "#32", "name": "jump_physics", "kind": "concept",
+          { "ref": "#42", "name": "jump_physics", "kind": "concept",
             "summary": "the platformer's jump feel system" }
         ],
         "state": [],

@@ -730,6 +730,7 @@ static ByteBuf tbb1, tbb2;
 static void fresh_graph(Hypergraph *g) {
     graph_free(g);
     ontology_seed(g);
+    seed_ext_vocab(g); /* mirror cmd_init: extended vocab is part of a live store */
 }
 
 static void run_save_on(Hypergraph *g, const char *payload) {
@@ -834,7 +835,7 @@ static void test_iso_format(void) {
 static void test_ontology_ids(void) {
     u32 i;
     fresh_graph(&tg);
-    CHECK(tg.element_count == WK_ELEMENT_COUNT && tg.element_count == 32);
+    CHECK(tg.element_count == WK_ELEMENT_COUNT + EXT_COUNT); /* 32 core + 10 ext */
     CHECK(tg.relation_count == 10);
     CHECK(tg.clock == 0);
     for (i = 0; i < WK_ELEMENT_COUNT; i++)
@@ -1228,7 +1229,7 @@ static void test_snapshot_corrupt(void) {
     CHECK(len > 200 && len < sizeof mut);
     eoff = snap_elements_off(tbb1.v);
     roff = snap_relations_off(tbb1.v);
-    CHECK(rd32le(tbb1.v + eoff) == 32 && rd32le(tbb1.v + roff) == 10);
+    CHECK(rd32le(tbb1.v + eoff) == 42 && rd32le(tbb1.v + roff) == 10);
 
     /* truncation at every prefix: declared-length mismatch, cleanly */
     for (n = 0; n < len; n += (n < 256 ? 1 : 17)) {
@@ -1357,7 +1358,7 @@ static void test_snapshot_corrupt(void) {
         graph_free(&tg2);
         TRY((void)snapshot_load(&tg2, t_corrupt_dir), failed);
         CHECK(!failed);
-        CHECK(tg2.element_count == 32 && tg2.relation_count == 10);
+        CHECK(tg2.element_count == 42 && tg2.relation_count == 10);
     }
 }
 
@@ -2267,10 +2268,10 @@ static void test_orientation_frame(void) {
     CHECK(twr.orientation == 1 && twr.focus_elems.count == 0);
     CHECK(twr.tick == 2);
     capture_frame(40, 2, -1);
-    /* 32 seeds + proj1/c1/q1 + the constraint's current_standing/active */
-    CHECK(strstr(t_frame, "\"overview\":{\"elements\":37,\"relations\":") != NULL);
+    /* 42 seeds (32 core + 10 ext) + proj1/c1/q1 + current_standing/active */
+    CHECK(strstr(t_frame, "\"overview\":{\"elements\":47,\"relations\":") != NULL);
     CHECK(strstr(t_frame, "\"clock\":2") != NULL);
-    CHECK(strstr(t_frame, "\"scope\":{\"ref\":\"#32\",\"name\":\"proj1\",\"kind\":\"project\","
+    CHECK(strstr(t_frame, "\"scope\":{\"ref\":\"#42\",\"name\":\"proj1\",\"kind\":\"project\","
                           "\"summary\":\"the project\"}") != NULL);
     CHECK(strstr(t_frame, "\"focus\":[") == NULL); /* overview replaces focus */
     CHECK(strstr(t_frame, "\"active\":[{\"ref\"") != NULL);

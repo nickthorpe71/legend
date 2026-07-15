@@ -14,8 +14,8 @@
         "resolution": [],
         "writes": {
           "minted_elements": [
-            { "ref": "#32", "name": "Mercury" },
-            { "ref": "#33", "name": "planet" }
+            { "ref": "#42", "name": "Mercury" },
+            { "ref": "#43", "name": "planet" }
           ],
           "reused_elements": [],
           "minted_relations": [],
@@ -39,7 +39,7 @@
         "store": "<store>",
         "resolution": [],
         "writes": {
-          "minted_elements": [ { "ref": "#34", "name": "Mercury" } ],
+          "minted_elements": [ { "ref": "#44", "name": "Mercury" } ],
           "reused_elements": [ { "ref": "#28", "name": "person" } ],
           "minted_relations": [],
           "reused_relations": [],
@@ -61,15 +61,15 @@
         "at": "2026-06-12T00:00:00Z",
         "store": "<store>",
         "resolution": [
-          { "at": "facts[0].s", "submitted": "Mercury", "ref": "#34",
+          { "at": "facts[0].s", "submitted": "Mercury", "ref": "#44",
             "name": "Mercury", "via": "homonym", "score": 1 }
         ],
         "writes": {
           "minted_elements": [
-            { "ref": "#35", "name": "orbits" },
-            { "ref": "#36", "name": "the Sun" }
+            { "ref": "#45", "name": "orbits" },
+            { "ref": "#46", "name": "the Sun" }
           ],
-          "reused_elements": [ { "ref": "#34", "name": "Mercury" } ],
+          "reused_elements": [ { "ref": "#44", "name": "Mercury" } ],
           "minted_relations": [ "rel:12" ],
           "reused_relations": [],
           "retracted": [],
@@ -79,7 +79,7 @@
         "conflicts": [],
         "template_drift": []
       },
-      "notes": "no kind context in a fact slot, so the tiebreak is last_seen: #35 (tick 2) beats #33 (tick 1)"
+      "notes": "no kind context in a fact slot, so the tiebreak is last_seen: #45 (tick 2) beats #43 (tick 1)"
     }
   ]
 }

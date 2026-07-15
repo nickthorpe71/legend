@@ -48,7 +48,7 @@
         ]
       },
       "expect": null,
-      "notes": "prelude: homonym pair via new:true. Assumed ids: #33 Mercury(planet), #34 planet, #35 Mercury(god), #36 god, #37 Hermes (README assumption 2)"
+      "notes": "prelude: homonym pair via new:true. Assumed ids: #43 Mercury(planet), #44 planet, #45 Mercury(god), #46 god, #47 Hermes (README assumption 2)"
     },
     {
       "now": 1782864006,
@@ -59,8 +59,8 @@
           "code": "ambiguous_ref",
           "at": "merge[0].from",
           "candidates": [
-            { "ref": "#32", "name": "Mercury", "kind": "planet", "score": 1 },
-            { "ref": "#34", "name": "Mercury", "kind": "god", "score": 1 }
+            { "ref": "#42", "name": "Mercury", "kind": "planet", "score": 1 },
+            { "ref": "#44", "name": "Mercury", "kind": "god", "score": 1 }
           ]
         }
       },

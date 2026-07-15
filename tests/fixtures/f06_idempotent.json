@@ -1,6 +1,6 @@
 {
   "name": "f06_idempotent",
-  "notes": "The three §9 idempotent no-ops all return normal frames: fact re-submit dedupes to reused_relations with a support bump; re-retracting a Retracted rel:id echoes in writes.retracted; re-merging an already-merged pair echoes in writes.merged (README assumption 15). Retries are the LLM norm. Ids (reconciled at M2, 0-based seeds): #32 alembic, #33 contains, #34 quicksilver, rel:10 the fact; #35 colour, #36 color variant.",
+  "notes": "The three §9 idempotent no-ops all return normal frames: fact re-submit dedupes to reused_relations with a support bump; re-retracting a Retracted rel:id echoes in writes.retracted; re-merging an already-merged pair echoes in writes.merged (README assumption 15). Retries are the LLM norm. Ids (reconciled at M2, 0-based seeds): #42 alembic, #43 contains, #44 quicksilver, rel:10 the fact; #45 colour, #46 color variant.",
   "steps": [
     { "now": 1780272000, "verb": "init", "payload": null, "expect": null },
     {
@@ -19,8 +19,8 @@
         "writes": {
           "minted_elements": [],
           "reused_elements": [
-            { "ref": "#32", "name": "alembic" },
-            { "ref": "#34", "name": "quicksilver" }
+            { "ref": "#42", "name": "alembic" },
+            { "ref": "#44", "name": "quicksilver" }
           ],
           "minted_relations": [],
           "reused_relations": [ { "ref": "rel:10", "support_count": 2, "promoted": false } ],
@@ -75,7 +75,7 @@
     },
     {
       "now": 1780790400, "verb": "save",
-      "payload": { "merge": [ { "from": "#36", "into": "#35" } ] },
+      "payload": { "merge": [ { "from": "#46", "into": "#45" } ] },
       "expect": {
         "tick": 6,
         "at": "2026-06-07T00:00:00Z",
@@ -85,14 +85,14 @@
           "minted_elements": [], "reused_elements": [],
           "minted_relations": [], "reused_relations": [],
           "retracted": [],
-          "merged": [ { "from": "#36", "into": "#35" } ]
+          "merged": [ { "from": "#46", "into": "#45" } ]
         },
         "near_matches": [], "conflicts": [], "template_drift": []
       }
     },
     {
       "now": 1780876800, "verb": "save",
-      "payload": { "merge": [ { "from": "#36", "into": "#35" } ] },
+      "payload": { "merge": [ { "from": "#46", "into": "#45" } ] },
       "expect": {
         "tick": 7,
         "at": "2026-06-08T00:00:00Z",
@@ -102,11 +102,11 @@
           "minted_elements": [], "reused_elements": [],
           "minted_relations": [], "reused_relations": [],
           "retracted": [],
-          "merged": [ { "from": "#36", "into": "#35" } ]
+          "merged": [ { "from": "#46", "into": "#45" } ]
         },
         "near_matches": [], "conflicts": [], "template_drift": []
       },
-      "notes": "#36 follows its redirect tombstone to #35; merging an element into itself is the idempotent no-op (spec §9)"
+      "notes": "#46 follows its redirect tombstone to #45; merging an element into itself is the idempotent no-op (spec §9)"
     }
   ]
 }

@@ -2071,6 +2071,23 @@ enum { ST_SUPERSEDED = 3, ST_RETRACTED = 4 };
  * of the slot label ("subject", "uses", ...), `value` is the Term it points
  * at. A relation is just an array of these. */
 enum { TERM_ELEM = 0, TERM_REL = 1 };
+
+/* Extended-vocabulary index enum (names + rationale at EXT_NAMES, below the
+ * legacy WK table). Declared here so the Hypergraph struct can size g->wk_ext. */
+enum {
+  EXT_CAUSED = 0,
+  EXT_CORRELATED_WITH,
+  EXT_ENABLES,
+  EXT_PREVENTS,
+  EXT_SUBCLASS_OF,
+  EXT_ANTECEDENT_OF,
+  EXT_NEGATED,
+  EXT_UNCERTAIN,
+  EXT_NON_ACTUAL,
+  EXT_GENERAL,
+  EXT_COUNT
+};
+
 typedef struct {
   u8 tag;
   u32 id;
@@ -2218,6 +2235,9 @@ typedef struct {
   CurEntry *cur_slots; /* "what is the current value of (target, property)?" ->
                           cache rel; target == NONE_U32 = empty */
   u32 cur_cap, cur_used;
+  u32 wk_ext[EXT_COUNT]; /* resolved element id of each extended-vocab name in
+                            THIS store; set by seed_ext_vocab at init and load,
+                            never a raw enum id (see EXT_NAMES) */
 } Hypergraph;
 
 static void graph_free(Hypergraph *g) {
@@ -2722,6 +2742,27 @@ static const char *const WK_NAMES[WK_ELEMENT_COUNT] = {
     "task",       "pointer",    "project",     "person",     "event",
     "file",       "commit"};
 
+/* Extended vocabulary (Pearl / Book-of-Why causal representation, new_foundation
+ * §16.3). Unlike the legacy core (ids 0..WK_ELEMENT_COUNT-1, verified by name in
+ * the snapshot reader), these do NOT sit at fixed ids: a store seeded before this
+ * vocabulary existed already occupies #32+, so the extended names are seeded
+ * contiguously on a fresh init but APPENDED on load of an older store. Every use
+ * resolves through g->wk_ext[] -- never a raw id.
+ *
+ *  - caused / correlated_with / enables / prevents: causal-relation predicates.
+ *    caused/enables/prevents carry a rung-2 causal claim; correlated_with is
+ *    rung-1 co-occurrence. Kept distinct so retrieval never promotes correlation
+ *    to causation (the core Book-of-Why invariant).
+ *  - subclass_of: taxonomy / cone membership.  antecedent_of: conditional shape
+ *    ("Y holds if X") -- substrate for later forward-chaining / counterfactuals.
+ *  - negated / uncertain / non_actual / general: behavioral modals reified as
+ *    meta-relations on a claim (intervened is legacy #21).
+ *
+ * The EXT_* index enum lives before the Hypergraph struct (g->wk_ext sizing). */
+static const char *const EXT_NAMES[EXT_COUNT] = {
+    "caused",   "correlated_with", "enables",    "prevents", "subclass_of",
+    "antecedent_of", "negated",    "uncertain",  "non_actual", "general"};
+
 typedef struct {
   u8 kind;             /* WK_KIND_* */
   const char *summary; /* the kind element's one prose slot */
@@ -2938,6 +2979,38 @@ static u32 resolve_tier1_n(const Hypergraph *g, const char *norm, u32 nlen,
 static u32 resolve_tier1(const Hypergraph *g, const char *norm, u32 nlen,
                          u32 want_kind) {
   return resolve_tier1_n(g, norm, nlen, want_kind, NULL);
+}
+
+/* Reconcile the extended vocabulary (EXT_NAMES) into this store: adopt an
+ * element already carrying the name -- a pre-upgrade store may hold one as an
+ * ordinary predicate, or a fresh store just minted it -- else mint it, recording
+ * the resolved id in g->wk_ext. Idempotent, so it is safe to run on every load;
+ * an older store gains the vocabulary (appended past its existing ids) the first
+ * time it is opened by this build. Shared by the init seed and the snapshot
+ * reader so both paths converge on the same vocabulary. */
+static void seed_ext_vocab(Hypergraph *g) {
+  u32 i;
+  for (i = 0; i < EXT_COUNT; i++) {
+    u32 len = (u32)strlen(EXT_NAMES[i]);
+    u32 nlen = normalize_into_scratch(EXT_NAMES[i], len);
+    u32 id = resolve_tier1(g, g_norm_buf, nlen, NONE_U32);
+    if (id == NONE_U32)
+      id = mint_element(g, EXT_NAMES[i], len, 1.0, 0.0, 0);
+    g->wk_ext[i] = id;
+  }
+}
+
+/* Is `id` a protected vocabulary element (legacy core 0..WK_ELEMENT_COUNT-1 or
+ * an extended-vocab name)? Renaming or merging one away would break resolution
+ * of every claim that uses it. */
+static int is_core_vocab(const Hypergraph *g, u32 id) {
+  u32 i;
+  if (id < WK_ELEMENT_COUNT)
+    return 1;
+  for (i = 0; i < EXT_COUNT; i++)
+    if (g->wk_ext[i] == id)
+      return 1;
+  return 0;
 }
 
 static const char *elem_name(const Hypergraph *g, u32 id) {
@@ -4843,7 +4916,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
        * snapshot reader verifies elements 0..31 by name, so a rename
        * here would brick the store it just saved */
       if (pl->pends[name_pend].existing != NONE_U32 &&
-          pl->pends[name_pend].existing < WK_ELEMENT_COUNT) {
+          is_core_vocab(pl->g, pl->pends[name_pend].existing)) {
         snprintf(path, sizeof path, "elements[%u].rename_to", i);
         fail(ERR_PARSE, path, "cannot rename a core vocabulary element");
       }
@@ -5199,7 +5272,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     MergeOp op;
     snprintf(path, sizeof path, "merge[%u].from", i);
     op.from_elem = plan_precise_elem(pl, m->from, path);
-    if (op.from_elem < WK_ELEMENT_COUNT)
+    if (is_core_vocab(pl->g, op.from_elem))
       fail(ERR_PARSE, path, "cannot merge away a core vocabulary element");
     snprintf(path, sizeof path, "merge[%u].into", i);
     op.into_elem = plan_precise_elem(pl, m->into, path);
@@ -7916,6 +7989,7 @@ static int snapshot_load(Hypergraph *g, const char *store) {
     }
   }
   rebuild_indices(g);
+  seed_ext_vocab(g); /* older stores gain the extended vocabulary on open */
   return 1;
 }
 
@@ -8515,6 +8589,7 @@ static int cmd_init(int reset) {
   }
   if (!snapshot_load(&g_graph, store)) {
     ontology_seed(&g_graph);
+    seed_ext_vocab(&g_graph);
     snapshot_write(&g_graph, store);
   }
   /* Idempotent status report (spec §4). */
