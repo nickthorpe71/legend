@@ -68,6 +68,23 @@ lines). Divergence means a determinism bug or a hand-edited store — bisect by
 truncating the journal. Replay runs with `LEGEND_EMBED=0`; embeddings never
 affect the snapshot (semantic ranking only shapes frame candidate lists).
 
+**Byte-identical replay holds within one binary version, NOT across a
+fix-bearing upgrade.** A bug fix that changes write semantics makes any journal
+op that relied on the old behavior replay differently. Known divergence
+(observed 2026-07-15, under BOTH the pre-causal `3bf188a` and causal `2c42c74`
+binaries, so not caused by either): replay fails at **line 335 / ts
+1784059486**, a `merge` whose `from` is a `source`-phantom element — minted by
+the buggy `source`-without-facts path under `fcbb707` (line 334), then merged
+away. Post-`ec197d7` (the source-phantom fix) that element is never minted, so
+the merge can't find it. This is expected across the mid-trial fixes, not store
+corruption: **the live snapshot stays the source of truth** (the warm server and
+CLI load it directly; replay is only the diagnosis tool). The causal-vocab
+upgrade (`2c42c74`) adds a second, benign cross-binary difference — extended
+vocab is *appended* on an old store but *seeded at #32–41* on a fresh replay, so
+element ids shift. To restore clean byte-replay one would re-seed the store from
+its journal under a single binary; deferred (diagnostic-only, and blocked behind
+the source-phantom divergence anyway).
+
 **2. Rejection log** — how often the calling LLM's payloads bounce, and why
 (this measures the MCP instructions' quality, which no gate covers):
 
