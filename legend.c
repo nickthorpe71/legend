@@ -5032,18 +5032,22 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     property_pend = plan_ref(pl, c->property, path, NONE_U32, 0, 0);
     cn = plan_curname_peek(pl, property_pend);
     plan_prior_peek(pl, target_pend, cn, &prior);
-    if (!span_absent(c->from)) {
-      snprintf(path, sizeof path, "changes[%u].from", i);
-      from_pend = plan_ref(pl, c->from, path, NONE_U32, 0, 1);
-    } else if (prior.found) {
-      /* from-fill (spec §5): the filled value counts as a
-       * write-position touch */
+    if (prior.found) {
+      /* the store's actual prior is authoritative and already an element, so it
+       * fills `from` — a caller-supplied `from` that disagrees is a mismatch we
+       * must NOT mint into a phantom value-element (it just clutters the graph).
+       * The filled value counts as a write-position touch (spec §5). */
       if (prior.staged)
         from_pend = prior.val_id;
       else if (prior.val_tag == TERM_ELEM)
         from_pend = plan_pend_for_elem(pl, prior.val_id);
       if (from_pend != NONE_U32)
         plan_touch(pl, from_pend, 1);
+    } else if (!span_absent(c->from)) {
+      /* no stored prior: the explicit `from` is the only record of the prior
+       * value — legitimate history, reify it as given */
+      snprintf(path, sizeof path, "changes[%u].from", i);
+      from_pend = plan_ref(pl, c->from, path, NONE_U32, 0, 1);
     }
     snprintf(path, sizeof path, "changes[%u].to", i);
     to_pend = plan_ref(pl, c->to, path, NONE_U32, 0, 1);
