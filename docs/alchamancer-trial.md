@@ -475,6 +475,35 @@ abstention signal than lexical overlap (common-word hits anchor most prompts).
 tell us whether the fixes moved the needle. Continue rounds until Legend is
 amazing.
 
+## ROUND 2 PRE-TEST FIXES 2026-07-15 · deployed `3bf188a`
+
+Two of the three deferred items shipped before the user's Round-2 sessions;
+the third is reclassified as a design pass, not a hotfix.
+
+| Fix | Commit | Effect |
+|---|---|---|
+| Name-coverage abstention anchor | `3bf188a` | anchor signal swapped from scan score (name+summary, query-coverage) to `tier2_name_anchor` (name-only, name-coverage). Fixes the false-abstention of prompts that *name* an entity in passing ("lets keep working on the ai duel mode" now anchors). Live ambient workload (182 recalls): 11% resolve / 50.5% candidates / **38.5% abstain** — vs 81% over-suppression under the query-coverage trial. |
+| Summary-split nudge | `3bf188a` | `#66`/task 12 — instruction in both `MCP_INSTRUCTIONS` and the `legend_save` tool description: split an overgrown summary into child elements, keep a short core. |
+
+**`changes.from` for fact-set priors → deferred as a design pass, not a
+hotfix.** The observed Round-1 papercut was the *change-cached* mismatch,
+already fixed by `d6058b0`. The fact-set variant (a value first recorded as a
+plain FACT, later hit with `changes`) is not a clean bug: a `changes` op
+supersedes the `current_<prop>` cache, which plain facts never populate, so
+`plan_prior_peek` correctly misses. The only correct fix is to have `changes`
+*recognize and supersede a plain-fact prior* — a **core-semantics decision**
+(should `changes` supersede `facts`? how to disambiguate a multi-valued
+property?), with real corpus/ambiguity risk. Doing only the "recognize for
+`from`-fill" half would be *worse* than today: the change caches the new value
+while the stale fact stays live — a silent contradiction instead of a visible
+phantom. Filed for a deliberate design pass; not blocking Round 2.
+
+**Round 2 now runs on `3bf188a`.** Warm-server note: two pre-`ecab48c`
+trial `mcp-serve` processes were left over from ended sessions (started Jul 12
+and Jul 14 21:04) — a binary swap does not hot-reload a running process, but a
+fresh Round-2 session spawns a new server from the deployed binary and bypasses
+them, and the journal `build` column stamps the switchover.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
