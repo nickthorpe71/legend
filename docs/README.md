@@ -16,6 +16,9 @@ design and its rationale live in the root spec.
 ## Reference
 
 - [cli.md](cli.md) — the verbs, JSON payloads and frames, the store, environment.
+- [causal.md](causal.md) — causal representation (Book of Why / §16.3): the
+  `caused`/`enables`/`prevents`/`correlated_with` predicates, the fact `modal`
+  array, and the recall `causal` section.
 - [mcp-server.md](mcp-server.md) — the warm MCP server and how a model connects.
 - [embeddings.md](embeddings.md) — the bundled BGE embedder and tiered recall,
   plus how to re-export the model blob.

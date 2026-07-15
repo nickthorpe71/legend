@@ -504,6 +504,42 @@ and Jul 14 21:04) — a binary swap does not hot-reload a running process, but a
 fresh Round-2 session spawns a new server from the deployed binary and bypasses
 them, and the journal `build` column stamps the switchover.
 
+## ROUND 2 ADDS: causal representation (Book of Why) — what to test
+
+Shipped alongside Round 2 (three phases, on top of `3bf188a`): Legend can now
+represent cause and effect as first-class structure. Full reference in
+`docs/causal.md`; this is the trial test plan.
+
+**What's new the trial should exercise:**
+1. **Causal predicates** — save `{s, p, o}` facts with `p` = `caused`,
+   `enables`, `prevents` (a real cause) or `correlated_with` (co-occurrence
+   only). They dedup to one seeded element each. Test the invariant: use
+   `correlated_with` when you only know two things co-occur and confirm Legend
+   never surfaces it as a cause.
+2. **Modality** — tag a fact with `modal`: `intervened` (an agent acted, vs the
+   default observed), `non_actual` (counterfactual/desired), `negated`,
+   `uncertain`, `general`. E.g. a design post-mortem: `{deploy, caused, outage,
+   modal:[intervened]}`; a counterfactual: `{earlier_test, prevents, outage,
+   modal:[non_actual]}`.
+3. **Recall `causal` section** — recall a focus that participates in causal
+   edges and read the new `causal` array: each edge with its `rung`
+   (causal/correlational) and `modal`. These are consumed from `recent`/
+   `related` (typed once, not buried).
+
+**Signal we're looking for (testimony questions):**
+- Does capturing *why* (cause/effect) as structure beat prose in a summary —
+  does a later session actually use the `causal` section?
+- Does the rung/modality distinction earn its keep, or is it ceremony the model
+  won't populate correctly under real load? (Watch: does the calling LLM reach
+  for `caused` vs `correlated_with` appropriately, or default to one?)
+- Clutter check: does the typed `causal` section reduce noise vs the edges
+  landing in `recent`/`related`, or add a section nobody reads?
+- Utilization vs quality (the T6 ceiling): even if recall surfaces good causal
+  structure, is it applied?
+
+**Not tested this round (deferred):** interventional/counterfactual *queries*
+(do()-projection, §24.9) — only the representation ships now.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
