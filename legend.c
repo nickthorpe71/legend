@@ -1334,6 +1334,19 @@ typedef struct {
 
 enum { ST_ASSERTED, ST_ENTAILED, ST_DEFEASIBLE };
 
+/* Behavioral-modal bit flags parsed from a fact's `modal` array and reified as
+ * meta-relations on the fact (new_foundation §16.3): intervened marks Pearl
+ * rung-2 agent action (vs default rung-1 observation); non_actual a claim not
+ * about actual world state (counterfactual/desired); negated a polarity flip;
+ * uncertain a graded hedge; general a habitual/generic claim. */
+enum {
+  MODF_INTERVENED = 1u << 0,
+  MODF_NEGATED = 1u << 1,
+  MODF_UNCERTAIN = 1u << 2,
+  MODF_NON_ACTUAL = 1u << 3,
+  MODF_GENERAL = 1u << 4
+};
+
 typedef struct {
   int is_triple;
   Span s, p, o;               /* triple form */
@@ -1344,6 +1357,7 @@ typedef struct {
   double salience;
   int has_salience;
   Span src;
+  u32 modal; /* MODF_* bitset, reified as meta-relations on the fact */
 } SubFact;
 
 typedef struct {
@@ -1649,6 +1663,27 @@ static void read_fact(const Rd *r, u32 obj_i, const char *path, Submission *sub,
     } else if (allow_options && rd_str_eq(r, key, "src")) {
       snprintf(vpath, sizeof vpath, "%s.src", path);
       f->src = rd_string_nonempty(r, val, vpath);
+    } else if (allow_options && rd_str_eq(r, key, "modal")) {
+      u32 mn, mk, mti;
+      snprintf(vpath, sizeof vpath, "%s.modal", path);
+      mn = rd_array(r, val, vpath);
+      mti = val + 1;
+      for (mk = 0; mk < mn; mk++) {
+        if (rd_str_eq(r, mti, "intervened"))
+          f->modal |= MODF_INTERVENED;
+        else if (rd_str_eq(r, mti, "negated"))
+          f->modal |= MODF_NEGATED;
+        else if (rd_str_eq(r, mti, "uncertain"))
+          f->modal |= MODF_UNCERTAIN;
+        else if (rd_str_eq(r, mti, "non_actual"))
+          f->modal |= MODF_NON_ACTUAL;
+        else if (rd_str_eq(r, mti, "general"))
+          f->modal |= MODF_GENERAL;
+        else
+          fail(ERR_PARSE, vpath,
+               "unknown modal (intervened|negated|uncertain|non_actual|general)");
+        mti = tok_skip(r->t, mti);
+      }
     } else {
       fail_unknown_field(r, key, path);
     }
@@ -3013,6 +3048,24 @@ static int is_core_vocab(const Hypergraph *g, u32 id) {
   return 0;
 }
 
+/* Element id backing one MODF_* modal bit: intervened is legacy core, the rest
+ * are extended vocab resolved through this store's g->wk_ext. */
+static u32 modal_elem_id(const Hypergraph *g, u32 bit) {
+  switch (bit) {
+  case MODF_INTERVENED:
+    return WK_INTERVENED;
+  case MODF_NEGATED:
+    return g->wk_ext[EXT_NEGATED];
+  case MODF_UNCERTAIN:
+    return g->wk_ext[EXT_UNCERTAIN];
+  case MODF_NON_ACTUAL:
+    return g->wk_ext[EXT_NON_ACTUAL];
+  case MODF_GENERAL:
+    return g->wk_ext[EXT_GENERAL];
+  }
+  return NONE_U32;
+}
+
 static const char *elem_name(const Hypergraph *g, u32 id) {
   return str_ptr(&g->strs, g->elements[id].names.v[0]);
 }
@@ -3933,6 +3986,10 @@ typedef struct {
   u32 ptr_pend;
   u8 meta;
 } SrcOp; /* meta=0: element form, base rel only */
+typedef struct {
+  u32 rel_idx; /* the fact/event relation the modals annotate */
+  u32 modal;   /* MODF_* bitset */
+} ModalOp;
 
 /* The plan-phase workspace: one of these is built up during PASS 1 and then
  * consumed by apply. It owns the pend list, all the staged-op arrays, and the
@@ -3980,6 +4037,8 @@ typedef struct {
   u32 mergeop_count, mergeop_cap;
   SrcOp *srcops;
   u32 srcop_count, srcop_cap;
+  ModalOp *modalops;
+  u32 modalop_count, modalop_cap;
   U32Vec
       retract_echo; /* rel ids acknowledged in writes.retracted, echo order */
   ResOp *focus_ops;
@@ -4011,6 +4070,7 @@ static void plan_reset(Plan *pl) {
   free(pl->sexpects);
   free(pl->mergeops);
   free(pl->srcops);
+  free(pl->modalops);
   free(pl->retract_echo.v);
   free(pl->focus_ops);
   free(pl->nears);
@@ -4392,6 +4452,16 @@ static void plan_push_srcop(Plan *pl, u32 rel_idx, u32 ptr_pend, u8 meta) {
   pl->srcops[pl->srcop_count].ptr_pend = ptr_pend;
   pl->srcops[pl->srcop_count].meta = meta;
   pl->srcop_count++;
+}
+
+static void plan_push_modalop(Plan *pl, u32 rel_idx, u32 modal) {
+  if (!modal)
+    return;
+  pl->modalops = (ModalOp *)xgrow(pl->modalops, pl->modalop_count + 1,
+                                  &pl->modalop_cap, sizeof *pl->modalops);
+  pl->modalops[pl->modalop_count].rel_idx = rel_idx;
+  pl->modalops[pl->modalop_count].modal = modal;
+  pl->modalop_count++;
 }
 
 /* ---- changes: the supersession form (spec §5) ---- */
@@ -5012,6 +5082,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
         snprintf(path, sizeof path, "facts[%u].src", i);
         plan_push_srcop(pl, rp, plan_ref(pl, f->src, path, NONE_U32, 0, 1), 1);
       }
+      plan_push_modalop(pl, rp, f->modal);
     } else {
       u32 keys[5], val_off[5], val_cnt[5], a, total = 1;
       PlanVal vals[5 * LEGEND_LIST_CAP];
@@ -5078,6 +5149,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
           plan_push_srcop(pl, event_idx,
                           plan_ref(pl, f->src, path, NONE_U32, 0, 1), 1);
         }
+        plan_push_modalop(pl, event_idx, f->modal);
         continue;
       }
       for (a = 0; a < f->attr_count; a++) {
@@ -5119,6 +5191,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
             plan_push_srcop(pl, rp, plan_ref(pl, f->src, path, NONE_U32, 0, 1),
                             1);
           }
+          plan_push_modalop(pl, rp, f->modal);
           for (a = 0; a < f->attr_count; a++) {
             if (++idx[a] < val_cnt[a])
               break;
@@ -5341,6 +5414,26 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     tags[1] = VT_EPEND;
     vids[1] = pl->srcops[i].ptr_pend;
     plan_relation(pl, names, tags, vids, 2, ST_ASSERTED, 1.0, 0.0, 0, 0);
+  }
+  /* modal meta-relations: one [subject: <fact-rel>, <modal>: <modal>] per set
+   * bit. The attr NAME carries the modality (the value is a self-marker); the
+   * subject slot is a relation ref, so meta_by_target links the fact and recall
+   * can read its modality (§16.3). */
+  for (i = 0; i < pl->modalop_count; i++) {
+    u32 bit;
+    for (bit = MODF_INTERVENED; bit <= MODF_GENERAL; bit <<= 1) {
+      u32 names[2], vids[2], me;
+      u8 tags[2];
+      if (!(pl->modalops[i].modal & bit))
+        continue;
+      me = plan_pend_for_elem(pl, modal_elem_id(pl->g, bit));
+      names[0] = plan_pend_for_elem(pl, WK_SUBJECT);
+      plan_rel_slot(pl, &tags[0], &vids[0], pl->modalops[i].rel_idx);
+      names[1] = me;
+      tags[1] = VT_EPEND;
+      vids[1] = me;
+      plan_relation(pl, names, tags, vids, 2, ST_ASSERTED, 1.0, 0.0, 0, 0);
+    }
   }
   /* source is provenance FOR facts minted this call; with nothing to attach it
    * to it must not mint a lone element named after the provenance sentence (a
