@@ -112,7 +112,8 @@
         "history": [],
         "related": [],
         "pointers": [],
-        "sources": []
+        "sources": [],
+        "causal": []
       },
       "notes": "the character kind section is keyed by kind name; 'wants' renders as an array ordered by relation id ascending (README assumption 23); attr relations rendered in a kind section do not repeat in recent/related (assumption 12)"
     }

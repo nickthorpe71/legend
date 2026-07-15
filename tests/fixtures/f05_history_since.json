@@ -40,7 +40,8 @@
           { "ref": "rel:18", "attrs": { "subject": "gauge", "current_value": "3" },
             "asserted_at": 3, "asserted": "2026-06-10", "superseded_by": "rel:22", "superseded_at": 4 }
         ],
-        "related": [], "pointers": [], "sources": []
+        "related": [], "pointers": [], "sources": [],
+ "causal": []
       },
       "notes": "e1 has no from slot (no prior cache existed); e2-e4 carry the cache-filled from"
     },
@@ -71,7 +72,8 @@
           { "ref": "rel:14", "attrs": { "subject": "gauge", "current_value": "2" },
             "asserted_at": 2, "asserted": "2026-06-05", "superseded_by": "rel:18", "superseded_at": 3 }
         ],
-        "related": [], "pointers": [], "sources": []
+        "related": [], "pointers": [], "sources": [],
+ "causal": []
       }
     },
     {
@@ -103,7 +105,8 @@
           { "ref": "rel:11", "attrs": { "subject": "gauge", "current_value": "1" },
             "asserted_at": 1, "asserted": "2026-06-01", "superseded_by": "rel:14", "superseded_at": 2 }
         ],
-        "related": [], "pointers": [], "sources": []
+        "related": [], "pointers": [], "sources": [],
+ "causal": []
       }
     },
     {
@@ -129,7 +132,8 @@
           { "ref": "rel:18", "attrs": { "subject": "gauge", "current_value": "3" },
             "asserted_at": 3, "asserted": "2026-06-10", "superseded_by": "rel:22", "superseded_at": 4 }
         ],
-        "related": [], "pointers": [], "sources": []
+        "related": [], "pointers": [], "sources": [],
+ "causal": []
       },
       "notes": "since 2026-06-08 drops e1/e2 from recent and c2/c1 from history (asserted 06-05/06-01 < cutoff); c3 stays (asserted 06-10); state is unaffected by since"
     }

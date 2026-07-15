@@ -2717,6 +2717,46 @@ static void test_retract_core_ontology(void) {
     unsetenv("LEGEND_NOW");
 }
 
+/* Phase 1-3: causal vocabulary, modal annotations, and the recall causal
+ * section. caused/correlated_with dedup to one seeded predicate each; a fact's
+ * modal reifies a meta-relation; recall surfaces the edge with rung + modal and
+ * keeps it out of recent/related. */
+static void test_causal(void) {
+    int failed;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+    /* seeded predicates dedup: two `caused` facts share one predicate element */
+    TRY(run_save("{\"facts\":["
+                 "{\"s\":\"deploy\",\"p\":\"caused\",\"o\":\"outage\",\"modal\":[\"intervened\"]},"
+                 "{\"s\":\"migration\",\"p\":\"prevents\",\"o\":\"outage\",\"modal\":[\"non_actual\"]},"
+                 "{\"s\":\"spike\",\"p\":\"correlated_with\",\"o\":\"outage\"}]}"), failed);
+    CHECK(!failed);
+    {
+        u32 nlen = normalize_into_scratch("caused", 6);
+        u32 caused = resolve_tier1(&tg, g_norm_buf, nlen, NONE_U32);
+        CHECK(caused == tg.wk_ext[EXT_CAUSED] && caused != NONE_U32);
+    }
+    /* recall the effect: the causal section carries rung + modal, and the edges
+     * do not also appear in recent/related */
+    TRY(run_recall("{\"focus\":[\"outage\"]}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "\"causal\":[") != NULL);
+    CHECK(strstr(t_frame, "\"caused\":\"outage\"") != NULL);
+    CHECK(strstr(t_frame, "\"rung\":\"causal\"") != NULL);
+    CHECK(strstr(t_frame, "\"rung\":\"correlational\"") != NULL);
+    CHECK(strstr(t_frame, "\"modal\":[\"intervened\"]") != NULL);
+    CHECK(strstr(t_frame, "\"modal\":[\"non_actual\"]") != NULL);
+    CHECK(strstr(t_frame, "\"recent\":[]") != NULL);
+    CHECK(strstr(t_frame, "\"related\":[]") != NULL);
+    /* an unknown modal is a parse error, and a causal predicate is protected */
+    TRY(run_save("{\"facts\":[{\"s\":\"a\",\"p\":\"caused\",\"o\":\"b\",\"modal\":[\"bogus\"]}]}"), failed);
+    CHECK(failed);
+    TRY(run_save("{\"merge\":[{\"from\":\"caused\",\"into\":\"prevents\"}]}"), failed);
+    CHECK(failed);
+    unsetenv("LEGEND_NOW");
+}
+
 int main(void) {
     test_normalize();
     test_trigrams();
@@ -2771,6 +2811,7 @@ int main(void) {
     test_reserved_kind_name();
     test_orientation_history_cap();
     test_retract_core_ontology();
+    test_causal();
 
     json_free(&tj);
     sub_free(&tsub);

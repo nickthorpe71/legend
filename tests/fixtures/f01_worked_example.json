@@ -173,7 +173,8 @@
           { "source": "claude-code:platformer",
             "rels": ["rel:32", "rel:33", "rel:34", "rel:35",
                      "rel:36", "rel:37", "rel:38", "rel:39"] }
-        ]
+        ],
+        "causal": []
       },
       "notes": "tick 5, apply order per the amended §7 walk: rel:35-39 decision attrs (chose/rejected/reason/about/resolves — the resolves closes #60, why open shows only #61), rel:40 uses fact, rel:41 change event, rel:42 cache; rel:43-44 instance_of and the metas follow unlisted. Every array's ordering reproduces the spec's §7 walk exactly."
     }

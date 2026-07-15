@@ -6510,7 +6510,7 @@ static const char *const FRAME_RESERVED_KEYS[] = {
     "tick",         "at",        "store",          "resolution", "writes",
     "near_matches", "conflicts", "template_drift", "focus",      "overview",
     "state",        "decisions", "constraints",    "open",       "recent",
-    "history",      "related",   "pointers",       "sources"};
+    "history",      "related",   "pointers",       "sources",    "causal"};
 
 static int is_reserved_frame_key(const char *norm, u32 nlen) {
   u32 i;
@@ -6929,6 +6929,68 @@ typedef struct {
   u32 rel, by, at_tick;
 } HistEntry;
 
+/* Is `id` a behavioral-modal attribute-name element (§16.3)? */
+static int is_modal_name(const Hypergraph *g, u32 id) {
+  return id == WK_INTERVENED || id == g->wk_ext[EXT_NEGATED] ||
+         id == g->wk_ext[EXT_UNCERTAIN] || id == g->wk_ext[EXT_NON_ACTUAL] ||
+         id == g->wk_ext[EXT_GENERAL];
+}
+
+/* If `rid` is a causal edge -- carries an attr named caused/enables/prevents/
+ * correlated_with (§16.3) -- return that predicate's element id, else NONE_U32. */
+static u32 rel_causal_pred(const Hypergraph *g, u32 rid) {
+  const Relation *r = &g->relations[rid];
+  u32 a;
+  for (a = 0; a < r->attr_count; a++) {
+    u32 nm = r->attrs[a].name;
+    if (nm == g->wk_ext[EXT_CAUSED] || nm == g->wk_ext[EXT_ENABLES] ||
+        nm == g->wk_ext[EXT_PREVENTS] || nm == g->wk_ext[EXT_CORRELATED_WITH])
+      return nm;
+  }
+  return NONE_U32;
+}
+
+/* One causal-section entry: the edge's attrs, its Pearl rung (correlated_with is
+ * rung-1 correlational; caused/enables/prevents are rung-2 causal), and the
+ * modality carried by its meta-relations (§16.3) so a counterfactual, negated,
+ * or intervened causal claim is not read as a plain actual one. */
+static void frame_put_causal_entry(const Hypergraph *g, u32 rid, int first) {
+  u32 pred = rel_causal_pred(g, rid);
+  const char *rung =
+      pred == g->wk_ext[EXT_CORRELATED_WITH] ? "correlational" : "causal";
+  u32 link, put_modal = 0;
+  if (!first)
+    fputc(',', stdout);
+  printf("{\"ref\":\"rel:%u\",\"attrs\":", rid);
+  frame_put_rel_attrs(g, rid);
+  fputs(",\"rung\":\"", stdout);
+  fputs(rung, stdout);
+  fputs("\",\"modal\":[", stdout);
+  for (link = g->meta_by_target[rid]; link != NONE_U32;
+       link = g->rel_links[link].next) {
+    const Relation *m = &g->relations[g->rel_links[link].rel];
+    u32 a, ma = NONE_U32;
+    int subj_is_rid = 0;
+    if (m->status >= ST_SUPERSEDED)
+      continue;
+    for (a = 0; a < m->attr_count; a++) {
+      if (m->attrs[a].name == WK_SUBJECT && m->attrs[a].value.tag == TERM_REL &&
+          m->attrs[a].value.id == rid)
+        subj_is_rid = 1;
+      else if (is_modal_name(g, m->attrs[a].name))
+        ma = m->attrs[a].name;
+    }
+    if (subj_is_rid && ma != NONE_U32) {
+      if (put_modal++)
+        fputc(',', stdout);
+      fputc('"', stdout);
+      json_escape_fputs(elem_name(g, ma), stdout);
+      fputc('"', stdout);
+    }
+  }
+  fputs("]}", stdout);
+}
+
 /* The frame (spec §7). A compact frame (no focus) stops after template_drift;
  * a full frame appends the packet sections. Empty fields emit as [] per plan
  * §3.14; key order is fixed (plan §5). */
@@ -7065,13 +7127,14 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
   {
     static U32Vec hood, pool, state, recent, related, nbr, sect, consumed;
     static U32Vec decisions, constraints, open, ckinds, cinsts, ckind_of;
+    static U32Vec causal;
     static HistEntry *hist;
     static u32 hist_cap;
     u32 hist_count = 0;
     i64 remaining;
     g_sort_g = g;
     hood.count = pool.count = state.count = recent.count = related.count = 0;
-    nbr.count = sect.count = consumed.count = 0;
+    nbr.count = sect.count = consumed.count = causal.count = 0;
     decisions.count = constraints.count = open.count = 0;
     ckinds.count = cinsts.count = ckind_of.count = 0;
 
@@ -7197,6 +7260,20 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
     u32vec_sort(&constraints, elem_recency_cmp);
     u32vec_sort(&open, elem_recency_cmp);
     u32vec_sort(&ckinds, u32_cmp);
+
+    /* causal: caused/enables/prevents/correlated_with edges in the focus
+     * neighborhood get a typed section (with rung + modality) and are consumed
+     * so they do not also appear as untyped recent/related edges (§16.3). */
+    for (i = 0; i < pool.count; i++) {
+      u32 rid = pool.v[i];
+      if (g->relations[rid].status >= ST_SUPERSEDED || rel_is_meta(g, rid))
+        continue;
+      if (rel_causal_pred(g, rid) != NONE_U32) {
+        u32vec_push_unique(&causal, rid);
+        u32vec_push_unique(&consumed, rid);
+      }
+    }
+    u32vec_sort(&causal, rel_recency_cmp);
 
     /* recent vs related. recent = base relations from the tick's writes
      * (mints) and the focus neighborhood — on a recall the whole
@@ -7538,6 +7615,9 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
         fputs("]}", stdout);
       }
     }
+    fputs("],\"causal\":[", stdout);
+    for (i = 0; i < causal.count; i++)
+      frame_put_causal_entry(g, causal.v[i], i == 0);
     fputs("]", stdout);
   }
   fputs("}\n", stdout);
@@ -8829,7 +8909,14 @@ static const char MCP_INSTRUCTIONS[] =
     "question is a decision even when the request looked cosmetic. (9) A saved "
     "measurement "
     "without its method is half lost -- record how to reproduce it (a src "
-    "pointer or a harness/pointer element). Recall "
+    "pointer or a harness/pointer element). (10) For cause and effect, use the "
+    "predicates caused / enables / prevents for a real causal claim and "
+    "correlated_with for mere co-occurrence -- keep them distinct, never call a "
+    "correlation a cause. Tag a claim's modality with a fact `modal` array: "
+    "intervened (an agent acted, vs the default of an observed fact), non_actual "
+    "(counterfactual or merely desired, not actual state), negated, uncertain, "
+    "general (habitual/generic). Recall gathers these into a `causal` section, "
+    "each edge tagged with its rung and modality. Recall "
     "with no focus returns an orientation packet for session start.";
 
 static const char MCP_TOOLS_JSON[] =
@@ -8862,7 +8949,10 @@ static const char MCP_TOOLS_JSON[] =
     "(next levers, negative "
     "results, reasons); a choice that settles a design question is a decision "
     "even when the request looked cosmetic; measurements include how to "
-    "reproduce them. Prefer "
+    "reproduce them. For cause and effect use predicates caused/enables/prevents "
+    "(a real cause) vs correlated_with (co-occurrence only), never conflating "
+    "the two; tag a fact's modality with `modal` "
+    "(intervened|non_actual|negated|uncertain|general). Prefer "
     "few precise "
     "elements; over-extraction buries the signal. At least one write list is "
     "required.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
@@ -8880,7 +8970,10 @@ static const char MCP_TOOLS_JSON[] =
     "\"facts\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
     "\"s\":{\"type\":\"string\"},\"p\":{\"type\":\"string\"},\"o\":{\"type\":\"string\"},"
     "\"status\":{\"type\":\"string\",\"enum\":[\"asserted\",\"defeasible\"],"
-    "\"description\":\"defeasible = tentative/uncertain\"}},"
+    "\"description\":\"defeasible = tentative/uncertain\"},"
+    "\"modal\":{\"type\":\"array\",\"items\":{\"type\":\"string\","
+    "\"enum\":[\"intervened\",\"non_actual\",\"negated\",\"uncertain\",\"general\"]},"
+    "\"description\":\"claim modality, reified as meta-relations\"}},"
     "\"required\":[\"s\",\"p\",\"o\"]}},"
     "\"changes\":{\"type\":\"array\",\"description\":\"supersede a current value (keeps history)\","
     "\"items\":{\"type\":\"object\",\"properties\":{"

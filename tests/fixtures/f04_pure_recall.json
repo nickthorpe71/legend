@@ -53,7 +53,8 @@
         "history": [],
         "related": [],
         "pointers": [],
-        "sources": []
+        "sources": [],
+        "causal": []
       }
     }
   ]
