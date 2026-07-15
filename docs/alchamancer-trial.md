@@ -456,6 +456,25 @@ phantom fixed (`ec197d7`), `changes.from` mismatch phantom queued (`legend.c`
 ~5037, reuse-only for `from`); (3) **summary-split nudge** (`#66`/task 12, next
 instruction batch); (4) bundle all into the next deliberate trial-binary upgrade.
 
+## ROUND 1 CLOSED 2026-07-15 · deployed `ecab48c` · `#69`
+
+Round 1 = one full cycle: 6 testimonies → verdict → GO-deepen fixes → deploy.
+Shipped this round and **live on the pinned binary `ecab48c`**:
+
+| Fix | Commit | Effect |
+|---|---|---|
+| C2 ambient retrieval separation | `fcbb707` | rank-1-noise 82%→0%, first-domain-rank 3.9→1.0 |
+| `source`-without-facts phantom | `ec197d7` | no lone provenance-sentence element |
+| `changes.from` mismatch phantom | `d6058b0` | re-change reuses the cached prior, no phantom value |
+| Ambient abstention (lexical anchor 0.6) | `ecab48c` | off-domain sweeps go quiet (~3% fire, modest but correct) |
+
+**Deferred to Round 2:** summary-split instruction nudge (`#66`/task 12);
+`changes.from` for fact-set (not change-cached) priors; a stronger off-domain
+abstention signal than lexical overlap (common-word hits anchor most prompts).
+**Round 2 = the next alchamancer sessions on `ecab48c`** — fresh testimonies
+tell us whether the fixes moved the needle. Continue rounds until Legend is
+amazing.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
