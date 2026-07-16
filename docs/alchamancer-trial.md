@@ -63,27 +63,28 @@ the store from it must reproduce the live snapshot byte-for-byte:
 python3 harness/replay_journal.py ~/Code/alchamancer2/.legend
 ```
 
-Exit 0 + `byte-identical: True` = healthy (verified at trial start, 12/12
-lines). Divergence means a determinism bug or a hand-edited store — bisect by
-truncating the journal. Replay runs with `LEGEND_EMBED=0`; embeddings never
-affect the snapshot (semantic ranking only shapes frame candidate lists).
+Exit 0 + `byte-identical: True` = healthy. The check is **build-aware**: every
+journal line records the `build` (git short-sha) that wrote it, so replay
+reconstructs each distinct binary from git (`git archive` + `cc`, cached per sha)
+and replays every line under its **own** binary — the whole multi-build journal
+verifies byte-for-byte, not just one binary's segment. Replay runs with
+`LEGEND_EMBED=0` (embeddings never affect the snapshot). Divergence means a real
+determinism bug or a hand-edited store — bisect by truncating the journal; exit 2
+means a `build` couldn't be reconstructed (a `dev`/unstamped binary, or a sha not
+in git). **Verified byte-identical 2026-07-16: 425 ok lines across 8 builds**
+(`ad49797` → … → `2c42c74`, the causal binary).
 
-**Byte-identical replay holds within one binary version, NOT across a
-fix-bearing upgrade.** A bug fix that changes write semantics makes any journal
-op that relied on the old behavior replay differently. Known divergence
-(observed 2026-07-15, under BOTH the pre-causal `3bf188a` and causal `2c42c74`
-binaries, so not caused by either): replay fails at **line 335 / ts
-1784059486**, a `merge` whose `from` is a `source`-phantom element — minted by
-the buggy `source`-without-facts path under `fcbb707` (line 334), then merged
-away. Post-`ec197d7` (the source-phantom fix) that element is never minted, so
-the merge can't find it. This is expected across the mid-trial fixes, not store
-corruption: **the live snapshot stays the source of truth** (the warm server and
-CLI load it directly; replay is only the diagnosis tool). The causal-vocab
-upgrade (`2c42c74`) adds a second, benign cross-binary difference — extended
-vocab is *appended* on an old store but *seeded at #32–41* on a fresh replay, so
-element ids shift. To restore clean byte-replay one would re-seed the store from
-its journal under a single binary; deferred (diagnostic-only, and blocked behind
-the source-phantom divergence anyway).
+**Why build-aware.** Byte-identical replay holds only when each line runs under
+the binary that wrote it. A mid-trial bug fix changes write semantics, so an op
+that relied on the OLD behavior replays differently under a NEW binary. Concrete
+case this tool now handles: line 335 (`fcbb707`) is a `merge` whose `from` is a
+`source`-phantom element the buggy `source`-without-facts path minted at line 334
+— replaying it under any post-`ec197d7` binary (the fix) fails, because the fixed
+path never mints the phantom. Replaying line 335 under `fcbb707` (its own build)
+reproduces it exactly. `--simple` forces the old single-binary replay and is
+correct only for a one-build journal; it will (correctly) diverge on this store.
+The live snapshot remains the source of truth regardless — the warm server and
+CLI load it directly; replay is only the diagnosis tool.
 
 **2. Rejection log** — how often the calling LLM's payloads bounce, and why
 (this measures the MCP instructions' quality, which no gate covers):
