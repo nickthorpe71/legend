@@ -2749,6 +2749,25 @@ static void test_causal(void) {
     CHECK(strstr(t_frame, "\"modal\":[\"non_actual\"]") != NULL);
     CHECK(strstr(t_frame, "\"recent\":[]") != NULL);
     CHECK(strstr(t_frame, "\"related\":[]") != NULL);
+    /* #616 regression: a modal on a NON-causal predicate must still surface at
+     * recall -- it renders on the recent/related entry, not only in the causal
+     * section -- or a negated fact reads as a plain asserted one (an inverted
+     * claim). A plain fact carries no modal key (empty "modal":[] never emits). */
+    TRY(run_save("{\"facts\":["
+                 "{\"s\":\"readability\",\"p\":\"justifies\",\"o\":\"text assets\",\"modal\":[\"negated\"]},"
+                 "{\"s\":\"cat\",\"p\":\"sat on\",\"o\":\"mat\"}]}"), failed);
+    CHECK(!failed);
+    TRY(run_recall("{\"focus\":[\"text assets\"]}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "\"justifies\":\"text assets\"") != NULL);
+    CHECK(strstr(t_frame, "\"modal\":[\"negated\"]") != NULL);
+    CHECK(strstr(t_frame, "\"modal\":[]") == NULL);
+    TRY(run_recall("{\"focus\":[\"mat\"]}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "\"sat on\":\"mat\"") != NULL);
+    CHECK(strstr(t_frame, "\"modal\"") == NULL);
     /* an unknown modal is a parse error, and a causal predicate is protected */
     TRY(run_save("{\"facts\":[{\"s\":\"a\",\"p\":\"caused\",\"o\":\"b\",\"modal\":[\"bogus\"]}]}"), failed);
     CHECK(failed);

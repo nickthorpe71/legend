@@ -6485,6 +6485,60 @@ static void frame_put_rel_attrs(const Hypergraph *g, u32 rid) {
 }
 
 /* The uniform relation-object shape (pin §3.22). */
+/* A modal is one of the five §16.3 modality markers: intervened (do()), plus
+ * the extended negated/uncertain/non_actual/general. */
+static int is_modal_name(const Hypergraph *g, u32 id) {
+  return id == WK_INTERVENED || id == g->wk_ext[EXT_NEGATED] ||
+         id == g->wk_ext[EXT_UNCERTAIN] || id == g->wk_ext[EXT_NON_ACTUAL] ||
+         id == g->wk_ext[EXT_GENERAL];
+}
+
+/* If meta-relation m_rid is a live modal self-marker on target_rid -- its
+ * subject slot IS target_rid and it carries a modal attr -- return that modal
+ * element id, else NONE_U32. This is how a fact's `modal` array is reified
+ * (§7.2): each modal becomes a `[subject:<fact-rel>, <modal>:<modal>]`. */
+static u32 meta_modal_of(const Hypergraph *g, u32 m_rid, u32 target_rid) {
+  const Relation *m = &g->relations[m_rid];
+  u32 a, ma = NONE_U32;
+  int subj_is_target = 0;
+  if (m->status >= ST_SUPERSEDED)
+    return NONE_U32;
+  for (a = 0; a < m->attr_count; a++) {
+    if (m->attrs[a].name == WK_SUBJECT && m->attrs[a].value.tag == TERM_REL &&
+        m->attrs[a].value.id == target_rid)
+      subj_is_target = 1;
+    else if (is_modal_name(g, m->attrs[a].name))
+      ma = m->attrs[a].name;
+  }
+  return subj_is_target ? ma : NONE_U32;
+}
+
+/* How many live modal markers rid carries. */
+static u32 rel_modal_count(const Hypergraph *g, u32 rid) {
+  u32 link, n = 0;
+  for (link = g->meta_by_target[rid]; link != NONE_U32;
+       link = g->rel_links[link].next)
+    if (meta_modal_of(g, g->rel_links[link].rel, rid) != NONE_U32)
+      n++;
+  return n;
+}
+
+/* Emit rid's modal names as comma-separated JSON strings (no brackets). */
+static void frame_put_modal_values(const Hypergraph *g, u32 rid) {
+  u32 link, put = 0;
+  for (link = g->meta_by_target[rid]; link != NONE_U32;
+       link = g->rel_links[link].next) {
+    u32 ma = meta_modal_of(g, g->rel_links[link].rel, rid);
+    if (ma == NONE_U32)
+      continue;
+    if (put++)
+      fputc(',', stdout);
+    fputc('"', stdout);
+    json_escape_fputs(elem_name(g, ma), stdout);
+    fputc('"', stdout);
+  }
+}
+
 static void frame_put_rel_entry(const Hypergraph *g, u32 rid, int first) {
   const Relation *r = &g->relations[rid];
   char conf[8];
@@ -6497,7 +6551,18 @@ static void frame_put_rel_entry(const Hypergraph *g, u32 rid, int first) {
       ",\"status\":\"%s\",\"confidence\":%s,\"support_count\":%u,\"date\":\"",
       ST_NAMES[r->status], conf, r->stats.support_count);
   frame_put_day(g, r->created_at);
-  fputs("\"}", stdout);
+  fputc('"', stdout);
+  /* Modality is a property of the CLAIM, so a negated/uncertain/non_actual fact
+   * must show its modal here too -- not only in the causal section -- or a
+   * `modal:["negated"]` fact reads as a plain asserted one (an inverted claim).
+   * Emitted only when present: most facts carry none, and the token cost of an
+   * empty "modal":[] on every entry is not worth paying. */
+  if (rel_modal_count(g, rid)) {
+    fputs(",\"modal\":[", stdout);
+    frame_put_modal_values(g, rid);
+    fputc(']', stdout);
+  }
+  fputc('}', stdout);
 }
 
 /* ---- full-frame section assembly ---- */
@@ -6930,12 +6995,6 @@ typedef struct {
 } HistEntry;
 
 /* Is `id` a behavioral-modal attribute-name element (§16.3)? */
-static int is_modal_name(const Hypergraph *g, u32 id) {
-  return id == WK_INTERVENED || id == g->wk_ext[EXT_NEGATED] ||
-         id == g->wk_ext[EXT_UNCERTAIN] || id == g->wk_ext[EXT_NON_ACTUAL] ||
-         id == g->wk_ext[EXT_GENERAL];
-}
-
 /* If `rid` is a causal edge -- carries an attr named caused/enables/prevents/
  * correlated_with (§16.3) -- return that predicate's element id, else NONE_U32. */
 static u32 rel_causal_pred(const Hypergraph *g, u32 rid) {
@@ -6958,7 +7017,6 @@ static void frame_put_causal_entry(const Hypergraph *g, u32 rid, int first) {
   u32 pred = rel_causal_pred(g, rid);
   const char *rung =
       pred == g->wk_ext[EXT_CORRELATED_WITH] ? "correlational" : "causal";
-  u32 link, put_modal = 0;
   if (!first)
     fputc(',', stdout);
   printf("{\"ref\":\"rel:%u\",\"attrs\":", rid);
@@ -6966,28 +7024,7 @@ static void frame_put_causal_entry(const Hypergraph *g, u32 rid, int first) {
   fputs(",\"rung\":\"", stdout);
   fputs(rung, stdout);
   fputs("\",\"modal\":[", stdout);
-  for (link = g->meta_by_target[rid]; link != NONE_U32;
-       link = g->rel_links[link].next) {
-    const Relation *m = &g->relations[g->rel_links[link].rel];
-    u32 a, ma = NONE_U32;
-    int subj_is_rid = 0;
-    if (m->status >= ST_SUPERSEDED)
-      continue;
-    for (a = 0; a < m->attr_count; a++) {
-      if (m->attrs[a].name == WK_SUBJECT && m->attrs[a].value.tag == TERM_REL &&
-          m->attrs[a].value.id == rid)
-        subj_is_rid = 1;
-      else if (is_modal_name(g, m->attrs[a].name))
-        ma = m->attrs[a].name;
-    }
-    if (subj_is_rid && ma != NONE_U32) {
-      if (put_modal++)
-        fputc(',', stdout);
-      fputc('"', stdout);
-      json_escape_fputs(elem_name(g, ma), stdout);
-      fputc('"', stdout);
-    }
-  }
+  frame_put_modal_values(g, rid);
   fputs("]}", stdout);
 }
 
@@ -8899,8 +8936,9 @@ static const char MCP_INSTRUCTIONS[] =
     "created a phantom -- there was no open item to close; retract it). "
     "(7) To update an element's summary, resubmit the element with the new "
     "summary (latest write wins); `changes` is for domain property VALUES "
-    "(a fact object becomes an element named by it, so never pass prose as "
-    "a value -- prose belongs in summaries). When a summary outgrows a line, "
+    "(a fact object -- and every attr value -- becomes an element named by it, "
+    "so never pass prose as a fact object or an attr value; prose belongs in "
+    "summaries). When a summary outgrows a line, "
     "split the detail into child elements and keep a short core -- an "
     "everything-dump summary buries the signal. (8) Prefer few precise "
     "elements and durable facts; over-extraction buries the signal. The "
@@ -8915,8 +8953,10 @@ static const char MCP_INSTRUCTIONS[] =
     "correlation a cause. Tag a claim's modality with a fact `modal` array: "
     "intervened (an agent acted, vs the default of an observed fact), non_actual "
     "(counterfactual or merely desired, not actual state), negated, uncertain, "
-    "general (habitual/generic). Recall gathers these into a `causal` section, "
-    "each edge tagged with its rung and modality. Recall "
+    "general (habitual/generic). Recall tags each fact with its modality "
+    "wherever it surfaces -- a `negated` fact is asserted to be FALSE, so read "
+    "the modal, don't take the bare claim -- and gathers causal edges into a "
+    "`causal` section with their rung. Recall "
     "with no focus returns an orientation packet for session start.";
 
 static const char MCP_TOOLS_JSON[] =
@@ -8943,8 +8983,8 @@ static const char MCP_TOOLS_JSON[] =
     "(check writes.minted_elements in the frame: your target there = a "
     "phantom, retract it). To UPDATE a summary resubmit the "
     "element (latest write wins) -- `changes` is for domain property values, "
-    "and fact objects become element names, so keep them short (prose goes "
-    "in summaries); when a summary outgrows a line, split the detail into "
+    "and fact objects AND attr values become element names, so keep them short "
+    "(prose goes in summaries); when a summary outgrows a line, split the detail into "
     "child elements and keep a short core. Best saves: what code cannot hold "
     "(next levers, negative "
     "results, reasons); a choice that settles a design question is a decision "
@@ -8963,7 +9003,7 @@ static const char MCP_TOOLS_JSON[] =
     "parameter|constraint|decision|spell|enemy|character|place|question|person|file|event|task|pointer\"},"
     "\"summary\":{\"type\":\"string\",\"description\":\"one line\"},"
     "\"aliases\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
-    "\"attrs\":{\"type\":\"object\",\"description\":\"structured properties (name -> value(s))\"},"
+    "\"attrs\":{\"type\":\"object\",\"description\":\"structured properties (name -> value(s)); each value becomes an element, so use canonical names, not prose\"},"
     "\"rename_to\":{\"type\":\"string\",\"description\":\"new canonical name for this element\"},"
     "\"src\":{\"type\":\"string\",\"description\":\"source pointer (file/url/id)\"}},"
     "\"required\":[\"name\"]}},"

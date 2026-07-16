@@ -82,6 +82,30 @@ This is the "what caused the outage?" query: the observed-vs-intervened and
 actual-vs-counterfactual distinctions are on every edge, so the consumer never
 reads a hedged or counterfactual claim as a settled cause.
 
+### Modality surfaces on every fact, not only causal edges
+
+A `modal` array is legal on **any** fact, not just a causal predicate — a
+`justifies` or `depends_on` claim can be `negated` or `uncertain` too. So a
+fact's modality renders wherever the fact renders: an entry in `state`,
+`recent`, `related`, or `history` carries a `modal` field **when it has one**
+(a plain fact with no modal omits the key, so the common case pays no bytes):
+
+```jsonc
+// recall {"focus": ["assets are text"]}  -- a NEGATED non-causal claim
+"recent": [
+  {"ref": "rel:10", "attrs": {"subject": "llm readability", "justifies": "assets are text"},
+   "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-07-16",
+   "modal": ["negated"]}
+]
+```
+
+Negation is *modal*, not a status (there is no `Negated` status): the relation
+is still `asserted` into the graph, and `modal: ["negated"]` says the claim it
+asserts is **false**. A consumer must read the modal — a `negated` fact whose
+modal is ignored inverts the record. (Regression fix, 2026-07-16: before this,
+`modal` rendered only in the `causal` section, so a negated *non-causal* fact
+recalled as a plain assertion — trial issue #616.)
+
 ## Storage & migration (implementation notes)
 
 - The ten extended-vocabulary names are seeded contiguously on a fresh init and
