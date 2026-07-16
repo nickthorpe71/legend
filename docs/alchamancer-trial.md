@@ -676,6 +676,32 @@ both `informs` `trial value evidence` (`#37`).
   compiler). Arguably fair — code knowledge the code should hold — but a note
   that absence-in-store isn't evidence of absence-in-code.
 
+## ROUND 2 CLOSED 2026-07-16 · deployed `8fbeedc` · Round 3 next
+
+All Round-2 sessions ended; the round is closed and the trial binary upgraded
+(deliberately, sessions quiescent) from `4ee4ac9` → **`8fbeedc`**.
+
+**Shipped in `8fbeedc`** (on top of the causal binary):
+- **`#616`** — negated/modal facts now surface `modal` on every recall entry
+  (recent/related/state/history), not only the causal section. A `negated`
+  non-causal fact no longer recalls as a plain assertion. Data-integrity fix;
+  `modal:["negated"]` is trustworthy again.
+- **`#615`** — the "no prose as a value" nudge now covers attr values (both
+  instruction mirrors + the attrs schema).
+
+**Deliberately NOT in this binary** — the **orientation-packet surface bounding**
+(the store-health check-in above / `#91`). Capping which decisions/constraints
+surface is a design change with real downside if done blindly (a mis-ranked cap
+could hide a load-bearing constraint at boot), so it is Round 3's opening dev
+item, not a rushed pre-redeploy edit. The store balloon is a surface problem, not
+a storage one — the fix bounds what recall *surfaces*, never what the store
+*keeps* (per stale-intent `#89`).
+
+**Round 3 = the next alchamancer sessions on `8fbeedc`.** Two things to watch:
+(1) the first clean test of *working* modality — does a `negated`/`non_actual`
+claim get read correctly and earn its keep; (2) the orientation-packet balloon
+(watch #3) under continued growth, pending the surface-bounding fix.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
