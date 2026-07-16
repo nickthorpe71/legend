@@ -528,6 +528,13 @@ Shipped alongside Round 2 (three phases, on top of `3bf188a`): Legend can now
 represent cause and effect as first-class structure. Full reference in
 `docs/causal.md`; this is the trial test plan.
 
+**Deploy log.** Causal code first went live as `2c42c74` (Round-2 session 1 ran
+on it — 53 journal lines). Current pinned binary: **`4ee4ac9`** — a restamp of
+byte-identical `legend.c`/`embed.c` (the only changes since `2c42c74` are docs +
+the build-aware `replay_journal.py` fix, neither of which ships in the binary),
+so behavior is unchanged. The deployed stamp tracks the binary-code version;
+docs/harness commits after it do not require a redeploy.
+
 **What's new the trial should exercise:**
 1. **Causal predicates** — save `{s, p, o}` facts with `p` = `caused`,
    `enables`, `prevents` (a real cause) or `correlated_with` (co-occurrence
