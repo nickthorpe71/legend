@@ -366,6 +366,42 @@ its trigger and its response so a future session doesn't re-derive them.
     any divergence. *Response:* stop, bisect by truncating the journal —
     this one is a hard gate, not a trend.
 
+### Check-in 2026-07-16 — store-health read (clock 212; dev store `#91`)
+
+Read-only via `journal_report.py` + a temp-copy frame measurement (zero live
+journal footprint — `dump` journals nothing, and frame sizing ran on a copied
+snapshot). Growth over 8 days / 151 saves / 55 sessions: **120→651 live
+elements, 263→1352 relations** (21 superseded/retracted). Snapshot 420KB,
+vectors 944KB — loads fast; a focused recall is cheap (~5.8KB).
+
+**Watch #3 (frame/token cost) has FIRED — but as truncation, not token spend.**
+The orientation packet is now **38KB compact / 35KB pretty** (61 decisions + 38
+constraints emitted uncapped, plus summary bloat — `#506`'s summary alone
+~1500 chars). The SessionStart hook (`recall '{}' --pretty | head -c 4000`) was
+tuned when the store was small; **4000 bytes now cuts off inside `overview`**,
+after ~4 working-set entries. The model receives project scope + top-salience
+active items ONLY and never sees the `decisions`/`constraints`/`open`/`recent`/
+`causal` sections at boot. So store growth is being paid as *silent orientation
+loss*, not tokens. **The fix is at the surface, not the store** — and per the
+stale-intent finding (`#89`) pruning the store is the wrong lever (you want the
+cold/stale facts). Levers: (a) cap the orientation sections (top-N decisions/
+constraints by salience/recency); (b) enforce summary discipline (`#66` — the
+split-into-children nudge isn't holding; 36 paragraph-named elements now, up
+from 8); (c) retune the hook cap. Ambient/explicit recall (cheap, focus-scoped)
+currently masks the loss — the model re-fetches what boot drops.
+
+**Watch #1 (predicate proliferation):** 19→**84 minted predicates**, long
+single-use tail, plus a `current_*` status-as-fact family (55 uses, incl. a
+`current_current_status` doubled-prefix bug) — **watch #11's nudge is not
+landing**; the model reifies status as predicates instead of `changes`.
+**Watch #5:** 0 exact-duplicate names (dedup solid), but 36 paragraph-named
+elements (prose reified as names — the `#615` mechanism). **Watch #7 (write-only
+growth):** 609/651 never focus-retrieved (93.5%), *down* from 96.5% at day two —
+ratio is flat-to-improving, not worsening; acceptable (insurance memory).
+**Decay:** none by design — no eviction; activation decays for ranking only (all
+read 0). The store grows monotonically; the only thing bounding delivered cost
+today is the crude `head -c` truncation, which bounds it by dropping signal.
+
 ## Roadmap & go/no-go criterion (locked 2026-07-13)
 
 **Store-health check + wipe decision (2026-07-13).** Before continuing the
@@ -564,6 +600,81 @@ docs/harness commits after it do not require a redeploy.
 
 **Not tested this round (deferred):** interventional/counterfactual *queries*
 (do()-projection, §24.9) — only the representation ships now.
+
+## ROUND 2 SESSION 2 — testimony + two filed issues (2026-07-16)
+
+An alchamancer asset session (ran on `2c42c74`/`4ee4ac9`, the causal binary).
+It exercised the new surface hard — minted a new predicate `justifies` (checked
+existing predicates first, per instruction (1)), corrected a stale constraint,
+and used `retract`/`merge` for cleanup — and surfaced two real defects.
+
+- **`#616` — Negated facts recalled as asserted (data-integrity, SERIOUS).**
+  It saved `{llm readability, justifies, assets are text, modal:["negated"]}` to
+  record that a rationale was void; recall returned `status:"asserted"` with no
+  negation marker — the exact opposite of the finding. Root cause: Phase 3
+  rendered `modal` **only in the `causal` section**, and `justifies` is a
+  non-causal predicate, so its `negated` meta existed in the graph but never
+  reached the frame. A negated claim was indistinguishable from an assertion.
+  **FIXED 2026-07-16 (dev):** `frame_put_rel_entry` now emits `modal` on every
+  fact entry that carries one (`recent`/`related`/`state`/`history`), emit-
+  when-present so plain facts pay no bytes. Regression-locked in `test_causal`;
+  recall-read guidance added to the MCP instructions ("a `negated` fact is
+  asserted to be FALSE, so read the modal"). See `docs/causal.md` §"Modality
+  surfaces on every fact". **Not yet on the trial binary** — folds into the next
+  deliberate upgrade.
+- **`#615` — attrs silently reify prose into elements.** Passing prose as an
+  `attr` value minted 7 sentence-named phantom elements. The "never pass prose
+  as a value" nudge was scoped to fact *objects*; attr values reify identically,
+  and the attrs schema ("structured properties") read as non-reifying.
+  **ADDRESSED 2026-07-16 (dev):** the prose nudge now names attr values in both
+  the verbose instructions and the compact `legend_save` description, and the
+  attrs schema says "each value becomes an element, so use canonical names, not
+  prose." Instruction-only fix (attrs reifying is by design); no auto-guard.
+
+Both fixes are dev-side (`./legend`); the pinned trial binary at
+`~/.local/bin/legend` is unchanged until a deliberate upgrade (see the deploy
+discipline above). Cleanup lesson the session also recorded: `retract` is the
+right tool for a wrong fact; `merge` on unrelated elements makes self-loops.
+
+## ROUND 2 SESSION 3 — the strongest testimony, and a design pivot (2026-07-16)
+
+An AP-migration coding session (same binary), **all non-causal/non-modal**, so
+unaffected by the still-undeployed `#616` — a clean example of the
+"continue non-modal work on the current binary, redeploy before modal-heavy
+work" call. Elements `#88` (testimony 8) / `#89` (the stale-intent principle),
+both `informs` `trial value evidence` (`#37`).
+
+- **The value was a RULE, not a fact.** The biggest hit was a carried
+  probe-discipline rule ("a probe that has never failed is a decoration"); it
+  changed the *quality* of the work (5 fixes got sabotage-tested that otherwise
+  wouldn't have). Facts saved minutes; the rule changed the outcome. This is the
+  "what code cannot hold" category (`#39`) doing its core job — strongest
+  evidence yet that the durable payoff is decisions/rules/recipes, not facts.
+- **Recall collapsed a diagnosis.** Ambient + one explicit recall turned
+  "reconstruct the AP migration from git history" into "find the one call site
+  that missed the memo" in ~a minute.
+- **A STALE memory was the most productive thing in the store — a design
+  pivot.** `#562` "explore ignores AP entirely" was true of absorb, false of
+  casting; the gap between recorded *intent* and drifted *code* WAS the bug, and
+  gave standing to fix the whole design rather than one site. **Implication for
+  the `#71` supersession fork:** aggressively pruning facts to match the code
+  would destroy this drift-detection value. Record intent, let it go stale,
+  surface the gap — do not silently "correct" it away. Captured as `#89`.
+- **Phantom recurrence (finding-8 amplifier).** A fact referencing a name the
+  agent had read in the CLAUDE.md *file-memory* index silently minted an empty
+  Legend stub (facts mint unknown refs rather than erroring). Self-caught via
+  `writes.minted_elements` and retracted — the net worked — but it confirms the
+  two-surface hazard: a name from one memory system silently becomes a stub in
+  the other. The real fix is the deferred memory-surface reconciliation (Phase
+  D / hooks), not another instruction line; logged here, not instrumented, until
+  it recurs a third time or the reconciliation lands.
+- **Attribution honesty (keep the trial clean).** Some wins this session came
+  from the file-based auto-memory (`-Werror` divergence; "Nick tunes numbers by
+  playing"), NOT the graph. Don't credit Legend for them.
+- **Gap:** the store's *silence* about `run_rival_turn`'s existing kite band let
+  the agent assert "no `enemy_step_away` primitive exists" (false, caught by the
+  compiler). Arguably fair — code knowledge the code should hold — but a note
+  that absence-in-store isn't evidence of absence-in-code.
 
 ## What the store was seeded with (baseline)
 
