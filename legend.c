@@ -8964,11 +8964,15 @@ static u32 g_aud_dup_min_name = 12; /* below this a single differing byte still
                                        b"), so short names are incomparable by
                                        trigram and are not paired at all */
 
-/* Suspects per reason actually printed. A store that has drifted for weeks
- * has more bloated summaries than anyone will fix in one sitting, and a wall
- * of them buries the stubs — which are defects, not housekeeping. The full
- * tally always ships in `counts`, and whatever the cap drops is named in
- * `truncated`: the list is short, never quietly short. */
+/* Suspects per reason actually printed, by default. A store that has drifted
+ * for weeks has more bloated summaries than anyone will fix in one sitting,
+ * and a wall of them buries the defects under the housekeeping. The full tally
+ * always ships in `counts`, and whatever the cap drops is named in
+ * `truncated`: the list is short, never quietly short.
+ *
+ * A maintenance pass needs the whole list, though — triaging 17 suspects five
+ * at a time is not triage — so `limit` overrides this per call and `null`
+ * lifts the cap entirely, matching how recall spells the same idea. */
 static u32 g_aud_per_reason = 5;
 
 typedef struct {
@@ -9306,8 +9310,8 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
   *out_n = n;
 }
 
-/* Rank, cap, print. */
-static void audit_graph(const Hypergraph *g) {
+/* Rank, cap, print. `per_reason` < 0 prints every suspect. */
+static void audit_graph(const Hypergraph *g, i64 per_reason) {
   Suspect *sus;
   u32 n, i;
   u32 counts[AUD_REASON_COUNT];
@@ -9319,7 +9323,7 @@ static void audit_graph(const Hypergraph *g) {
     for (i = 0; i < AUD_REASON_COUNT; i++)
       shown[i] = 0;
     for (i = 0; i < n; i++) {
-      if (shown[sus[i].reason] >= g_aud_per_reason)
+      if (per_reason >= 0 && shown[sus[i].reason] >= (u32)per_reason)
         continue;
       shown[sus[i].reason]++;
       audit_put_suspect(g, &sus[i], put++ == 0);
@@ -9340,6 +9344,32 @@ static void audit_graph(const Hypergraph *g) {
     printf("},\"shown\":%u,\"total\":%u}\n", put, n);
   }
   free(sus);
+}
+
+/* `{"limit": N}` caps suspects per reason; `{"limit": null}` lifts the cap;
+ * an absent payload keeps the default. Spelled exactly as recall spells it. */
+static i64 read_audit_limit(const Rd *r) {
+  u32 n, ti, k;
+  if (r->t[0].type != J_OBJ)
+    fail(ERR_PARSE, NULL, "payload must be a JSON object");
+  n = r->t[0].size;
+  ti = 1;
+  for (k = 0; k < n; k++) {
+    u32 key = ti, val = ti + 1;
+    if (rd_str_eq(r, key, "limit")) {
+      if (r->t[val].type == J_NULL)
+        return -1;
+      {
+        i64 v = rd_integer(r, val, "limit");
+        if (v < 1)
+          fail(ERR_PARSE, "limit", "expected a positive integer or null");
+        return v;
+      }
+    }
+    fail(ERR_PARSE, NULL, "audit takes only `limit`");
+    ti = tok_skip(r->t, val);
+  }
+  return (i64)g_aud_per_reason;
 }
 
 /* The session-start tally: the same checks, minus the O(n^2) pair sweep,
@@ -9512,7 +9542,11 @@ static const char MCP_TOOLS_JSON[] =
     "dropped. NOT a to-do list and NOT permission to clean: a suspect is a "
     "question for the user, and a fact that disagrees with the code may be "
     "recording intent worth keeping. Propose, never repair unasked.\","
-    "\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]";
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+    "\"limit\":{\"type\":[\"integer\",\"null\"],\"description\":\"suspects "
+    "shown per reason (default 5); null for all of them -- pass null when "
+    "actually working through a reason group, since triaging 17 suspects 5 "
+    "at a time is not triage\"}}}}]";
 
 /* `prompts/get maintain` — the human-in-the-loop gardening session. Served
  * over MCP prompts (clients surface it as a slash command) beside `onboard`,
@@ -9903,7 +9937,8 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store,
        * (journal_append below is a no-op while unarmed.) */
       graph_sync(store);
       mcp_cap_begin();
-      audit_graph(&g_graph);
+      audit_graph(&g_graph, args_i >= 0 ? read_audit_limit(&rd)
+                                        : (i64)g_aud_per_reason);
     } else {
       /* container-token start/end are original read offsets, so the slice of
        * the pristine line is the arguments subtree exactly as submitted */
@@ -10062,14 +10097,22 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   }
   if (strcmp(verb, "audit") == 0) {
     static char store[4200];
-    if (inline_payload)
-      fail(ERR_PARSE, NULL, "audit takes no payload");
+    static Json json;
+    i64 limit = (i64)g_aud_per_reason;
     if (!discover_store(store, sizeof store))
       fail(ERR_NO_STORE, NULL,
            "no .legend store found (set LEGEND_STATE_DIR or run legend init)");
+    if (inline_payload) {
+      Rd rd;
+      u32 len = payload_from_arg(inline_payload);
+      json_parse(&json, g_payload, len);
+      rd.t = json.toks;
+      rd.buf = g_payload;
+      limit = read_audit_limit(&rd);
+    }
     if (!snapshot_load(&g_graph, store))
       fail(ERR_NO_STORE, NULL, "no snapshot in %s — run legend init", store);
-    audit_graph(&g_graph);
+    audit_graph(&g_graph, limit);
     return 0;
   }
   if (strcmp(verb, "dump") == 0) {

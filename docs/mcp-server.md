@@ -7,8 +7,9 @@ MCP client (Claude Code, etc.):
 - **`legend_save`** — ingest a structured payload (see [cli.md](cli.md#save-payload)).
 - **`legend_recall`** — resolve a focus and return the frame.
 - **`legend_audit`** — scan for entries a human should adjudicate (see
-  [cli.md](cli.md#audit)). Takes no arguments and accepts a call with no
-  `arguments` key at all, since clients differ there. Read-only: it writes
+  [cli.md](cli.md#audit)). Takes an optional `limit` (suspects per reason,
+  default 5, `null` for all) and accepts a call with no `arguments` key at all,
+  since clients differ there. Read-only: it writes
   nothing and, unlike `observe`, is not journaled either — the journal exists to
   replay mutations, and `replay_journal.py` re-runs every ok entry as
   `legend <verb> <payload>`, which a payload-less read would break.

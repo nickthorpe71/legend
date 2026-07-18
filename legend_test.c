@@ -2778,7 +2778,7 @@ static void test_causal(void) {
 
 static char t_audit[1 << 16];
 
-static void capture_audit(void) {
+static void capture_audit_limit(i64 per_reason) {
     FILE *tmp = tmpfile();
     int saved;
     long n;
@@ -2787,7 +2787,7 @@ static void capture_audit(void) {
     fflush(stdout);
     saved = dup(1);
     CHECK(saved >= 0 && dup2(fileno(tmp), 1) >= 0);
-    audit_graph(&tg);
+    audit_graph(&tg, per_reason);
     fflush(stdout);
     dup2(saved, 1);
     close(saved);
@@ -2799,6 +2799,8 @@ static void capture_audit(void) {
     t_audit[n] = 0;
     fclose(tmp);
 }
+
+static void capture_audit(void) { capture_audit_limit((i64)g_aud_per_reason); }
 
 static void test_audit(void) {
     int failed;
@@ -3020,6 +3022,14 @@ static void test_audit(void) {
     CHECK(strstr(t_audit, "\"truncated\":{\"bloat\":1}") != NULL);
     CHECK(strstr(t_audit, "\"shown\":5") != NULL);
     CHECK(strstr(t_audit, "\"total\":6") != NULL);
+    /* ...and `limit` lifts it, which is what a maintenance pass needs: five
+     * at a time is not triage when a group holds seventeen */
+    capture_audit_limit(-1);
+    CHECK(strstr(t_audit, "\"shown\":6") != NULL);
+    CHECK(strstr(t_audit, "\"truncated\":{}") != NULL);
+    capture_audit_limit(2);
+    CHECK(strstr(t_audit, "\"shown\":2") != NULL);
+    CHECK(strstr(t_audit, "\"truncated\":{\"bloat\":4}") != NULL);
 
     /* the orientation tally: same checks, in the packet header where the
      * SessionStart hook's `head -c 4000` cannot cut it off, and WITHOUT the

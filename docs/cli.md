@@ -66,6 +66,17 @@ Output carries the full tally in `counts` even when the printed list is capped
 at five per reason; whatever the cap drops is named in `truncated`, so the list
 is short but never quietly short.
 
+The cap is per reason and overridable:
+
+```
+legend audit                    # 5 per reason
+legend audit '{"limit":2}'      # 2 per reason
+legend audit '{"limit":null}'   # all of them
+```
+
+Pass `null` when actually working through a group — triaging seventeen suspects
+five at a time is not triage. `limit` is the only key `audit` accepts.
+
 Thresholds were set by measurement, not taste. `near_dup` is the fussiest and
 the least proven — it needs three guards before a similarity score means
 anything:

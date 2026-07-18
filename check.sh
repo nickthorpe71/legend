@@ -333,12 +333,36 @@ assert len(f["state"]) == 1  # the current_standing cache
     else
         fail "$BIN audit: exit=$rc snapshot $before -> $after out=$out"
     fi
-    out="$(LEGEND_STATE_DIR="$S5" "$BIN" audit '{}' 2>&1)"
-    rc=$?
-    if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q 'audit takes no payload'; then
-        pass "$BIN audit rejects a payload"
+    # `limit` is what makes a real maintenance pass possible: null lifts the
+    # per-reason cap so a whole group can be triaged at once. Needs a store
+    # that actually HAS more suspects than the default cap, or the assertion
+    # passes vacuously at 0 of 0.
+    SA="$TMPROOT/audit_$(basename "$BIN")"
+    LEGEND_STATE_DIR="$SA" "$BIN" init >/dev/null || fail "$BIN audit-store init"
+    i=1
+    while [ $i -le 7 ]; do
+        LEGEND_STATE_DIR="$SA" LEGEND_NOW=1780272000 "$BIN" save \
+          "{\"elements\":[{\"name\":\"bloated $i\",\"kind\":\"task\",\"summary\":\"$(printf 'x%.0s' $(seq 1 400))\"}]}" \
+          >/dev/null || fail "$BIN audit-store seed $i"
+        i=$((i+1))
+    done
+    a_def="$(LEGEND_STATE_DIR="$SA" "$BIN" audit)"
+    a_all="$(LEGEND_STATE_DIR="$SA" "$BIN" audit '{"limit":null}')"
+    a_two="$(LEGEND_STATE_DIR="$SA" "$BIN" audit '{"limit":2}')"
+    bad_zero="$(LEGEND_STATE_DIR="$SA" "$BIN" audit '{"limit":0}' 2>&1)"; rc_zero=$?
+    bad_key="$(LEGEND_STATE_DIR="$SA" "$BIN" audit '{"nope":1}' 2>&1)"; rc_key=$?
+    n_def="$(printf '%s' "$a_def" | grep -o '"shown":[0-9]*' | cut -d: -f2)"
+    n_all="$(printf '%s' "$a_all" | grep -o '"shown":[0-9]*' | cut -d: -f2)"
+    n_two="$(printf '%s' "$a_two" | grep -o '"shown":[0-9]*' | cut -d: -f2)"
+    n_tot="$(printf '%s' "$a_all" | grep -o '"total":[0-9]*' | cut -d: -f2)"
+    if [ "$n_tot" -eq 7 ] && [ "$n_def" -eq 5 ] && [ "$n_all" -eq 7 ] && [ "$n_two" -eq 2 ] \
+       && printf '%s' "$a_all" | grep -q '"truncated":{}' \
+       && printf '%s' "$a_def" | grep -q '"truncated":{"bloat":2}' \
+       && [ $rc_zero -ne 0 ] && printf '%s' "$bad_zero" | grep -q 'positive integer or null' \
+       && [ $rc_key -ne 0 ] && printf '%s' "$bad_key" | grep -q 'audit takes only'; then
+        pass "$BIN audit limit: default caps 5/7, null uncaps 7/7, 2 caps 2/7"
     else
-        fail "$BIN audit payload: exit=$rc out=$out"
+        fail "$BIN audit limit: def=$n_def two=$n_two all=$n_all tot=$n_tot zero=$bad_zero key=$bad_key"
     fi
 
     # the MCP surface: tools/list and prompts/list are hand-written JSON, so a
@@ -357,7 +381,9 @@ assert len(f["state"]) == 1  # the current_standing cache
     rc=$?
     after="$(cksum "$S5/legend.snapshot")"
     jl_after="$(wc -l < "$S5/journal.jsonl" 2>/dev/null || echo 0)"
-    nsuspects="$(printf '%s' "$out" | grep -c 'suspects')"
+    # count the JSON key, not the bare word — the tool descriptions mention
+    # "suspects" in prose and would otherwise inflate this
+    nsuspects="$(printf '%s' "$out" | grep -o '\\"suspects\\":\[' | wc -l)"
     if [ $rc -eq 0 ] && [ "$before" = "$after" ] && [ "$jl_before" = "$jl_after" ] \
        && [ "$nsuspects" -eq 2 ] \
        && printf '%s' "$out" | grep -q '"name":"legend_audit"' \
