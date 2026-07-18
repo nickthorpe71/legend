@@ -8894,6 +8894,424 @@ static void dump_graph(const Hypergraph *g) {
   fputs("]}\n", stdout);
 }
 
+/* ========================================================================
+ * S11.5  AUDIT — `legend audit`
+ *
+ * A read-only scan that names the parts of a store a human should look at.
+ * Every check is a deterministic graph query: no embeddings, no model, no
+ * mutation, no tick. The oracle computes SUSPICION; a human decides what is
+ * actually wrong. That split is deliberate — a store can hold a fact that is
+ * stale on purpose (design intent the code has since drifted from), and the
+ * disagreement is the signal, so nothing here may prune on its own.
+ *
+ * Five checks, one per papercut the trial found by hand:
+ *
+ *   stub        an element with no summary that is never a fact's subject —
+ *               the shape left behind when a fact object silently minted a
+ *               name that was never described
+ *   status_fact a plain fact on a status-flavored property, which accretes
+ *               and goes stale; `changes` is the verb that supersedes
+ *   near_dup    two live names similar enough that dedup should have folded
+ *               them and did not
+ *   stale_open  a question/task with no `resolves` edge, untouched for long
+ *               enough that it is probably finished or abandoned
+ *   bloat       a summary that outgrew one line and should split into
+ *               child elements
+ *
+ * Ranked most-actionable first: a stub is a defect, a bloated summary is
+ * housekeeping.
+ * ===================================================================== */
+
+enum {
+  AUD_PHANTOM_CLOSE = 0,
+  AUD_STATUS_FACT,
+  AUD_NEAR_DUP,
+  AUD_PROSE_NAME,
+  AUD_STALE_OPEN,
+  AUD_ORPHAN,
+  AUD_BLOAT,
+  AUD_REASON_COUNT
+};
+
+static const char *const AUD_REASONS[AUD_REASON_COUNT] = {
+    "phantom_close", "status_fact", "near_dup", "prose_name",
+    "stale_open",    "orphan",      "bloat"};
+
+/* Thresholds. Mutable so tests can drive each check from a small store. */
+static u32 g_aud_bloat_chars = 280; /* the "outgrew one line" mark (#66) */
+static u32 g_aud_name_chars = 120;  /* a name past here is prose. Measured on
+                                       the trial store: median name 29 bytes,
+                                       p90 92, tail to 1177 — the tail is
+                                       whole sentences passed where a
+                                       canonical name belongs */
+static u32 g_aud_stale_ticks = 50;  /* ticks of silence before an open item
+                                       reads as abandoned */
+static double g_aud_dup_sim = 0.60; /* name trigram Jaccard for near_dup, with
+                                       differing digits vetoing the pair */
+static u32 g_aud_dup_min_name = 12; /* below this a single differing byte still
+                                       leaves ~0.6 Jaccard ("elem a" vs "elem
+                                       b"), so short names are incomparable by
+                                       trigram and are not paired at all */
+
+/* Suspects per reason actually printed. A store that has drifted for weeks
+ * has more bloated summaries than anyone will fix in one sitting, and a wall
+ * of them buries the stubs — which are defects, not housekeeping. The full
+ * tally always ships in `counts`, and whatever the cap drops is named in
+ * `truncated`: the list is short, never quietly short. */
+static u32 g_aud_per_reason = 5;
+
+typedef struct {
+  u8 reason;
+  u32 subject; /* element id, or relation id when reason is AUD_STATUS_FACT */
+  u32 other;   /* near_dup partner element, else NONE_U32 */
+  u32 refs;    /* live relations touching the element; triages a stub */
+  u32 sev;     /* worst-first within a reason: chars, ticks silent, similarity */
+} Suspect;
+
+/* Vocabulary and structural elements are never suspects: the seeded core, the
+ * extended causal vocabulary, anything used as an attribute NAME (a predicate),
+ * anything used as a kind, and anything naming a provenance — whether it
+ * arrived as a src/source slot or, as `source` on a save does, in a relation's
+ * supporters list. All of them are summary-less and subject-less by design,
+ * which is exactly the stub shape; miss one and every provenance string in the
+ * store reads as a phantom. */
+static void audit_mark_structural(const Hypergraph *g, u8 *structural) {
+  u32 i, r, a;
+  for (i = 0; i < WK_ELEMENT_COUNT && i < g->element_count; i++)
+    structural[i] = 1;
+  for (i = 0; i < EXT_COUNT; i++)
+    if (g->wk_ext[i] != NONE_U32 && g->wk_ext[i] < g->element_count)
+      structural[g->wk_ext[i]] = 1;
+  for (i = 0; i < g->element_count; i++)
+    if (g->elem_kind[i] != NONE_U32)
+      structural[g->elem_kind[i]] = 1;
+  for (r = 0; r < g->relation_count; r++) {
+    const Relation *rel = &g->relations[r];
+    for (a = 0; a < rel->attr_count; a++) {
+      structural[rel->attrs[a].name] = 1;
+      if ((rel->attrs[a].name == WK_SOURCE || rel->attrs[a].name == WK_SRC) &&
+          rel->attrs[a].value.tag == TERM_ELEM)
+        structural[rel->attrs[a].value.id] = 1;
+    }
+    for (a = 0; a < rel->supporters.count; a++)
+      structural[rel->supporters.v[a]] = 1;
+  }
+}
+
+/* A property whose value moves over time. Trial doc §11: these belong in
+ * `changes`, which supersedes and keeps history; written as a plain fact they
+ * accrete and the old value stays live next to the new one. current_* names
+ * are the cache `changes` already wrote, so they are the correct shape. */
+static int audit_name_is_status_flavored(const Hypergraph *g, u32 name_elem) {
+  static const char *const FLAVORS[] = {"status",  "state",   "progress",
+                                        "phase",   "standing", "stage",
+                                        "version", "result"};
+  const char *nb = elem_name(g, name_elem);
+  u32 nl = elem_name_l(g, name_elem), i;
+  if (nl > 8 && memcmp(nb, "current_", 8) == 0)
+    return 0;
+  for (i = 0; i < sizeof FLAVORS / sizeof FLAVORS[0]; i++) {
+    u32 fl = (u32)strlen(FLAVORS[i]);
+    if (nl == fl && memcmp(nb, FLAVORS[i], fl) == 0)
+      return 1;
+  }
+  return 0;
+}
+
+/* Live relations touching `e`, and whether any of them is a plain fact with
+ * `e` as its subject. An element that is never a subject was named by someone
+ * else and never described in its own right. */
+static u32 audit_elem_refs(const Hypergraph *g, u32 e, int *is_subject) {
+  u32 link = g->rels_by_elem[e], refs = 0;
+  *is_subject = 0;
+  while (link != NONE_U32) {
+    u32 rid = g->rel_links[link].rel;
+    const Relation *r = &g->relations[rid];
+    u32 a;
+    link = g->rel_links[link].next;
+    if (r->status >= ST_SUPERSEDED)
+      continue;
+    refs++;
+    for (a = 0; a < r->attr_count; a++)
+      if (r->attrs[a].name == WK_SUBJECT && r->attrs[a].value.tag == TERM_ELEM &&
+          r->attrs[a].value.id == e && r->attr_count == 2 &&
+          r->attrs[0].name != WK_INSTANCE_OF && r->attrs[1].name != WK_INSTANCE_OF)
+        *is_subject = 1;
+  }
+  return refs;
+}
+
+/* Whether any live relation closes `e` — a {subject: X, resolves: e} fact.
+ * Rewriting a question's summary does not close it; only this edge does. */
+static int audit_is_resolved(const Hypergraph *g, u32 e) {
+  u32 link = g->rels_by_elem[e];
+  while (link != NONE_U32) {
+    u32 rid = g->rel_links[link].rel;
+    const Relation *r = &g->relations[rid];
+    u32 a;
+    link = g->rel_links[link].next;
+    if (r->status >= ST_SUPERSEDED)
+      continue;
+    for (a = 0; a < r->attr_count; a++)
+      if (r->attrs[a].name == WK_RESOLVES &&
+          r->attrs[a].value.tag == TERM_ELEM && r->attrs[a].value.id == e)
+        return 1;
+  }
+  return 0;
+}
+
+/* The digits of a canonical name, in order ("trial round 2" -> "2"). Names in
+ * a real store distinguish siblings by number or date far more often than by
+ * wording — round 1 vs round 2, session 2 vs session 3, testimony 5 vs 6 —
+ * and trigram similarity barely registers the one byte that carries all the
+ * meaning: measured on this store's own names, those DISTINCT pairs score
+ * 0.83-0.89 while a genuine typo duplicate scores 0.80, so no threshold can
+ * separate them. Differing digits therefore veto a near_dup outright. Same
+ * reading of digits as rel_exception_protected: in this store they are
+ * identity, not decoration. */
+static u32 audit_name_digits(const Hypergraph *g, u32 e, char *out, u32 cap) {
+  const char *b = elem_name(g, e);
+  u32 n = elem_name_l(g, e), i, w = 0;
+  for (i = 0; i < n && w < cap; i++)
+    if (b[i] >= '0' && b[i] <= '9')
+      out[w++] = b[i];
+  return w;
+}
+
+/* Whether these two elements are the old and new values of one change event.
+ * `changes` records supersession as {from: <old>, to: <new>}, so both values
+ * necessarily survive as elements — and a property whose value was EDITED
+ * rather than replaced leaves two near-identical names behind by design
+ * ("...Rare/Epic/Mythic" -> "...Rare/Fabled/Mythic"). That is the feature
+ * working, not a duplicate to fold; merging them would destroy the history
+ * `changes` exists to keep. Only reached for pairs that already cleared the
+ * similarity bar, so the scan costs nothing. */
+static int audit_is_supersession_pair(const Hypergraph *g, u32 a, u32 b) {
+  u32 r, i;
+  for (r = 0; r < g->relation_count; r++) {
+    const Relation *rel = &g->relations[r];
+    u32 from = NONE_U32, to = NONE_U32;
+    for (i = 0; i < rel->attr_count; i++) {
+      if (rel->attrs[i].value.tag != TERM_ELEM)
+        continue;
+      if (rel->attrs[i].name == WK_FROM)
+        from = rel->attrs[i].value.id;
+      else if (rel->attrs[i].name == WK_TO)
+        to = rel->attrs[i].value.id;
+    }
+    if ((from == a && to == b) || (from == b && to == a))
+      return 1;
+  }
+  return 0;
+}
+
+static int audit_kind_is_open(const Hypergraph *g, u32 e) {
+  u32 k = g->elem_kind[e];
+  return k != NONE_U32 && (k == WK_KIND_QUESTION || k == WK_KIND_TASK);
+}
+
+static int suspect_cmp(const void *pa, const void *pb) {
+  const Suspect *a = (const Suspect *)pa, *b = (const Suspect *)pb;
+  if (a->reason != b->reason)
+    return a->reason < b->reason ? -1 : 1;
+  if (a->sev != b->sev)
+    return a->sev > b->sev ? -1 : 1;
+  return a->subject < b->subject ? -1 : a->subject > b->subject ? 1 : 0;
+}
+
+static void audit_put_suspect(const Hypergraph *g, const Suspect *s, int first) {
+  if (!first)
+    fputc(',', stdout);
+  printf("{\"reason\":\"%s\",", AUD_REASONS[s->reason]);
+  if (s->reason == AUD_STATUS_FACT) {
+    printf("\"ref\":\"rel:%u\",\"attrs\":", s->subject);
+    frame_put_rel_attrs(g, s->subject);
+  } else {
+    const Element *el = &g->elements[s->subject];
+    printf("\"ref\":\"#%u\",\"name\":\"", s->subject);
+    json_escape_fputs(elem_name(g, s->subject), stdout);
+    fputc('"', stdout);
+    if (g->elem_kind[s->subject] != NONE_U32) {
+      fputs(",\"kind\":\"", stdout);
+      json_escape_fputs(elem_name(g, g->elem_kind[s->subject]), stdout);
+      fputc('"', stdout);
+    }
+    if (s->reason == AUD_ORPHAN)
+      printf(",\"refs\":%u", s->refs);
+    if (s->reason == AUD_PROSE_NAME)
+      printf(",\"name_chars\":%u", s->sev);
+    if (s->reason == AUD_PHANTOM_CLOSE) {
+      printf(",\"via\":\"rel:%u\",\"fact\":", s->other);
+      frame_put_rel_attrs(g, s->other);
+    }
+    if (s->reason == AUD_NEAR_DUP) {
+      printf(",\"other\":\"#%u\",\"similarity\":%.3f,\"other_name\":\"",
+             s->other, (double)s->sev / 1000.0);
+      json_escape_fputs(elem_name(g, s->other), stdout);
+      fputc('"', stdout);
+    }
+    if (s->reason == AUD_STALE_OPEN)
+      printf(",\"last_seen\":%u,\"silent_for\":%u", el->stats.last_seen,
+             g->clock - el->stats.last_seen);
+    if (s->reason == AUD_BLOAT)
+      printf(",\"summary_chars\":%u", str_len(&g->strs, el->summary));
+  }
+  fputc('}', stdout);
+}
+
+/* Scan every check, rank, print. The caller has already loaded the snapshot;
+ * nothing here writes, so an audit can run against a live store mid-session. */
+static void audit_graph(const Hypergraph *g) {
+  u8 *structural = (u8 *)calloc(g->element_count ? g->element_count : 1, 1);
+  Suspect *sus = NULL;
+  u32 cap = 0, n = 0, e, r, i;
+  u32 counts[AUD_REASON_COUNT];
+  U32Vec ta, tb;
+  if (!structural) {
+    fprintf(stderr, "legend: out of memory\n");
+    exit(1);
+  }
+  memset(&ta, 0, sizeof ta);
+  memset(&tb, 0, sizeof tb);
+  for (i = 0; i < AUD_REASON_COUNT; i++)
+    counts[i] = 0;
+  audit_mark_structural(g, structural);
+
+#define AUD_PUSH(rsn, subj, oth, rf, sv)                                       \
+  do {                                                                         \
+    sus = (Suspect *)xgrow(sus, n + 1, &cap, sizeof *sus);                      \
+    sus[n].reason = (u8)(rsn);                                                  \
+    sus[n].subject = (subj);                                                    \
+    sus[n].other = (oth);                                                       \
+    sus[n].refs = (rf);                                                         \
+    sus[n].sev = (sv);                                                          \
+    n++;                                                                        \
+    counts[rsn]++;                                                              \
+  } while (0)
+
+  for (e = 0; e < g->element_count; e++) {
+    const Element *el = &g->elements[e];
+    int is_subject;
+    u32 refs;
+    if (structural[e] || el->redirect != NONE_U32)
+      continue;
+    refs = audit_elem_refs(g, e, &is_subject);
+    /* A summary-less element referenced by a live fact is NOT reportable on
+     * that shape alone: "sdl" and "game engine" are perfectly good fact
+     * objects that will never carry a summary, and they outnumber real
+     * defects 119 to 5 in the trial store. What separates a mistake from a
+     * shorthand is not the missing summary — it is prose where a name
+     * belongs, or a `resolves` that closed nothing. Both are checked
+     * directly, so nothing keys off the summary being absent.
+     *
+     * The one exception is an element NOTHING references, which no fact can
+     * be reading: a provenance string whose facts all deduped, or what a
+     * retraction left behind. Inert, so it ranks near the bottom. */
+    if (el->summary == NONE_U32 && !is_subject && refs == 0)
+      AUD_PUSH(AUD_ORPHAN, e, NONE_U32, refs, 0);
+    if (elem_name_l(g, e) > g_aud_name_chars)
+      AUD_PUSH(AUD_PROSE_NAME, e, NONE_U32, refs, elem_name_l(g, e));
+    if (el->summary != NONE_U32 && str_len(&g->strs, el->summary) > g_aud_bloat_chars)
+      AUD_PUSH(AUD_BLOAT, e, NONE_U32, refs, str_len(&g->strs, el->summary));
+    if (audit_kind_is_open(g, e) && !audit_is_resolved(g, e) &&
+        g->clock > g_aud_stale_ticks &&
+        el->stats.last_seen < g->clock - g_aud_stale_ticks)
+      AUD_PUSH(AUD_STALE_OPEN, e, NONE_U32, refs,
+               g->clock - el->stats.last_seen);
+  }
+
+  for (r = 0; r < g->relation_count; r++) {
+    const Relation *rel = &g->relations[r];
+    u32 a, subj = NONE_U32, prop = NONE_U32;
+    if (rel->status >= ST_SUPERSEDED)
+      continue;
+    /* A `resolves` whose target was minted by this very fact closed nothing —
+     * it invented a leaf shaped like an answer. An open item always carries a
+     * kind (question or task); a target with no kind at all was never on the
+     * books, so the question it claims to close is still open and now has a
+     * decoy sitting next to it. The trial store holds exactly one, which is
+     * the shape of a check worth running. */
+    for (a = 0; a < rel->attr_count; a++)
+      if (rel->attrs[a].name == WK_RESOLVES &&
+          rel->attrs[a].value.tag == TERM_ELEM &&
+          g->elem_kind[rel->attrs[a].value.id] == NONE_U32)
+        AUD_PUSH(AUD_PHANTOM_CLOSE, rel->attrs[a].value.id, r, 0, 0);
+    if (rel->attr_count != 2)
+      continue;
+    for (a = 0; a < 2; a++) {
+      if (rel->attrs[a].name == WK_SUBJECT && rel->attrs[a].value.tag == TERM_ELEM)
+        subj = rel->attrs[a].value.id;
+      else
+        prop = rel->attrs[a].name;
+    }
+    if (subj == NONE_U32 || prop == NONE_U32 || structural[subj])
+      continue;
+    if (audit_name_is_status_flavored(g, prop))
+      AUD_PUSH(AUD_STATUS_FACT, r, NONE_U32, 0, 0);
+  }
+
+  /* Near-duplicate names, O(n^2) over live non-structural elements. A store
+   * is thousands of elements at most and audit runs on demand, so the pair
+   * sweep stays well under the cost of the snapshot load that preceded it. */
+  for (e = 0; e < g->element_count; e++) {
+    char da[32], db[32];
+    u32 dan, dbn;
+    if (structural[e] || g->elements[e].redirect != NONE_U32 ||
+        elem_name_l(g, e) < g_aud_dup_min_name)
+      continue;
+    tier2_trigrams(elem_name(g, e), elem_name_l(g, e), &ta);
+    dan = audit_name_digits(g, e, da, sizeof da);
+    for (r = e + 1; r < g->element_count; r++) {
+      double sim;
+      if (structural[r] || g->elements[r].redirect != NONE_U32 ||
+          elem_name_l(g, r) < g_aud_dup_min_name)
+        continue;
+      dbn = audit_name_digits(g, r, db, sizeof db);
+      if (dan != dbn || (dan && memcmp(da, db, dan) != 0))
+        continue;
+      tier2_trigrams(elem_name(g, r), elem_name_l(g, r), &tb);
+      sim = trigram_jaccard(ta.v, ta.count, tb.v, tb.count);
+      if (sim >= g_aud_dup_sim && !audit_is_supersession_pair(g, e, r))
+        AUD_PUSH(AUD_NEAR_DUP, r, e, 0, (u32)(sim * 1000.0));
+    }
+  }
+#undef AUD_PUSH
+
+  if (n > 1)
+    qsort(sus, n, sizeof *sus, suspect_cmp);
+  printf("{\"clock\":%u,\"elements\":%u,\"suspects\":[", g->clock,
+         g->element_count);
+  {
+    u32 shown[AUD_REASON_COUNT], put = 0;
+    for (i = 0; i < AUD_REASON_COUNT; i++)
+      shown[i] = 0;
+    for (i = 0; i < n; i++) {
+      if (shown[sus[i].reason] >= g_aud_per_reason)
+        continue;
+      shown[sus[i].reason]++;
+      audit_put_suspect(g, &sus[i], put++ == 0);
+    }
+    fputs("],\"counts\":{", stdout);
+    for (i = 0; i < AUD_REASON_COUNT; i++)
+      printf("%s\"%s\":%u", i ? "," : "", AUD_REASONS[i], counts[i]);
+    fputs("},\"truncated\":{", stdout);
+    {
+      u32 first = 1;
+      for (i = 0; i < AUD_REASON_COUNT; i++)
+        if (counts[i] > shown[i]) {
+          printf("%s\"%s\":%u", first ? "" : ",", AUD_REASONS[i],
+                 counts[i] - shown[i]);
+          first = 0;
+        }
+    }
+    printf("},\"shown\":%u,\"total\":%u}\n", put, n);
+  }
+  free(structural);
+  free(sus);
+  free(ta.v);
+  free(tb.v);
+}
+
 /* Parse argv, dispatch the verb, and run the one invocation. init creates or
  * reports the store; save/recall discover an existing store, lock it, load,
  * tick, save (unless observe), and print. Every error along the way funnels
@@ -9027,7 +9445,89 @@ static const char MCP_TOOLS_JSON[] =
     "\"merge\":{\"type\":\"array\",\"description\":\"fold a duplicate element into the canonical one\","
     "\"items\":{\"type\":\"object\",\"properties\":{"
     "\"from\":{\"type\":\"string\"},\"into\":{\"type\":\"string\"}},"
-    "\"required\":[\"from\",\"into\"]}}}}}]";
+    "\"required\":[\"from\",\"into\"]}}}}},"
+    "{\"name\":\"legend_audit\",\"description\":\"Scan the store for entries a "
+    "HUMAN should adjudicate, ranked most-actionable first. Read-only: it "
+    "changes nothing and is safe to run any time. Reasons: `phantom_close` (a "
+    "resolves that closed nothing and left a decoy), `status_fact` (a "
+    "changing value written as a plain fact instead of `changes`), "
+    "`near_dup` (two names dedup should probably have folded), `prose_name` "
+    "(a sentence where a canonical name belongs), `stale_open` (an open item "
+    "long untouched), `orphan` (nothing references it), `bloat` (a summary "
+    "that should split into children). `counts` is the full tally even when "
+    "the printed list is capped per reason; `truncated` names what was "
+    "dropped. NOT a to-do list and NOT permission to clean: a suspect is a "
+    "question for the user, and a fact that disagrees with the code may be "
+    "recording intent worth keeping. Propose, never repair unasked.\","
+    "\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]";
+
+/* `prompts/get maintain` — the human-in-the-loop gardening session. Served
+ * over MCP prompts (clients surface it as a slash command) beside `onboard`,
+ * so the flow travels with the binary. The division of labour is the whole
+ * point: `legend_audit` computes suspicion deterministically, the model only
+ * presents and executes, and the USER decides. Nothing here may repair on its
+ * own — a store can hold a fact that is stale on purpose, and that
+ * disagreement with the code has diagnostic value an eager tidier destroys. */
+static const char MCP_MAINTAIN_PROMPT[] =
+    "Run a maintenance pass over the Legend store WITH the user. You are "
+    "presenting evidence and carrying out their decisions; you are not "
+    "cleaning up. Never repair anything they did not just approve.\n\n"
+    "Step 1 -- SCAN. Call `legend_audit`. If `total` is 0, say the store is "
+    "clean and stop; do not go looking for other work.\n\n"
+    "Step 2 -- TRIAGE, worst first. Take the reasons in the order the tool "
+    "returned them and work one GROUP at a time (all the `near_dup`s, then "
+    "all the `status_fact`s, ...). Do not dump the whole list at once.\n\n"
+    "For each suspect, before showing it to the user, look it up with "
+    "`legend_recall` — a bare name and a reason code are not enough for "
+    "anyone to judge. Read the FACTS that reference it, not just its summary: "
+    "the entries most likely to be flagged are the ones that never had a "
+    "summary, and what they mean lives entirely in the facts around them. "
+    "Then give the user, in two or three lines: what the entry says, why the "
+    "tool flagged it, and the single most likely repair. Then ask. One "
+    "decision at a time.\n\n"
+    "Expect false positives and say so plainly when you find one. If the "
+    "surrounding facts show the entry is correct as it stands, tell the user "
+    "it is fine and move on -- do not manufacture a repair to justify the "
+    "flag.\n\n"
+    "What each reason usually means, and the repair to propose:\n"
+    "- `phantom_close`: a `resolves` names a target that never existed, so "
+    "the real item is still open and a decoy sits beside it. Confirm which "
+    "item they MEANT to close, then `retract` the bogus fact and re-save the "
+    "resolves against the real one.\n"
+    "- `status_fact`: a value that changes over time was written as a plain "
+    "fact, so the old value stays live beside the new one. Ask what the "
+    "current value is, then re-express it with `changes`; `retract` the "
+    "stale fact.\n"
+    "- `near_dup`: two names that may be one thing. Show BOTH summaries -- "
+    "they are often genuinely different, and a wrong `merge` is hard to "
+    "undo. Only on a clear yes, `merge` the later into the earlier.\n"
+    "- `prose_name`: a sentence ended up as an element name (fact objects and "
+    "attr values become names). Propose a short canonical name via "
+    "`rename_to`, and offer to move the sentence into the summary.\n"
+    "- `stale_open`: an open question or task nobody has touched. Ask: done, "
+    "abandoned, or still live? If done, save a `resolves` fact from whatever "
+    "settled it -- an existing element, never a new one. If still live, "
+    "leave it and move on.\n"
+    "- `orphan`: nothing references it. Usually harmless residue. Offer "
+    "removal only if the user recognises it as a mistake.\n"
+    "- `bloat`: a summary that grew into a wall. Propose splitting the detail "
+    "into child elements and leaving a short core, and show the proposed "
+    "short core before writing it.\n\n"
+    "Step 3 -- APPLY. Batch the approved repairs into as few `legend_save` "
+    "calls as you can and set `source` to \"maintenance <today's date>\", so "
+    "gardening stays distinguishable from real session work later. Check "
+    "`writes.minted_elements` in every response: a name you expected to "
+    "already exist appearing there means you just created a phantom -- "
+    "retract it and tell the user.\n\n"
+    "Step 4 -- STOP CLEANLY. Maintenance is interruptible by design. Whenever "
+    "the user is done, summarise what changed and what is still outstanding. "
+    "Do not press on through the whole list for completeness.\n\n"
+    "Two standing rules. A suspect is a QUESTION, not a defect: the tool "
+    "reports shapes, and only the user knows whether a given entry is wrong. "
+    "And a memory that disagrees with the current code is not automatically "
+    "stale -- it may be recording what was INTENDED, and that gap is worth "
+    "more than a tidy store. Surface the disagreement; never silently correct "
+    "it away.";
 
 /* `prompts/get onboard` — the discovery script for starting Legend on an
  * EXISTING project: the client LLM explores the repo, interviews the user for
@@ -9201,7 +9701,10 @@ static void mcp_prompts_list(const Json *j, long id_i) {
   mcp_reply_head(j, id_i);
   fputs(",\"result\":{\"prompts\":[{\"name\":\"onboard\",\"description\":"
         "\"Start Legend on an existing project: explore the repo, interview "
-        "the user for the why, seed the store, confirm the packet.\"}]}}\n",
+        "the user for the why, seed the store, confirm the packet.\"},"
+        "{\"name\":\"maintain\",\"description\":"
+        "\"Garden the store with the user: audit for questionable entries, "
+        "present them one at a time, and apply only what they approve.\"}]}}\n",
         stdout);
   fflush(stdout);
 }
@@ -9215,7 +9718,12 @@ static void mcp_error(const Json *j, long id_i, int code, const char *msg) {
 static void mcp_prompts_get(const Json *j, long id_i) {
   long params_i = mcp_obj_get(j, 0, "params");
   long name_i = params_i >= 0 ? mcp_obj_get(j, (u32)params_i, "name") : -1;
-  if (!mcp_streq(j, name_i, "onboard")) {
+  const char *text;
+  if (mcp_streq(j, name_i, "onboard"))
+    text = MCP_ONBOARD_PROMPT;
+  else if (mcp_streq(j, name_i, "maintain"))
+    text = MCP_MAINTAIN_PROMPT;
+  else {
     mcp_error(j, id_i, -32602, "unknown prompt");
     return;
   }
@@ -9223,7 +9731,7 @@ static void mcp_prompts_get(const Json *j, long id_i) {
   fputs(",\"result\":{\"messages\":[{\"role\":\"user\",\"content\":"
         "{\"type\":\"text\",\"text\":\"",
         stdout);
-  json_escape_fputs(MCP_ONBOARD_PROMPT, stdout);
+  json_escape_fputs(text, stdout);
   fputs("\"}}]}}\n", stdout);
   fflush(stdout);
 }
@@ -9304,18 +9812,21 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store,
   long params_i = mcp_obj_get(j, 0, "params");
   long name_i = params_i >= 0 ? mcp_obj_get(j, (u32)params_i, "name") : -1;
   long args_i = params_i >= 0 ? mcp_obj_get(j, (u32)params_i, "arguments") : -1;
-  int is_save, is_recall;
+  int is_save, is_recall, is_audit;
   if (name_i < 0) {
     mcp_error(j, id_i, -32602, "missing tool name");
     return;
   }
   is_save = mcp_streq(j, name_i, "legend_save");
   is_recall = mcp_streq(j, name_i, "legend_recall");
-  if (!is_save && !is_recall) {
+  is_audit = mcp_streq(j, name_i, "legend_audit");
+  if (!is_save && !is_recall && !is_audit) {
     mcp_error(j, id_i, -32602, "unknown tool");
     return;
   }
-  if (args_i < 0) {
+  /* audit takes nothing, and clients differ on whether a no-arg call carries
+   * an empty `arguments` object at all */
+  if (args_i < 0 && !is_audit) {
     mcp_error(j, id_i, -32602, "missing arguments");
     return;
   }
@@ -9326,34 +9837,47 @@ static void mcp_tools_call(const Json *j, long id_i, const char *store,
     static WriteReport report;
     Rd rd;
     char *frame;
-    rd.t = &j->toks[args_i]; /* Rd navigates relative to its root token */
-    rd.buf = j->buf;
+    if (args_i >= 0) {
+      rd.t = &j->toks[args_i]; /* Rd navigates relative to its root token */
+      rd.buf = j->buf;
+    }
     acquire_lock(store); /* brief per-call hold, released before we reply */
-    /* container-token start/end are original read offsets, so the slice of
-     * the pristine line is the arguments subtree exactly as submitted */
-    journal_arm(store, is_save ? "save" : "recall",
-                pristine + j->toks[args_i].start,
-                j->toks[args_i].end - j->toks[args_i].start);
-    graph_sync(store);   /* warm: reload only when the snapshot changed on disk */
-    if (is_save) {
-      read_submission(&rd, &sub);
+    if (is_audit) {
+      /* Deliberately unjournaled. The journal exists to replay mutations, and
+       * replay_journal.py re-runs every ok entry as `legend <verb> <payload>`
+       * — a payload-less read would break the replay the trial's determinism
+       * check depends on. Nothing is written, so there is nothing to replay.
+       * (journal_append below is a no-op while unarmed.) */
+      graph_sync(store);
       mcp_cap_begin();
-      tick_save(&g_graph, &sub, j->buf, &report);
-      snapshot_write(&g_graph, store);
-      graph_mark_synced(store); /* g_graph now matches what we just wrote */
-      tier2_sync(&g_graph);
-      emit_frame(&g_graph, &report, store, 40, 2, -1);
+      audit_graph(&g_graph);
     } else {
-      read_recall(&rd, &rec);
-      g_journal_observe = rec.observe;
-      mcp_cap_begin();
-      tick_recall(&g_graph, &rec, j->buf, &report);
-      if (!rec.observe) {
+      /* container-token start/end are original read offsets, so the slice of
+       * the pristine line is the arguments subtree exactly as submitted */
+      journal_arm(store, is_save ? "save" : "recall",
+                  pristine + j->toks[args_i].start,
+                  j->toks[args_i].end - j->toks[args_i].start);
+      graph_sync(store); /* warm: reload only when the snapshot changed on disk */
+      if (is_save) {
+        read_submission(&rd, &sub);
+        mcp_cap_begin();
+        tick_save(&g_graph, &sub, j->buf, &report);
         snapshot_write(&g_graph, store);
-        graph_mark_synced(store);
+        graph_mark_synced(store); /* g_graph now matches what we just wrote */
+        tier2_sync(&g_graph);
+        emit_frame(&g_graph, &report, store, 40, 2, -1);
+      } else {
+        read_recall(&rd, &rec);
+        g_journal_observe = rec.observe;
+        mcp_cap_begin();
+        tick_recall(&g_graph, &rec, j->buf, &report);
+        if (!rec.observe) {
+          snapshot_write(&g_graph, store);
+          graph_mark_synced(store);
+        }
+        emit_frame(&g_graph, &report, store, rec.limit, rec.history_depth,
+                   rec.since);
       }
-      emit_frame(&g_graph, &report, store, rec.limit, rec.history_depth,
-                 rec.since);
     }
     frame = mcp_cap_take();
     if (is_recall)
@@ -9476,12 +10000,24 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   g_pretty = pretty;
   if (!verb)
     fail(ERR_PARSE, NULL,
-         "usage: legend save|recall|init|dump|mcp-serve [payload] [--pretty] "
-         "[--reset]");
+         "usage: legend save|recall|init|dump|audit|mcp-serve [payload] "
+         "[--pretty] [--reset]");
   if (strcmp(verb, "init") == 0) {
     if (inline_payload)
       fail(ERR_PARSE, NULL, "init takes no payload");
     return cmd_init(reset);
+  }
+  if (strcmp(verb, "audit") == 0) {
+    static char store[4200];
+    if (inline_payload)
+      fail(ERR_PARSE, NULL, "audit takes no payload");
+    if (!discover_store(store, sizeof store))
+      fail(ERR_NO_STORE, NULL,
+           "no .legend store found (set LEGEND_STATE_DIR or run legend init)");
+    if (!snapshot_load(&g_graph, store))
+      fail(ERR_NO_STORE, NULL, "no snapshot in %s — run legend init", store);
+    audit_graph(&g_graph);
+    return 0;
   }
   if (strcmp(verb, "dump") == 0) {
     static char store[4200];
@@ -9503,8 +10039,8 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   if (reset)
     fail(ERR_PARSE, NULL, "--reset applies to init only");
   if (strcmp(verb, "save") != 0 && strcmp(verb, "recall") != 0)
-    fail(ERR_PARSE, NULL, "unknown verb %s; expected save, recall, or init",
-         verb);
+    fail(ERR_PARSE, NULL,
+         "unknown verb %s; expected save, recall, init, dump, or audit", verb);
 
   {
     static char store[4200];

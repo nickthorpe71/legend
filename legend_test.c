@@ -2776,6 +2776,244 @@ static void test_causal(void) {
     unsetenv("LEGEND_NOW");
 }
 
+static char t_audit[1 << 16];
+
+static void capture_audit(void) {
+    FILE *tmp = tmpfile();
+    int saved;
+    long n;
+    CHECK(tmp != NULL);
+    if (!tmp) { t_audit[0] = 0; return; }
+    fflush(stdout);
+    saved = dup(1);
+    CHECK(saved >= 0 && dup2(fileno(tmp), 1) >= 0);
+    audit_graph(&tg);
+    fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+    n = ftell(tmp);
+    if (n < 0) n = 0;
+    if ((size_t)n >= sizeof t_audit) n = (long)sizeof t_audit - 1;
+    rewind(tmp);
+    if (n > 0 && fread(t_audit, 1, (size_t)n, tmp) != (size_t)n) n = 0;
+    t_audit[n] = 0;
+    fclose(tmp);
+}
+
+static void test_audit(void) {
+    int failed;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+
+    /* a well-formed store is silent: every check must earn its output, or a
+     * maintenance pass trains the human to skim past it */
+    TRY(run_save("{\"elements\":["
+                 "{\"name\":\"jump feel\",\"kind\":\"system\",\"summary\":\"how jumping reads\"},"
+                 "{\"name\":\"coyote time\",\"kind\":\"parameter\",\"summary\":\"grace window\"}],"
+                 "\"facts\":[{\"s\":\"jump feel\",\"p\":\"uses\",\"o\":\"coyote time\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"suspects\":[]") != NULL);
+    CHECK(strstr(t_audit, "\"total\":0") != NULL);
+    CHECK(strstr(t_audit, "\"truncated\":{}") != NULL);
+
+    /* audit never writes: same clock before and after, so it is safe to run
+     * against a live store mid-session */
+    {
+        u32 before = tg.clock;
+        capture_audit();
+        CHECK(tg.clock == before);
+    }
+
+    /* phantom_close: a resolves whose target nobody ever opened closed
+     * nothing and left a decoy (the finding-6 papercut) */
+    TRY(run_save("{\"elements\":[{\"name\":\"real question\",\"kind\":\"question\","
+                 "\"summary\":\"genuinely open\"},"
+                 "{\"name\":\"the fix\",\"kind\":\"decision\",\"summary\":\"what landed\"}]}"),
+        failed);
+    CHECK(!failed);
+    TRY(run_save("{\"facts\":[{\"s\":\"the fix\",\"p\":\"resolves\","
+                 "\"o\":\"a question nobody opened\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"reason\":\"phantom_close\"") != NULL);
+    CHECK(strstr(t_audit, "\"name\":\"a question nobody opened\"") != NULL);
+    CHECK(strstr(t_audit, "\"phantom_close\":1") != NULL);
+    /* resolving a REAL open item is correct usage and stays silent */
+    TRY(run_save("{\"facts\":[{\"s\":\"the fix\",\"p\":\"resolves\",\"o\":\"real question\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"phantom_close\":1") != NULL); /* still just the one */
+
+    /* status_fact: a status-flavored property written as a plain fact
+     * accretes instead of superseding (trial doc §11) */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"phase 0 build\",\"kind\":\"task\",\"summary\":\"the build\"}],"
+                 "\"facts\":[{\"s\":\"phase 0 build\",\"p\":\"status\",\"o\":\"M0 green\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"reason\":\"status_fact\"") != NULL);
+    CHECK(strstr(t_audit, "\"status\":\"M0 green\"") != NULL);
+    /* the same value through `changes` is the right shape and is not flagged */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"phase 0 build\",\"kind\":\"task\",\"summary\":\"the build\"}],"
+                 "\"changes\":[{\"target\":\"phase 0 build\",\"property\":\"status\",\"to\":\"M0 green\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"status_fact\":0") != NULL);
+
+    /* near_dup: catches a typo twin, and the digit guard keeps numbered
+     * siblings apart -- "round 1" vs "round 2" scores HIGHER on trigrams
+     * (0.83) than the real duplicate does (0.63), so similarity alone
+     * cannot separate them and a differing digit has to veto the pair */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":["
+                 "{\"name\":\"trap spell rework\",\"kind\":\"task\",\"summary\":\"a\"},"
+                 "{\"name\":\"trap spell rewrite\",\"kind\":\"task\",\"summary\":\"b\"},"
+                 "{\"name\":\"trial round 1\",\"kind\":\"event\",\"summary\":\"c\"},"
+                 "{\"name\":\"trial round 2\",\"kind\":\"event\",\"summary\":\"d\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"near_dup\":1") != NULL);
+    CHECK(strstr(t_audit, "\"other_name\":\"trap spell rework\"") != NULL);
+    CHECK(strstr(t_audit, "trial round") == NULL);
+    /* a `changes` from/to pair is supersession history, not duplication: the
+     * old and new values of an EDITED string are near-identical by nature,
+     * and folding them would destroy the history `changes` exists to keep */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"spell drops\",\"kind\":\"system\","
+                 "\"summary\":\"the drop table\"}],"
+                 "\"changes\":[{\"target\":\"spell drops\",\"property\":\"rarity_vocabulary\","
+                 "\"from\":\"tier is rarity: Common/Rare/Epic/Mythic\","
+                 "\"to\":\"tier is rarity: Common/Rare/Fabled/Mythic\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"near_dup\":0") != NULL);
+
+    /* short names are incomparable by trigram: one differing byte out of six
+     * still leaves ~0.6, so "elem a"/"elem b" would pair every sibling with
+     * every other. Below the floor, no pairing at all. */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":["
+                 "{\"name\":\"elem a\",\"kind\":\"task\",\"summary\":\"a\"},"
+                 "{\"name\":\"elem b\",\"kind\":\"task\",\"summary\":\"b\"},"
+                 "{\"name\":\"elem c\",\"kind\":\"task\",\"summary\":\"c\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"near_dup\":0") != NULL);
+
+    /* prose_name: a whole sentence passed where a canonical name belongs */
+    fresh_graph(&tg);
+    TRY(run_save("{\"facts\":[{\"s\":\"lesson\",\"p\":\"is\",\"o\":\"measurements need "
+                 "provenance: session-4 self-play stats were saved without how they "
+                 "were run, forcing a from-scratch arena rebuild in session 5\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"reason\":\"prose_name\"") != NULL);
+    CHECK(strstr(t_audit, "\"name_chars\":143") != NULL);
+    /* the short subject of that same fact is not prose and is not flagged */
+    CHECK(strstr(t_audit, "\"prose_name\":1") != NULL);
+
+    /* stale_open: an open item nobody has touched in a long time. Driven from
+     * a small store by shrinking the threshold rather than burning 50 ticks --
+     * only open KINDS count, and a `resolves` edge takes an item off the list
+     * however old it is (rewriting its summary would not). */
+    fresh_graph(&tg);
+    {
+        u32 saved_ticks = g_aud_stale_ticks;
+        TRY(run_save("{\"elements\":["
+                     "{\"name\":\"forgotten question\",\"kind\":\"question\",\"summary\":\"never answered\"},"
+                     "{\"name\":\"answered question\",\"kind\":\"question\",\"summary\":\"since closed\"},"
+                     "{\"name\":\"settled decision\",\"kind\":\"decision\",\"summary\":\"not an open kind\"}]}"),
+            failed);
+        CHECK(!failed);
+        TRY(run_save("{\"facts\":[{\"s\":\"settled decision\",\"p\":\"resolves\","
+                     "\"o\":\"answered question\"}]}"),
+            failed);
+        CHECK(!failed);
+        /* age the closed question PAST the threshold too, so the `resolves`
+         * edge is the only thing keeping it off the list. Without this it
+         * stays silent merely by being recent, and the exemption goes
+         * untested (removing the resolves check would not fail the test). */
+        TRY(run_save("{\"elements\":[{\"name\":\"filler one\",\"kind\":\"event\","
+                     "\"summary\":\"advances the clock\"}]}"),
+            failed);
+        CHECK(!failed);
+        TRY(run_save("{\"elements\":[{\"name\":\"later work\",\"kind\":\"task\","
+                     "\"summary\":\"touched just now\"}]}"),
+            failed);
+        CHECK(!failed);
+        g_aud_stale_ticks = 1;
+        capture_audit();
+        g_aud_stale_ticks = saved_ticks;
+        CHECK(strstr(t_audit, "\"reason\":\"stale_open\"") != NULL);
+        CHECK(strstr(t_audit, "\"name\":\"forgotten question\"") != NULL);
+        CHECK(strstr(t_audit, "\"stale_open\":1") != NULL); /* not the resolved
+                                                             one, not the
+                                                             decision, not the
+                                                             fresh task */
+        CHECK(strstr(t_audit, "\"silent_for\":") != NULL);
+    }
+
+    /* orphan: what a retraction leaves behind. The retracted fact's object
+     * keeps its element but nothing live points at it any more -- inert, so
+     * it ranks below the defects rather than beside them. The subject carries
+     * a summary and is therefore never a candidate. */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"described thing\",\"kind\":\"system\","
+                 "\"summary\":\"has a summary, never orphans\"}],"
+                 "\"facts\":[{\"s\":\"described thing\",\"p\":\"mentions\",\"o\":\"dangling name\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"orphan\":0") != NULL); /* still referenced: silent */
+    TRY(run_save("{\"retract\":[{\"s\":\"described thing\",\"p\":\"mentions\","
+                 "\"o\":\"dangling name\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"reason\":\"orphan\"") != NULL);
+    CHECK(strstr(t_audit, "\"name\":\"dangling name\"") != NULL);
+    CHECK(strstr(t_audit, "\"orphan\":1") != NULL);
+    CHECK(strstr(t_audit, "described thing") == NULL);
+
+    /* the per-reason cap keeps the list readable, and says what it dropped:
+     * six bloated summaries, five shown, one named in `truncated` */
+    fresh_graph(&tg);
+    {
+        static char big[4096];
+        u32 i;
+        char *p = big;
+        p += sprintf(p, "{\"elements\":[");
+        for (i = 0; i < 6; i++) {
+            u32 k;
+            p += sprintf(p, "%s{\"name\":\"elem %c\",\"kind\":\"task\",\"summary\":\"",
+                         i ? "," : "", (char)('a' + i));
+            for (k = 0; k < 30; k++) p += sprintf(p, "ten chars ");
+            p += sprintf(p, "\"}");
+        }
+        sprintf(p, "]}");
+        TRY(run_save(big), failed);
+        CHECK(!failed);
+    }
+    capture_audit();
+    CHECK(strstr(t_audit, "\"bloat\":6") != NULL);
+    CHECK(strstr(t_audit, "\"truncated\":{\"bloat\":1}") != NULL);
+    CHECK(strstr(t_audit, "\"shown\":5") != NULL);
+    CHECK(strstr(t_audit, "\"total\":6") != NULL);
+
+    unsetenv("LEGEND_NOW");
+}
+
 int main(void) {
     test_normalize();
     test_trigrams();
@@ -2831,6 +3069,7 @@ int main(void) {
     test_orientation_history_cap();
     test_retract_core_ontology();
     test_causal();
+    test_audit();
 
     json_free(&tj);
     sub_free(&tsub);

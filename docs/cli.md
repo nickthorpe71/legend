@@ -1,10 +1,10 @@
 # CLI reference
 
-One binary, five verbs. Every verb reads/writes JSON on stdio and exits non-zero
+One binary, six verbs. Every verb reads/writes JSON on stdio and exits non-zero
 with a structured error on failure.
 
 ```
-legend save|recall|init|dump|mcp-serve [payload] [--pretty] [--reset]
+legend save|recall|init|dump|audit|mcp-serve [payload] [--pretty] [--reset]
 ```
 
 A payload can be passed as the trailing argument or piped on stdin. `--pretty`
@@ -38,6 +38,42 @@ Resolves the requested focus and prints a frame without mutating the graph
 ### `dump`
 Prints a human-readable rendering of the whole graph (ids resolved to names).
 Read-only.
+
+### `audit`
+Scans the store for things a human should look at and prints them ranked,
+most-actionable first. Read-only and tick-free — like `observe`, it leaves the
+snapshot byte-identical, so it is safe to run against a live store mid-session.
+
+Every check is a deterministic graph query: no embeddings, no model, no
+mutation. The oracle computes *suspicion*; a human decides what is actually
+wrong. Nothing here repairs anything, and that is deliberate — a store can hold
+a fact that is stale on purpose (design intent the code has since drifted from),
+and the disagreement is the signal, so an automatic pruner would destroy exactly
+the diagnostic value worth keeping. Repairs go back through the ordinary write
+verbs: `retract`, `merge`, `changes`, `rename_to`, or resubmitting a summary.
+
+| reason | what it means |
+|---|---|
+| `phantom_close` | a `resolves` fact whose target has no kind — it closed nothing and left a decoy beside the still-open item |
+| `status_fact` | a status-flavored property (`status`, `standing`, `phase`, …) written as a plain fact, which accretes and goes stale; `changes` supersedes and keeps history |
+| `near_dup` | two live names similar enough that dedup arguably should have folded them |
+| `prose_name` | a whole sentence passed where a canonical name belongs (fact objects and attr values become element names) |
+| `stale_open` | a question/task with no `resolves` edge, untouched for `50+` ticks |
+| `orphan` | an element no live relation references at all — dangling provenance, or what a retraction left behind |
+| `bloat` | a summary past ~280 chars, which should split into child elements |
+
+Output carries the full tally in `counts` even when the printed list is capped
+at five per reason; whatever the cap drops is named in `truncated`, so the list
+is short but never quietly short.
+
+Two thresholds are load-bearing and were set by measurement, not taste.
+`near_dup` ignores names under 12 bytes and vetoes any pair whose digits differ:
+on real stores the numbered siblings that must NOT pair (`trial round 1` vs
+`round 2`, 0.83) score *higher* than the genuine typo duplicates that must
+(`abstention` vs `abstension`, 0.80), so no similarity threshold alone can
+separate them — digits carry identity, the same reading `rel_exception_protected`
+already takes. `prose_name` triggers past 120 bytes, against a measured median
+name of 29.
 
 ### `mcp-serve`
 Starts the long-lived MCP server over stdio (see [mcp-server.md](mcp-server.md)).

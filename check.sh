@@ -314,6 +314,68 @@ assert len(f["state"]) == 1  # the current_standing cache
         fail "$BIN non-observe recall left the store untouched"
     fi
 
+    # audit reports every reason and, like observe, never writes: a human can
+    # run it against a live store mid-session without perturbing the trial
+    before="$(cksum "$S5/legend.snapshot")"
+    out="$(LEGEND_STATE_DIR="$S5" "$BIN" audit)"
+    rc=$?
+    after="$(cksum "$S5/legend.snapshot")"
+    if [ $rc -eq 0 ] && [ "$before" = "$after" ] \
+       && printf '%s' "$out" | grep -q '"suspects":\[' \
+       && printf '%s' "$out" | grep -q '"phantom_close":' \
+       && printf '%s' "$out" | grep -q '"status_fact":' \
+       && printf '%s' "$out" | grep -q '"near_dup":' \
+       && printf '%s' "$out" | grep -q '"prose_name":' \
+       && printf '%s' "$out" | grep -q '"stale_open":' \
+       && printf '%s' "$out" | grep -q '"orphan":' \
+       && printf '%s' "$out" | grep -q '"bloat":'; then
+        pass "$BIN audit reports all reasons and leaves the snapshot untouched"
+    else
+        fail "$BIN audit: exit=$rc snapshot $before -> $after out=$out"
+    fi
+    out="$(LEGEND_STATE_DIR="$S5" "$BIN" audit '{}' 2>&1)"
+    rc=$?
+    if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q 'audit takes no payload'; then
+        pass "$BIN audit rejects a payload"
+    else
+        fail "$BIN audit payload: exit=$rc out=$out"
+    fi
+
+    # the MCP surface: tools/list and prompts/list are hand-written JSON, so a
+    # protocol-level smoke keeps a stray comma from shipping. legend_audit is
+    # exercised BOTH with and without an `arguments` key (clients differ on
+    # whether a no-arg call carries one) and must leave the store untouched.
+    before="$(cksum "$S5/legend.snapshot")"
+    jl_before="$(wc -l < "$S5/journal.jsonl" 2>/dev/null || echo 0)"
+    out="$( { echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}'
+              echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+              echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"legend_audit"}}'
+              echo '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"legend_audit","arguments":{}}}'
+              echo '{"jsonrpc":"2.0","id":5,"method":"prompts/list"}'
+              echo '{"jsonrpc":"2.0","id":6,"method":"prompts/get","params":{"name":"maintain"}}'
+            } | LEGEND_STATE_DIR="$S5" "$BIN" mcp-serve 2>&1)"
+    rc=$?
+    after="$(cksum "$S5/legend.snapshot")"
+    jl_after="$(wc -l < "$S5/journal.jsonl" 2>/dev/null || echo 0)"
+    nsuspects="$(printf '%s' "$out" | grep -c 'suspects')"
+    if [ $rc -eq 0 ] && [ "$before" = "$after" ] && [ "$jl_before" = "$jl_after" ] \
+       && [ "$nsuspects" -eq 2 ] \
+       && printf '%s' "$out" | grep -q '"name":"legend_audit"' \
+       && printf '%s' "$out" | grep -q '"name":"maintain"' \
+       && printf '%s' "$out" | grep -q 'Run a maintenance pass' \
+       && ! printf '%s' "$out" | grep -q '"isError":true'; then
+        pass "$BIN mcp: legend_audit + maintain prompt, no write, no journal entry"
+    else
+        fail "$BIN mcp audit: exit=$rc snap $before -> $after journal $jl_before -> $jl_after suspects=$nsuspects"
+    fi
+    out="$(printf '{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"nope"}}\n' \
+           | LEGEND_STATE_DIR="$S5" "$BIN" mcp-serve 2>&1)"
+    if printf '%s' "$out" | grep -q 'unknown prompt'; then
+        pass "$BIN mcp rejects an unknown prompt"
+    else
+        fail "$BIN mcp unknown prompt: out=$out"
+    fi
+
     # --pretty renders headed sections and exits 0; errors render too
     out="$(printf '{"focus":["platformer"]}' | LEGEND_STATE_DIR="$S5" LEGEND_NOW=1780617600 "$BIN" recall --pretty)"
     rc=$?

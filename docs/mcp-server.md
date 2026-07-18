@@ -1,14 +1,40 @@
 # MCP server
 
 `legend mcp-serve` runs a long-lived [Model Context Protocol](https://modelcontextprotocol.io)
-server: JSON-RPC 2.0 over newline-delimited stdio. It exposes two tools to any
+server: JSON-RPC 2.0 over newline-delimited stdio. It exposes three tools to any
 MCP client (Claude Code, etc.):
 
 - **`legend_save`** — ingest a structured payload (see [cli.md](cli.md#save-payload)).
 - **`legend_recall`** — resolve a focus and return the frame.
+- **`legend_audit`** — scan for entries a human should adjudicate (see
+  [cli.md](cli.md#audit)). Takes no arguments and accepts a call with no
+  `arguments` key at all, since clients differ there. Read-only: it writes
+  nothing and, unlike `observe`, is not journaled either — the journal exists to
+  replay mutations, and `replay_journal.py` re-runs every ok entry as
+  `legend <verb> <payload>`, which a payload-less read would break.
 
 Clients namespace the tool names; in Claude Code they appear as
-`mcp__legend__legend_save` and `mcp__legend__legend_recall`.
+`mcp__legend__legend_save`, `mcp__legend__legend_recall`, and
+`mcp__legend__legend_audit`.
+
+## Prompts
+
+Two flows ship as MCP prompts, which clients surface as slash commands, so they
+travel with the binary into any project `legend init` touches:
+
+- **`onboard`** — start Legend on an existing project: explore the repo,
+  interview the user for the why, seed the store.
+- **`maintain`** — garden the store *with* the user: call `legend_audit`, work
+  one reason-group at a time, recall each suspect so it can be described rather
+  than just named, and apply only what the user approves. Repairs go through the
+  ordinary write verbs with `source` set to `maintenance <date>`, which keeps
+  gardening distinguishable from real session work in the journal without any
+  new mutation surface.
+
+The division of labour in `maintain` is the point: the oracle computes suspicion
+deterministically, the model presents and executes, the user decides. The prompt
+forbids unrequested repair, because a fact that disagrees with the code may be
+recording *intent* — and that gap is worth more than a tidy store.
 
 ## Provisioning
 
