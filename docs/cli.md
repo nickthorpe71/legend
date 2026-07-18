@@ -66,14 +66,51 @@ Output carries the full tally in `counts` even when the printed list is capped
 at five per reason; whatever the cap drops is named in `truncated`, so the list
 is short but never quietly short.
 
-Two thresholds are load-bearing and were set by measurement, not taste.
-`near_dup` ignores names under 12 bytes and vetoes any pair whose digits differ:
-on real stores the numbered siblings that must NOT pair (`trial round 1` vs
-`round 2`, 0.83) score *higher* than the genuine typo duplicates that must
-(`abstention` vs `abstension`, 0.80), so no similarity threshold alone can
-separate them — digits carry identity, the same reading `rel_exception_protected`
-already takes. `prose_name` triggers past 120 bytes, against a measured median
-name of 29.
+Thresholds were set by measurement, not taste. `near_dup` is the fussiest and
+the least proven — it needs three guards before a similarity score means
+anything:
+
+- **Digits veto a pair.** Numbered siblings that must NOT pair (`trial round 1`
+  vs `round 2`, 0.83) score *higher* than genuine typo duplicates that must
+  (`abstention` vs `abstension`, 0.80), so no threshold alone separates them.
+  Digits carry identity here, the same reading `rel_exception_protected` takes.
+- **A `changes` from/to pair is never a duplicate.** An edited value's old and
+  new forms are near-identical by nature, and folding them would destroy the
+  history `changes` exists to keep.
+- **Names under 12 bytes are not compared.** One differing byte in six still
+  leaves ~0.6 Jaccard.
+
+The bar itself is 0.72, set above the false positives a real store produced
+(`regions design adversarial review` vs `loot design adversarial review`, 0.685
+— same review type, different subsystem). Even so, `near_dup` found 0 confirmed
+defects across 815 elements; treat it as advisory. The sharp checks are
+`phantom_close` and `status_fact`. `prose_name` triggers past 120 bytes against
+a measured median name of 29.
+
+### The orientation tally
+
+A `recall` with no focus carries a store-health tally in its `overview` header:
+
+```json
+"overview":{"elements":815,"relations":1936,"clock":251,
+            "audit":{"status_fact":7,"prose_name":17,"stale_open":15,
+                     "orphan":10,"bloat":267},
+            "scope":{...}}
+```
+
+Emitted only when something is flagged — a clean store says nothing, so
+maintenance stays a pull rather than a standing nag. Placement is deliberate:
+the SessionStart hook truncates the packet with `head -c 4000`, and that cut
+lands inside `overview.active`, so a counter further down would never reach the
+model.
+
+The tally skips `near_dup`. That pair sweep is O(n²) and costs 58ms of a 59ms
+scan on an 815-element store, against the 4.6ms an entire orientation recall
+takes; running it at every session start would make boot an order of magnitude
+slower and degrade as the store grows. Without it the scan is ~4ms — the tally
+costs about 0.2ms — and since `near_dup` is also the least precise check, the
+ambient tally gives up nothing it could act on. A deliberate `legend audit`
+still runs all seven.
 
 ### `mcp-serve`
 Starts the long-lived MCP server over stdio (see [mcp-server.md](mcp-server.md)).

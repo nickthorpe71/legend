@@ -2873,16 +2873,26 @@ static void test_audit(void) {
      * cannot separate them and a differing digit has to veto the pair */
     fresh_graph(&tg);
     TRY(run_save("{\"elements\":["
-                 "{\"name\":\"trap spell rework\",\"kind\":\"task\",\"summary\":\"a\"},"
-                 "{\"name\":\"trap spell rewrite\",\"kind\":\"task\",\"summary\":\"b\"},"
+                 "{\"name\":\"ambient recall abstention\",\"kind\":\"task\",\"summary\":\"a\"},"
+                 "{\"name\":\"ambient recall abstension\",\"kind\":\"task\",\"summary\":\"b\"},"
                  "{\"name\":\"trial round 1\",\"kind\":\"event\",\"summary\":\"c\"},"
                  "{\"name\":\"trial round 2\",\"kind\":\"event\",\"summary\":\"d\"}]}"),
         failed);
     CHECK(!failed);
     capture_audit();
     CHECK(strstr(t_audit, "\"near_dup\":1") != NULL);
-    CHECK(strstr(t_audit, "\"other_name\":\"trap spell rework\"") != NULL);
+    CHECK(strstr(t_audit, "\"other_name\":\"ambient recall abstention\"") != NULL);
     CHECK(strstr(t_audit, "trial round") == NULL);
+    /* the threshold sits above same-topic/different-subsystem names, which are
+     * the false positives the trial store actually produced (0.685) */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":["
+                 "{\"name\":\"regions design adversarial review\",\"kind\":\"event\",\"summary\":\"a\"},"
+                 "{\"name\":\"loot design adversarial review\",\"kind\":\"event\",\"summary\":\"b\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"near_dup\":0") != NULL);
     /* a `changes` from/to pair is supersession history, not duplication: the
      * old and new values of an EDITED string are near-identical by nature,
      * and folding them would destroy the history `changes` exists to keep */
@@ -3010,6 +3020,45 @@ static void test_audit(void) {
     CHECK(strstr(t_audit, "\"truncated\":{\"bloat\":1}") != NULL);
     CHECK(strstr(t_audit, "\"shown\":5") != NULL);
     CHECK(strstr(t_audit, "\"total\":6") != NULL);
+
+    /* the orientation tally: same checks, in the packet header where the
+     * SessionStart hook's `head -c 4000` cannot cut it off, and WITHOUT the
+     * O(n^2) pair sweep that would slow every session start */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":["
+                 "{\"name\":\"phase 0 build\",\"kind\":\"task\",\"summary\":\"the build\"},"
+                 "{\"name\":\"ambient recall abstention\",\"kind\":\"task\",\"summary\":\"a\"},"
+                 "{\"name\":\"ambient recall abstension\",\"kind\":\"task\",\"summary\":\"b\"}],"
+                 "\"facts\":[{\"s\":\"phase 0 build\",\"p\":\"status\",\"o\":\"M0 green\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"near_dup\":1") != NULL); /* the full scan sees it */
+    TRY(run_recall("{}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "\"audit\":{") != NULL);
+    CHECK(strstr(t_frame, "\"status_fact\":1") != NULL);
+    CHECK(strstr(t_frame, "near_dup") == NULL); /* ...the tally never does */
+    /* it sits in the overview header, ahead of scope/active */
+    {
+        const char *ov = strstr(t_frame, "\"overview\":{");
+        const char *aud = strstr(t_frame, "\"audit\":{");
+        const char *scope = strstr(t_frame, "\"scope\":");
+        CHECK(ov != NULL && aud != NULL && scope != NULL);
+        if (ov && aud && scope) CHECK(ov < aud && aud < scope);
+    }
+    /* a clean store says nothing at all: maintenance is pull, not a nag */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"jump feel\",\"kind\":\"system\","
+                 "\"summary\":\"how jumping reads\"}]}"),
+        failed);
+    CHECK(!failed);
+    TRY(run_recall("{}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "\"overview\":{") != NULL);
+    CHECK(strstr(t_frame, "\"audit\"") == NULL);
 
     unsetenv("LEGEND_NOW");
 }

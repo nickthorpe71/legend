@@ -7031,6 +7031,10 @@ static void frame_put_causal_entry(const Hypergraph *g, u32 rid, int first) {
 /* The frame (spec §7). A compact frame (no focus) stops after template_drift;
  * a full frame appends the packet sections. Empty fields emit as [] per plan
  * §3.14; key order is fixed (plan §5). */
+/* The orientation overview carries a store-health tally; the checks it counts
+ * live with the rest of the audit in S11.5, below the frame code. */
+static void frame_put_audit_tally(const Hypergraph *g);
+
 static void print_frame(const Hypergraph *g, const WriteReport *w,
                         const char *store, i64 limit, i32 history_depth,
                         i64 since) {
@@ -7431,9 +7435,10 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
 
     /* focus header — or the orientation overview (pin §3.15) */
     if (w->orientation) {
-      printf(",\"overview\":{\"elements\":%u,\"relations\":%u,\"clock\":%u,"
-             "\"scope\":",
+      printf(",\"overview\":{\"elements\":%u,\"relations\":%u,\"clock\":%u",
              g->element_count, g->relation_count, w->tick);
+      frame_put_audit_tally(g);
+      fputs(",\"scope\":", stdout);
       {
         u32 scope = NONE_U32;
         for (i = 0; i < g->element_count; i++)
@@ -8946,8 +8951,14 @@ static u32 g_aud_name_chars = 120;  /* a name past here is prose. Measured on
                                        canonical name belongs */
 static u32 g_aud_stale_ticks = 50;  /* ticks of silence before an open item
                                        reads as abandoned */
-static double g_aud_dup_sim = 0.60; /* name trigram Jaccard for near_dup, with
-                                       differing digits vetoing the pair */
+static double g_aud_dup_sim = 0.72; /* name trigram Jaccard for near_dup, with
+                                       differing digits vetoing the pair. Set
+                                       from the trial store's own false
+                                       positives: two same-topic-different-
+                                       subsystem names ("regions design
+                                       adversarial review" vs "loot design
+                                       adversarial review") land at 0.685, so
+                                       the bar sits above them */
 static u32 g_aud_dup_min_name = 12; /* below this a single differing byte still
                                        leaves ~0.6 Jaccard ("elem a" vs "elem
                                        b"), so short names are incomparable by
@@ -9159,13 +9170,22 @@ static void audit_put_suspect(const Hypergraph *g, const Suspect *s, int first) 
   fputc('}', stdout);
 }
 
-/* Scan every check, rank, print. The caller has already loaded the snapshot;
- * nothing here writes, so an audit can run against a live store mid-session. */
-static void audit_graph(const Hypergraph *g) {
+/* Run every check and hand back the suspects, ranked. Nothing here writes, so
+ * a scan can run against a live store mid-session.
+ *
+ * `with_near_dup` exists for one caller: the orientation packet, which wants a
+ * tally cheaply. The pair sweep is O(n^2) and measures at 58ms of a 59ms scan
+ * on an 815-element store, against the 4.6ms the whole orientation recall
+ * costs — folding it into session start would make boot an order of magnitude
+ * slower and get worse as the store grows. Skipping it leaves the scan at
+ * ~4ms, and near_dup is also the least precise check, so the ambient tally
+ * gives up nothing it could act on. A deliberate `legend audit` still runs
+ * everything. */
+static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
+                       u32 *counts, int with_near_dup) {
   u8 *structural = (u8 *)calloc(g->element_count ? g->element_count : 1, 1);
   Suspect *sus = NULL;
   u32 cap = 0, n = 0, e, r, i;
-  u32 counts[AUD_REASON_COUNT];
   U32Vec ta, tb;
   if (!structural) {
     fprintf(stderr, "legend: out of memory\n");
@@ -9253,7 +9273,7 @@ static void audit_graph(const Hypergraph *g) {
   /* Near-duplicate names, O(n^2) over live non-structural elements. A store
    * is thousands of elements at most and audit runs on demand, so the pair
    * sweep stays well under the cost of the snapshot load that preceded it. */
-  for (e = 0; e < g->element_count; e++) {
+  for (e = 0; with_near_dup && e < g->element_count; e++) {
     char da[32], db[32];
     u32 dan, dbn;
     if (structural[e] || g->elements[e].redirect != NONE_U32 ||
@@ -9279,6 +9299,19 @@ static void audit_graph(const Hypergraph *g) {
 
   if (n > 1)
     qsort(sus, n, sizeof *sus, suspect_cmp);
+  free(structural);
+  free(ta.v);
+  free(tb.v);
+  *out_sus = sus;
+  *out_n = n;
+}
+
+/* Rank, cap, print. */
+static void audit_graph(const Hypergraph *g) {
+  Suspect *sus;
+  u32 n, i;
+  u32 counts[AUD_REASON_COUNT];
+  audit_scan(g, &sus, &n, counts, 1);
   printf("{\"clock\":%u,\"elements\":%u,\"suspects\":[", g->clock,
          g->element_count);
   {
@@ -9306,10 +9339,30 @@ static void audit_graph(const Hypergraph *g) {
     }
     printf("},\"shown\":%u,\"total\":%u}\n", put, n);
   }
-  free(structural);
   free(sus);
-  free(ta.v);
-  free(tb.v);
+}
+
+/* The session-start tally: the same checks, minus the O(n^2) pair sweep,
+ * emitted into the orientation overview. Placement is load-bearing — the
+ * SessionStart hook truncates the packet with `head -c 4000` and that cut now
+ * lands inside overview.active, so a counter anywhere further down would never
+ * reach the model. Emitted only when something is flagged: a clean store says
+ * nothing, and maintenance stays the user's move rather than a standing nag. */
+static void frame_put_audit_tally(const Hypergraph *g) {
+  Suspect *sus;
+  u32 n, i, put = 0;
+  u32 counts[AUD_REASON_COUNT];
+  audit_scan(g, &sus, &n, counts, 0);
+  free(sus);
+  if (n == 0)
+    return;
+  fputs(",\"audit\":{", stdout);
+  for (i = 0; i < AUD_REASON_COUNT; i++) {
+    if (counts[i] == 0) /* near_dup is always 0 here: the scan skipped it */
+      continue;
+    printf("%s\"%s\":%u", put++ ? "," : "", AUD_REASONS[i], counts[i]);
+  }
+  fputc('}', stdout);
 }
 
 /* Parse argv, dispatch the verb, and run the one invocation. init creates or
