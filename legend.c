@@ -6575,7 +6575,21 @@ static const char *const FRAME_RESERVED_KEYS[] = {
     "tick",         "at",        "store",          "resolution", "writes",
     "near_matches", "conflicts", "template_drift", "focus",      "overview",
     "state",        "decisions", "constraints",    "open",       "recent",
-    "history",      "related",   "pointers",       "sources",    "causal"};
+    "history",      "related",   "pointers",       "sources",    "causal",
+    "omitted"};
+
+/* Entries per typed section (decisions, constraints, open, causal, and each
+ * custom-kind section). These were emitted UNCAPPED — `limit` budgets only
+ * recent/related — on the reasoning that the typed sections are the ones worth
+ * never truncating. That holds at 10 decisions and fails at 103: the live
+ * trial packet reached 51KB, of which decisions alone were 18KB and
+ * constraints 12KB, while the SessionStart hook feeds the model the first 4000
+ * bytes. The sections meant to be protected were the ones being dropped.
+ *
+ * A cap is a surface bound, never a store one: nothing is pruned, the entries
+ * are newest-first, and whatever is held back is counted in `omitted` so the
+ * model can see there is more and recall for it. */
+static u32 g_frame_section_cap = 10;
 
 static int is_reserved_frame_key(const char *norm, u32 nlen) {
   u32 i;
@@ -7168,6 +7182,8 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
   {
     static U32Vec hood, pool, state, recent, related, nbr, sect, consumed;
     static U32Vec decisions, constraints, open, ckinds, cinsts, ckind_of;
+    static U32Vec ckind_over; /* per custom-kind section, entries the cap held
+                                 back; parallel to ckinds */
     static U32Vec causal;
     static HistEntry *hist;
     static u32 hist_cap;
@@ -7177,7 +7193,7 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
     hood.count = pool.count = state.count = recent.count = related.count = 0;
     nbr.count = sect.count = consumed.count = causal.count = 0;
     decisions.count = constraints.count = open.count = 0;
-    ckinds.count = cinsts.count = ckind_of.count = 0;
+    ckinds.count = cinsts.count = ckind_of.count = ckind_over.count = 0;
 
     /* hood: the one-hop relations of focus — store-wide in orientation
      * mode, where the seed-tick ontology stays out of the walk */
@@ -7522,13 +7538,13 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
     for (i = 0; i < state.count; i++)
       frame_put_rel_entry(g, state.v[i], i == 0);
     fputs("],\"decisions\":[", stdout);
-    for (i = 0; i < decisions.count; i++)
+    for (i = 0; i < decisions.count && i < g_frame_section_cap; i++)
       frame_put_instance(g, decisions.v[i], 0, i == 0);
     fputs("],\"constraints\":[", stdout);
-    for (i = 0; i < constraints.count; i++)
+    for (i = 0; i < constraints.count && i < g_frame_section_cap; i++)
       frame_put_instance(g, constraints.v[i], 0, i == 0);
     fputs("],\"open\":[", stdout);
-    for (i = 0; i < open.count; i++)
+    for (i = 0; i < open.count && i < g_frame_section_cap; i++)
       frame_put_instance(g, open.v[i], 1, i == 0);
     fputc(']', stdout);
     /* one section per non-seeded template kind with instances here,
@@ -7543,9 +7559,13 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
       fputs(",\"", stdout);
       json_escape_fputs(elem_name(g, ckinds.v[i]), stdout);
       fputs("\":[", stdout);
-      for (j = 0; j < insts.count; j++)
+      for (j = 0; j < insts.count && j < g_frame_section_cap; j++)
         frame_put_instance(g, insts.v[j], 0, j == 0);
       fputc(']', stdout);
+      if (insts.count > g_frame_section_cap)
+        u32vec_push(&ckind_over, insts.count - g_frame_section_cap);
+      else
+        u32vec_push(&ckind_over, 0);
     }
     fputs(",\"recent\":[", stdout);
     /* the limit budget (spec §6): state, history, and the typed sections
@@ -7658,9 +7678,45 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
       }
     }
     fputs("],\"causal\":[", stdout);
-    for (i = 0; i < causal.count; i++)
+    for (i = 0; i < causal.count && i < g_frame_section_cap; i++)
       frame_put_causal_entry(g, causal.v[i], i == 0);
     fputs("]", stdout);
+    /* What the caps held back, so a short section never reads as a complete
+     * one. Emitted only when something was actually dropped. */
+    {
+      u32 over[4], put = 0;
+      static const char *const NAMES[4] = {"decisions", "constraints", "open",
+                                           "causal"};
+      over[0] = decisions.count > g_frame_section_cap
+                    ? decisions.count - g_frame_section_cap : 0;
+      over[1] = constraints.count > g_frame_section_cap
+                    ? constraints.count - g_frame_section_cap : 0;
+      over[2] = open.count > g_frame_section_cap
+                    ? open.count - g_frame_section_cap : 0;
+      over[3] = causal.count > g_frame_section_cap
+                    ? causal.count - g_frame_section_cap : 0;
+      for (i = 0; i < 4; i++)
+        put += over[i] != 0;
+      for (i = 0; i < ckind_over.count; i++)
+        put += ckind_over.v[i] != 0;
+      if (put) {
+        u32 first = 1;
+        fputs(",\"omitted\":{", stdout);
+        for (i = 0; i < 4; i++)
+          if (over[i]) {
+            printf("%s\"%s\":%u", first ? "" : ",", NAMES[i], over[i]);
+            first = 0;
+          }
+        for (i = 0; i < ckind_over.count; i++)
+          if (ckind_over.v[i]) {
+            fputs(first ? "\"" : ",\"", stdout);
+            json_escape_fputs(elem_name(g, ckinds.v[i]), stdout);
+            printf("\":%u", ckind_over.v[i]);
+            first = 0;
+          }
+        fputc('}', stdout);
+      }
+    }
   }
   fputs("}\n", stdout);
 }
@@ -8663,8 +8719,15 @@ static int write_hooks_config(const char *store, char *out_path,
         "    \"SessionStart\": [{\"matcher\": \"*\", \"hooks\": "
         "[{\"type\": \"command\", \"command\": \"",
         f);
+  /* The packet is bounded by the section caps and `limit`, so `head -c` is a
+   * safety valve against a pathological store, not a routine trimmer. It was
+   * doing the trimming when it was 4000: on the live trial store the cut
+   * landed inside `overview`, so the model received the project scope and a
+   * few active items and NEVER the decisions, constraints, open questions or
+   * causal edges — the sections that are the whole point of orienting. */
   snprintf(cmd, sizeof cmd,
-           "%s recall '{}' --pretty 2>/dev/null | head -c 4000", exe);
+           "%s recall '{\"limit\":16}' --pretty 2>/dev/null | head -c 20000",
+           exe);
   json_escape_fputs(cmd, f);
   fputs("\"}]}],\n"
         "    \"UserPromptSubmit\": [{\"matcher\": \"*\", \"hooks\": "

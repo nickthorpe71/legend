@@ -2776,6 +2776,52 @@ static void test_causal(void) {
     unsetenv("LEGEND_NOW");
 }
 
+static void test_frame_section_caps(void) {
+    int failed;
+    u32 i;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+    /* 13 decisions: the typed sections used to emit every one of them, which
+     * is how the live trial packet reached 51KB against a 4000-byte hook cap
+     * and starved the model of the very sections it boots to read */
+    for (i = 0; i < 13; i++) {
+        char buf[256];
+        snprintf(buf, sizeof buf,
+                 "{\"elements\":[{\"name\":\"choice %u\",\"kind\":\"decision\","
+                 "\"summary\":\"one of many\"}]}", i);
+        TRY(run_save(buf), failed);
+        CHECK(!failed);
+    }
+    TRY(run_recall("{}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    /* newest-first, so 12..3 make the cut and 2..0 are held back. Match the
+     * closing quote: "choice 1" is a prefix of "choice 12". */
+    CHECK(strstr(t_frame, "\"name\":\"choice 3\"") != NULL);
+    CHECK(strstr(t_frame, "\"name\":\"choice 2\"") == NULL);
+    CHECK(strstr(t_frame, "\"name\":\"choice 0\"") == NULL);
+    CHECK(strstr(t_frame, "\"omitted\":{\"decisions\":3}") != NULL);
+    /* nothing was pruned -- the store still holds all 13, and a focused
+     * recall still reaches one the cap held back */
+    CHECK(tg.element_count > 13);
+    TRY(run_recall("{\"focus\":[\"choice 0\"]}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "choice 0") != NULL);
+    /* a store under the cap says nothing about omission */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"only choice\",\"kind\":\"decision\","
+                 "\"summary\":\"the one\"}]}"),
+        failed);
+    CHECK(!failed);
+    TRY(run_recall("{}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "only choice") != NULL);
+    CHECK(strstr(t_frame, "omitted") == NULL);
+    unsetenv("LEGEND_NOW");
+}
+
 static char t_audit[1 << 16];
 
 static void capture_audit_limit(i64 per_reason) {
@@ -3128,6 +3174,7 @@ int main(void) {
     test_orientation_history_cap();
     test_retract_core_ontology();
     test_causal();
+    test_frame_section_caps();
     test_audit();
 
     json_free(&tj);

@@ -35,6 +35,27 @@ refreshed — all under the store lock.
 Resolves the requested focus and prints a frame without mutating the graph
 (unless the payload sets `observe`, which records the access).
 
+**Section caps.** The typed sections — `decisions`, `constraints`, `open`,
+`causal`, and each custom-kind section — emit at most 10 entries, newest first.
+`limit` budgets `recent`/`related`; it does not govern these. Whatever a cap
+holds back is counted in a top-level `omitted` object, emitted only when
+something was actually dropped:
+
+```json
+"decisions":[ ...10... ],
+"omitted":{"decisions":93,"constraints":66,"open":13,"causal":26}
+```
+
+This is a bound on the *surface*, never on the store: nothing is pruned, and a
+focused `recall` still reaches anything a cap held back. It exists because the
+sections were previously uncapped on the reasoning that the typed sections are
+the ones worth never truncating — which holds at 10 decisions and fails at 103.
+The live trial packet reached 51KB (decisions alone 18KB, constraints 12KB)
+against a SessionStart hook feeding the model its first 4000 bytes, so the cut
+landed inside `overview` and the protected sections were exactly the ones being
+dropped. Capped, that same packet is 18.9KB of JSON / 13.3KB pretty, and every
+section reaches the model.
+
 ### `dump`
 Prints a human-readable rendering of the whole graph (ids resolved to names).
 Read-only.
@@ -110,10 +131,11 @@ A `recall` with no focus carries a store-health tally in its `overview` header:
 ```
 
 Emitted only when something is flagged — a clean store says nothing, so
-maintenance stays a pull rather than a standing nag. Placement is deliberate:
-the SessionStart hook truncates the packet with `head -c 4000`, and that cut
-lands inside `overview.active`, so a counter further down would never reach the
-model.
+maintenance stays a pull rather than a standing nag. Placement in the header is
+deliberate: it predates the section caps, and at the time the hook's `head -c
+4000` cut landed inside `overview`, so a counter further down would never have
+reached the model. With the caps in place the whole packet now arrives, but the
+header is still the right home for a health line.
 
 The tally skips `near_dup`. That pair sweep is O(n²) and costs 58ms of a 59ms
 scan on an 815-element store, against the 4.6ms an entire orientation recall

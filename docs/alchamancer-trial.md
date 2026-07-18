@@ -390,6 +390,26 @@ split-into-children nudge isn't holding; 36 paragraph-named elements now, up
 from 8); (c) retune the hook cap. Ambient/explicit recall (cheap, focus-scoped)
 currently masks the loss — the model re-fetches what boot drops.
 
+**RESOLVED 2026-07-18 (levers a + c).** By then the packet had grown to
+**51KB** and the cut had moved *earlier* — landing inside `overview` itself, so
+the model never even reached `state`. Fixed at the surface, exactly as the
+diagnosis prescribed, with nothing pruned from the store:
+
+- **(a) Section caps.** `decisions`, `constraints`, `open`, `causal` and each
+  custom-kind section emit at most 10 entries, newest first, with the held-back
+  counts reported in a top-level `omitted` object. On the live store that is
+  51,441 → 18,895 bytes of JSON, `omitted:{decisions:93, constraints:66,
+  open:13, causal:26}`.
+- **(c) Hook retune.** The generated SessionStart hook becomes
+  `recall '{"limit":16}' --pretty | head -c 20000`. The caps now bound the
+  content, so `head -c` is a safety valve against a pathological store rather
+  than the routine trimmer it had become. The live packet is 13.3KB pretty and
+  arrives whole — every section, plus `omitted`, reaches the model.
+
+Lever **(b)** — summary discipline — remains open under `#66`. It is the
+larger remaining driver: `overview` alone is still 5.3KB for five active
+entries, because those entries carry ~1KB summaries.
+
 **Watch #1 (predicate proliferation):** 19→**84 minted predicates**, long
 single-use tail, plus a `current_*` status-as-fact family (55 uses, incl. a
 `current_current_status` doubled-prefix bug) — **watch #11's nudge is not
