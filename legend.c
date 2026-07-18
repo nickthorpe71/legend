@@ -9156,19 +9156,29 @@ static u32 audit_name_digits(const Hypergraph *g, u32 e, char *out, u32 cap) {
   return w;
 }
 
-/* Whether these two elements are the old and new values of one change event.
- * `changes` records supersession as {from: <old>, to: <new>}, so both values
- * necessarily survive as elements — and a property whose value was EDITED
- * rather than replaced leaves two near-identical names behind by design
- * ("...Rare/Epic/Mythic" -> "...Rare/Fabled/Mythic"). That is the feature
- * working, not a duplicate to fold; merging them would destroy the history
- * `changes` exists to keep. Only reached for pairs that already cleared the
- * similarity bar, so the scan costs nothing. */
-static int audit_is_supersession_pair(const Hypergraph *g, u32 a, u32 b) {
+/* Whether these two similar names are similar ON PURPOSE — a pair the graph
+ * itself says belongs together, which folding would damage. Two shapes:
+ *
+ *   from/to of one change event. `changes` records supersession as
+ *   {from: <old>, to: <new>}, so both values survive as elements, and a
+ *   property whose value was EDITED rather than replaced leaves two
+ *   near-identical names by design ("...Rare/Epic/Mythic" ->
+ *   "...Rare/Fabled/Mythic"). Merging them destroys the history `changes`
+ *   exists to keep.
+ *
+ *   parent and child. Splitting an overgrown summary into a short core plus
+ *   children is the documented remedy for `bloat`, and a child is naturally
+ *   named after its parent ("color-signature summons roster" under
+ *   "color-signature summons"). Without this, taking the advice the tool gives
+ *   you manufactures suspects in another of its own checks.
+ *
+ * Only reached for pairs that already cleared the similarity bar, so the scan
+ * costs nothing. */
+static int audit_pair_is_intentional(const Hypergraph *g, u32 a, u32 b) {
   u32 r, i;
   for (r = 0; r < g->relation_count; r++) {
     const Relation *rel = &g->relations[r];
-    u32 from = NONE_U32, to = NONE_U32;
+    u32 from = NONE_U32, to = NONE_U32, subj = NONE_U32, part = NONE_U32;
     for (i = 0; i < rel->attr_count; i++) {
       if (rel->attrs[i].value.tag != TERM_ELEM)
         continue;
@@ -9176,8 +9186,15 @@ static int audit_is_supersession_pair(const Hypergraph *g, u32 a, u32 b) {
         from = rel->attrs[i].value.id;
       else if (rel->attrs[i].name == WK_TO)
         to = rel->attrs[i].value.id;
+      else if (rel->attrs[i].name == WK_SUBJECT)
+        subj = rel->attrs[i].value.id;
+      else if (rel->attrs[i].name == WK_PART_OF)
+        part = rel->attrs[i].value.id;
     }
     if ((from == a && to == b) || (from == b && to == a))
+      return 1;
+    if (rel->status < ST_SUPERSEDED &&
+        ((subj == a && part == b) || (subj == b && part == a)))
       return 1;
   }
   return 0;
@@ -9358,7 +9375,7 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
         continue;
       tier2_trigrams(elem_name(g, r), elem_name_l(g, r), &tb);
       sim = trigram_jaccard(ta.v, ta.count, tb.v, tb.count);
-      if (sim >= g_aud_dup_sim && !audit_is_supersession_pair(g, e, r))
+      if (sim >= g_aud_dup_sim && !audit_pair_is_intentional(g, e, r))
         AUD_PUSH(AUD_NEAR_DUP, r, e, 0, (u32)(sim * 1000.0));
     }
   }

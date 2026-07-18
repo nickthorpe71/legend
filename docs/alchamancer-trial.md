@@ -722,6 +722,58 @@ a storage one — the fix bounds what recall *surfaces*, never what the store
 claim get read correctly and earn its keep; (2) the orientation-packet balloon
 (watch #3) under continued growth, pending the surface-bounding fix.
 
+## ROUND 3 CLOSED 2026-07-18 · `#126` · Round 4 needs a re-pin
+
+18 sessions on `8fbeedc` (07-16 → 07-18): 110 invocations, 31 saves, **zero
+rejections** — against 5 across all earlier rounds combined, the clearest
+evidence yet that the MCP instruction fixes landed. Work was audio/DSP doctrine,
+regions design, and playtest batches. Determinism healthy: 579 ok journal lines
+replay byte-identical across 11 binaries.
+
+**Watch item (1) did not happen, and that is the finding.** Round 3 existed to
+be the first clean test of *working* modality (`#616`). **Zero payloads in the
+entire 585-line journal carry a `modal` field** — not one, across the whole
+trial. The fix is correct by unit test and untested in the wild, because the
+feature has no adoption. That reframes what causal representation is worth:
+rung-2 predicates shipped, modality shipped, and the calling model has reached
+for neither. Open as `#127` — is modality unused because the domain rarely needs
+it, because the instructions mention it too weakly, or because a model writing
+facts does not naturally reach for negation?
+
+**Watch item (2), the packet balloon, is fixed** — see the RESOLVED note under
+the store-health check-in above. The packet had grown to 51KB with the hook cut
+landing inside `overview`; section caps plus a hook retune bring it to 13.3KB
+pretty, delivered whole.
+
+**Two new issues were raised in-band** by the sessions themselves: `#615` attrs
+silently reify prose values (one save of 3 elements minted 7 prose-named
+phantoms) and `#645` cross-store name collisions mint phantoms (a fact object
+read from the CLAUDE.md file-memory *index* rather than from Legend — the same
+failure as testimony 8, now named as a structural hazard of running two memory
+systems whose topic names deliberately overlap).
+
+**First human-in-the-loop maintenance pass** ran at close (`#119`, `#130`): 16
+decisions, applied at ticks 263–265 tagged `source="maintenance 2026-07-18"`.
+`status_fact` 7→0, `stale_open` 21→13, `prose_name` 17→14. Replay stayed
+byte-identical afterwards, so mixing a newer build's writes into an
+`8fbeedc`-pinned journal cost nothing. Independent validation for the audit: its
+`prose_name` and `orphan` checks surfaced `#615`'s wreckage without knowing the
+issue existed.
+
+**Round 4 requires a manual re-pin** — the `#91` fix and the whole audit/
+maintenance surface reach the trial only when the pinned binary is replaced and
+the SessionStart hook updated:
+
+```sh
+cp ~/Code/legend/legend ~/.local/bin/legend      # pin the new build
+# then in ~/Code/alchamancer2/.claude/settings.json, SessionStart command:
+#   ... recall '{"limit":16}' --pretty 2>/dev/null | head -c 20000
+```
+
+`legend init` never clobbers an existing `settings.json`, so the hook edit is
+manual. Until both are done, Round 4 runs on `8fbeedc` and sees neither the
+capped packet nor `legend audit`.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview

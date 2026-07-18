@@ -2955,6 +2955,20 @@ static void test_audit(void) {
     capture_audit();
     CHECK(strstr(t_audit, "\"near_dup\":0") != NULL);
 
+    /* nor is a child named after its parent: splitting an overgrown summary
+     * into a short core plus children is the documented remedy for bloat, so
+     * taking the tool's own advice must not manufacture suspects here */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":["
+                 "{\"name\":\"color-signature summons\",\"kind\":\"decision\",\"summary\":\"the core\"},"
+                 "{\"name\":\"color-signature summons roster\",\"kind\":\"system\",\"summary\":\"the detail\"}],"
+                 "\"facts\":[{\"s\":\"color-signature summons roster\",\"p\":\"part_of\","
+                 "\"o\":\"color-signature summons\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"near_dup\":0") != NULL);
+
     /* short names are incomparable by trigram: one differing byte out of six
      * still leaves ~0.6, so "elem a"/"elem b" would pair every sibling with
      * every other. Below the floor, no pairing at all. */
