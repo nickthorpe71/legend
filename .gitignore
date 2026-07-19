@@ -106,3 +106,7 @@ benchmarks/conflictqa/store*/
 benchmarks/conflictqa/runs*/
 benchmarks/conflictqa/results/
 benchmarks/conflictqa/*.log
+
+# point-in-time trial store snapshots kept for rollback; the journal is the
+# committed record and replays byte-identical, so these are belt not braces
+.trial-backups/
