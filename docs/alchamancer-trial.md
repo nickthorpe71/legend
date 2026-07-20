@@ -799,6 +799,42 @@ Two re-pin gotchas, learned the hard way — fold into the recipe above:
    they restart (which is the Round boundary anyway) and the next fresh
    invocation gets the new one.
 
+## ROUND 4 IN PROGRESS · from 2026-07-20 · `0c70e2a` · `#145`
+
+The first round to run on the capped packet, the 400 bloat threshold, and the
+MCP `audit`/`maintain` surface. **Closes at ~15–18 sessions (parity with Round
+3), then one maintenance pass.** No mid-round gardening — bloat, suspects, and
+phantoms accrue naturally so the *rate* is what gets measured, not a groomed
+snapshot.
+
+**Baseline at start** (`#146`, read-only on a store copy, `0c70e2a`): 639 journal
+lines, 886 elements, 2172 relations. Audit: bloat 281, prose_name 16, stale_open
+14, orphan 11, near_dup 2, status_fact **0** (held since the Round-3 pass).
+Summaries: max 2042, p90 1427, over-400 = 283. Causal: enables 23 / caused 10 /
+prevents 6 / correlated_with **0**. Modal 5. Packet **12.7 KB, whole**.
+
+**Pre-registered gauges** — each anchored to the baseline and each deciding an
+open item, so the close is a measurement, not an impression:
+
+1. **Packet orients** (`#91`, never tested in the wild before): arrives whole
+   every session, zero truncation inside `overview`, testimony that it oriented.
+2. **400 + the number changes writing** (`#66`/`#122`): of summaries *written
+   during* the round, does the fraction over 400 fall vs history, and does
+   max/p90 hold? Rate, not count — count rises with store size, which is the
+   whole `#122` point.
+3. **`phantom_change` in the wild** (`#135`): count Round-4 `changes`/`resolves`
+   whose target lands in `minted_elements`. >0 → build the detector; 0 →
+   theoretical, deprioritize.
+4. **`correlated_with` stays 0** (`#137`): any Round-4 causal fact using it? Still
+   0 → the "never call a correlation a cause" invariant-risk is confirmed.
+5. **Maintenance pass at close** feeds the retune bucket: stale_open true/false
+   split (`#118`), bloat count-vs-distribution (`#122`), near_dup precision.
+
+Determinism note: the `8fbeedc → 0c70e2a` upgrade is a fix-bearing one, so
+cross-version byte-replay diverges at the boundary by design (see the
+determinism memory) — not corruption. Within `0c70e2a`, replay must stay
+byte-identical.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
