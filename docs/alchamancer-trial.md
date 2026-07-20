@@ -730,15 +730,19 @@ evidence yet that the MCP instruction fixes landed. Work was audio/DSP doctrine,
 regions design, and playtest batches. Determinism healthy: 579 ok journal lines
 replay byte-identical across 11 binaries.
 
-**Watch item (1) did not happen, and that is the finding.** Round 3 existed to
-be the first clean test of *working* modality (`#616`). **Zero payloads in the
-entire 585-line journal carry a `modal` field** — not one, across the whole
-trial. The fix is correct by unit test and untested in the wild, because the
-feature has no adoption. That reframes what causal representation is worth:
-rung-2 predicates shipped, modality shipped, and the calling model has reached
-for neither. Open as `#127` — is modality unused because the domain rarely needs
-it, because the instructions mention it too weakly, or because a model writing
-facts does not naturally reach for negation?
+**Watch item (1): modality is lightly adopted — corrected 2026-07-19.** The
+Round-3 close originally recorded "zero `modal` payloads," but that was a grep
+artifact (`payload` is an escaped JSON string; `grep '"modal"'` misses the
+escaped key). The structural count is **5 accepted, unprompted `modal` facts**
+(journal lines 383/385/391/403/455), each using `negated`/`general` correctly
+where something is inert. And the rung-2 causal predicates are **adopted** —
+`enables` 22, `caused` 10, `prevents` 6 across 509 facts; only `modal` (5) and
+`correlated_with` (0) are rare/dead. So causal representation is *used*, modality
+*rarely*. `#127` resolved 2026-07-19: **leave `modal`, stop counting it as
+shipped value** — a correct, cheap-when-unused capability waiting for a domain
+that needs negation, not a defect. The likelier next lever is `correlated_with`
+at 0/38: the invariant "never call a correlation a cause" is at risk from the
+model never *picking* the weak option, not from relabeling.
 
 **Watch item (2), the packet balloon, is fixed** — see the RESOLVED note under
 the store-health check-in above. The packet had grown to 51KB with the hook cut

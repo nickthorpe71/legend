@@ -16,14 +16,63 @@ days traces to something the deployment surfaced.
 Round 3 closed 2026-07-18: 18 sessions, 110 invocations, 31 saves, **zero
 rejections**. Round 4 is pending a manual re-pin (below).
 
+## Update — 2026-07-19 session (read before the forks below)
+
+The forks were re-examined against the store this session. **Three claims in the
+original brief were verified WRONG**; the corrections here supersede the framing
+that follows.
+
+1. **Modality is NOT at zero adoption.** "Zero `modal` payloads" was a grep
+   artifact — `payload` is an escaped JSON string, so `grep '"modal"'` finds
+   nothing while the structural count is **5 accepted, unprompted `modal` facts**
+   (journal lines 383/385/391/403/455), each using `negated`/`general` correctly
+   where something is inert. The rung-2 causal predicates are **adopted**:
+   `enables` 22, `caused` 10, `prevents` 6 across 509 facts. Only `modal` (5) and
+   `correlated_with` (0) are rare/dead. (A naïve substring search overcounts to
+   29 — this is a game codebase full of the UI word "modal"; 5 is the structural
+   number.)
+2. **The `#66` "280 nudge" was never built.** `280` existed *only* as the audit
+   threshold `g_aud_bloat_chars`; no write-path instruction ever carried a
+   number. "290 summaries over threshold" measured a numberless instruction
+   against a constant the model was never shown. Fixed this session (below).
+3. Scorecard / `near_dup` counts drift with the store — read them as of their
+   measurement date, not standing truth.
+
+### Decisions taken
+- **`#71` → instruction only.** No engine change; `changes` does not supersede
+  plain facts. The instruction already said "status-like values go through
+  changes, not facts"; this session added the phantom warning below.
+- **`#127` → leave `modal`, stop counting it as shipped value.** Correct and
+  cheap-when-unused; 5 correct uses is real but rare. Causal predicates stay.
+  Re-scope the fork to `modal` alone. Do **not** cut.
+
+### Shipped this session (committed; trial re-pinned)
+- `bloat` threshold **`280 → 400`** (`#122`: a terse core + its result lands
+  ~300). The number now also appears in the write-path instructions, so guidance
+  and audit finally agree. Fixtures resized; check.sh green.
+- Trial re-pinned to this build; SessionStart hook →
+  `recall '{"limit":16}' --pretty | head -c 20000`. Round 4 now sees the capped
+  packet and `legend audit`.
+
+### New finding — `phantom_change` (adjacent to `#71`, deferred to the audit bucket)
+A `changes` (or `resolves`) whose target does not exist **silently mints a
+phantom**: the `current_<prop>` cache lands on the phantom and the real element
+keeps its stale value. No audit check catches it — `orphan` needs `refs==0`,
+`near_dup` skips names under 12 chars, `phantom_close` checks `resolves` only.
+Verified live this session with a typo'd target. Instruction mitigation shipped
+(target-must-exist warning on `changes`); a `phantom_change` detector mirroring
+`phantom_close` is deferred to the next maintenance pass alongside the
+`#118`/`#122` audit retune, per the "don't retune on one store" discipline.
+
 ## The forks
 
 ### 1. `#127` — modality has zero adoption
 
-**The finding.** Round 3 existed to be the first clean test of working modality
-after the `#616` fix. **Zero payloads in the entire 585-line journal carry a
-`modal` field** — not one, across the whole trial. The fix is correct by unit
-test and unexercised in the wild.
+**The finding.** _[SUPERSEDED — see Update above: the structural count is 5, not
+zero; "zero" was a grep artifact.]_ Round 3 existed to be the first clean test of
+working modality after the `#616` fix. Modal adoption is **low but nonzero**: 5
+unprompted `modal` facts, all correct. The fix is correct by unit test and
+lightly exercised in the wild.
 
 **Why it matters beyond modality.** Causal representation shipped three phases:
 rung-2 predicates (`caused`/`enables`/`prevents` vs `correlated_with`), the
