@@ -769,7 +769,10 @@ maintenance surface reach the trial only when the pinned binary is replaced and
 the SessionStart hook updated:
 
 ```sh
-cp ~/Code/legend/legend ~/.local/bin/legend      # pin the new build
+git commit ...                                   # FIRST — see gotcha 1
+cc ... -DLEGEND_BUILD="$(git rev-parse --short HEAD)" -O2 legend.c embed.c -o legend
+cp ~/Code/legend/legend ~/.local/bin/legend.new  # gotcha 2: not a direct cp
+mv -f ~/.local/bin/legend.new ~/.local/bin/legend
 # then in ~/Code/alchamancer2/.claude/settings.json, SessionStart command:
 #   ... recall '{"limit":16}' --pretty 2>/dev/null | head -c 20000
 ```
@@ -777,6 +780,24 @@ cp ~/Code/legend/legend ~/.local/bin/legend      # pin the new build
 `legend init` never clobbers an existing `settings.json`, so the hook edit is
 manual. Until both are done, Round 4 runs on `8fbeedc` and sees neither the
 capped packet nor `legend audit`.
+
+**Done 2026-07-19: re-pinned to `0c70e2a`, hook updated** (`{"limit":16}` /
+`head -c 20000`). Measured on a store copy first: the new packet is 14.3KB
+(arrives whole, all seven typed sections); the old `{}`/`4000` hook cut at 4KB
+mid-sentence inside `overview` with zero typed sections surviving.
+
+Two re-pin gotchas, learned the hard way — fold into the recipe above:
+1. **Commit before you build the binary you pin.** The stamp is
+   `git rev-parse --short HEAD`, and it goes into every journal line. Pinning a
+   binary built with uncommitted changes records a sha that `git archive <sha>`
+   cannot reproduce — the journal *lies* about which binary wrote it, and
+   build-aware replay diverges as if corrupt. Commit first so the stamp is real.
+2. **The pinned binary is `Text file busy`** — warm `legend mcp-serve` processes
+   hold it open, so a direct `cp` over it fails (`ETXTBSY`). Copy to a sibling
+   name and `mv -f` over the target: rename swaps the directory entry without
+   truncating the running inode, so live servers keep their old binary until
+   they restart (which is the Round boundary anyway) and the next fresh
+   invocation gets the new one.
 
 ## What the store was seeded with (baseline)
 
