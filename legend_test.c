@@ -3070,7 +3070,7 @@ static void test_audit(void) {
             u32 k;
             p += sprintf(p, "%s{\"name\":\"elem %c\",\"kind\":\"task\",\"summary\":\"",
                          i ? "," : "", (char)('a' + i));
-            for (k = 0; k < 30; k++) p += sprintf(p, "ten chars ");
+            for (k = 0; k < 45; k++) p += sprintf(p, "ten chars ");
             p += sprintf(p, "\"}");
         }
         sprintf(p, "]}");

@@ -342,7 +342,7 @@ assert len(f["state"]) == 1  # the current_standing cache
     i=1
     while [ $i -le 7 ]; do
         LEGEND_STATE_DIR="$SA" LEGEND_NOW=1780272000 "$BIN" save \
-          "{\"elements\":[{\"name\":\"bloated $i\",\"kind\":\"task\",\"summary\":\"$(printf 'x%.0s' $(seq 1 400))\"}]}" \
+          "{\"elements\":[{\"name\":\"bloated $i\",\"kind\":\"task\",\"summary\":\"$(printf 'x%.0s' $(seq 1 450))\"}]}" \
           >/dev/null || fail "$BIN audit-store seed $i"
         i=$((i+1))
     done

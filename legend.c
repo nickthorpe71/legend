@@ -9006,7 +9006,7 @@ static const char *const AUD_REASONS[AUD_REASON_COUNT] = {
     "stale_open",    "orphan",      "bloat"};
 
 /* Thresholds. Mutable so tests can drive each check from a small store. */
-static u32 g_aud_bloat_chars = 280; /* the "outgrew one line" mark (#66) */
+static u32 g_aud_bloat_chars = 400; /* a terse core + its result lands ~300; a wall starts ~400 (#66, #122) */
 static u32 g_aud_name_chars = 120;  /* a name past here is prose. Measured on
                                        the trial store: median name 29 bytes,
                                        p90 92, tail to 1177 — the tail is
@@ -9507,7 +9507,8 @@ static const char MCP_INSTRUCTIONS[] =
     "predicate; prefer short verbs. (2) To change a current "
     "value use `changes` {target, property, to}, not a new fact -- changes "
     "supersede and keep history. Status-like values go through changes, not "
-    "facts. (3) To correct something now false use "
+    "facts; the `changes` target must ALREADY EXIST or it silently mints a "
+    "phantom while the real value stays stale. (3) To correct something now false use "
     "`retract`. (4) To fold a duplicate you made use `merge` {from, into}. "
     "(5) To rename, set `rename_to` on the element. (6) To close an open "
     "question or task, save the fact {s: <what resolved it>, p: resolves, "
@@ -9520,7 +9521,8 @@ static const char MCP_INSTRUCTIONS[] =
     "(a fact object -- and every attr value -- becomes an element named by it, "
     "so never pass prose as a fact object or an attr value; prose belongs in "
     "summaries). When a summary outgrows a line, "
-    "split the detail into child elements and keep a short core -- an "
+    "split the detail into child elements and keep a short core (under "
+    "~400 chars) -- an "
     "everything-dump summary buries the signal. (8) Prefer few precise "
     "elements and durable facts; over-extraction buries the signal. The "
     "highest-value saves are what the code cannot hold: next levers, "
@@ -9566,7 +9568,7 @@ static const char MCP_TOOLS_JSON[] =
     "element (latest write wins) -- `changes` is for domain property values, "
     "and fact objects AND attr values become element names, so keep them short "
     "(prose goes in summaries); when a summary outgrows a line, split the detail into "
-    "child elements and keep a short core. Best saves: what code cannot hold "
+    "child elements and keep a short core (under ~400 chars). Best saves: what code cannot hold "
     "(next levers, negative "
     "results, reasons); a choice that settles a design question is a decision "
     "even when the request looked cosmetic; measurements include how to "
@@ -9598,7 +9600,7 @@ static const char MCP_TOOLS_JSON[] =
     "\"required\":[\"s\",\"p\",\"o\"]}},"
     "\"changes\":{\"type\":\"array\",\"description\":\"supersede a current value (keeps history)\","
     "\"items\":{\"type\":\"object\",\"properties\":{"
-    "\"target\":{\"type\":\"string\"},\"property\":{\"type\":\"string\"},"
+    "\"target\":{\"type\":\"string\",\"description\":\"must already exist, else changes mints a phantom\"},\"property\":{\"type\":\"string\"},"
     "\"from\":{\"type\":\"string\",\"description\":\"prior value if known\"},"
     "\"to\":{\"type\":\"string\"}},\"required\":[\"target\",\"property\",\"to\"]}},"
     "\"retract\":{\"type\":\"array\",\"description\":\"mark a fact no longer true\","
@@ -9677,7 +9679,7 @@ static const char MCP_MAINTAIN_PROMPT[] =
     "leave it and move on.\n"
     "- `orphan`: nothing references it. Usually harmless residue. Offer "
     "removal only if the user recognises it as a mistake.\n"
-    "- `bloat`: a summary that grew into a wall. Propose splitting the detail "
+    "- `bloat`: a summary past ~400 chars, grown into a wall. Propose splitting the detail "
     "into child elements and leaving a short core, and show the proposed "
     "short core before writing it.\n\n"
     "Step 3 -- APPLY. Batch the approved repairs into as few `legend_save` "
