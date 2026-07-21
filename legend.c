@@ -9460,15 +9460,23 @@ static i64 read_audit_limit(const Rd *r) {
  * nothing, and maintenance stays the user's move rather than a standing nag. */
 static void frame_put_audit_tally(const Hypergraph *g) {
   Suspect *sus;
-  u32 n, i, put = 0;
+  u32 n, i, put = 0, shown = 0;
   u32 counts[AUD_REASON_COUNT];
   audit_scan(g, &sus, &n, counts, 0);
   free(sus);
-  if (n == 0)
+  /* bloat is excluded from the standing tally: its count climbs with store
+   * size and cannot be acted on mid-session, so it belongs in `legend audit`,
+   * not the session-start signal (#122, confirmed by trial round 4 — count
+   * rose with element count while the distribution held flat). near_dup is
+   * already 0 here (the scan skipped the O(n^2) sweep). */
+  counts[AUD_BLOAT] = 0;
+  for (i = 0; i < AUD_REASON_COUNT; i++)
+    shown += counts[i];
+  if (shown == 0)
     return;
   fputs(",\"audit\":{", stdout);
   for (i = 0; i < AUD_REASON_COUNT; i++) {
-    if (counts[i] == 0) /* near_dup is always 0 here: the scan skipped it */
+    if (counts[i] == 0)
       continue;
     printf("%s\"%s\":%u", put++ ? "," : "", AUD_REASONS[i], counts[i]);
   }
@@ -9508,7 +9516,9 @@ static const char MCP_INSTRUCTIONS[] =
     "value use `changes` {target, property, to}, not a new fact -- changes "
     "supersede and keep history. Status-like values go through changes, not "
     "facts; the `changes` target must ALREADY EXIST or it silently mints a "
-    "phantom while the real value stays stale. (3) To correct something now false use "
+    "phantom while the real value stays stale, and `to` is a SHORT canonical "
+    "value that itself becomes an element -- never a prose note (that belongs "
+    "in the target's summary). (3) To correct something now false use "
     "`retract`. (4) To fold a duplicate you made use `merge` {from, into}. "
     "(5) To rename, set `rename_to` on the element. (6) To close an open "
     "question or task, save the fact {s: <what resolved it>, p: resolves, "
@@ -9602,7 +9612,7 @@ static const char MCP_TOOLS_JSON[] =
     "\"items\":{\"type\":\"object\",\"properties\":{"
     "\"target\":{\"type\":\"string\",\"description\":\"must already exist, else changes mints a phantom\"},\"property\":{\"type\":\"string\"},"
     "\"from\":{\"type\":\"string\",\"description\":\"prior value if known\"},"
-    "\"to\":{\"type\":\"string\"}},\"required\":[\"target\",\"property\",\"to\"]}},"
+    "\"to\":{\"type\":\"string\",\"description\":\"new value -- short canonical name; becomes an element, never prose\"}},\"required\":[\"target\",\"property\",\"to\"]}},"
     "\"retract\":{\"type\":\"array\",\"description\":\"mark a fact no longer true\","
     "\"items\":{\"type\":\"object\",\"properties\":{"
     "\"s\":{\"type\":\"string\"},\"p\":{\"type\":\"string\"},\"o\":{\"type\":\"string\"}},"

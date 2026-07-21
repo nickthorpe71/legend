@@ -3102,14 +3102,23 @@ static void test_audit(void) {
                  "\"facts\":[{\"s\":\"phase 0 build\",\"p\":\"status\",\"o\":\"M0 green\"}]}"),
         failed);
     CHECK(!failed);
-    capture_audit();
-    CHECK(strstr(t_audit, "\"near_dup\":1") != NULL); /* the full scan sees it */
-    TRY(run_recall("{}"), failed);
-    CHECK(!failed);
-    capture_frame(40, 2, -1);
+    {
+        u32 saved_bloat = g_aud_bloat_chars;
+        g_aud_bloat_chars = 5; /* make "the build" (9ch) count as bloat */
+        capture_audit();
+        CHECK(strstr(t_audit, "\"near_dup\":1") != NULL); /* the full scan sees it */
+        CHECK(strstr(t_audit, "\"bloat\":") != NULL);     /* the verb reports it */
+        TRY(run_recall("{}"), failed);
+        CHECK(!failed);
+        capture_frame(40, 2, -1);
+        g_aud_bloat_chars = saved_bloat;
+    }
     CHECK(strstr(t_frame, "\"audit\":{") != NULL);
     CHECK(strstr(t_frame, "\"status_fact\":1") != NULL);
     CHECK(strstr(t_frame, "near_dup") == NULL); /* ...the tally never does */
+    CHECK(strstr(t_frame, "bloat") == NULL);    /* ...nor bloat: it climbs with
+                                                   store size, so it lives in
+                                                   `legend audit`, not here (#122) */
     /* it sits in the overview header, ahead of scope/active */
     {
         const char *ov = strstr(t_frame, "\"overview\":{");
