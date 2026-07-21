@@ -799,7 +799,7 @@ Two re-pin gotchas, learned the hard way — fold into the recipe above:
    they restart (which is the Round boundary anyway) and the next fresh
    invocation gets the new one.
 
-## ROUND 4 IN PROGRESS · from 2026-07-20 · `0c70e2a` · `#145`
+## ROUND 4 CLOSED 2026-07-21 · `0c70e2a` · `#145`
 
 The first round to run on the capped packet, the 400 bloat threshold, and the
 MCP `audit`/`maintain` surface. **Closes at ~15–18 sessions (parity with Round
@@ -834,6 +834,39 @@ Determinism note: the `8fbeedc → 0c70e2a` upgrade is a fix-bearing one, so
 cross-version byte-replay diverges at the boundary by design (see the
 determinism memory) — not corruption. Within `0c70e2a`, replay must stay
 byte-identical.
+
+**CLOSED 2026-07-21 — 7 sessions (below the 15–18 target; findings directional).**
+104 invocations, all on `0c70e2a`; determinism byte-faithful on replay (968 ==
+968). Gauge results:
+
+1. **Packet orients** — holds: 12.7 → 15.0KB, still whole. But climbing ~2.3KB
+   per +82 elements; the `#141` scaling pressure is now empirical. No orientation
+   testimony was saved, so the qualitative side stays untested.
+2. **400 write-rate** — FAIL. 43 of 44 R4 summaries exceeded 400 (98% vs 74%
+   historical); distribution flat, count climbed +38 with store size. The
+   write-side length instruction is dead (`#150`), and bloat is now out of the
+   session tally (`#153`) — closing `#122`.
+3. **phantom_change** — 0 in the wild → standalone detector deprioritized
+   (`#135`). But the sibling `changes.to`-reifies-prose fired 4 of 5, minting
+   300–542-char prose names — the round's dominant papercut → warning shipped
+   (`#152` / `#149`).
+4. **correlated_with** — still 0 across 39 causal facts; the invariant-risk is
+   confirmed (`#137`, kept open, no check built — speculative precision).
+5. **Maintenance** — status_fact held at 0; prose_name 16→20 (all via the
+   changes.to path), bloat 281→319, stale_open 14→16.
+
+Footnotes: 1 rejection (malformed JSON on a complex musical payload); the model
+minted two off-list kinds, `reference` (11×) and `feedback` (2×) — taxonomy
+drift, directional.
+
+## ROUND 5 IN PROGRESS · from 2026-07-21 · `9d745ee` · `#155`
+
+Re-pinned with the two Round-4 fixes live: the `changes.to` prose warning and
+bloat dropped from the session tally. **Deliberately lightweight — one gauge:**
+does prose-name pollution stop growing now that the model is warned? Baseline
+`prose_name = 20`, packet 15.0 KB whole. Passively watching packet growth toward
+the 20 KB cap and whether `correlated_with` ever leaves 0. Close when convenient;
+not a formal round.
 
 ## What the store was seeded with (baseline)
 
