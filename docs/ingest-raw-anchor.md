@@ -1,6 +1,41 @@
 # Spec — raw-passage anchor (recall fallback to source text)
 
-**Status:** proposed, not built. Primary lever for closing the RAG gap.
+> **ADVERSARIAL REVIEW VERDICT (2026-07-22) — DO NOT BUILD AS SPECCED.** A 5-agent
+> panel found the plan broken in its core mechanism and net-negative for Legend's
+> actual (revisable) use case. Status downgraded from "primary lever" to
+> **deferred, revise-heavy**; F6 abstention + F3 traversal + extraction-tightening
+> move ahead of it (`retrieval-redesign.md`). Findings:
+> - **The confidence gate is broken four ways**, all rooted in reusing F1's cosine
+>   (which can't separate "answer present" from "topically-adjacent wrong
+>   neighbor"): (1) can't catch wrong-*value* misses — "Moral Sciences" scores high,
+>   so the flagship 2790 case never flips; (2) *fires more reliably in stale cases*
+>   — a supersession pushes the new value away from a query that echoes the old, so
+>   the gate resurrects superseded/retracted values; (3) the BGE cosine band is
+>   already measured dead by the trial (`alchamancer-trial.md:468-472, 270-272`) —
+>   no floor separates a relevant 0.6 from a noise 0.6; (4) it is *circular* — the
+>   same score that made arm B never abstain gates the fallback. Only rescue: a
+>   **lexical/token-coverage** trigger (the trial's validated abstention mechanism),
+>   not a cosine threshold.
+> - **Net-negative for revisable stores** (`changes`/`retract`): the sidecar has no
+>   status link and reasserts values the graph buried. Safe only for immutable/
+>   append-only factoid corpora, hard-gated on a store having no supersessions.
+> - **Wouldn't fix what it claims:** ~3–4 of 8 flip (not 8), ceiling is a *tie*
+>   with RAG; several "ingest misses" are really retrieval (F3/F5) or wrong-value
+>   (extraction) misses needing different fixes.
+> - **The agentic-relevant win is F6 abstention — needs no raw text.** Only the
+>   raw-text-*return* half requires the gist concession, and it serves factoid QA
+>   alone.
+> - **Spec errors:** "reuses F1's scores, no new machinery" is false (F1 discards
+>   cosines); "recall stays read-only" is loosely false (`embed_rank_elements`
+>   persists `vectors.bin`); the "relevant 0.6 / noise 0.5" band is a misread.
+> - **Before any code:** run the ~$1–2 no-code simulation — append the exact
+>   D_dense chunks arm D already retrieved to arm B's frames for the 8 target qids,
+>   re-run Terra, re-grade; pre-registered bar: **≥6/8 flip with the gate
+>   auto-firing** → build, else the mechanism is broken as designed.
+> Reopen only behind an explicit factoid-store product decision.
+
+**Status:** proposed, not built. ~~Primary lever for closing the RAG gap.~~
+**DEFERRED — see adversarial-review verdict above.**
 Motivated by the SimpleQA breakdown (`eval-simpleqa-run-2026-07-22.md` +
 `retrieval-redesign.md`): of the 13 questions RAG got that Legend missed, **~8 are
 ingest misses** — the answer fact never made it into the graph (Sol didn't extract

@@ -87,9 +87,22 @@ lever**, and consumption is a non-issue:
   lookup 820) → **F3 traversal**: [`retrieval-f3-traversal.md`](retrieval-f3-traversal.md).
 - **0 consumption** — when a fact reaches the frame, the consumer uses it.
 
-So: build the raw-passage anchor first (biggest bucket, and the crisp answer to
-"why not just RAG"), then F3 (Legend's relational-query differentiator). Both are
-specced; **come back to them.**
+~~So: build the raw-passage anchor first, then F3.~~ **Superseded by the 2026-07-22
+adversarial review** (verdict block atop `ingest-raw-anchor.md`): the raw anchor is
+deferred (broken gate, net-negative for revisable stores, ~3–4/8 flip, ties RAG at
+best). Revised order:
+1. **F6 abstention** (via lexical/token-coverage, the trial's validated mechanism)
+   — the agentic-relevant win the raw anchor's "miss detector" was really after;
+   needs no stored raw text. Converts confident-wrong-neighbor into honest nulls.
+2. **F3 traversal + F5 alias/disambiguation** — Legend's relational differentiator;
+   fixes the retrieval-miss subset (447 alias, 820 reverse-lookup) that the anchor
+   would only paper over.
+3. **Tighten over-extraction** — the one lever that pays off on the benchmark, on
+   trial store health, AND on F3's hub-explosion risk simultaneously.
+4. **Raw-passage anchor** — only behind an explicit factoid-store product decision,
+   and only after the ~$1–2 no-code simulation clears ≥6/8 flip with an auto-firing
+   gate. If built: lexical-coverage trigger (not cosine), hard-gated to immutable
+   corpora, cached chunk vectors, off by default.
 
 ## Re-run economics
 
