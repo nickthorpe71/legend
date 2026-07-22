@@ -107,7 +107,16 @@ best). Revised order:
    fixes the retrieval-miss subset (447 alias, 820 reverse-lookup) that the anchor
    would only paper over.
 3. **Tighten over-extraction** — the one lever that pays off on the benchmark, on
-   trial store health, AND on F3's hub-explosion risk simultaneously.
+   trial store health, AND on F3's hub-explosion risk simultaneously. **PARTIALLY
+   VALIDATED 2026-07-22** (`ingest_subset.py`+`measure_tight.py`, ~$4.59, quota-
+   truncated): cutting the ingester's "be exhaustive" clause **halved over-extraction
+   (205 → 106 elem/page)**, *fixed a wrong-value extraction* (2790 "Moral Sciences" →
+   correct "Philosophy"), and **surfaced buried answers** the polluted store couldn't
+   (447 Pluto — original recall *timed out*; 820 US equestrian). Over-extraction is a
+   genuine root cause. Caveat: the prompt over-corrected (dropped 2932/2952) → needs
+   tuning (precision without dropping answers). Perf note: F1's `rerank_relevance`
+   embeds the whole neighborhood at query time, so recall latency scales with
+   pollution (447 still 38s). Needs the expensive re-ingest path.
 4. **Raw-passage anchor** — only behind an explicit factoid-store product decision,
    and only after the ~$1–2 no-code simulation clears ≥6/8 flip with an auto-firing
    gate. If built: lexical-coverage trigger (not cosine), hard-gated to immutable
