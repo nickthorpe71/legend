@@ -91,9 +91,18 @@ lever**, and consumption is a non-issue:
 adversarial review** (verdict block atop `ingest-raw-anchor.md`): the raw anchor is
 deferred (broken gate, net-negative for revisable stores, ~3–4/8 flip, ties RAG at
 best). Revised order:
-1. **F6 abstention** (via lexical/token-coverage, the trial's validated mechanism)
-   — the agentic-relevant win the raw anchor's "miss detector" was really after;
-   needs no stored raw text. Converts confident-wrong-neighbor into honest nulls.
+1. ~~**F6 abstention** (via lexical/token-coverage).~~ **VALIDATED-AND-DEFERRED
+   2026-07-22.** Tested three abstention signals on the eval frames (does the
+   signal separate "graph has the answer" from "graph has only a wrong neighbor"?):
+   query-token coverage (0.67 vs 0.55, heavy overlap), answer-type presence (24/33
+   should-abstain cases already hold a right-type wrong-value fact → useless), and
+   predicate coverage (18/27 false-abstain — embedding finds facts whose predicate
+   doesn't lexically match). **None cleanly separates** — same wall as the raw-anchor
+   gate: the graph almost always holds a plausible fact, so no cheap lexical signal
+   detects the answer's absence. A conservative low-threshold coverage gate catches
+   only the *genuine-absence* subset (not the confident-wrong-neighbor cases that
+   hurt most). F6 is not the quick win it looked like; its failure points at the
+   root below.
 2. **F3 traversal + F5 alias/disambiguation** — Legend's relational differentiator;
    fixes the retrieval-miss subset (447 alias, 820 reverse-lookup) that the anchor
    would only paper over.
