@@ -1,15 +1,18 @@
-/* Pure-C all-MiniLM-L6-v2 sentence embedder. In-process, no daemon, no Python.
+/* Pure-C BGE-small-en-v1.5 sentence embedder. In-process, no daemon, no Python.
  *
  * (feature macro: strdup/getline are POSIX.1-2008, not in strict c99)
  */
 #define _POSIX_C_SOURCE 200809L
 /*
  * Reads two committed assets produced once by tools/embed_prep (offline, Rust):
- *   minilm.int8.bin  weights (per-row int8 + fp32 small) in embed.c's fixed order
+ *   minilm.int8.bin  int8 weight blob (per-row int8 + fp32 small) in embed.c's
+ *                    fixed order. The "minilm" filename and the MINILM02 magic
+ *                    are HISTORICAL (this is BGE-small, swapped in after MiniLM);
+ *                    kept so existing stores' vectors.bin/blob_sig stay valid.
  *   vocab.txt       id-ordered WordPiece vocab (line N == token id N)
  *
- * embed_text(m, text, out384) = BERT-uncased WordPiece tokenize -> 6-layer
- * encoder -> mean-pool over tokens -> L2 normalize. Deterministic fp32 math,
+ * embed_text(m, text, out384) = BERT-uncased WordPiece tokenize -> 12-layer
+ * encoder -> CLS-pool (row 0) -> L2 normalize. Deterministic fp32 math,
  * libm only. Build with legend: gcc ... legend.c embed.c -lm
  */
 #include <stdio.h>
@@ -29,7 +32,7 @@
 #define EMBED_X86 0
 #endif
 
-/* ---- fixed architecture (all-MiniLM-L6-v2) ---- */
+/* ---- fixed architecture (BGE-small-en-v1.5: 12-layer, 384-dim, CLS-pool) ---- */
 enum { HID = 384, NL = 12, NH = 12, DH = HID / NH, INTER = 1536,
        NVOCAB = 30522, MAXPOS = 512, TYPE_ID = 0 };
 static const double LN_EPS = 1e-12;

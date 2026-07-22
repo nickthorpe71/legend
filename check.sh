@@ -24,6 +24,25 @@ $CC $CFLAGS $STAMP -g -O1 $SAN legend.c      embed.c -o legend.asan      -lm || 
 $CC $CFLAGS $STAMP -g -O1 $SAN legend_test.c embed.c -o legend_test.asan -lm || { echo "FATAL: legend_test asan build failed"; exit 1; }
 pass "4 binaries built with -Werror"
 
+# Embedder golden: the semantic tier is the least-exercised code (the gates below
+# run with LEGEND_EMBED=0), and its architecture (BGE-small: 12-layer, CLS-pool)
+# is easy to break silently when regenerating the weight blob. embed.c's own
+# EMBED_TEST harness pins tokenization (exact) + vector cosine (>0.999) against
+# tools/embed_prep/golden.txt.
+echo "== embedder golden (embed.c is BGE-small: 12-layer, CLS-pool) =="
+if $CC $CFLAGS -DEMBED_TEST -O2 embed.c -o embed_test -lm 2>embtest_build.log; then
+  if ./embed_test models/bge-small-en-v1.5 tools/embed_prep/golden.txt >embtest.log 2>&1; then
+    pass "embedder golden: $(tail -n1 embtest.log)"
+  else
+    sed 's/^/    /' embtest.log
+    fail "embedder golden mismatch (tokens or cosine <0.999)"
+  fi
+else
+  cat embtest_build.log
+  fail "embed_test build"
+fi
+rm -f embtest.log embtest_build.log embed_test
+
 # Embeddings are ON by default in the binary (committed blob). The core gates
 # (fixtures, smoke determinism, fuzz) test embeddings-independent logic and must
 # stay fast + model-agnostic, so disable there; only the adversarial gate runs

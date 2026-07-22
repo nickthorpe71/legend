@@ -1,4 +1,4 @@
-/* Pure-C MiniLM sentence embedder — see embed.c. */
+/* Pure-C BGE-small-en-v1.5 sentence embedder — see embed.c. */
 #ifndef LEGEND_EMBED_H
 #define LEGEND_EMBED_H
 
@@ -6,11 +6,11 @@
 
 typedef struct EmbedModel EmbedModel;
 
-/* Load weights (minilm.f32.bin) + vocab (vocab.txt). NULL on failure. */
+/* Load the int8 weight blob + vocab (vocab.txt). NULL on failure. */
 EmbedModel *embed_load(const char *bin_path, const char *vocab_path);
 void embed_free(EmbedModel *m);
 
-/* Embed `text` into out[384] (mean-pooled, L2-normalized). 0 on success. */
+/* Embed `text` into out[384] (CLS-pooled, L2-normalized). 0 on success. */
 int embed_text(const EmbedModel *m, const char *text, float *out);
 
 /* Tokenize into ids (incl [CLS]/[SEP]); returns token count. */
