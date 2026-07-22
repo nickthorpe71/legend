@@ -7033,10 +7033,10 @@ static void rerank_relevance(const Hypergraph *g, U32Vec *rels,
   static u32 texts_cap;
   static u32 *sel, *sc;
   static u32 sel_cap, sc_cap;
-  static int *order;
-  static u32 order_cap;
-  static u8 *emitted;
-  static u32 em_cap;
+  static u32 *ids, *out_ids;
+  static u32 ids_cap, out_ids_cap;
+  static float *out_sc;
+  static u32 out_sc_cap;
   static U32Vec ranked;
   char qtok[24][32];
   u32 n = rels->count, m, i, j, nq = 0;
@@ -7096,26 +7096,36 @@ static void rerank_relevance(const Hypergraph *g, U32Vec *rels,
     m = n;
   }
 
+  /* Rank via embed_rank_elements (keyed by rel id + text hash) so each fact's
+   * query-independent vector is embedded once and cached in vectors.bin; warm
+   * recalls are cosine dot-products, not forward passes. */
   texts = (const char **)xgrow(texts, m, &texts_cap, sizeof *texts);
-  order = (int *)xgrow(order, m, &order_cap, sizeof *order);
-  for (i = 0; i < m; i++)
+  ids = (u32 *)xgrow(ids, m, &ids_cap, sizeof *ids);
+  out_ids = (u32 *)xgrow(out_ids, m, &out_ids_cap, sizeof *out_ids);
+  out_sc = (float *)xgrow(out_sc, m, &out_sc_cap, sizeof *out_sc);
+  for (i = 0; i < m; i++) {
     texts[i] = txt[sel[i]];
-  r = embed_rank_texts(texts, (int)m, query, (int)strlen(query), order, (int)m);
+    ids[i] = rels->v[sel[i]];
+  }
+  r = embed_rank_elements(ids, texts, (int)m, query, (int)strlen(query), out_ids,
+                          out_sc, (int)m);
   if (r <= 0)
     return; /* embedder failed -> keep recency order */
 
-  emitted = (u8 *)xgrow(emitted, n, &em_cap, 1);
-  for (i = 0; i < n; i++)
-    emitted[i] = 0;
   ranked.count = 0;
-  for (i = 0; i < (u32)r; i++) { /* relevance-ranked head */
-    u32 idx = sel[order[i]];
-    u32vec_push(&ranked, rels->v[idx]);
-    emitted[idx] = 1;
+  for (i = 0; i < (u32)r; i++) /* relevance-ranked head (rel ids) */
+    u32vec_push(&ranked, out_ids[i]);
+  for (i = 0; i < n; i++) { /* everything else, incoming order */
+    u32 rid = rels->v[i], k;
+    int found = 0;
+    for (k = 0; k < (u32)r; k++)
+      if (out_ids[k] == rid) {
+        found = 1;
+        break;
+      }
+    if (!found)
+      u32vec_push(&ranked, rid);
   }
-  for (i = 0; i < n; i++) /* everything else, incoming order */
-    if (!emitted[i])
-      u32vec_push(&ranked, rels->v[i]);
   rels->count = 0;
   for (i = 0; i < ranked.count; i++)
     u32vec_push(rels, ranked.v[i]);
