@@ -96,11 +96,16 @@ evidence.
    not recency — F1 exists to surface a low-recency fact). Large-neighborhood recall
    **1.5s → 0.73–0.93s**, quality preserved (David Sweet date-of-birth still #1),
    gate green. Two things it surfaced, now tracked:
-   - **2a. Fact-vector caching** — `embed_rank_texts` is uncached; fact vectors are
-     *query-independent*, so embedding each once and reusing (like element vectors)
-     would take repeat recalls well under 100ms. The 38s "F1" symptom was actually a
-     cold `vectors.bin` (first recall embeds all elements); a save-time fact pre-warm
-     closes both.
+   - **2a. Fact-vector caching — DONE** (`2b9122a`). Fact vectors are
+     query-independent, so F1 now ranks via `embed_rank_elements` (keyed by rel id +
+     text hash, persisted in `vectors.bin` like elements): each fact embeds once,
+     warm recalls are dot-products. **Measured (warm): trial store recall 203ms →
+     73ms, save 78ms; over-extracted store recall 752ms cold → ~100ms warm.** Both
+     well under the 300ms target; quality preserved (David Sweet #1). Recall now
+     persists fact vectors on cold-first (consistent with tier-2 element caching;
+     not in the snapshot, determinism-safe). Remaining: cold-first (first recall of a
+     neighborhood) still embeds up to the cap then amortizes — a save-time fact
+     pre-warm would remove it too but slows large saves, so left lazy.
    - **2b. Non-F1 slow paths on polluted neighborhoods** — tier-2 element resolution
      on unresolved focus terms + frame assembly over hundreds of relations can still
      be slow (a Yama/Pluto recall timed out). Downstream of over-extraction (#B) —
