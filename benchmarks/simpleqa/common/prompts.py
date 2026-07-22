@@ -88,6 +88,15 @@ for "what year did Haile Gebrselassie go undefeated in his road races?" focus on
 with different terms. Then answer using what it returned.
 """
 
+# The only delta arm D sees: reference passages retrieved from the SAME corpus by
+# a naive retriever, stuffed into context at a token budget matched to arm B's
+# recall. Same answer/abstain instruction as A and B so outcomes are comparable.
+ARM_D_PREAMBLE = """\
+You are given reference passages retrieved from a set of source pages for this
+question. Use the passages and your own judgment. If the passages contain the
+answer, use it; if they do not, follow the answer instruction below.
+"""
+
 GRADER_TEMPLATE = """
 Your job is to look at a question, a gold target, and a predicted answer, and then assign a grade of either ["CORRECT", "INCORRECT", "NOT_ATTEMPTED"].
 First, I will give examples of each grade, and then you will grade a new example.

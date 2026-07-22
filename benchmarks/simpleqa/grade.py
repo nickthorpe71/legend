@@ -47,10 +47,11 @@ def main():
                       "response": r["response"], "answer": r["answer"], "problem": r["problem"]})
         print(f"  qid={r['qid']} arm={r['arm']}: {outcome}")
 
-    # transition table A -> B
+    # per-question outcome map (arm -> outcome), and the A->B transition table
     by_qid = {}
     for g in graded:
         by_qid.setdefault(g["qid"], {})[g["arm"]] = g["outcome"]
+    arms_present = sorted({g["arm"] for g in graded})
     table = {a: {b: 0 for b in OUTCOMES} for a in OUTCOMES}
     pairs = []
     for qid, arms in by_qid.items():
@@ -60,10 +61,12 @@ def main():
 
     out = {
         "n": len(by_qid),
+        "arms": arms_present,
         "per_arm": {
             arm: {o: sum(1 for g in graded if g["arm"] == arm and g["outcome"] == o) for o in OUTCOMES}
-            for arm in ("A", "B")
+            for arm in arms_present
         },
+        "outcomes_by_qid": {str(qid): arms for qid, arms in by_qid.items()},
         "transition_A_to_B": table,
         "pairs": pairs,
         "graded": graded,

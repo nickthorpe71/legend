@@ -202,6 +202,27 @@ def run_tool_loop(model, system, user, tools, dispatch, max_calls=8, seed=None):
         _accumulate(resp.usage)
 
 
+def embed(model, inputs, batch=128):
+    """Embed a list of strings, batched. Returns a list of float vectors aligned
+    to `inputs`. Same transient-error backoff as _create."""
+    retryable = _retryable()
+    out = []
+    for start in range(0, len(inputs), batch):
+        window = inputs[start:start + batch]
+        delay = 2.0
+        for attempt in range(6):
+            try:
+                resp = client().embeddings.create(model=model, input=window)
+                break
+            except retryable:
+                if attempt == 5:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 60.0)
+        out.extend([e.embedding for e in resp.data])
+    return out
+
+
 def list_models(prefix=None):
     """Return model IDs, optionally filtered by prefix. Used by preflight."""
     ids = [m.id for m in client().models.list().data]
