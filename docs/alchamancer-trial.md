@@ -21,6 +21,16 @@ diagnose, or upgrade the trial.
 | Hooks | `~/Code/alchamancer2/.claude/settings.json` — SessionStart (inject orientation packet), UserPromptSubmit (20s-rate-limited ambient recall, observe:true), Stop (save reminder when files changed) |
 | Trial rules note | `~/Code/alchamancer2/CLAUDE.md` (the blockquote at the top) |
 
+> **Embeddings verified on (2026-07-22).** A harness bug in `benchmarks/simpleqa`
+> ran recall with embeddings OFF because it resolved the model dir relative to the
+> process CWD. **The trial is NOT affected:** the MCP server (`.mcp.json`) and every
+> hook pin `LEGEND_EMBED_DIR` to the absolute `~/.local/share/legend/bge-small-en-v1.5`,
+> and this was confirmed empirically on a store copy (model loads, candidates come
+> back embedding-ranked). The trial's recall has used embeddings throughout — but on
+> the pre-F1 binary (`9d745ee`), so it is embeddings-on-but-recency-ranked; F1's
+> query→fact relevance ranking reaches the trial only on a re-pin. See
+> `docs/session-2026-07-22-retrieval.md`.
+
 **The trial binary is pinned on purpose.** Dev builds in this repo
 (`./legend`) never touch it. To upgrade the trial deliberately:
 
