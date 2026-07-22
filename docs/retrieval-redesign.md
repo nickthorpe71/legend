@@ -75,6 +75,22 @@ serves. Pair the retrieval work with tightening ingest extraction.
    Legend's relational-query strength, where it should beat RAG, not just match it.
 4. **F6** — abstention, once relevance scores give a usable confidence signal.
 
+## Re-prioritization after the D-only breakdown (2026-07-22)
+
+The verified breakdown of the 13 questions RAG still wins (corrected embed-on+F1
+run) reordered the levers — **ingest, not traversal, is the bigger remaining
+lever**, and consumption is a non-issue:
+- **~8/13 ingest misses** (fact never stored, or stored wrong) → the primary lever
+  is the **raw-passage anchor**: [`ingest-raw-anchor.md`](ingest-raw-anchor.md).
+  RAG wins these purely by keeping the verbatim source text.
+- **~3–4/13 retrieval misses** (fact in store, not surfaced: alias 447, reverse-
+  lookup 820) → **F3 traversal**: [`retrieval-f3-traversal.md`](retrieval-f3-traversal.md).
+- **0 consumption** — when a fact reaches the frame, the consumer uses it.
+
+So: build the raw-passage anchor first (biggest bucket, and the crisp answer to
+"why not just RAG"), then F3 (Legend's relational-query differentiator). Both are
+specced; **come back to them.**
+
 ## Re-run economics
 
 A recall change is **read-only** — it does not touch the store. So testing F1
