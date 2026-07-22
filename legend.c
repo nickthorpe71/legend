@@ -7007,47 +7007,115 @@ static void rank_related(const Hypergraph *g, U32Vec *rels) {
   rrf_apply(rels, rr, 0);
 }
 
+/* F1 embeds every candidate fact at query time (embed_rank_texts is uncached, by
+ * design so recall stays read-only). Each BGE forward pass is ~20ms, so a large
+ * neighborhood would blow past a second. To stay sub-second AND keep quality, a
+ * cheap lexical pre-filter picks the F1_RERANK_CAP facts with the most query-term
+ * overlap (microseconds), and only those are embedded and cosine-ranked. Lexical
+ * overlap — not recency — is the selector precisely because F1 exists to surface
+ * a LOW-recency fact; a recency cap would re-exclude the answer. The un-embedded
+ * facts keep their incoming order after the ranked head (never dropped). */
+static const u32 F1_RERANK_CAP = 32;
+
+static char f1_lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+static int f1_alnum(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
+
 /* F1: reorder a relation band by cosine relevance of each fact to the focus
- * query, so the fact the question is about outranks activation/recency
- * neighbors. No-op unless the embedder is available, so the LEGEND_EMBED=0
- * determinism gate keeps its recency ordering. Facts whose text fails to embed
- * are kept, appended after the ranked ones (never silently dropped). */
+ * query. No-op unless the embedder is available, so the LEGEND_EMBED=0
+ * determinism gate keeps its recency ordering. */
 static void rerank_relevance(const Hypergraph *g, U32Vec *rels,
                              const char *query) {
-  static char (*txt)[256];
-  static u32 txt_cap;
+  static char (*txt)[256], (*low)[256];
+  static u32 txt_cap, low_cap;
   static const char **texts;
   static u32 texts_cap;
+  static u32 *sel, *sc;
+  static u32 sel_cap, sc_cap;
   static int *order;
   static u32 order_cap;
+  static u8 *emitted;
+  static u32 em_cap;
   static U32Vec ranked;
-  u32 n = rels->count, i, k;
+  char qtok[24][32];
+  u32 n = rels->count, m, i, j, nq = 0;
   int r;
   if (!query || !*query || n < 2 || !embed_available())
     return;
+
+  /* render + lowercase every candidate fact (cheap; no embedding yet) */
   txt = (char(*)[256])xgrow(txt, n, &txt_cap, sizeof *txt);
-  texts = (const char **)xgrow(texts, n, &texts_cap, sizeof *texts);
-  order = (int *)xgrow(order, n, &order_cap, sizeof *order);
+  low = (char(*)[256])xgrow(low, n, &low_cap, sizeof *low);
   for (i = 0; i < n; i++) {
     frame_rel_text(g, rels->v[i], txt[i], sizeof txt[i]);
-    texts[i] = txt[i];
+    for (j = 0; txt[i][j] && j < 255; j++)
+      low[i][j] = f1_lower(txt[i][j]);
+    low[i][j] = 0;
   }
-  r = embed_rank_texts(texts, (int)n, query, (int)strlen(query), order, (int)n);
+  /* tokenize the query (lowercased, len>=3) */
+  for (i = 0; query[i] && nq < 24;) {
+    while (query[i] && !f1_alnum(query[i]))
+      i++;
+    j = 0;
+    while (query[i] && f1_alnum(query[i])) {
+      if (j < 31)
+        qtok[nq][j++] = f1_lower(query[i]);
+      i++;
+    }
+    if (j >= 3) {
+      qtok[nq][j] = 0;
+      nq++;
+    }
+  }
+
+  /* pick the facts to embed: all of them, or the top-CAP by query-term overlap */
+  sel = (u32 *)xgrow(sel, n, &sel_cap, sizeof *sel);
+  for (i = 0; i < n; i++)
+    sel[i] = i;
+  if (n > F1_RERANK_CAP && nq > 0) {
+    sc = (u32 *)xgrow(sc, n, &sc_cap, sizeof *sc);
+    for (i = 0; i < n; i++) {
+      u32 s = 0;
+      for (j = 0; j < nq; j++)
+        if (strstr(low[i], qtok[j]))
+          s++;
+      sc[i] = s;
+    }
+    for (i = 0; i < F1_RERANK_CAP; i++) { /* partial selection of the top CAP */
+      u32 best = i, t;
+      for (j = i + 1; j < n; j++)
+        if (sc[sel[j]] > sc[sel[best]])
+          best = j;
+      t = sel[i];
+      sel[i] = sel[best];
+      sel[best] = t;
+    }
+    m = F1_RERANK_CAP;
+  } else {
+    m = n;
+  }
+
+  texts = (const char **)xgrow(texts, m, &texts_cap, sizeof *texts);
+  order = (int *)xgrow(order, m, &order_cap, sizeof *order);
+  for (i = 0; i < m; i++)
+    texts[i] = txt[sel[i]];
+  r = embed_rank_texts(texts, (int)m, query, (int)strlen(query), order, (int)m);
   if (r <= 0)
     return; /* embedder failed -> keep recency order */
+
+  emitted = (u8 *)xgrow(emitted, n, &em_cap, 1);
+  for (i = 0; i < n; i++)
+    emitted[i] = 0;
   ranked.count = 0;
-  for (i = 0; i < (u32)r; i++)
-    u32vec_push(&ranked, rels->v[order[i]]);
-  for (i = 0; i < n; i++) { /* keep any fact that did not embed */
-    int found = 0;
-    for (k = 0; k < (u32)r; k++)
-      if (order[k] == (int)i) {
-        found = 1;
-        break;
-      }
-    if (!found)
-      u32vec_push(&ranked, rels->v[i]);
+  for (i = 0; i < (u32)r; i++) { /* relevance-ranked head */
+    u32 idx = sel[order[i]];
+    u32vec_push(&ranked, rels->v[idx]);
+    emitted[idx] = 1;
   }
+  for (i = 0; i < n; i++) /* everything else, incoming order */
+    if (!emitted[i])
+      u32vec_push(&ranked, rels->v[i]);
   rels->count = 0;
   for (i = 0; i < ranked.count; i++)
     u32vec_push(rels, ranked.v[i]);
