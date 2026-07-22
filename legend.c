@@ -5641,6 +5641,8 @@ typedef struct {
   int orientation; /* focus-less recall: overview + store-wide sections */
   int is_recall;   /* recall: the whole focus neighborhood is recency */
   double curiosity; /* recall intent (0..1): >0 biases recent toward novelty */
+  const char *focus_query; /* joined raw focus text; ranks facts by relevance
+                              on a focused recall (NULL = recency only) */
 } WriteReport;
 
 static void report_reset(WriteReport *w) {
@@ -6303,6 +6305,24 @@ static void tick_recall(Hypergraph *g, const Recall *rec,
     }
     u32vec_push_unique(&out->focus_elems, id);
   }
+  /* Join the raw focus terms into one query string; a focused recall ranks its
+   * neighborhood facts by relevance to this (frame side), not by recency. */
+  {
+    static char q[1024];
+    u32 qn = 0;
+    for (i = 0; i < rec->focus_count; i++) {
+      Span s = rec->focus[i];
+      u32 cp = s.len;
+      if (qn && qn + 1 < sizeof q)
+        q[qn++] = ' ';
+      if (cp > sizeof q - 1 - qn)
+        cp = (u32)(sizeof q - 1 - qn);
+      memcpy(q + qn, payload_buf + s.off, cp);
+      qn += cp;
+    }
+    q[qn] = 0;
+    out->focus_query = qn ? q : NULL;
+  }
   out->at_secs = now_unix_seconds();
   if (!rec->observe) {
     if (g->clock >= g_cap_ticks)
@@ -6720,6 +6740,25 @@ static u32 rel_pair_name(const Hypergraph *g, u32 rid) {
   return r->attrs[0].name == WK_SUBJECT ? r->attrs[1].name : r->attrs[0].name;
 }
 
+/* Render a base fact as "subject predicate object" so a query can be
+ * cosine-matched against it (F1 relevance ranking). */
+static void frame_rel_text(const Hypergraph *g, u32 rid, char *buf, size_t cap) {
+  const Relation *r = &g->relations[rid];
+  const char *subj = "", *pred = "", *obj = "";
+  if (r->attr_count == 2) {
+    u32 sa = r->attrs[0].name == WK_SUBJECT ? 0 : 1, pa = sa ^ 1;
+    const Term *ov = &r->attrs[pa].value;
+    if (r->attrs[sa].value.tag == TERM_ELEM)
+      subj = elem_name(g, r->attrs[sa].value.id);
+    pred = attr_display_name(g, r->attrs[pa].name);
+    if (ov->tag == TERM_ELEM)
+      obj = elem_name(g, ov->id);
+  } else if (r->attr_count > 0) {
+    pred = elem_name(g, r->attrs[0].name);
+  }
+  snprintf(buf, cap, "%s %s %s", subj, pred, obj);
+}
+
 /* Instance shape: {ref, name, kind?, <attr>: value | [values], date} —
  * multi-value attrs render as arrays, relation id ascending (shape rule §5). */
 static void frame_put_instance(const Hypergraph *g, u32 e, int with_kind,
@@ -6966,6 +7005,52 @@ static void rank_related(const Hypergraph *g, U32Vec *rels) {
     rr[i].tie = (i64)si->last_seen;
   }
   rrf_apply(rels, rr, 0);
+}
+
+/* F1: reorder a relation band by cosine relevance of each fact to the focus
+ * query, so the fact the question is about outranks activation/recency
+ * neighbors. No-op unless the embedder is available, so the LEGEND_EMBED=0
+ * determinism gate keeps its recency ordering. Facts whose text fails to embed
+ * are kept, appended after the ranked ones (never silently dropped). */
+static void rerank_relevance(const Hypergraph *g, U32Vec *rels,
+                             const char *query) {
+  static char (*txt)[256];
+  static u32 txt_cap;
+  static const char **texts;
+  static u32 texts_cap;
+  static int *order;
+  static u32 order_cap;
+  static U32Vec ranked;
+  u32 n = rels->count, i, k;
+  int r;
+  if (!query || !*query || n < 2 || !embed_available())
+    return;
+  txt = (char(*)[256])xgrow(txt, n, &txt_cap, sizeof *txt);
+  texts = (const char **)xgrow(texts, n, &texts_cap, sizeof *texts);
+  order = (int *)xgrow(order, n, &order_cap, sizeof *order);
+  for (i = 0; i < n; i++) {
+    frame_rel_text(g, rels->v[i], txt[i], sizeof txt[i]);
+    texts[i] = txt[i];
+  }
+  r = embed_rank_texts(texts, (int)n, query, (int)strlen(query), order, (int)n);
+  if (r <= 0)
+    return; /* embedder failed -> keep recency order */
+  ranked.count = 0;
+  for (i = 0; i < (u32)r; i++)
+    u32vec_push(&ranked, rels->v[order[i]]);
+  for (i = 0; i < n; i++) { /* keep any fact that did not embed */
+    int found = 0;
+    for (k = 0; k < (u32)r; k++)
+      if (order[k] == (int)i) {
+        found = 1;
+        break;
+      }
+    if (!found)
+      u32vec_push(&ranked, rels->v[i]);
+  }
+  rels->count = 0;
+  for (i = 0; i < ranked.count; i++)
+    u32vec_push(rels, ranked.v[i]);
 }
 
 /* recent-band novelty bias (intent curiosity): the recent band is recency by
@@ -7362,6 +7447,12 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
     if (w->is_recall && w->curiosity > 0.0)
       rank_recent_novelty(g, &recent, w->curiosity);
     rank_related(g, &related);
+    /* F1: on a focused recall with embeddings on, rank the neighborhood facts
+     * by relevance to the query rather than recency/activation. */
+    if (w->is_recall) {
+      rerank_relevance(g, &recent, w->focus_query);
+      rerank_relevance(g, &related, w->focus_query);
+    }
 
     /* Orientation state is store-wide and capped (spec §6): at most half
      * the limit, newest first, so recent/related keep budget room — a

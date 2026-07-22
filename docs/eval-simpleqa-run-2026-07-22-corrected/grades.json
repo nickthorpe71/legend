@@ -1,0 +1,4314 @@
+{
+  "n": 60,
+  "arms": [
+    "A",
+    "B",
+    "D_bm25",
+    "D_dense"
+  ],
+  "per_arm": {
+    "A": {
+      "correct": 23,
+      "incorrect": 34,
+      "not_attempted": 3
+    },
+    "B": {
+      "correct": 45,
+      "incorrect": 15,
+      "not_attempted": 0
+    },
+    "D_bm25": {
+      "correct": 56,
+      "incorrect": 3,
+      "not_attempted": 1
+    },
+    "D_dense": {
+      "correct": 58,
+      "incorrect": 2,
+      "not_attempted": 0
+    }
+  },
+  "outcomes_by_qid": {
+    "16": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "34": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "51": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "115": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "447": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "493": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "531": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "732": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "796": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "807": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "820": {
+      "A": "incorrect",
+      "D_bm25": "incorrect",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "859": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "894": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "917": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "934": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "954": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1016": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "1152": {
+      "A": "not_attempted",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1287": {
+      "A": "not_attempted",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1334": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "1415": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1605": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1698": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1707": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1778": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1846": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1875": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "1883": {
+      "A": "incorrect",
+      "D_bm25": "incorrect",
+      "D_dense": "incorrect",
+      "B": "incorrect"
+    },
+    "2082": {
+      "A": "incorrect",
+      "D_bm25": "incorrect",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2091": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2095": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2176": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "incorrect",
+      "B": "incorrect"
+    },
+    "2190": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2306": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2532": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2566": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2633": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2673": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2790": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "2835": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2857": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2919": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "2932": {
+      "A": "incorrect",
+      "D_bm25": "not_attempted",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "2952": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "3007": {
+      "A": "not_attempted",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "3166": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "3358": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "3442": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "3488": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "3573": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "3699": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "3710": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "3716": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "3723": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "3754": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "3884": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "4042": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "incorrect"
+    },
+    "4157": {
+      "A": "correct",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "4222": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    },
+    "4313": {
+      "A": "incorrect",
+      "D_bm25": "correct",
+      "D_dense": "correct",
+      "B": "correct"
+    }
+  },
+  "transition_A_to_B": {
+    "correct": {
+      "correct": 20,
+      "incorrect": 3,
+      "not_attempted": 0
+    },
+    "incorrect": {
+      "correct": 22,
+      "incorrect": 12,
+      "not_attempted": 0
+    },
+    "not_attempted": {
+      "correct": 3,
+      "incorrect": 0,
+      "not_attempted": 0
+    }
+  },
+  "pairs": [
+    {
+      "qid": 16,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 34,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 51,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 115,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 447,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 493,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 531,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 732,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 796,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 807,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 820,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 859,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 894,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 917,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 934,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 954,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 1016,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 1152,
+      "A": "not_attempted",
+      "B": "correct"
+    },
+    {
+      "qid": 1287,
+      "A": "not_attempted",
+      "B": "correct"
+    },
+    {
+      "qid": 1334,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 1415,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 1605,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 1698,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 1707,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 1778,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 1846,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 1875,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 1883,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 2082,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 2091,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 2095,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 2176,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 2190,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 2306,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 2532,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 2566,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 2633,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 2673,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 2790,
+      "A": "correct",
+      "B": "incorrect"
+    },
+    {
+      "qid": 2835,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 2857,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 2919,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 2932,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 2952,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 3007,
+      "A": "not_attempted",
+      "B": "correct"
+    },
+    {
+      "qid": 3166,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 3358,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 3442,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 3488,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 3573,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 3699,
+      "A": "incorrect",
+      "B": "incorrect"
+    },
+    {
+      "qid": 3710,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 3716,
+      "A": "correct",
+      "B": "incorrect"
+    },
+    {
+      "qid": 3723,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 3754,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 3884,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 4042,
+      "A": "correct",
+      "B": "incorrect"
+    },
+    {
+      "qid": 4157,
+      "A": "correct",
+      "B": "correct"
+    },
+    {
+      "qid": 4222,
+      "A": "incorrect",
+      "B": "correct"
+    },
+    {
+      "qid": 4313,
+      "A": "incorrect",
+      "B": "correct"
+    }
+  ],
+  "graded": [
+    {
+      "qid": 16,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1391,
+        "completion_tokens": 5,
+        "total_tokens": 1396
+      },
+      "response": "Jaime Manteca",
+      "answer": "Manuel Ordas",
+      "problem": "What player scored all the conversions for Spain in the rugby match between Spain and Romania that was part of the 2022 Rugby Europe Championship on February 27, 2022?"
+    },
+    {
+      "qid": 16,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "Manuel Ordas",
+      "answer": "Manuel Ordas",
+      "problem": "What player scored all the conversions for Spain in the rugby match between Spain and Romania that was part of the 2022 Rugby Europe Championship on February 27, 2022?"
+    },
+    {
+      "qid": 16,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "Manuel Ordas",
+      "answer": "Manuel Ordas",
+      "problem": "What player scored all the conversions for Spain in the rugby match between Spain and Romania that was part of the 2022 Rugby Europe Championship on February 27, 2022?"
+    },
+    {
+      "qid": 34,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "15 June 1957",
+      "answer": "June 24, 1957",
+      "problem": "On what day, month, and year was David Sweet, Canadian politician, born?"
+    },
+    {
+      "qid": 34,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "June 24, 1957.",
+      "answer": "June 24, 1957",
+      "problem": "On what day, month, and year was David Sweet, Canadian politician, born?"
+    },
+    {
+      "qid": 34,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "June 24, 1957",
+      "answer": "June 24, 1957",
+      "problem": "On what day, month, and year was David Sweet, Canadian politician, born?"
+    },
+    {
+      "qid": 51,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1369,
+        "completion_tokens": 5,
+        "total_tokens": 1374
+      },
+      "response": "2003",
+      "answer": "2004.",
+      "problem": "In what year was John Williams inducted into the Classical Music Hall of Fame?"
+    },
+    {
+      "qid": 51,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1369,
+        "completion_tokens": 5,
+        "total_tokens": 1374
+      },
+      "response": "2004",
+      "answer": "2004.",
+      "problem": "In what year was John Williams inducted into the Classical Music Hall of Fame?"
+    },
+    {
+      "qid": 51,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1369,
+        "completion_tokens": 5,
+        "total_tokens": 1374
+      },
+      "response": "2004",
+      "answer": "2004.",
+      "problem": "In what year was John Williams inducted into the Classical Music Hall of Fame?"
+    },
+    {
+      "qid": 115,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1386,
+        "completion_tokens": 5,
+        "total_tokens": 1391
+      },
+      "response": "2845 mm",
+      "answer": "2,845 mm",
+      "problem": "The Jensen Interceptor (1950), produced from 1950 to 1957, had a wheelbase measurement of what in millimeters?"
+    },
+    {
+      "qid": 115,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1387,
+        "completion_tokens": 5,
+        "total_tokens": 1392
+      },
+      "response": "2,845 mm",
+      "answer": "2,845 mm",
+      "problem": "The Jensen Interceptor (1950), produced from 1950 to 1957, had a wheelbase measurement of what in millimeters?"
+    },
+    {
+      "qid": 115,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1387,
+        "completion_tokens": 5,
+        "total_tokens": 1392
+      },
+      "response": "2,845 mm",
+      "answer": "2,845 mm",
+      "problem": "The Jensen Interceptor (1950), produced from 1950 to 1957, had a wheelbase measurement of what in millimeters?"
+    },
+    {
+      "qid": 447,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1366,
+        "completion_tokens": 5,
+        "total_tokens": 1371
+      },
+      "response": "Saturn (Shani)",
+      "answer": "Pluto",
+      "problem": "According to Hinduism, which planet is associated with Yamraj?"
+    },
+    {
+      "qid": 447,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1363,
+        "completion_tokens": 5,
+        "total_tokens": 1368
+      },
+      "response": "Pluto",
+      "answer": "Pluto",
+      "problem": "According to Hinduism, which planet is associated with Yamraj?"
+    },
+    {
+      "qid": 447,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1363,
+        "completion_tokens": 5,
+        "total_tokens": 1368
+      },
+      "response": "Pluto",
+      "answer": "Pluto",
+      "problem": "According to Hinduism, which planet is associated with Yamraj?"
+    },
+    {
+      "qid": 493,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "Barvikha Hospital near Moscow.",
+      "answer": " Barvikha sanatorium ",
+      "problem": "At what hospital did Communist politician Georgi Dimitrov die in 1949?"
+    },
+    {
+      "qid": 493,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "Barvikha sanatorium near Moscow.",
+      "answer": " Barvikha sanatorium ",
+      "problem": "At what hospital did Communist politician Georgi Dimitrov die in 1949?"
+    },
+    {
+      "qid": 493,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "Barvikha sanatorium near Moscow.",
+      "answer": " Barvikha sanatorium ",
+      "problem": "At what hospital did Communist politician Georgi Dimitrov die in 1949?"
+    },
+    {
+      "qid": 531,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "164 million",
+      "answer": "41 million",
+      "problem": "How many million viewers of the inaugural season of Ultimate Kho Kho (UKK) were from India?"
+    },
+    {
+      "qid": 531,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "41 million",
+      "answer": "41 million",
+      "problem": "How many million viewers of the inaugural season of Ultimate Kho Kho (UKK) were from India?"
+    },
+    {
+      "qid": 531,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "41 million",
+      "answer": "41 million",
+      "problem": "How many million viewers of the inaugural season of Ultimate Kho Kho (UKK) were from India?"
+    },
+    {
+      "qid": 732,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "1955",
+      "answer": "1954",
+      "problem": "In which year was Jamini Roy (an Indian painter) awarded the Padma Bhushan by the Government of India?"
+    },
+    {
+      "qid": 732,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "1954",
+      "answer": "1954",
+      "problem": "In which year was Jamini Roy (an Indian painter) awarded the Padma Bhushan by the Government of India?"
+    },
+    {
+      "qid": 732,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "1954",
+      "answer": "1954",
+      "problem": "In which year was Jamini Roy (an Indian painter) awarded the Padma Bhushan by the Government of India?"
+    },
+    {
+      "qid": 796,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "8 February 2012",
+      "answer": "6 November 2012",
+      "problem": "What were the day, month, and year when Google released a version of Chrome on Windows that added hardware-accelerated H.264 video decoding?"
+    },
+    {
+      "qid": 796,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1391,
+        "completion_tokens": 5,
+        "total_tokens": 1396
+      },
+      "response": "November 6, 2012.",
+      "answer": "6 November 2012",
+      "problem": "What were the day, month, and year when Google released a version of Chrome on Windows that added hardware-accelerated H.264 video decoding?"
+    },
+    {
+      "qid": 796,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1391,
+        "completion_tokens": 5,
+        "total_tokens": 1396
+      },
+      "response": "November 6, 2012.",
+      "answer": "6 November 2012",
+      "problem": "What were the day, month, and year when Google released a version of Chrome on Windows that added hardware-accelerated H.264 video decoding?"
+    },
+    {
+      "qid": 807,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1371,
+        "completion_tokens": 5,
+        "total_tokens": 1376
+      },
+      "response": "1992",
+      "answer": "1992",
+      "problem": "Charles Saatchi had his first \"Young British Art\" show during what year?"
+    },
+    {
+      "qid": 807,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1371,
+        "completion_tokens": 5,
+        "total_tokens": 1376
+      },
+      "response": "1992",
+      "answer": "1992",
+      "problem": "Charles Saatchi had his first \"Young British Art\" show during what year?"
+    },
+    {
+      "qid": 807,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1371,
+        "completion_tokens": 5,
+        "total_tokens": 1376
+      },
+      "response": "1992",
+      "answer": "1992",
+      "problem": "Charles Saatchi had his first \"Young British Art\" show during what year?"
+    },
+    {
+      "qid": 820,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "Germany",
+      "answer": "United States",
+      "problem": "What country won more equestrian medals than any other team at the 2004 Olympic Games in Athens?"
+    },
+    {
+      "qid": 820,
+      "arm": "D_bm25",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "Germany",
+      "answer": "United States",
+      "problem": "What country won more equestrian medals than any other team at the 2004 Olympic Games in Athens?"
+    },
+    {
+      "qid": 820,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1373,
+        "completion_tokens": 5,
+        "total_tokens": 1378
+      },
+      "response": "United States",
+      "answer": "United States",
+      "problem": "What country won more equestrian medals than any other team at the 2004 Olympic Games in Athens?"
+    },
+    {
+      "qid": 859,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1365,
+        "completion_tokens": 5,
+        "total_tokens": 1370
+      },
+      "response": "Five weeks.",
+      "answer": "5",
+      "problem": "How many weeks did Letecia Stauch's trial last?"
+    },
+    {
+      "qid": 859,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1365,
+        "completion_tokens": 5,
+        "total_tokens": 1370
+      },
+      "response": "Five weeks.",
+      "answer": "5",
+      "problem": "How many weeks did Letecia Stauch's trial last?"
+    },
+    {
+      "qid": 859,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1365,
+        "completion_tokens": 5,
+        "total_tokens": 1370
+      },
+      "response": "Five weeks.",
+      "answer": "5",
+      "problem": "How many weeks did Letecia Stauch's trial last?"
+    },
+    {
+      "qid": 894,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1397,
+        "completion_tokens": 5,
+        "total_tokens": 1402
+      },
+      "response": "1994",
+      "answer": "1992",
+      "problem": "In which year did Julian Bradley, the first Black Republican to serve in the Wisconsin Senate and only the second Black Republican to serve in the Wisconsin Legislature, first move to La Crosse, Wisconsin, with his mother?"
+    },
+    {
+      "qid": 894,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1397,
+        "completion_tokens": 5,
+        "total_tokens": 1402
+      },
+      "response": "1992",
+      "answer": "1992",
+      "problem": "In which year did Julian Bradley, the first Black Republican to serve in the Wisconsin Senate and only the second Black Republican to serve in the Wisconsin Legislature, first move to La Crosse, Wisconsin, with his mother?"
+    },
+    {
+      "qid": 894,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1397,
+        "completion_tokens": 5,
+        "total_tokens": 1402
+      },
+      "response": "1992",
+      "answer": "1992",
+      "problem": "In which year did Julian Bradley, the first Black Republican to serve in the Wisconsin Senate and only the second Black Republican to serve in the Wisconsin Legislature, first move to La Crosse, Wisconsin, with his mother?"
+    },
+    {
+      "qid": 917,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "Alamo",
+      "answer": "Alamo",
+      "problem": "What is the name of the eighth track on the album \"These Two Windows\" by Alec Benjamin?"
+    },
+    {
+      "qid": 917,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "Alamo",
+      "answer": "Alamo",
+      "problem": "What is the name of the eighth track on the album \"These Two Windows\" by Alec Benjamin?"
+    },
+    {
+      "qid": 917,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1373,
+        "completion_tokens": 5,
+        "total_tokens": 1378
+      },
+      "response": "“Alamo”",
+      "answer": "Alamo",
+      "problem": "What is the name of the eighth track on the album \"These Two Windows\" by Alec Benjamin?"
+    },
+    {
+      "qid": 934,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1367,
+        "completion_tokens": 5,
+        "total_tokens": 1372
+      },
+      "response": "5",
+      "answer": "6",
+      "problem": "How many siblings did Elizabeth Spencer, Baroness Hunsdon, have?"
+    },
+    {
+      "qid": 934,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1367,
+        "completion_tokens": 5,
+        "total_tokens": 1372
+      },
+      "response": "Six siblings.",
+      "answer": "6",
+      "problem": "How many siblings did Elizabeth Spencer, Baroness Hunsdon, have?"
+    },
+    {
+      "qid": 934,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1367,
+        "completion_tokens": 5,
+        "total_tokens": 1372
+      },
+      "response": "Six siblings.",
+      "answer": "6",
+      "problem": "How many siblings did Elizabeth Spencer, Baroness Hunsdon, have?"
+    },
+    {
+      "qid": 954,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1380,
+        "completion_tokens": 5,
+        "total_tokens": 1385
+      },
+      "response": "01-01-1995",
+      "answer": "June 4, 2002",
+      "problem": "When (month-day-year) was \"Amazing Love\" by the Mississippi Mass Choir released?"
+    },
+    {
+      "qid": 954,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1380,
+        "completion_tokens": 5,
+        "total_tokens": 1385
+      },
+      "response": "June 4, 2002",
+      "answer": "June 4, 2002",
+      "problem": "When (month-day-year) was \"Amazing Love\" by the Mississippi Mass Choir released?"
+    },
+    {
+      "qid": 954,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1380,
+        "completion_tokens": 5,
+        "total_tokens": 1385
+      },
+      "response": "June 4, 2002",
+      "answer": "June 4, 2002",
+      "problem": "When (month-day-year) was \"Amazing Love\" by the Mississippi Mass Choir released?"
+    },
+    {
+      "qid": 1016,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "1983",
+      "answer": "1976",
+      "problem": "In what year was British chemist John Shipley Rowlinson appointed a Fellow of the Royal Academy of Engineering?"
+    },
+    {
+      "qid": 1016,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "1976",
+      "answer": "1976",
+      "problem": "In what year was British chemist John Shipley Rowlinson appointed a Fellow of the Royal Academy of Engineering?"
+    },
+    {
+      "qid": 1016,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "1976",
+      "answer": "1976",
+      "problem": "In what year was British chemist John Shipley Rowlinson appointed a Fellow of the Royal Academy of Engineering?"
+    },
+    {
+      "qid": 1152,
+      "arm": "A",
+      "outcome": "not_attempted",
+      "letter": "C",
+      "grader_raw": "C",
+      "usage": {
+        "prompt_tokens": 1380,
+        "completion_tokens": 5,
+        "total_tokens": 1385
+      },
+      "response": "I don't know.",
+      "answer": "5 October 2016",
+      "problem": "What was the date, month, and year when Clifford Cunnell, an English cricketer, died?"
+    },
+    {
+      "qid": 1152,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "5 October 2016",
+      "answer": "5 October 2016",
+      "problem": "What was the date, month, and year when Clifford Cunnell, an English cricketer, died?"
+    },
+    {
+      "qid": 1152,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "5 October 2016",
+      "answer": "5 October 2016",
+      "problem": "What was the date, month, and year when Clifford Cunnell, an English cricketer, died?"
+    },
+    {
+      "qid": 1287,
+      "arm": "A",
+      "outcome": "not_attempted",
+      "letter": "C",
+      "grader_raw": "C",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "I don't know.",
+      "answer": "204",
+      "problem": "What was the overall length, in inches, of the 1934 Bendix SWC concept car?"
+    },
+    {
+      "qid": 1287,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "204 inches",
+      "answer": "204",
+      "problem": "What was the overall length, in inches, of the 1934 Bendix SWC concept car?"
+    },
+    {
+      "qid": 1287,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "204.0 inches",
+      "answer": "204",
+      "problem": "What was the overall length, in inches, of the 1934 Bendix SWC concept car?"
+    },
+    {
+      "qid": 1334,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1368,
+        "completion_tokens": 5,
+        "total_tokens": 1373
+      },
+      "response": "Shannon Oliver",
+      "answer": "Lori Todd",
+      "problem": "Which contestant from Season 2 of The Bachelor was a former NBA cheerleader?"
+    },
+    {
+      "qid": 1334,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1368,
+        "completion_tokens": 5,
+        "total_tokens": 1373
+      },
+      "response": "Lori Todd",
+      "answer": "Lori Todd",
+      "problem": "Which contestant from Season 2 of The Bachelor was a former NBA cheerleader?"
+    },
+    {
+      "qid": 1334,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1368,
+        "completion_tokens": 5,
+        "total_tokens": 1373
+      },
+      "response": "Lori Todd",
+      "answer": "Lori Todd",
+      "problem": "Which contestant from Season 2 of The Bachelor was a former NBA cheerleader?"
+    },
+    {
+      "qid": 1415,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1381,
+        "completion_tokens": 5,
+        "total_tokens": 1386
+      },
+      "response": "3 Willow Road, Hampstead, London.",
+      "answer": "35 Downshire Hill",
+      "problem": "What was the Hampstead, London, street address of art collector Margaret Gardiner's home?"
+    },
+    {
+      "qid": 1415,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1380,
+        "completion_tokens": 5,
+        "total_tokens": 1385
+      },
+      "response": "35 Downshire Hill, Hampstead.",
+      "answer": "35 Downshire Hill",
+      "problem": "What was the Hampstead, London, street address of art collector Margaret Gardiner's home?"
+    },
+    {
+      "qid": 1415,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1380,
+        "completion_tokens": 5,
+        "total_tokens": 1385
+      },
+      "response": "35 Downshire Hill, Hampstead.",
+      "answer": "35 Downshire Hill",
+      "problem": "What was the Hampstead, London, street address of art collector Margaret Gardiner's home?"
+    },
+    {
+      "qid": 1605,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1366,
+        "completion_tokens": 5,
+        "total_tokens": 1371
+      },
+      "response": "Li Yuanhong.",
+      "answer": "Lee Teng-hui.",
+      "problem": "Which Chinese president was nicknamed \"Mr. Democracy?\""
+    },
+    {
+      "qid": 1605,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1367,
+        "completion_tokens": 5,
+        "total_tokens": 1372
+      },
+      "response": "Lee Teng-hui.",
+      "answer": "Lee Teng-hui.",
+      "problem": "Which Chinese president was nicknamed \"Mr. Democracy?\""
+    },
+    {
+      "qid": 1605,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1367,
+        "completion_tokens": 5,
+        "total_tokens": 1372
+      },
+      "response": "Lee Teng-hui.",
+      "answer": "Lee Teng-hui.",
+      "problem": "Which Chinese president was nicknamed \"Mr. Democracy?\""
+    },
+    {
+      "qid": 1698,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "1,565",
+      "answer": "1,565",
+      "problem": "According to the 2012 municipal census, how many people live in Shawnee Slopes?"
+    },
+    {
+      "qid": 1698,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "1,565",
+      "answer": "1,565",
+      "problem": "According to the 2012 municipal census, how many people live in Shawnee Slopes?"
+    },
+    {
+      "qid": 1698,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "1,565",
+      "answer": "1,565",
+      "problem": "According to the 2012 municipal census, how many people live in Shawnee Slopes?"
+    },
+    {
+      "qid": 1707,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1367,
+        "completion_tokens": 5,
+        "total_tokens": 1372
+      },
+      "response": "1922",
+      "answer": "1922",
+      "problem": "What year was Oliver Heaviside awarded the Faraday Medal?"
+    },
+    {
+      "qid": 1707,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1367,
+        "completion_tokens": 5,
+        "total_tokens": 1372
+      },
+      "response": "1922",
+      "answer": "1922",
+      "problem": "What year was Oliver Heaviside awarded the Faraday Medal?"
+    },
+    {
+      "qid": 1707,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1367,
+        "completion_tokens": 5,
+        "total_tokens": 1372
+      },
+      "response": "1922",
+      "answer": "1922",
+      "problem": "What year was Oliver Heaviside awarded the Faraday Medal?"
+    },
+    {
+      "qid": 1778,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1373,
+        "completion_tokens": 5,
+        "total_tokens": 1378
+      },
+      "response": "Ghulam Ishaq Khan",
+      "answer": "Ghulam Ishaq Khan",
+      "problem": "Who was the 2nd chairman of the Senate of Pakistan?"
+    },
+    {
+      "qid": 1778,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1373,
+        "completion_tokens": 5,
+        "total_tokens": 1378
+      },
+      "response": "Ghulam Ishaq Khan",
+      "answer": "Ghulam Ishaq Khan",
+      "problem": "Who was the 2nd chairman of the Senate of Pakistan?"
+    },
+    {
+      "qid": 1778,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1373,
+        "completion_tokens": 5,
+        "total_tokens": 1378
+      },
+      "response": "Ghulam Ishaq Khan",
+      "answer": "Ghulam Ishaq Khan",
+      "problem": "Who was the 2nd chairman of the Senate of Pakistan?"
+    },
+    {
+      "qid": 1846,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "1860",
+      "answer": "1854",
+      "problem": "In what year was the praying mantis species Eremiaphila barbara described by Brisout?"
+    },
+    {
+      "qid": 1846,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "1854",
+      "answer": "1854",
+      "problem": "In what year was the praying mantis species Eremiaphila barbara described by Brisout?"
+    },
+    {
+      "qid": 1846,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "1854",
+      "answer": "1854",
+      "problem": "In what year was the praying mantis species Eremiaphila barbara described by Brisout?"
+    },
+    {
+      "qid": 1875,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1394,
+        "completion_tokens": 5,
+        "total_tokens": 1399
+      },
+      "response": "Clark B. Millikan.",
+      "answer": "Frank Wattendorf",
+      "problem": "Who did Theodore von Kármán select as his research assistant when he accepted the directorship of the Guggenheim Aeronautical Laboratory at the California Institute of Technology in 1930?"
+    },
+    {
+      "qid": 1875,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1392,
+        "completion_tokens": 5,
+        "total_tokens": 1397
+      },
+      "response": "Frank Wattendorf.",
+      "answer": "Frank Wattendorf",
+      "problem": "Who did Theodore von Kármán select as his research assistant when he accepted the directorship of the Guggenheim Aeronautical Laboratory at the California Institute of Technology in 1930?"
+    },
+    {
+      "qid": 1875,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1392,
+        "completion_tokens": 5,
+        "total_tokens": 1397
+      },
+      "response": "Frank Wattendorf.",
+      "answer": "Frank Wattendorf",
+      "problem": "Who did Theodore von Kármán select as his research assistant when he accepted the directorship of the Guggenheim Aeronautical Laboratory at the California Institute of Technology in 1930?"
+    },
+    {
+      "qid": 1883,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "“enshittification”",
+      "answer": "\"-ussy\"",
+      "problem": "Which word was selected as the 2022 Word of the Year by the American Dialect Society?"
+    },
+    {
+      "qid": 1883,
+      "arm": "D_bm25",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "quiet quitting",
+      "answer": "\"-ussy\"",
+      "problem": "Which word was selected as the 2022 Word of the Year by the American Dialect Society?"
+    },
+    {
+      "qid": 1883,
+      "arm": "D_dense",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "enshittification",
+      "answer": "\"-ussy\"",
+      "problem": "Which word was selected as the 2022 Word of the Year by the American Dialect Society?"
+    },
+    {
+      "qid": 2082,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Professor John C. W. Cope",
+      "answer": "James Valentine",
+      "problem": "What is the name of the recipient of the Lapworth Medal in 2004?"
+    },
+    {
+      "qid": 2082,
+      "arm": "D_bm25",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "Euan N. K. Clarkson",
+      "answer": "James Valentine",
+      "problem": "What is the name of the recipient of the Lapworth Medal in 2004?"
+    },
+    {
+      "qid": 2082,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1371,
+        "completion_tokens": 5,
+        "total_tokens": 1376
+      },
+      "response": "Prof. James Valentine",
+      "answer": "James Valentine",
+      "problem": "What is the name of the recipient of the Lapworth Medal in 2004?"
+    },
+    {
+      "qid": 2091,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1370,
+        "completion_tokens": 5,
+        "total_tokens": 1375
+      },
+      "response": "Pozzaglia Sabina, Italy.",
+      "answer": "Pozzaglia Sabina",
+      "problem": "Where was Agostina Pietrantoni born?"
+    },
+    {
+      "qid": 2091,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "Pozzaglia Sabina, Rieti, Kingdom of Italy.",
+      "answer": "Pozzaglia Sabina",
+      "problem": "Where was Agostina Pietrantoni born?"
+    },
+    {
+      "qid": 2091,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "Pozzaglia Sabina, Rieti, Kingdom of Italy.",
+      "answer": "Pozzaglia Sabina",
+      "problem": "Where was Agostina Pietrantoni born?"
+    },
+    {
+      "qid": 2095,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "4 times",
+      "answer": " four",
+      "problem": "How many times has the Pakistan People's Party emerged as the leading opposition party in Pakistan on a national level until 2022?"
+    },
+    {
+      "qid": 2095,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "Four times.",
+      "answer": " four",
+      "problem": "How many times has the Pakistan People's Party emerged as the leading opposition party in Pakistan on a national level until 2022?"
+    },
+    {
+      "qid": 2095,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "Four times.",
+      "answer": " four",
+      "problem": "How many times has the Pakistan People's Party emerged as the leading opposition party in Pakistan on a national level until 2022?"
+    },
+    {
+      "qid": 2176,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1386,
+        "completion_tokens": 5,
+        "total_tokens": 1391
+      },
+      "response": "16 October 2002",
+      "answer": "October 2, 2002",
+      "problem": "What were the day, month, and year when President Bush and Congress agreed on the joint resolution authorizing the Iraq War?"
+    },
+    {
+      "qid": 2176,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1387,
+        "completion_tokens": 5,
+        "total_tokens": 1392
+      },
+      "response": "October 2, 2002.",
+      "answer": "October 2, 2002",
+      "problem": "What were the day, month, and year when President Bush and Congress agreed on the joint resolution authorizing the Iraq War?"
+    },
+    {
+      "qid": 2176,
+      "arm": "D_dense",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1387,
+        "completion_tokens": 5,
+        "total_tokens": 1392
+      },
+      "response": "October 16, 2002.",
+      "answer": "October 2, 2002",
+      "problem": "What were the day, month, and year when President Bush and Congress agreed on the joint resolution authorizing the Iraq War?"
+    },
+    {
+      "qid": 2190,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Episode 7.",
+      "answer": "7",
+      "problem": "In Season 2 of the American version of \"The Circle,\" what episode did Terilisha get blocked?"
+    },
+    {
+      "qid": 2190,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Episode 7.",
+      "answer": "7",
+      "problem": "In Season 2 of the American version of \"The Circle,\" what episode did Terilisha get blocked?"
+    },
+    {
+      "qid": 2190,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Episode 7.",
+      "answer": "7",
+      "problem": "In Season 2 of the American version of \"The Circle,\" what episode did Terilisha get blocked?"
+    },
+    {
+      "qid": 2306,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "11 March 1979",
+      "answer": "11 March 1979",
+      "problem": "What day, month, and year was Georgi Ivanov Peev, the Bulgarian former footballer, born?"
+    },
+    {
+      "qid": 2306,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "11 March 1979",
+      "answer": "11 March 1979",
+      "problem": "What day, month, and year was Georgi Ivanov Peev, the Bulgarian former footballer, born?"
+    },
+    {
+      "qid": 2306,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "11 March 1979",
+      "answer": "11 March 1979",
+      "problem": "What day, month, and year was Georgi Ivanov Peev, the Bulgarian former footballer, born?"
+    },
+    {
+      "qid": 2532,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1381,
+        "completion_tokens": 5,
+        "total_tokens": 1386
+      },
+      "response": "263",
+      "answer": "263.",
+      "problem": "In September 2022, biologists reported what number of Devils Hole Pupfish in Devils Hole, the most they'd observed in 19 years?"
+    },
+    {
+      "qid": 2532,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "263 pupfish",
+      "answer": "263.",
+      "problem": "In September 2022, biologists reported what number of Devils Hole Pupfish in Devils Hole, the most they'd observed in 19 years?"
+    },
+    {
+      "qid": 2532,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "263 pupfish",
+      "answer": "263.",
+      "problem": "In September 2022, biologists reported what number of Devils Hole Pupfish in Devils Hole, the most they'd observed in 19 years?"
+    },
+    {
+      "qid": 2566,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1385,
+        "completion_tokens": 5,
+        "total_tokens": 1390
+      },
+      "response": "Otto von Kotzebue",
+      "answer": " Otto von Kotzebue ",
+      "problem": "What is the name of the person who explored and named Bikini Atoll \"Eschscholtz Atoll\"?"
+    },
+    {
+      "qid": 2566,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1385,
+        "completion_tokens": 5,
+        "total_tokens": 1390
+      },
+      "response": "Otto von Kotzebue",
+      "answer": " Otto von Kotzebue ",
+      "problem": "What is the name of the person who explored and named Bikini Atoll \"Eschscholtz Atoll\"?"
+    },
+    {
+      "qid": 2566,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1385,
+        "completion_tokens": 5,
+        "total_tokens": 1390
+      },
+      "response": "Otto von Kotzebue",
+      "answer": " Otto von Kotzebue ",
+      "problem": "What is the name of the person who explored and named Bikini Atoll \"Eschscholtz Atoll\"?"
+    },
+    {
+      "qid": 2633,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "Chad Michaels and Phi Phi O’Hara.",
+      "answer": "Chad Michaels, Phi Phi O'Hara",
+      "problem": "Who were the two runners-up on Season 4 of RPDR?"
+    },
+    {
+      "qid": 2633,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "Chad Michaels and Phi Phi O’Hara.",
+      "answer": "Chad Michaels, Phi Phi O'Hara",
+      "problem": "Who were the two runners-up on Season 4 of RPDR?"
+    },
+    {
+      "qid": 2633,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "Chad Michaels and Phi Phi O’Hara.",
+      "answer": "Chad Michaels, Phi Phi O'Hara",
+      "problem": "Who were the two runners-up on Season 4 of RPDR?"
+    },
+    {
+      "qid": 2673,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1373,
+        "completion_tokens": 5,
+        "total_tokens": 1378
+      },
+      "response": "Abdul Wajid Khan",
+      "answer": "Shamim Ahmed Khan",
+      "problem": "What is the father's name of the 2015 MLA of Matia Mahal?"
+    },
+    {
+      "qid": 2673,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "Shamim Ahmed Khan",
+      "answer": "Shamim Ahmed Khan",
+      "problem": "What is the father's name of the 2015 MLA of Matia Mahal?"
+    },
+    {
+      "qid": 2673,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "Shamim Ahmed Khan",
+      "answer": "Shamim Ahmed Khan",
+      "problem": "What is the father's name of the 2015 MLA of Matia Mahal?"
+    },
+    {
+      "qid": 2790,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1364,
+        "completion_tokens": 5,
+        "total_tokens": 1369
+      },
+      "response": "Philosophy.",
+      "answer": "Philosophy",
+      "problem": "What did the artist Lygia Pape initially study in university?"
+    },
+    {
+      "qid": 2790,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1364,
+        "completion_tokens": 5,
+        "total_tokens": 1369
+      },
+      "response": "Philosophy.",
+      "answer": "Philosophy",
+      "problem": "What did the artist Lygia Pape initially study in university?"
+    },
+    {
+      "qid": 2790,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1364,
+        "completion_tokens": 5,
+        "total_tokens": 1369
+      },
+      "response": "Philosophy.",
+      "answer": "Philosophy",
+      "problem": "What did the artist Lygia Pape initially study in university?"
+    },
+    {
+      "qid": 2835,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "1863",
+      "answer": "1896",
+      "problem": "From what year in the 1800s did Nikolai Christian Grove Prebensen serve as the County Governor of Aust-Agder in Norway?"
+    },
+    {
+      "qid": 2835,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "1896",
+      "answer": "1896",
+      "problem": "From what year in the 1800s did Nikolai Christian Grove Prebensen serve as the County Governor of Aust-Agder in Norway?"
+    },
+    {
+      "qid": 2835,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "1896",
+      "answer": "1896",
+      "problem": "From what year in the 1800s did Nikolai Christian Grove Prebensen serve as the County Governor of Aust-Agder in Norway?"
+    },
+    {
+      "qid": 2857,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "2019",
+      "answer": "2014",
+      "problem": "In what year was Peter Scholze appointed the Chancellor's Professor at the University of California, Berkeley?"
+    },
+    {
+      "qid": 2857,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "2014",
+      "answer": "2014",
+      "problem": "In what year was Peter Scholze appointed the Chancellor's Professor at the University of California, Berkeley?"
+    },
+    {
+      "qid": 2857,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "2014",
+      "answer": "2014",
+      "problem": "In what year was Peter Scholze appointed the Chancellor's Professor at the University of California, Berkeley?"
+    },
+    {
+      "qid": 2919,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "2006",
+      "answer": "1997",
+      "problem": "In what year did Gerald M. Friedman receive the William Henry Twenhofel Medal?"
+    },
+    {
+      "qid": 2919,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "1997",
+      "answer": "1997",
+      "problem": "In what year did Gerald M. Friedman receive the William Henry Twenhofel Medal?"
+    },
+    {
+      "qid": 2919,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "1997",
+      "answer": "1997",
+      "problem": "In what year did Gerald M. Friedman receive the William Henry Twenhofel Medal?"
+    },
+    {
+      "qid": 2932,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1380,
+        "completion_tokens": 5,
+        "total_tokens": 1385
+      },
+      "response": "In the Zone by Britney Spears",
+      "answer": "Fired Up!",
+      "problem": "In 2004, what album was ranked number one in the Billboard Top Dance/Electronic Albums Year-End chart?"
+    },
+    {
+      "qid": 2932,
+      "arm": "D_bm25",
+      "outcome": "not_attempted",
+      "letter": "C",
+      "grader_raw": "C",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "I don't know.",
+      "answer": "Fired Up!",
+      "problem": "In 2004, what album was ranked number one in the Billboard Top Dance/Electronic Albums Year-End chart?"
+    },
+    {
+      "qid": 2932,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1382,
+        "completion_tokens": 5,
+        "total_tokens": 1387
+      },
+      "response": "*Fired Up!* by Various Artists",
+      "answer": "Fired Up!",
+      "problem": "In 2004, what album was ranked number one in the Billboard Top Dance/Electronic Albums Year-End chart?"
+    },
+    {
+      "qid": 2952,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1371,
+        "completion_tokens": 5,
+        "total_tokens": 1376
+      },
+      "response": "Julio César Aráoz",
+      "answer": "Julio Corzo\n",
+      "problem": "Who was Carlos Menem's first Minister of Social Assistance and Public Health?"
+    },
+    {
+      "qid": 2952,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1369,
+        "completion_tokens": 5,
+        "total_tokens": 1374
+      },
+      "response": "Julio Corzo",
+      "answer": "Julio Corzo\n",
+      "problem": "Who was Carlos Menem's first Minister of Social Assistance and Public Health?"
+    },
+    {
+      "qid": 2952,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1369,
+        "completion_tokens": 5,
+        "total_tokens": 1374
+      },
+      "response": "Julio Corzo",
+      "answer": "Julio Corzo\n",
+      "problem": "Who was Carlos Menem's first Minister of Social Assistance and Public Health?"
+    },
+    {
+      "qid": 3007,
+      "arm": "A",
+      "outcome": "not_attempted",
+      "letter": "C",
+      "grader_raw": "C",
+      "usage": {
+        "prompt_tokens": 1389,
+        "completion_tokens": 5,
+        "total_tokens": 1394
+      },
+      "response": "I don't know.",
+      "answer": "1480 English guineas",
+      "problem": "For how many English guineas did the Victoria and Albert Museum purchase the \"Bust of Thomas Baker\" by Gian Lorenzo Bernini in 1921?"
+    },
+    {
+      "qid": 3007,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1393,
+        "completion_tokens": 5,
+        "total_tokens": 1398
+      },
+      "response": "1480 English guineas",
+      "answer": "1480 English guineas",
+      "problem": "For how many English guineas did the Victoria and Albert Museum purchase the \"Bust of Thomas Baker\" by Gian Lorenzo Bernini in 1921?"
+    },
+    {
+      "qid": 3007,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1393,
+        "completion_tokens": 5,
+        "total_tokens": 1398
+      },
+      "response": "1480 English guineas",
+      "answer": "1480 English guineas",
+      "problem": "For how many English guineas did the Victoria and Albert Museum purchase the \"Bust of Thomas Baker\" by Gian Lorenzo Bernini in 1921?"
+    },
+    {
+      "qid": 3166,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1371,
+        "completion_tokens": 5,
+        "total_tokens": 1376
+      },
+      "response": "Two.",
+      "answer": "Two.",
+      "problem": "How many children did José Figueres Ferrer have with his first wife, Henrietta Boggs?"
+    },
+    {
+      "qid": 3166,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "Two children.",
+      "answer": "Two.",
+      "problem": "How many children did José Figueres Ferrer have with his first wife, Henrietta Boggs?"
+    },
+    {
+      "qid": 3166,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "Two children.",
+      "answer": "Two.",
+      "problem": "How many children did José Figueres Ferrer have with his first wife, Henrietta Boggs?"
+    },
+    {
+      "qid": 3358,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1396,
+        "completion_tokens": 5,
+        "total_tokens": 1401
+      },
+      "response": "John Charles Constable and Alfred Constable.",
+      "answer": "John Charles Constable and Charles Golding Constable",
+      "problem": "What are the complete names of John Constable's (English landscape painter) two children who are buried alongside him in their family tomb in Hampstead?"
+    },
+    {
+      "qid": 3358,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1398,
+        "completion_tokens": 5,
+        "total_tokens": 1403
+      },
+      "response": "John Charles Constable and Charles Golding Constable",
+      "answer": "John Charles Constable and Charles Golding Constable",
+      "problem": "What are the complete names of John Constable's (English landscape painter) two children who are buried alongside him in their family tomb in Hampstead?"
+    },
+    {
+      "qid": 3358,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1398,
+        "completion_tokens": 5,
+        "total_tokens": 1403
+      },
+      "response": "John Charles Constable and Charles Golding Constable.",
+      "answer": "John Charles Constable and Charles Golding Constable",
+      "problem": "What are the complete names of John Constable's (English landscape painter) two children who are buried alongside him in their family tomb in Hampstead?"
+    },
+    {
+      "qid": 3442,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "1873",
+      "answer": "1865",
+      "problem": "In which year did George Bentham change the name of *Hedaroma pinifolium* to *Pimelea pinifolia*?"
+    },
+    {
+      "qid": 3442,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "1865",
+      "answer": "1865",
+      "problem": "In which year did George Bentham change the name of *Hedaroma pinifolium* to *Pimelea pinifolia*?"
+    },
+    {
+      "qid": 3442,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "1865",
+      "answer": "1865",
+      "problem": "In which year did George Bentham change the name of *Hedaroma pinifolium* to *Pimelea pinifolia*?"
+    },
+    {
+      "qid": 3488,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "2003",
+      "answer": "2003",
+      "problem": "In what year was Alain Stanké made a Knight of the National Order of Quebec?"
+    },
+    {
+      "qid": 3488,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "2003",
+      "answer": "2003",
+      "problem": "In what year was Alain Stanké made a Knight of the National Order of Quebec?"
+    },
+    {
+      "qid": 3488,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1372,
+        "completion_tokens": 5,
+        "total_tokens": 1377
+      },
+      "response": "2003",
+      "answer": "2003",
+      "problem": "In what year was Alain Stanké made a Knight of the National Order of Quebec?"
+    },
+    {
+      "qid": 3573,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1389,
+        "completion_tokens": 5,
+        "total_tokens": 1394
+      },
+      "response": "6 February 2008",
+      "answer": "December 4, 2007",
+      "problem": "What day, month, and year was Masaki Tsuji given a lifetime achievement award at the 11th Japan Media Arts Festival?"
+    },
+    {
+      "qid": 3573,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "December 4, 2007",
+      "answer": "December 4, 2007",
+      "problem": "What day, month, and year was Masaki Tsuji given a lifetime achievement award at the 11th Japan Media Arts Festival?"
+    },
+    {
+      "qid": 3573,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "December 4, 2007.",
+      "answer": "December 4, 2007",
+      "problem": "What day, month, and year was Masaki Tsuji given a lifetime achievement award at the 11th Japan Media Arts Festival?"
+    },
+    {
+      "qid": 3699,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "August 21, 2010.",
+      "answer": "August 16, 2008",
+      "problem": "What day, month, and year did Sara Watkins marry Todd Cooper?"
+    },
+    {
+      "qid": 3699,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "August 16, 2008.",
+      "answer": "August 16, 2008",
+      "problem": "What day, month, and year did Sara Watkins marry Todd Cooper?"
+    },
+    {
+      "qid": 3699,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1376,
+        "completion_tokens": 5,
+        "total_tokens": 1381
+      },
+      "response": "August 16, 2008.",
+      "answer": "August 16, 2008",
+      "problem": "What day, month, and year did Sara Watkins marry Todd Cooper?"
+    },
+    {
+      "qid": 3710,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Acisclo Valladares Molina",
+      "answer": "Ramses Cuestas Gomez",
+      "problem": "Who was the inaugural holder of the position of Attorney General of Guatemala?"
+    },
+    {
+      "qid": 3710,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "Rámses Cuestas Gómez",
+      "answer": "Ramses Cuestas Gomez",
+      "problem": "Who was the inaugural holder of the position of Attorney General of Guatemala?"
+    },
+    {
+      "qid": 3710,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "Rámses Cuestas Gómez",
+      "answer": "Ramses Cuestas Gomez",
+      "problem": "Who was the inaugural holder of the position of Attorney General of Guatemala?"
+    },
+    {
+      "qid": 3716,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "£20",
+      "answer": "£20",
+      "problem": "What was the prize money, in British pounds, awarded to the loser of the chess match featuring Wilhelm Steinitz and Adolf Anderssen in 1866?"
+    },
+    {
+      "qid": 3716,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "£20",
+      "answer": "£20",
+      "problem": "What was the prize money, in British pounds, awarded to the loser of the chess match featuring Wilhelm Steinitz and Adolf Anderssen in 1866?"
+    },
+    {
+      "qid": 3716,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "£20",
+      "answer": "£20",
+      "problem": "What was the prize money, in British pounds, awarded to the loser of the chess match featuring Wilhelm Steinitz and Adolf Anderssen in 1866?"
+    },
+    {
+      "qid": 3723,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1369,
+        "completion_tokens": 5,
+        "total_tokens": 1374
+      },
+      "response": "A cat.",
+      "answer": "A cat.",
+      "problem": "What animal does Arya Stark form a psychic bond with while living in Braavos?"
+    },
+    {
+      "qid": 3723,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1371,
+        "completion_tokens": 5,
+        "total_tokens": 1376
+      },
+      "response": "a street tomcat",
+      "answer": "A cat.",
+      "problem": "What animal does Arya Stark form a psychic bond with while living in Braavos?"
+    },
+    {
+      "qid": 3723,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1371,
+        "completion_tokens": 5,
+        "total_tokens": 1376
+      },
+      "response": "A street tomcat.",
+      "answer": "A cat.",
+      "problem": "What animal does Arya Stark form a psychic bond with while living in Braavos?"
+    },
+    {
+      "qid": 3754,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "Kashmir Chowk, Lahore.",
+      "answer": "Mughalpura",
+      "problem": "Name the place in Lahore where an underpass (Habba Khatoon Underpass) has been named after Habba Khatoon (a Kashmiri poetess)."
+    },
+    {
+      "qid": 3754,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1391,
+        "completion_tokens": 5,
+        "total_tokens": 1396
+      },
+      "response": "Mughalpura, Lahore.",
+      "answer": "Mughalpura",
+      "problem": "Name the place in Lahore where an underpass (Habba Khatoon Underpass) has been named after Habba Khatoon (a Kashmiri poetess)."
+    },
+    {
+      "qid": 3754,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1391,
+        "completion_tokens": 5,
+        "total_tokens": 1396
+      },
+      "response": "Mughalpura, Lahore.",
+      "answer": "Mughalpura",
+      "problem": "Name the place in Lahore where an underpass (Habba Khatoon Underpass) has been named after Habba Khatoon (a Kashmiri poetess)."
+    },
+    {
+      "qid": 3884,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "Rev. J. H. Knowles",
+      "answer": "Reverend J.H.Knowles",
+      "problem": "What was the name of the first principal of Tyndale Biscoe School in Srinagar, Kashmir?"
+    },
+    {
+      "qid": 3884,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "Reverend J. H. Knowles.",
+      "answer": "Reverend J.H.Knowles",
+      "problem": "What was the name of the first principal of Tyndale Biscoe School in Srinagar, Kashmir?"
+    },
+    {
+      "qid": 3884,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "Reverend J. H. Knowles.",
+      "answer": "Reverend J.H.Knowles",
+      "problem": "What was the name of the first principal of Tyndale Biscoe School in Srinagar, Kashmir?"
+    },
+    {
+      "qid": 4042,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1385,
+        "completion_tokens": 5,
+        "total_tokens": 1390
+      },
+      "response": "Javits",
+      "answer": "Javits ",
+      "problem": "What was the last name of the senator from New York who presented Reverend Billy Graham with the Gold Award of the George Washington Carver Memorial Institute in 1964?"
+    },
+    {
+      "qid": 4042,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1385,
+        "completion_tokens": 5,
+        "total_tokens": 1390
+      },
+      "response": "Javits",
+      "answer": "Javits ",
+      "problem": "What was the last name of the senator from New York who presented Reverend Billy Graham with the Gold Award of the George Washington Carver Memorial Institute in 1964?"
+    },
+    {
+      "qid": 4042,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1385,
+        "completion_tokens": 5,
+        "total_tokens": 1390
+      },
+      "response": "Javits",
+      "answer": "Javits ",
+      "problem": "What was the last name of the senator from New York who presented Reverend Billy Graham with the Gold Award of the George Washington Carver Memorial Institute in 1964?"
+    },
+    {
+      "qid": 4157,
+      "arm": "A",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "Bloomington, Indiana",
+      "answer": "Bloomington, Indiana",
+      "problem": "What is the name of the city and state where Václav Hlavatý, a Czech-American mathematician, died?"
+    },
+    {
+      "qid": 4157,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "Bloomington, Indiana.",
+      "answer": "Bloomington, Indiana",
+      "problem": "What is the name of the city and state where Václav Hlavatý, a Czech-American mathematician, died?"
+    },
+    {
+      "qid": 4157,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "Bloomington, Indiana.",
+      "answer": "Bloomington, Indiana",
+      "problem": "What is the name of the city and state where Václav Hlavatý, a Czech-American mathematician, died?"
+    },
+    {
+      "qid": 4222,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1388,
+        "completion_tokens": 5,
+        "total_tokens": 1393
+      },
+      "response": "28 February 2024",
+      "answer": "28 July 2021",
+      "problem": "On what day, month, and year was Manuleleua Paletasala Tovale appointed Associate Minister for the Prime Minister and Cabinet?"
+    },
+    {
+      "qid": 4222,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1388,
+        "completion_tokens": 5,
+        "total_tokens": 1393
+      },
+      "response": "28 July 2021",
+      "answer": "28 July 2021",
+      "problem": "On what day, month, and year was Manuleleua Paletasala Tovale appointed Associate Minister for the Prime Minister and Cabinet?"
+    },
+    {
+      "qid": 4222,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1388,
+        "completion_tokens": 5,
+        "total_tokens": 1393
+      },
+      "response": "28 July 2021",
+      "answer": "28 July 2021",
+      "problem": "On what day, month, and year was Manuleleua Paletasala Tovale appointed Associate Minister for the Prime Minister and Cabinet?"
+    },
+    {
+      "qid": 4313,
+      "arm": "A",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1377,
+        "completion_tokens": 5,
+        "total_tokens": 1382
+      },
+      "response": "Dhan Bahadur Shakya",
+      "answer": "Rajendra Man Suwal",
+      "problem": "Who was the mayor of Kathmandu who served from 1971 to 1976?"
+    },
+    {
+      "qid": 4313,
+      "arm": "D_bm25",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Rajendra Man Suwal",
+      "answer": "Rajendra Man Suwal",
+      "problem": "Who was the mayor of Kathmandu who served from 1971 to 1976?"
+    },
+    {
+      "qid": 4313,
+      "arm": "D_dense",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Rajendra Man Suwal",
+      "answer": "Rajendra Man Suwal",
+      "problem": "Who was the mayor of Kathmandu who served from 1971 to 1976?"
+    },
+    {
+      "qid": 16,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1396,
+        "completion_tokens": 5,
+        "total_tokens": 1401
+      },
+      "response": "Manuel Ordás scored all of Spain’s conversions.",
+      "answer": "Manuel Ordas",
+      "problem": "What player scored all the conversions for Spain in the rugby match between Spain and Romania that was part of the 2022 Rugby Europe Championship on February 27, 2022?"
+    },
+    {
+      "qid": 34,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "David Sweet was born on 24 June 1957.",
+      "answer": "June 24, 1957",
+      "problem": "On what day, month, and year was David Sweet, Canadian politician, born?"
+    },
+    {
+      "qid": 51,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "John Williams was inducted into the American Classical Music Hall of Fame in **2004**.",
+      "answer": "2004.",
+      "problem": "In what year was John Williams inducted into the Classical Music Hall of Fame?"
+    },
+    {
+      "qid": 115,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1395,
+        "completion_tokens": 5,
+        "total_tokens": 1400
+      },
+      "response": "The wheelbase was **2,845 mm** (112 inches).",
+      "answer": "2,845 mm",
+      "problem": "The Jensen Interceptor (1950), produced from 1950 to 1957, had a wheelbase measurement of what in millimeters?"
+    },
+    {
+      "qid": 447,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1405,
+        "completion_tokens": 5,
+        "total_tokens": 1410
+      },
+      "response": "In Hindu astrology, **Yamraj (Yama)** is commonly associated with **Shani (Saturn)**, due to their shared connection with karma, justice, discipline, and the consequences of one’s actions.",
+      "answer": "Pluto",
+      "problem": "According to Hinduism, which planet is associated with Yamraj?"
+    },
+    {
+      "qid": 493,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1400,
+        "completion_tokens": 5,
+        "total_tokens": 1405
+      },
+      "response": "Georgi Dimitrov died at the **Barvikha Sanatorium** (a Soviet government hospital) near Moscow, on 2 July 1949.",
+      "answer": " Barvikha sanatorium ",
+      "problem": "At what hospital did Communist politician Georgi Dimitrov die in 1949?"
+    },
+    {
+      "qid": 531,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1378,
+        "completion_tokens": 5,
+        "total_tokens": 1383
+      },
+      "response": "41 million viewers were from India.",
+      "answer": "41 million",
+      "problem": "How many million viewers of the inaugural season of Ultimate Kho Kho (UKK) were from India?"
+    },
+    {
+      "qid": 732,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "Jamini Roy was awarded the Padma Bhushan in **1954**.",
+      "answer": "1954",
+      "problem": "In which year was Jamini Roy (an Indian painter) awarded the Padma Bhushan by the Government of India?"
+    },
+    {
+      "qid": 796,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1395,
+        "completion_tokens": 5,
+        "total_tokens": 1400
+      },
+      "response": "Google released it on **6 November 2012**.",
+      "answer": "6 November 2012",
+      "problem": "What were the day, month, and year when Google released a version of Chrome on Windows that added hardware-accelerated H.264 video decoding?"
+    },
+    {
+      "qid": 807,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1386,
+        "completion_tokens": 5,
+        "total_tokens": 1391
+      },
+      "response": "Charles Saatchi’s first *Young British Art* show was in **1992**.",
+      "answer": "1992",
+      "problem": "Charles Saatchi had his first \"Young British Art\" show during what year?"
+    },
+    {
+      "qid": 820,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1385,
+        "completion_tokens": 5,
+        "total_tokens": 1390
+      },
+      "response": "Germany won the most equestrian medals at the 2004 Athens Olympics.",
+      "answer": "United States",
+      "problem": "What country won more equestrian medals than any other team at the 2004 Olympic Games in Athens?"
+    },
+    {
+      "qid": 859,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Letecia Stauch’s trial lasted **five weeks**.",
+      "answer": "5",
+      "problem": "How many weeks did Letecia Stauch's trial last?"
+    },
+    {
+      "qid": 894,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1409,
+        "completion_tokens": 5,
+        "total_tokens": 1414
+      },
+      "response": "Julian Bradley moved to La Crosse with his mother in **1992**.",
+      "answer": "1992",
+      "problem": "In which year did Julian Bradley, the first Black Republican to serve in the Wisconsin Senate and only the second Black Republican to serve in the Wisconsin Legislature, first move to La Crosse, Wisconsin, with his mother?"
+    },
+    {
+      "qid": 917,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "The eighth track is **“Alamo.”**",
+      "answer": "Alamo",
+      "problem": "What is the name of the eighth track on the album \"These Two Windows\" by Alec Benjamin?"
+    },
+    {
+      "qid": 934,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "Elizabeth Spencer, Baroness Hunsdon, had **five siblings**.",
+      "answer": "6",
+      "problem": "How many siblings did Elizabeth Spencer, Baroness Hunsdon, have?"
+    },
+    {
+      "qid": 954,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1380,
+        "completion_tokens": 5,
+        "total_tokens": 1385
+      },
+      "response": "06-04-2002",
+      "answer": "June 4, 2002",
+      "problem": "When (month-day-year) was \"Amazing Love\" by the Mississippi Mass Choir released?"
+    },
+    {
+      "qid": 1016,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1395,
+        "completion_tokens": 5,
+        "total_tokens": 1400
+      },
+      "response": "John Shipley Rowlinson was appointed a Fellow of the Royal Academy of Engineering in **1983**.",
+      "answer": "1976",
+      "problem": "In what year was British chemist John Shipley Rowlinson appointed a Fellow of the Royal Academy of Engineering?"
+    },
+    {
+      "qid": 1152,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "Clifford Cunnell died on **5 October 2016**.",
+      "answer": "5 October 2016",
+      "problem": "What was the date, month, and year when Clifford Cunnell, an English cricketer, died?"
+    },
+    {
+      "qid": 1287,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1388,
+        "completion_tokens": 5,
+        "total_tokens": 1393
+      },
+      "response": "The 1934 Bendix SWC concept car was **204 inches** long overall.",
+      "answer": "204",
+      "problem": "What was the overall length, in inches, of the 1934 Bendix SWC concept car?"
+    },
+    {
+      "qid": 1334,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1375,
+        "completion_tokens": 5,
+        "total_tokens": 1380
+      },
+      "response": "Angela Vaught was the former NBA cheerleader.",
+      "answer": "Lori Todd",
+      "problem": "Which contestant from Season 2 of The Bachelor was a former NBA cheerleader?"
+    },
+    {
+      "qid": 1415,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1389,
+        "completion_tokens": 5,
+        "total_tokens": 1394
+      },
+      "response": "Margaret Gardiner’s Hampstead home was at **35 Downshire Hill, London**.",
+      "answer": "35 Downshire Hill",
+      "problem": "What was the Hampstead, London, street address of art collector Margaret Gardiner's home?"
+    },
+    {
+      "qid": 1605,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1386,
+        "completion_tokens": 5,
+        "total_tokens": 1391
+      },
+      "response": "Lee Teng-hui, former president of the Republic of China (Taiwan), was nicknamed “Mr. Democracy.”",
+      "answer": "Lee Teng-hui.",
+      "problem": "Which Chinese president was nicknamed \"Mr. Democracy?\""
+    },
+    {
+      "qid": 1698,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1394,
+        "completion_tokens": 5,
+        "total_tokens": 1399
+      },
+      "response": "According to the 2012 municipal census, Shawnee Slopes had a population of **1,565** people.",
+      "answer": "1,565",
+      "problem": "According to the 2012 municipal census, how many people live in Shawnee Slopes?"
+    },
+    {
+      "qid": 1707,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "Oliver Heaviside was awarded the Faraday Medal in **1922**.",
+      "answer": "1922",
+      "problem": "What year was Oliver Heaviside awarded the Faraday Medal?"
+    },
+    {
+      "qid": 1778,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1397,
+        "completion_tokens": 5,
+        "total_tokens": 1402
+      },
+      "response": "The 2nd Chairman of the Senate of Pakistan was **Ghulam Ishaq Khan**, who served from **1977 to 1985**.",
+      "answer": "Ghulam Ishaq Khan",
+      "problem": "Who was the 2nd chairman of the Senate of Pakistan?"
+    },
+    {
+      "qid": 1846,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1391,
+        "completion_tokens": 5,
+        "total_tokens": 1396
+      },
+      "response": "Eremiaphila barbara was described by Brisout in **1854**.",
+      "answer": "1854",
+      "problem": "In what year was the praying mantis species Eremiaphila barbara described by Brisout?"
+    },
+    {
+      "qid": 1875,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1400,
+        "completion_tokens": 5,
+        "total_tokens": 1405
+      },
+      "response": "He selected **Frank Wattendorf** as his research assistant.",
+      "answer": "Frank Wattendorf",
+      "problem": "Who did Theodore von Kármán select as his research assistant when he accepted the directorship of the Guggenheim Aeronautical Laboratory at the California Institute of Technology in 1930?"
+    },
+    {
+      "qid": 1883,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1393,
+        "completion_tokens": 5,
+        "total_tokens": 1398
+      },
+      "response": "The American Dialect Society selected **“goblin mode”** as its 2022 Word of the Year.",
+      "answer": "\"-ussy\"",
+      "problem": "Which word was selected as the 2022 Word of the Year by the American Dialect Society?"
+    },
+    {
+      "qid": 2082,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1382,
+        "completion_tokens": 5,
+        "total_tokens": 1387
+      },
+      "response": "The 2004 recipient of the Lapworth Medal was **James Valentine**.",
+      "answer": "James Valentine",
+      "problem": "What is the name of the recipient of the Lapworth Medal in 2004?"
+    },
+    {
+      "qid": 2091,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1379,
+        "completion_tokens": 5,
+        "total_tokens": 1384
+      },
+      "response": "Agostina Pietrantoni was born in Pozzaglia Sabina, Italy.",
+      "answer": "Pozzaglia Sabina",
+      "problem": "Where was Agostina Pietrantoni born?"
+    },
+    {
+      "qid": 2095,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1413,
+        "completion_tokens": 5,
+        "total_tokens": 1418
+      },
+      "response": "The Pakistan People’s Party emerged as the leading national opposition party **four times**—after the **1990, 1997, 2002, and 2013** general elections.",
+      "answer": " four",
+      "problem": "How many times has the Pakistan People's Party emerged as the leading opposition party in Pakistan on a national level until 2022?"
+    },
+    {
+      "qid": 2176,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1406,
+        "completion_tokens": 5,
+        "total_tokens": 1411
+      },
+      "response": "President George W. Bush signed the congressional joint resolution authorizing the use of force against Iraq on **16 October 2002**.",
+      "answer": "October 2, 2002",
+      "problem": "What were the day, month, and year when President Bush and Congress agreed on the joint resolution authorizing the Iraq War?"
+    },
+    {
+      "qid": 2190,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1391,
+        "completion_tokens": 5,
+        "total_tokens": 1396
+      },
+      "response": "Terilisha was blocked in **Episode 7** of *The Circle* Season 2.",
+      "answer": "7",
+      "problem": "In Season 2 of the American version of \"The Circle,\" what episode did Terilisha get blocked?"
+    },
+    {
+      "qid": 2306,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1393,
+        "completion_tokens": 5,
+        "total_tokens": 1398
+      },
+      "response": "Georgi Ivanov Peev was born on **11 March 1979**.",
+      "answer": "11 March 1979",
+      "problem": "What day, month, and year was Georgi Ivanov Peev, the Bulgarian former footballer, born?"
+    },
+    {
+      "qid": 2532,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1394,
+        "completion_tokens": 5,
+        "total_tokens": 1399
+      },
+      "response": "Biologists counted **263 Devils Hole pupfish** in September 2022.",
+      "answer": "263.",
+      "problem": "In September 2022, biologists reported what number of Devils Hole Pupfish in Devils Hole, the most they'd observed in 19 years?"
+    },
+    {
+      "qid": 2566,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1413,
+        "completion_tokens": 5,
+        "total_tokens": 1418
+      },
+      "response": "Otto von Kotzebue explored Bikini Atoll and named it **Eschscholtz Atoll**, after the naturalist Johann Friedrich von Eschscholtz.",
+      "answer": " Otto von Kotzebue ",
+      "problem": "What is the name of the person who explored and named Bikini Atoll \"Eschscholtz Atoll\"?"
+    },
+    {
+      "qid": 2633,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1388,
+        "completion_tokens": 5,
+        "total_tokens": 1393
+      },
+      "response": "The two runners-up were **Chad Michaels** and **Phi Phi O’Hara**.",
+      "answer": "Chad Michaels, Phi Phi O'Hara",
+      "problem": "Who were the two runners-up on Season 4 of RPDR?"
+    },
+    {
+      "qid": 2673,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1397,
+        "completion_tokens": 5,
+        "total_tokens": 1402
+      },
+      "response": "The 2015 MLA for Matia Mahal was **Asim Ahmed Khan**. His father’s name is **Shamim Ahmed Khan**.",
+      "answer": "Shamim Ahmed Khan",
+      "problem": "What is the father's name of the 2015 MLA of Matia Mahal?"
+    },
+    {
+      "qid": 2790,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 95,
+        "total_tokens": 1478
+      },
+      "response": "Lygia Pape initially studied **Moral Sciences** at the Federal University of Rio de Janeiro.",
+      "answer": "Philosophy",
+      "problem": "What did the artist Lygia Pape initially study in university?"
+    },
+    {
+      "qid": 2835,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1403,
+        "completion_tokens": 5,
+        "total_tokens": 1408
+      },
+      "response": "Nikolai Christian Grove Prebensen began serving as County Governor of Aust-Agder in **1896**.",
+      "answer": "1896",
+      "problem": "From what year in the 1800s did Nikolai Christian Grove Prebensen serve as the County Governor of Aust-Agder in Norway?"
+    },
+    {
+      "qid": 2857,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1393,
+        "completion_tokens": 5,
+        "total_tokens": 1398
+      },
+      "response": "Peter Scholze was appointed a Chancellor’s Professor at the University of California, Berkeley, in **2014**.",
+      "answer": "2014",
+      "problem": "In what year was Peter Scholze appointed the Chancellor's Professor at the University of California, Berkeley?"
+    },
+    {
+      "qid": 2919,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1388,
+        "completion_tokens": 5,
+        "total_tokens": 1393
+      },
+      "response": "Gerald M. Friedman received the William H. Twenhofel Medal in **1997**.",
+      "answer": "1997",
+      "problem": "In what year did Gerald M. Friedman receive the William Henry Twenhofel Medal?"
+    },
+    {
+      "qid": 2932,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1401,
+        "completion_tokens": 5,
+        "total_tokens": 1406
+      },
+      "response": "*In the Zone* by Britney Spears was ranked number one on Billboard’s 2004 Top Dance/Electronic Albums Year-End chart.",
+      "answer": "Fired Up!",
+      "problem": "In 2004, what album was ranked number one in the Billboard Top Dance/Electronic Albums Year-End chart?"
+    },
+    {
+      "qid": 2952,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1392,
+        "completion_tokens": 5,
+        "total_tokens": 1397
+      },
+      "response": "Carlos Menem’s first Minister of Social Assistance and Public Health was **Julio César Aráoz**, appointed in 1989.",
+      "answer": "Julio Corzo\n",
+      "problem": "Who was Carlos Menem's first Minister of Social Assistance and Public Health?"
+    },
+    {
+      "qid": 3007,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1403,
+        "completion_tokens": 5,
+        "total_tokens": 1408
+      },
+      "response": "The Victoria and Albert Museum purchased it for **1,480 English guineas**.",
+      "answer": "1480 English guineas",
+      "problem": "For how many English guineas did the Victoria and Albert Museum purchase the \"Bust of Thomas Baker\" by Gian Lorenzo Bernini in 1921?"
+    },
+    {
+      "qid": 3166,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1405,
+        "completion_tokens": 5,
+        "total_tokens": 1410
+      },
+      "response": "José Figueres Ferrer and his first wife, Henrietta Boggs, had **two children**: José Martí Figueres and Muni Figueres Boggs.",
+      "answer": "Two.",
+      "problem": "How many children did José Figueres Ferrer have with his first wife, Henrietta Boggs?"
+    },
+    {
+      "qid": 3358,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1422,
+        "completion_tokens": 5,
+        "total_tokens": 1427
+      },
+      "response": "The two children buried with John Constable in the family tomb at St John-at-Hampstead are **John Charles Constable** and **Maria Louisa Constable**.",
+      "answer": "John Charles Constable and Charles Golding Constable",
+      "problem": "What are the complete names of John Constable's (English landscape painter) two children who are buried alongside him in their family tomb in Hampstead?"
+    },
+    {
+      "qid": 3442,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1400,
+        "completion_tokens": 5,
+        "total_tokens": 1405
+      },
+      "response": "George Bentham changed it to *Pimelea pinifolia* in **1865**.",
+      "answer": "1865",
+      "problem": "In which year did George Bentham change the name of *Hedaroma pinifolium* to *Pimelea pinifolia*?"
+    },
+    {
+      "qid": 3488,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1388,
+        "completion_tokens": 5,
+        "total_tokens": 1393
+      },
+      "response": "Alain Stanké was made a Knight of the National Order of Quebec in **2003**.",
+      "answer": "2003",
+      "problem": "In what year was Alain Stanké made a Knight of the National Order of Quebec?"
+    },
+    {
+      "qid": 3573,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1403,
+        "completion_tokens": 5,
+        "total_tokens": 1408
+      },
+      "response": "Masaki Tsuji received the Lifetime Achievement Award on **December 5, 2007**.",
+      "answer": "December 4, 2007",
+      "problem": "What day, month, and year was Masaki Tsuji given a lifetime achievement award at the 11th Japan Media Arts Festival?"
+    },
+    {
+      "qid": 3699,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1384,
+        "completion_tokens": 5,
+        "total_tokens": 1389
+      },
+      "response": "Sara Watkins married Todd Cooper on **October 31, 2009**.",
+      "answer": "August 16, 2008",
+      "problem": "What day, month, and year did Sara Watkins marry Todd Cooper?"
+    },
+    {
+      "qid": 3710,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1383,
+        "completion_tokens": 5,
+        "total_tokens": 1388
+      },
+      "response": "The inaugural Attorney General of Guatemala was **Rámses Cuestas Gómez**.",
+      "answer": "Ramses Cuestas Gomez",
+      "problem": "Who was the inaugural holder of the position of Attorney General of Guatemala?"
+    },
+    {
+      "qid": 3716,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1406,
+        "completion_tokens": 5,
+        "total_tokens": 1411
+      },
+      "response": "Adolf Anderssen, the loser, received **£0**; Wilhelm Steinitz won the **£100** stake.",
+      "answer": "£20",
+      "problem": "What was the prize money, in British pounds, awarded to the loser of the chess match featuring Wilhelm Steinitz and Adolf Anderssen in 1866?"
+    },
+    {
+      "qid": 3723,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1374,
+        "completion_tokens": 5,
+        "total_tokens": 1379
+      },
+      "response": "A Braavosi street tomcat.",
+      "answer": "A cat.",
+      "problem": "What animal does Arya Stark form a psychic bond with while living in Braavos?"
+    },
+    {
+      "qid": 3754,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1403,
+        "completion_tokens": 5,
+        "total_tokens": 1408
+      },
+      "response": "The Habba Khatoon Underpass is in **Mughalpura, Lahore**.",
+      "answer": "Mughalpura",
+      "problem": "Name the place in Lahore where an underpass (Habba Khatoon Underpass) has been named after Habba Khatoon (a Kashmiri poetess)."
+    },
+    {
+      "qid": 3884,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1398,
+        "completion_tokens": 29,
+        "total_tokens": 1427
+      },
+      "response": "The first principal of Tyndale Biscoe School in Srinagar was **James Hinton Knowles**.",
+      "answer": "Reverend J.H.Knowles",
+      "problem": "What was the name of the first principal of Tyndale Biscoe School in Srinagar, Kashmir?"
+    },
+    {
+      "qid": 4042,
+      "arm": "B",
+      "outcome": "incorrect",
+      "letter": "B",
+      "grader_raw": "B",
+      "usage": {
+        "prompt_tokens": 1396,
+        "completion_tokens": 5,
+        "total_tokens": 1401
+      },
+      "response": "Keating. Senator **Kenneth Keating** presented the award.",
+      "answer": "Javits ",
+      "problem": "What was the last name of the senator from New York who presented Reverend Billy Graham with the Gold Award of the George Washington Carver Memorial Institute in 1964?"
+    },
+    {
+      "qid": 4157,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1390,
+        "completion_tokens": 5,
+        "total_tokens": 1395
+      },
+      "response": "Václav Hlavatý died in **Bloomington, Indiana**.",
+      "answer": "Bloomington, Indiana",
+      "problem": "What is the name of the city and state where Václav Hlavatý, a Czech-American mathematician, died?"
+    },
+    {
+      "qid": 4222,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1401,
+        "completion_tokens": 5,
+        "total_tokens": 1406
+      },
+      "response": "Manuleleua Paletasala Tovale was appointed on **28 July 2021**.",
+      "answer": "28 July 2021",
+      "problem": "On what day, month, and year was Manuleleua Paletasala Tovale appointed Associate Minister for the Prime Minister and Cabinet?"
+    },
+    {
+      "qid": 4313,
+      "arm": "B",
+      "outcome": "correct",
+      "letter": "A",
+      "grader_raw": "A",
+      "usage": {
+        "prompt_tokens": 1395,
+        "completion_tokens": 5,
+        "total_tokens": 1400
+      },
+      "response": "Rajendra Man Suwal served as Kathmandu’s Pradhan Panch (mayoral equivalent) from 1971 to 1976.",
+      "answer": "Rajendra Man Suwal",
+      "problem": "Who was the mayor of Kathmandu who served from 1971 to 1976?"
+    }
+  ]
+}

@@ -40,4 +40,12 @@ int embed_rank_elements(const uint32_t *ids, const char *const *texts, int n,
                         const char *query, int qlen,
                         uint32_t *out_ids, float *out_scores, int max);
 
+/* Rank texts[0..n) by cosine of their embedding to `query`, computed entirely
+ * in memory — no vector sidecar, no persistence — so it is safe on the
+ * read-only recall path. Fills out_order[i] with the input index of the i-th
+ * best (score desc, index asc on ties); returns count (<=max), or -1 when the
+ * embedder is unavailable. */
+int embed_rank_texts(const char *const *texts, int n, const char *query,
+                     int qlen, int *out_order, int max);
+
 #endif

@@ -1,0 +1,43 @@
+{
+  "_comment": "Phase 0 signal check. Model IDs are UNVERIFIED placeholders until preflight.py resolves them against the OpenAI models endpoint; do not trust them until models_verified is true.",
+  "models": {
+    "models_verified": true,
+    "ingester": "gpt-5.6-sol",
+    "consumer": "gpt-5.6-terra",
+    "grader": "gpt-5.6-sol"
+  },
+  "legend_binary": "/home/nickthorpe71/Code/legend/legend",
+  "legend_now": 1720000000,
+  "legend_embed": 1,
+  "dataset_url": "https://openaipublic.blob.core.windows.net/simple-evals/simple_qa_test_set.csv",
+  "seed": 12345,
+  "_n_questions_note": "5 = smoke. Draw count, not surviving count: ~30-40% of draws are answer-absent and get dropped, so draw ~70 to net ~50 for the real run.",
+  "n_questions": 70,
+  "wikipedia_only": true,
+  "ingest_chunk_tokens": 2000,
+  "ingest_max_calls_per_chunk": 8,
+  "recall_max_calls": 3,
+  "rag": {
+    "_comment": "arm D naive-RAG baseline. chunk_tokens = retrieval granularity; budget_floor = min context tokens when arm B recalled little; dense uses OpenAI embeddings.",
+    "chunk_tokens": 256,
+    "budget_floor_tokens": 300,
+    "dense": true,
+    "embed_model": "text-embedding-3-small"
+  },
+  "http_user_agent": "legend-simpleqa-eval/0.1 (research; contact nickthorpe71@gmail.com)",
+  "audit_min_survival": 0.8,
+  "pricing_per_mtok": {
+    "ingester": {
+      "in": 5.0,
+      "out": 30.0
+    },
+    "consumer": {
+      "in": 2.5,
+      "out": 15.0
+    },
+    "grader": {
+      "in": 5.0,
+      "out": 30.0
+    }
+  }
+}

@@ -64,8 +64,12 @@ serves. Pair the retrieval work with tightening ingest extraction.
 
 ## Sequence
 
-1. **F1** — query→fact relevance ranking (this closes most of the measured gap).
-   Re-run the eval, confirm the delta moves.
+1. **F1** — query→fact relevance ranking. **DONE 2026-07-22** (`rerank_relevance`
+   in legend.c + `embed_rank_texts` in embed.c, gated on `embed_available()` so the
+   determinism gate is untouched). Frame-level: gold-in-frame 42%→60% (+11, 0
+   displaced). Answer-level, after also fixing the harness embed-dir bug that had
+   recall running embeddings-off: **arm B 57%→75%**, structure delta B−D_dense
+   −40%→−22%. See the CORRECTION in `eval-simpleqa-run-2026-07-22.md`.
 2. **F5** — multi-anchor disambiguation (cheap, fixes homonyms).
 3. **F2 + F3 + F4** — the full semantic traversal (anchors→paths→ranked expansion):
    Legend's relational-query strength, where it should beat RAG, not just match it.

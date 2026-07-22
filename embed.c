@@ -611,6 +611,40 @@ int embed_rank_elements(const uint32_t *ids, const char *const *texts, int n,
     return r;
 }
 
+int embed_rank_texts(const char *const *texts, int n, const char *query,
+                     int qlen, int *out_order, int max) {
+    ec_load_model();
+    if (!EC.model) return -1;
+
+    static const char QPREFIX[] = "Represent this sentence for searching relevant passages: ";
+    const int pl = (int)sizeof QPREFIX - 1;
+    char qbuf[2048];
+    if (qlen < 0) qlen = 0;
+    if (qlen >= (int)sizeof qbuf - pl - 1) qlen = (int)sizeof qbuf - pl - 1;
+    memcpy(qbuf, QPREFIX, pl);
+    memcpy(qbuf + pl, query, qlen); qbuf[pl + qlen] = 0;
+    float qv[HID];
+    if (embed_text(EC.model, qbuf, qv) != 0) return -1;
+
+    RankCand *c = malloc((size_t)n * sizeof *c);
+    if (!c) return -1;
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        float tv[HID];
+        if (!texts[i] || !texts[i][0] || embed_text(EC.model, texts[i], tv) != 0) continue;
+        double d = 0.0;                        /* qv, tv both L2-normalized -> dot == cosine */
+        for (int k = 0; k < HID; k++) d += (double)qv[k] * tv[k];
+        c[m].id = (uint32_t)i; c[m].s = (float)d; m++;   /* id carries the input index */
+    }
+    if (ec_traced())
+        fprintf(stderr, "[embed] recall: cosine-ranked %d facts by query relevance\n", m);
+    qsort(c, (size_t)m, sizeof *c, rankcand_cmp);
+    int r = m < max ? m : max;
+    for (int i = 0; i < r; i++) out_order[i] = (int)c[i].id;
+    free(c);
+    return r;
+}
+
 #ifdef EMBED_TEST
 /* Standalone validator: compares embed.c against tools/embed_prep/golden.txt
  * (token ids exact; vector cosine > 0.999). Build:

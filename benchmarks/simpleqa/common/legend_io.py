@@ -77,12 +77,20 @@ class Legend:
 
 
 def from_config(cfg, store_dir):
-    """Build a Legend bound to `store_dir` from a loaded config dict."""
+    """Build a Legend bound to `store_dir` from a loaded config dict.
+
+    Pin LEGEND_EMBED_DIR to the model dir next to the binary. Without this the
+    binary resolves the default "models/..." relative to the process CWD (the
+    benchmark dir, where it does not exist) and recall silently runs with
+    embeddings OFF — no semantic resolution, no relevance ranking.
+    """
+    embed_dir = Path(cfg["legend_binary"]).parent / "models" / "bge-small-en-v1.5"
     return Legend(
         binary=cfg["legend_binary"],
         store_dir=store_dir,
         now=cfg.get("legend_now"),
         embed=cfg.get("legend_embed", 1),
+        embed_dir=str(embed_dir) if embed_dir.is_dir() else None,
     )
 
 

@@ -1,5 +1,37 @@
 # SimpleQA — Legend vs naive RAG at matched token budget (2026-07-22)
 
+> **CORRECTION (2026-07-22, same day, later).** The run below was measured with a
+> configuration bug: the harness (`common/legend_io.py`) resolved Legend's embed
+> model dir relative to the benchmark CWD (where `models/` does not exist) and
+> never set `LEGEND_EMBED_DIR`, so **every arm-B recall ran with embeddings OFF** —
+> lexical entity resolution + recency fact ordering only, no semantic retrieval.
+> The store was fully embedded at ingest (`vectors.bin` is real); recall just never
+> used it. So the "RAG dominates by 37–40 points" headline was Legend competing
+> with its own semantic retrieval switched off, against embedding-based RAG arms.
+>
+> **Fixed** (`from_config` now pins `LEGEND_EMBED_DIR` to the model dir beside the
+> binary) and re-ran arm B with embeddings ON + the new F1 relevance ranking. The
+> corrected numbers (store unchanged, A/D frozen):
+>
+> | metric | embed OFF (original) | embed ON + F1 (corrected) |
+> |---|---|---|
+> | arm B accuracy | 34/60 = 57% | **45/60 = 75%** |
+> | B − D_bm25 | −37% [−50,−23] | **−18% [−30,−8]** |
+> | B − D_dense | −40% [−52,−28] | **−22% [−32,−12]** |
+> | correct & store-grounded | 18 | **30** |
+> | A→B grounded lift | +8 | **+19** |
+>
+> RAG still leads by ~18–22 pts (D-only = 13; the remaining misses are facts
+> outside the 1-hop hood → need the F3 traversal, multi-part answers, and residual
+> consumption failures), but the gap halved and the store now does real work.
+> **F1's isolated retrieval contribution** (deterministic frame-level replay, same
+> recall calls, embeddings on both sides): gold-in-frame **42% → 60%**, +11
+> questions, **0 displaced**. Corrected artifacts: `eval-simpleqa-run-2026-07-22-corrected/`.
+> The original embed-off analysis below is kept for the record.
+
+---
+
+
 The decisive experiment the six-perspective review converged on (Dana's
 falsifiable bar, Priya's #6): does Legend's deduplicated graph earn anything over
 dumb retrieval over the *same* corpus, at a *matched* token budget? Run to
