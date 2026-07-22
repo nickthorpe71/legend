@@ -91,9 +91,20 @@ evidence.
    prompt over-corrected; the fix is precision *without* dropping answer values. Full
    re-ingest (~$60) measures the confident-wrong reduction across all 60 and helps
    the live trial's store health. The expensive path, but the highest-value one.
-2. **F1 latency optimization** — `rerank_relevance` embeds the whole neighborhood at
-   query time, so recall latency scales with pollution (447 still 38s even tightened).
-   Cap the candidate set or cache fact vectors.
+2. **F1 latency optimization — DONE** (`2bc538d`). Bounded the fact-rerank with a
+   cheap query-term-overlap pre-filter to the top `F1_RERANK_CAP=32` facts (lexical,
+   not recency — F1 exists to surface a low-recency fact). Large-neighborhood recall
+   **1.5s → 0.73–0.93s**, quality preserved (David Sweet date-of-birth still #1),
+   gate green. Two things it surfaced, now tracked:
+   - **2a. Fact-vector caching** — `embed_rank_texts` is uncached; fact vectors are
+     *query-independent*, so embedding each once and reusing (like element vectors)
+     would take repeat recalls well under 100ms. The 38s "F1" symptom was actually a
+     cold `vectors.bin` (first recall embeds all elements); a save-time fact pre-warm
+     closes both.
+   - **2b. Non-F1 slow paths on polluted neighborhoods** — tier-2 element resolution
+     on unresolved focus terms + frame assembly over hundreds of relations can still
+     be slow (a Yama/Pluto recall timed out). Downstream of over-extraction (#B) —
+     the clean-store fix helps here too.
 3. **F5 fuzzy-resolution** — make "Yamraj" match the "Yamaraja" alias (447); cheap,
    recall-side. (`docs/retrieval-f3-traversal.md` §F5.)
 4. **`embed.c` model-dir root cause** — it defaults the model dir relative to the
