@@ -1,0 +1,133 @@
+# Design — literals-not-nodes (+ must_exist refs)
+
+**Status:** scoped, not built. The *free, permanent* version of the over-extraction
+fix (`retrieval-redesign.md` #3, `session-2026-07-22-retrieval.md` #B): the paid
+extractor-prompt tightening is a band-aid; this stops the reification at the
+substrate so the store *structurally cannot* over-extract. From Sofia's DX review
+(`analysis-2026-07-21.md`). This is the deepest lever found this session and a real
+project — read this before building.
+
+## The problem, confirmed at the type level
+
+`Term` (one relation slot's value) is `{u8 tag; u32 id}` with `enum { TERM_ELEM=0,
+TERM_REL=1 }` (`legend.c:2108,2126`). **There is no literal type.** So every value —
+`green`, `1957-06-24`, `2,845 mm` — becomes a minted *element node*:
+`plan_slot_value` (`legend.c:4217`) parses `rel:<id>` → `TERM_REL`, and *everything
+else* → `plan_ref` (`legend.c:4182`), which resolves-or-**mints** an element. That
+single default is why the SimpleQA store hit **205 elements/page** (14,730 elements
+from 72 pages), why recall neighborhoods are polluted, why F1 latency scaled with
+pollution, and why 5 of the 7 audit checks (`prose_name`, `bloat`, `status_fact`,
+`phantom_close`, `orphan`) exist — they detect the wreckage of reifying strings.
+
+## The hard decision: when is a value a node vs a literal?
+
+This is the crux, not the mechanism. Some fact objects are **scalars** (dates,
+numbers, statuses) that should be literals; some are **entities** (`spouse: Todd
+Cooper`, `planet: Pluto`) that must stay nodes so relational/multi-hop queries (F3)
+can traverse to them. Legend can't cheaply know which. Three candidate rules:
+
+- **(a) Literal-by-default** (Sofia's phrasing): value positions are literals unless
+  the payload explicitly gives an element ref. **Rejected** — it turns `Todd Cooper`
+  into a string, breaking every entity-valued fact and the F3 traversal that is
+  Legend's differentiator.
+- **(b) Reify-only-if-it-resolves-or-is-an-explicit-ref** *(recommended)*: a value
+  becomes an element **only if it already resolves to an existing element** (the
+  recall-before-save discipline already requires this) **or** is an explicit
+  `{ref: "..."}` / `#id`. Otherwise it is a literal. Result:
+  - `spouse: Todd Cooper` where Todd Cooper exists → `TERM_ELEM` (traversable). ✓
+  - `date of birth: 1957-06-24` (no such element) → `TERM_LIT` — **no new node.** ✓
+  - `status: green` (no such element) → `TERM_LIT`. ✓
+  This stops the minting (over-extraction) while preserving existing-entity links.
+  **Caveat — order dependence:** if Pluto is not yet in the store when `planet:
+  Pluto` is saved, "Pluto" becomes a literal and won't link once Pluto is later
+  minted. Mitigations: the ingester recalls entities first (already the discipline);
+  and an optional "promote a literal to an element when a matching element appears"
+  pass. Accept the caveat; it degrades to today's behavior only for
+  forward-referenced entities.
+- **(c) Type heuristic** (numbers/dates → literal, proper-noun → element): fragile,
+  locale-specific; use at most as a tie-breaker on top of (b).
+
+**Recommendation: build (b).** It needs no new caller syntax for the common case,
+and it directly implements "stop minting nodes for values that aren't entities."
+
+## The mechanism
+
+1. **Term:** add `TERM_LIT = 2`; when `tag == TERM_LIT`, `id` is a **string-arena
+   id** (the interned literal), not an element id. Literals intern like everything
+   else, so equal strings share an id → dedup and supersession keep working by
+   `(name, tag, id)` comparison.
+2. **Plan value tags:** add `VT_LIT` beside `VT_RCONST`/`VT_EPEND`
+   (`legend.c:4223-4227`). `plan_slot_value` (only for **value** positions, never
+   `subject`): if it resolves to an existing element or is an explicit ref →
+   `VT_EPEND`/existing; else `VT_LIT` (intern the raw span). Apply materializes
+   `VT_LIT` → `TERM_LIT`.
+3. **`changes.to`** flows through the same value path → literal by default (kills the
+   `changes.to`-reifies-prose papercut directly).
+
+## Blast radius — everything that reads `value.tag == TERM_ELEM`
+
+Each must handle `TERM_LIT` (grep `value.tag`):
+- **Dedup** (`legend.c:2358,2398`): compare literals by interned id (already works if
+  interned).
+- **Current-value cache / supersession** (`2598-2620,4524,4590,4711`): compare/emit
+  literal values; a literal `to` supersedes a prior literal.
+- **Retrieval / traversal** (`3704,3760,3788`): these push `value.id` (an element)
+  into the neighborhood — for `TERM_LIT` **skip** (a literal is not a node). This is
+  a *win*: literals stop polluting neighborhoods (the whole point).
+- **Frame rendering** (`frame_put_rel_attrs`, `frame_put_instance`, ~`6466/6725`):
+  render a `TERM_LIT` as its string, not an element name.
+- **F1 fact text** (`frame_rel_text`): render `TERM_LIT` object as its string.
+- **Persistence** (`snapshot_serialize/load`, ~`7947/8049`): serialize the tag; for
+  `TERM_LIT` the id is a string-table id (already persisted in the string table).
+  Bump the snapshot version; old stores are all-`TERM_ELEM` and load unchanged
+  (forward-compat).
+
+## Sub-fix: `must_exist` reference positions
+
+Separate, smaller, high-value: `changes.target`, `resolves.o`, and `merge` operands
+are **entity references that must already exist** — today an unknown one silently
+mints a phantom (`phantom_close`, `orphan`). Make these positions **error with the
+near-miss candidates** the resolver already computes (`near_matches`) instead of
+minting. This retires `phantom_close`/`orphan` and is independent of the literal
+work — could ship first.
+
+## Validation plan
+
+Measure-first, like the rest of this session:
+1. **Unit tests** (`legend_test.c`): a scalar-object fact mints **no** element and
+   stores `TERM_LIT`; an entity-object fact (entity pre-saved) stays `TERM_ELEM`;
+   dedup collapses two identical literal facts; supersession replaces a literal `to`;
+   the frame renders the literal; `changes.target` to an unknown ref **errors** (with
+   candidates) rather than minting.
+2. **Determinism gate**: frames change (literals render differently), so the golden
+   fixtures + corpus baselines (`tests/fixtures`, smoke/adversarial `inspect.py`
+   baselines) **must be regenerated** — a real, expected cost; review the diff to
+   confirm every change is a value-turned-literal, nothing else.
+3. **Over-extraction metric** (the payoff): re-ingest one SimpleQA page (free-ish,
+   or reuse `ingest_subset.py`) and confirm **elem/page drops sharply** (scalar
+   values no longer nodes) while gold facts survive; re-run `measure_tight.py` for
+   retrieval + latency.
+4. **Retrieval regression**: entity-valued facts still traverse (spot-check an F3
+   case); scalar facts still surface via F1 (it ranks the rendered `"pred: literal"`
+   text).
+
+## Risks / open questions
+
+- **The reify decision (b)'s order dependence** — forward-referenced entities become
+  literals. Decide whether the "promote literal → element" pass is in scope or
+  deferred.
+- **Golden/baseline regen** is unavoidable and touches many fixtures — budget for it
+  and diff carefully (this is where a subtle bug hides).
+- **Backward-compat**: existing over-extracted stores keep their value-nodes (no
+  migration) — the cleanup only applies to *new* writes unless a migration pass is
+  built (complex; defer). So the live trial store improves only going forward, or on
+  a re-ingest.
+- **Aggregation/counting** (`project_counting_out_of_scope`): literals are still
+  distinct per fact, so "average N ages" still works (each is a distinct literal on a
+  distinct relation) — confirm this holds.
+
+## Suggested build order
+
+1. `must_exist` refs (independent, smaller, retires 2 audit checks).
+2. `TERM_LIT` + rule (b) in `plan_slot_value`, then walk the blast-radius list.
+3. Regenerate goldens; validate over-extraction drop on a re-ingested page.
