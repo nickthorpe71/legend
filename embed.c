@@ -18,6 +18,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "embed.h"
 
@@ -447,7 +448,31 @@ static int ec_probe(void) {
     const char *off = getenv("LEGEND_EMBED");
     if (off && strcmp(off, "0") == 0) return 0; /* explicit disable (fuzz/core gates) */
     const char *dir = getenv("LEGEND_EMBED_DIR");
-    if (!dir || !*dir) dir = "models/bge-small-en-v1.5"; /* default: committed asset */
+    char binrel[512];
+    if (!dir || !*dir) {
+        /* Default the model dir relative to the BINARY, not the process CWD:
+         * resolving "models/..." against CWD is a footgun (a caller run from the
+         * wrong directory silently gets embeddings OFF). Prefer
+         * <binary_dir>/models/bge-small-en-v1.5 when its blob is present; else
+         * fall back to the CWD-relative path. LEGEND_EMBED_DIR still wins. */
+        dir = "models/bge-small-en-v1.5";
+        char exe[400];
+        ssize_t k = readlink("/proc/self/exe", exe, sizeof exe - 1);
+        if (k > 0) {
+            char probe[600];
+            struct stat bs;
+            char *slash;
+            exe[k] = 0;
+            slash = strrchr(exe, '/');
+            if (slash) {
+                *slash = 0; /* exe -> the binary's directory */
+                snprintf(binrel, sizeof binrel, "%s/models/bge-small-en-v1.5", exe);
+                snprintf(probe, sizeof probe, "%s/minilm.int8.bin", binrel);
+                if (stat(probe, &bs) == 0)
+                    dir = binrel;
+            }
+        }
+    }
     snprintf(EC.binpath, sizeof EC.binpath, "%s/minilm.int8.bin", dir);
     snprintf(EC.vocpath, sizeof EC.vocpath, "%s/vocab.txt", dir);
     struct stat st;
