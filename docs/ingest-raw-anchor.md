@@ -32,6 +32,23 @@
 >   D_dense chunks arm D already retrieved to arm B's frames for the 8 target qids,
 >   re-run Terra, re-grade; pre-registered bar: **≥6/8 flip with the gate
 >   auto-firing** → build, else the mechanism is broken as designed.
+> **SIMULATION RESULT (2026-07-22, `benchmarks/simpleqa/sim_raw_anchor.py`).** Ran
+> the $1-2 no-code test. **Bar NOT met.** Split outcome:
+> - **Content works — oracle-gate ceiling 7/8 ingest (12/13 overall) flip.** Handed
+>   the exact chunks RAG used, Terra readily uses them (refuting the "consumption is
+>   the bottleneck" prediction). The one non-flip (2790 Lygia Pape) is instructive:
+>   "prefer graph" made Terra keep the graph's WRONG "Moral Sciences" over the
+>   passage's correct "Philosophy."
+> - **Gate dead — confirmed.** Miss top-fact relevance `[0.03,0.14,0.51,0.53,0.67,
+>   0.70,0.72,0.80]` overlaps hits `[0.59,0.60,0.64,0.69,0.72,0.73,0.75,0.77]`; 4/8
+>   misses score ≥0.67, inside the hit band. A ~0.55 threshold catches only the 4
+>   low-gate misses → **cosine-gated reality ~4/8 (B→~82%, still loses); always-on
+>   ~7/8 but = RAG + staleness on revisable stores.**
+> Conclusion: the content approach works; the whole problem is the trigger. Viable
+> only as an opt-in **always-on** (immutable factoid corpora, where staleness can't
+> occur) or with a working **lexical-coverage** trigger (untested — the next
+> experiment if a factoid store is pursued). NOT a general lever.
+>
 > Reopen only behind an explicit factoid-store product decision.
 
 **Status:** proposed, not built. ~~Primary lever for closing the RAG gap.~~
