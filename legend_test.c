@@ -1399,6 +1399,39 @@ static int has_rel_meta(const Hypergraph *g, u32 subj_rel, u32 name_elem, u32 ob
     return 0;
 }
 
+static void test_prose_backstop(void) {
+    /* trial R5 backstop: a changes.to that would MINT a prose element (>120 norm
+     * chars) is rejected at changes[i].to; short values and long values that RESOLVE
+     * to an existing element (references, not new mints) pass. */
+    int failed;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+    /* prose value that would mint -> rejected */
+    expect_save_err(
+        "{\"changes\":[{\"target\":\"build\",\"property\":\"build_status\",\"to\":"
+        "\"BUILT 2026-07-21 sim-side, ART IS PLACEHOLDER (she wears older frames in "
+        "the viewer); the real 8-anim set is next and blocks the ship\"}]}",
+        ERR_PROSE_VALUE, "changes[0].to");
+    /* short canonical value passes */
+    fresh_graph(&tg);
+    TRY(run_save("{\"changes\":[{\"target\":\"build\",\"property\":\"build_status\","
+                 "\"to\":\"built\"}]}"), failed);
+    CHECK(!failed);
+    /* mint-only: a >120-char value that RESOLVES to an existing element is a
+     * legitimate reference, not a new prose mint -> passes */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"the fully spelled out canonical name that "
+                 "happens to exceed one hundred and twenty characters in total so the "
+                 "gate would catch it as a fresh mint\"}]}"), failed);
+    CHECK(!failed);
+    TRY(run_save("{\"changes\":[{\"target\":\"build\",\"property\":\"ref\",\"to\":"
+                 "\"the fully spelled out canonical name that happens to exceed one "
+                 "hundred and twenty characters in total so the gate would catch it as "
+                 "a fresh mint\"}]}"), failed);
+    CHECK(!failed);
+    unsetenv("LEGEND_NOW");
+}
+
 static void test_supersession_chain(void) {
     int failed;
     u32 speed, val, curval, v5, v7, cache1, cache2, event2;
@@ -3181,6 +3214,7 @@ int main(void) {
     test_relation_dedup();
     test_write_report_shape();
     test_supersession_chain();
+    test_prose_backstop();
     test_event_fact_equivalence();
     test_retract();
     test_merge_fold();

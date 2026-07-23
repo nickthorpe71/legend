@@ -25,7 +25,8 @@ import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ERROR_CODES = {"parse", "unknown_ref", "ambiguous_ref", "limit_exceeded",
-               "no_store", "lock_timeout", "snapshot_corrupt", "store_full"}
+               "no_store", "lock_timeout", "snapshot_corrupt", "store_full",
+               "prose_value"}
 CHILD_ENV_BASE = {
     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     "ASAN_OPTIONS": "abort_on_error=1:detect_leaks=0",

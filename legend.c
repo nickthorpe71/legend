@@ -213,11 +213,21 @@ enum {
   ERR_NO_STORE,
   ERR_LOCK_TIMEOUT,
   ERR_SNAPSHOT_CORRUPT,
-  ERR_STORE_FULL
+  ERR_STORE_FULL,
+  ERR_PROSE_VALUE
 };
 static const char *const ERR_CODE_NAMES[] = {
     "parse",    "unknown_ref",  "ambiguous_ref",    "limit_exceeded",
-    "no_store", "lock_timeout", "snapshot_corrupt", "store_full"};
+    "no_store", "lock_timeout", "snapshot_corrupt", "store_full",
+    "prose_value"};
+
+/* A minted element name past this many (normalized) chars is prose, not a name.
+ * Defined here — not in the audit section — so the save-time prose backstop and the
+ * audit's prose_name check share ONE threshold. Mutable so tests can drive it. */
+static u32 g_aud_name_chars = 120;  /* Measured on the trial store: median name
+                                       29 bytes, p90 92, tail to 1177 — the tail is
+                                       whole sentences passed where a canonical
+                                       name belongs */
 
 typedef struct {
   int code;
@@ -5297,6 +5307,22 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     }
     snprintf(path, sizeof path, "changes[%u].to", i);
     to_pend = plan_ref(pl, c->to, path, NONE_U32, 0, 1);
+    /* Prose backstop (trial R5 #149/#152): a changes.to that would MINT a new
+     * element and reads as prose (a paragraph, not a short value) is the dominant
+     * prose_name source. Reject at the mint — never on a resolve, where a long value
+     * that names an existing element is a legitimate reference — so the model logs a
+     * short canonical value and puts the detail in the target's summary. Shares the
+     * audit's threshold; measures normalized length to match the name it would become. */
+    if (pl->pends[to_pend].existing == NONE_U32) {
+      u32 tolen = normalize_into_scratch(pl->buf + c->to.off, c->to.len);
+      if (tolen > g_aud_name_chars)
+        fail(ERR_PROSE_VALUE, path,
+             "changes.to is %u chars -- it becomes an element NAME, so it must be a "
+             "SHORT canonical value (e.g. \"built\", \"approved\"). Put the detail in "
+             "the target's summary by resubmitting the element: "
+             "elements:[{\"name\":..., \"summary\":...}]",
+             tolen);
+    }
     if (!span_absent(c->event)) {
       snprintf(path, sizeof path, "changes[%u].event", i);
       event_pend = plan_ref(pl, c->event, path, NONE_U32, 0, 1);
@@ -9244,11 +9270,8 @@ static const char *const AUD_REASONS[AUD_REASON_COUNT] = {
 
 /* Thresholds. Mutable so tests can drive each check from a small store. */
 static u32 g_aud_bloat_chars = 400; /* a terse core + its result lands ~300; a wall starts ~400 (#66, #122) */
-static u32 g_aud_name_chars = 120;  /* a name past here is prose. Measured on
-                                       the trial store: median name 29 bytes,
-                                       p90 92, tail to 1177 — the tail is
-                                       whole sentences passed where a
-                                       canonical name belongs */
+/* g_aud_name_chars (the prose threshold) is defined up near the error codes so the
+ * save-time backstop and this prose_name check share one value. */
 static u32 g_aud_stale_ticks = 50;  /* ticks of silence before an open item
                                        reads as abandoned */
 static double g_aud_dup_sim = 0.72; /* name trigram Jaccard for near_dup, with
