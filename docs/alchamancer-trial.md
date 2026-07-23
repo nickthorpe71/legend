@@ -869,7 +869,7 @@ Footnotes: 1 rejection (malformed JSON on a complex musical payload); the model
 minted two off-list kinds, `reference` (11×) and `feedback` (2×) — taxonomy
 drift, directional.
 
-## ROUND 5 IN PROGRESS · from 2026-07-21 · `9d745ee` · `#155`
+## ROUND 5 CLOSED 2026-07-23 · re-pinned to `19868c3` · `#155`
 
 Re-pinned with the two Round-4 fixes live: the `changes.to` prose warning and
 bloat dropped from the session tally. **Deliberately lightweight — one gauge:**
@@ -896,6 +896,46 @@ not a formal round.
 The prose backstop is the **last piece before the next deliberate re-pin**, which
 should bundle it with F1 ranking + the recall `query` field + Phase-1
 `resolves.o must_exist`. The re-pin is the natural Round-5 close.
+
+**RE-PINNED 2026-07-23 → `19868c3`** (`install -m755 legend ~/.local/bin/legend`,
+strict `-std=c99 -Wall -Wextra -Werror` build, sha-stamped). The live store loaded
+unchanged (no migration; all four changes are save/recall logic, no snapshot bump).
+Round 6 opened organically the moment a live session recalled on the new binary.
+Cross-version replay diverges at this boundary by design (fix-bearing) — not
+corruption; replay stays byte-identical within `19868c3`.
+
+## ROUND 6 IN PROGRESS · from 2026-07-23 · `19868c3` · `#155`
+
+**First round carrying the retrieval work + the prose backstop.** Four changes now
+live: F1 query→fact ranking, the recall `query` field (decouples ranking from focus
+resolution; no more tier-2 hang on intent terms), Phase-1 `resolves.o must_exist`,
+and the `changes.to` prose backstop (`ERR_PROSE_VALUE` on a prose mint).
+
+**Baseline at re-pin** (clock 409, 1168 elements, read-only on a copy): audit
+prose_name **36**, bloat 397, stale_open 16, orphan 11, near_dup 2, phantom_close 0,
+status_fact 0; packet **16.0 KB** (hook's `limit:16`, under the 20 KB `head -c`);
+genuine `fact.o` prose (journal-measured, `facts[].o` > 120) ≈ **10**;
+`correlated_with` 0.
+
+**Gauges — relocation-aware (the backstop is a partial fix; adversarial review
+showed it may move pollution, not remove it):**
+1. **Prose backstop works AND doesn't just relocate** (`#149`/`#152`): does
+   `prose_name` growth flatten now that prose `changes.to` mints are rejected?
+   Measure **as a journal delta over Round 6**, and *alongside* it track the reroute
+   — new `facts[].o` prose (>120) and `bloat` growth. **A `prose_name` win that only
+   moves the prose into summaries (`bloat`) or `fact.o` is a wash → then drop/rethink
+   the backstop** (Nick: "validate it's working, if it doesn't, drop it"). Also count
+   `prose_value` rejections in the journal and whether the model recovered cleanly
+   (short value + summary) or looped.
+2. **F1 + `query` in the wild**: any testimony that focused recall surfaced the right
+   fact? (Retrieval quality was never trial-tested before this binary.) Watch for the
+   ambient/SessionStart hooks — do they pass `query`, or should they be taught to?
+3. **Packet** toward the 20 KB cap (`#141`) — still climbing; note the backstop
+   pushes *more* into summaries, so this is NOT expected to improve.
+4. **`correlated_with` stays 0** (`#137`) — invariant watch continues.
+
+Close when convenient; the relocation question (gauge 1) is the decision this round
+exists to make.
 
 ## What the store was seeded with (baseline)
 
