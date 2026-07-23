@@ -207,11 +207,14 @@ Measure-first, like the rest of this session:
   artifact (bare-entity focus → empty F1 query); with query intent F1 returns the
   answer at rank #1 in 0.1s on the unmodified store. Pathology is bulk-Wikipedia-only
   (live store maxes at 18 facts/entity).
-- [ ] **Surviving small lever** — decouple F1's ranking query from focus resolution
-  (a `query` field on `recall`; also fixes unresolved-term tier-2 slowness). No
-  re-ingest/golden. **Priority: below the live-trial GO-DEEPEN backlog** (summary
-  bloat, `changes.to` prose, orientation packet) **and F3 traversal.** Plus a
-  separate units/format canonicalization pass.
+- [x] **Surviving small lever — SHIPPED `7a9b47e` (2026-07-23).** Optional `query`
+  field on `recall` decouples the F1 ranking signal from focus resolution (query is
+  never resolved → no tier-2 hang; omitted → focus-join fallback, byte-identical
+  replay). Verified: `focus:[David Sweet]+query:"date of birth"` → DOB rank #1 in
+  0.09s. Idiom: query = discriminating intent, not the whole question.
+- [ ] **Still open below this** — the live-trial GO-DEEPEN backlog (summary bloat,
+  `changes.to` prose, orientation packet), F3 traversal, and a units/format
+  canonicalization pass. These outrank anything left here.
 
 Loose ends to interleave (free, ~1hr): Elena's 3 science-doc corrections;
 `apply_plan` non-reentrancy comment. Dropped: paid extractor re-ingest (superseded
