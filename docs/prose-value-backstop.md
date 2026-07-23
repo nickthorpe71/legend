@@ -1,8 +1,30 @@
 # Design — mechanical backstop for prose values that mint element names
 
-**Status:** SPEC / NEXT. The evidence-decided fix for the Round-5 trial finding that
-the `changes.to`-prose instruction nudge is dead. From `docs/alchamancer-trial.md`
-Round-5 gauge + memory `#149`/`#150`/`#152`.
+> **✅ BUILT & VALIDATED 2026-07-23 (`77da3ef`).** Reject at the `changes.to` plan
+> site (`legend.c:~5300`): if the value would MINT a new element
+> (`pl->pends[to_pend].existing == NONE_U32`) and its **normalized** length exceeds
+> `g_aud_name_chars` (hoisted so the gate and audit share one threshold), fail with
+> the new `ERR_PROSE_VALUE`, guiding the model to a short value + summary detail.
+> **Validated on real trial data** (`scratchpad/validate_backstop.py`): 32/32 prose
+> `changes.to` rejected, 26/26 legit passed, **0 false positives**; mint-only lets a
+> resolving 124-char reference through. Gate green. A 2-reviewer adversarial pass
+> shaped the build — corrections applied: check at the **call site** (not the shared
+> `plan_name_ref`, which `changes.to` doesn't use — it goes through `plan_ref`);
+> hoisted the threshold; added the error code to the enum + names + **fuzz allowlist**
+> (the fuzz gate caught the missing allowlist entry).
+>
+> **Deliberately partial — validated at build, NOT yet in the wild.** Reviewer B
+> showed it likely RELOCATES pollution (prose the model can't put in `changes.to`
+> moves into the target summary — feeding `bloat`, 11× more prevalent — or leaks
+> through the ungated `fact.o`, already carrying 10 prose values). So the Round-6
+> gauge MUST track `fact.o`-prose + `bloat` alongside `prose_name`; a `prose_name`
+> win that just moves the pollution is a wash, and then this gets dropped/rethought.
+> Do NOT sell it as fixing packet growth (that's summary/element-count driven).
+
+**Status:** ~~SPEC~~ **BUILT (partial, wild-validation pending Round 6).** The
+evidence-decided fix for the Round-5 trial finding that the `changes.to`-prose
+instruction nudge is dead. From `docs/alchamancer-trial.md` Round-5 gauge + memory
+`#149`/`#150`/`#152`.
 
 ## The problem, measured in the wild
 
