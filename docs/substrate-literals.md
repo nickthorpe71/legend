@@ -1,11 +1,34 @@
 # Design — literals-not-nodes (+ must_exist refs)
 
-**Status:** scoped, not built. The *free, permanent* version of the over-extraction
-fix (`retrieval-redesign.md` #3, `session-2026-07-22-retrieval.md` #B): the paid
-extractor-prompt tightening is a band-aid; this stops the reification at the
-substrate so the store *structurally cannot* over-extract. From Sofia's DX review
-(`analysis-2026-07-21.md`). This is the deepest lever found this session and a real
-project — read this before building.
+> **⚠️ VERDICT 2026-07-22 — PHASE 2 (`TERM_LIT`) DROPPED. Measurement below.**
+> A free local analysis of the ingested SimpleQA store (`dump` → shape + degree,
+> `scratchpad/analyze_store.py`) showed the literal fix targets the wrong thing:
+> - **Scalars are ~15% of elements, ~11% of fact-objects, and 77% of all
+>   object-values are degree-1** (avg degree ~2). They never dedup and are never
+>   traversal hubs — they are *harmless leaves*. Literal-izing them is real surgery
+>   (persistence bump, golden regen, forward-ref caveat, ~10-site blast radius) for
+>   a cleanup of the one bucket that already costs nothing. **Keeping scalars as
+>   elements is nearly free** — the "every scalar should still be an element"
+>   position (Nick) is correct.
+> - **The traversal hubs are ENTITIES + kind-labels**, not scalars: `Barack Obama`
+>   (deg 1159), `Google Chrome` (1084), `person` (1288), `organization` (741) — all
+>   must stay nodes. Literals wouldn't touch a single hub. The "scalar hairball"
+>   worry was wrong.
+> - **Real inflation, ranked:** (a) provenance overhead — **58% of all facts are
+>   `src`+`source` meta-facts** (2 per content fact); (b) predicate sprawl (~5,973
+>   distinct predicates, one-offs not reused); (c) section-title composites as object
+>   values (`Bikini_Atoll: Trust funds and failed claims`).
+>
+> Phase 1 (`must_exist` refs) still shipped and stands. The rest of this doc is
+> retained as the *original* (now-superseded) scoping. See the recall-harm probe
+> results for which real lever to pursue next.
+
+**Status:** ~~scoped, not built~~ **Phase 2 dropped (see verdict above).** The *free,
+permanent* version of the over-extraction fix (`retrieval-redesign.md` #3,
+`session-2026-07-22-retrieval.md` #B): the paid extractor-prompt tightening is a
+band-aid; this stops the reification at the substrate so the store *structurally
+cannot* over-extract. From Sofia's DX review (`analysis-2026-07-21.md`). This was
+believed the deepest lever — measurement redirected it.
 
 ## The problem, confirmed at the type level
 
@@ -145,11 +168,16 @@ Measure-first, like the rest of this session:
   there is a typo footgun for a future *warning*, not an error). **`merge` was
   already must-exist** (`resolve_precise_elem`). Net: `resolves.o` phantom_close is
   now prevented at the source (test updated), gate green.
-- [ ] **Phase 2 — `TERM_LIT` + rule (b)** in `plan_slot_value`, then walk the
-  blast-radius list. The core data-model change.
-- [ ] **Phase 3 — regenerate goldens; validate over-extraction drop** on a
-  re-ingested page (+ retrieval/latency regression via `measure_tight.py`).
-- [ ] **Milestone** — re-pin the trial on a build with F1 + literals-not-nodes.
+- [x] ~~**Phase 2 — `TERM_LIT` + rule (b)**~~ **DROPPED 2026-07-22** (verdict at
+  top). Measured harmless; scalars stay elements.
+- [x] ~~**Phase 3 — regenerate goldens; validate over-extraction drop**~~ **MOOT**
+  (was Phase 2's validation).
+- [ ] **Milestone** — re-pin the trial on a build with F1 (+ Phase 1). No longer
+  waits on literals.
+- [ ] **NEXT LEVER (from the measurement)** — pick between provenance-overhead
+  (58% of facts) and predicate-sprawl, gated on the **recall-harm probe**
+  (`scratchpad/recall_harm.py`): whichever actually pollutes the neighborhood /
+  buries answers is the one worth building. Counts ≠ harm.
 
 Loose ends to interleave (free, ~1hr): Elena's 3 science-doc corrections;
 `apply_plan` non-reentrancy comment. Dropped: paid extractor re-ingest (superseded
