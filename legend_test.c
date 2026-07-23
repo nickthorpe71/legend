@@ -585,7 +585,7 @@ static void test_reader_recall(void) {
     TRY(parse_rec("{}"), failed); /* orientation mode: valid, all defaults */
     CHECK(!failed);
     CHECK(trec.focus_count == 0 && trec.limit == 40 && trec.history_depth == 2);
-    CHECK(trec.since == -1 && trec.observe == 0);
+    CHECK(trec.since == -1 && trec.observe == 0 && trec.query.len == 0);
 
     TRY(parse_rec("{\"focus\":[\"jump physics\",\"#87\"],\"limit\":25,"
                   "\"history_depth\":3,\"since\":\"2026-06-01\",\"observe\":true}"), failed);
@@ -601,7 +601,10 @@ static void test_reader_recall(void) {
     TRY(parse_rec("{\"since\":\"2024-02-29\"}"), failed); /* leap day is valid */
     CHECK(!failed && trec.since == 1709164800);
 
-    expect_rec_err("{\"query\":\"x\"}", ERR_PARSE, "query");
+    /* `query` (optional): the F1 ranking signal; accepted, never resolved */
+    TRY(parse_rec("{\"query\":\"date of birth\"}"), failed);
+    CHECK(!failed && trec.focus_count == 0 && span_eq(tb, trec.query, "date of birth"));
+    expect_rec_err("{\"bogus\":\"x\"}", ERR_PARSE, "bogus"); /* unknown field still rejects */
     /* a recall is a submission with no writes (spec §4): intent is accepted */
     TRY(parse_rec("{\"intent\":{\"curiosity\":1}}"), failed);
     CHECK(!failed && trec.intent[INTENT_CURIOSITY] == 1.0);
@@ -1964,6 +1967,7 @@ static void test_recall_tick(void) {
         TRY(tick_recall(&tg, &rec, tb, &twr), failed);
         CHECK(!failed);
         CHECK(twr.tick == 2 && tg.clock == 2); /* recall advances the clock */
+        CHECK(strcmp(twr.focus_query, "engine nonesuch") == 0); /* defaults to joined focus */
         CHECK(twr.focus_elems.count == 1);
         CHECK(elem_name_is(&tg, twr.focus_elems.v[0], "engine"));
         CHECK(tg.elements[twr.focus_elems.v[0]].stats.last_seen == 2);
@@ -1973,6 +1977,22 @@ static void test_recall_tick(void) {
         rec.observe = 1;
         TRY(tick_recall(&tg, &rec, tb, &twr), failed);
         CHECK(!failed && twr.tick == 2 && tg.clock == 2);
+        /* an explicit `query` overrides the focus-join as the ranking signal
+         * without touching element resolution (query is never resolved) */
+        {
+            const char *q2 = "{\"focus\":[\"engine\"],\"query\":\"what fuel does it use\"}";
+            size_t n2 = strlen(q2);
+            memcpy(tb, q2, n2 + 1);
+            json_parse(&tj, tb, (u32)n2);
+            r.t = tj.toks;
+            r.buf = tb;
+            read_recall(&r, &rec);
+            TRY(tick_recall(&tg, &rec, tb, &twr), failed);
+            CHECK(!failed);
+            CHECK(twr.focus_elems.count == 1 &&
+                  elem_name_is(&tg, twr.focus_elems.v[0], "engine"));
+            CHECK(strcmp(twr.focus_query, "what fuel does it use") == 0);
+        }
     }
     unsetenv("LEGEND_NOW");
 }

@@ -1413,6 +1413,7 @@ typedef struct {
 typedef struct {
   Span *focus;
   u32 focus_count, focus_cap;
+  Span query;        /* optional F1 ranking query; .len==0 => fall back to focus */
   i64 limit;         /* > 0; -1 = null (uncapped); 40 when omitted */
   i32 history_depth; /* >= 0; -1 = null (full chains); 2 when omitted */
   i64 since;         /* unix seconds at UTC midnight; -1 = absent */
@@ -2015,6 +2016,8 @@ static i64 parse_iso_date(const char *s, u32 len, const char *path) {
 static void read_recall(const Rd *r, Recall *rec) {
   u32 n, ti, k;
   rec->focus_count = 0;
+  rec->query.off = 0;
+  rec->query.len = 0;
   rec->limit = 40;
   rec->history_depth = 2;
   rec->since = -1;
@@ -2062,6 +2065,8 @@ static void read_recall(const Rd *r, Recall *rec) {
     } else if (rd_str_eq(r, key, "since")) {
       Span s = rd_string(r, val, "since");
       rec->since = parse_iso_date(r->buf + s.off, s.len, "since");
+    } else if (rd_str_eq(r, key, "query")) {
+      rec->query = rd_string(r, val, "query");
     } else if (rd_str_eq(r, key, "intent")) {
       read_intent(r, val, rec->intent);
     } else if (rd_str_eq(r, key, "observe")) {
@@ -6357,20 +6362,31 @@ static void tick_recall(Hypergraph *g, const Recall *rec,
     }
     u32vec_push_unique(&out->focus_elems, id);
   }
-  /* Join the raw focus terms into one query string; a focused recall ranks its
-   * neighborhood facts by relevance to this (frame side), not by recency. */
+  /* The query that ranks the neighborhood by relevance (frame side), not by
+   * recency: the explicit `query` field if given, else the joined focus terms.
+   * The query drives F1 ranking ONLY — it is never resolved to an element, so
+   * passing pure intent here cannot trigger the tier-2 focus-miss scan the way
+   * an unresolvable focus term does. */
   {
     static char q[1024];
     u32 qn = 0;
-    for (i = 0; i < rec->focus_count; i++) {
-      Span s = rec->focus[i];
-      u32 cp = s.len;
-      if (qn && qn + 1 < sizeof q)
-        q[qn++] = ' ';
-      if (cp > sizeof q - 1 - qn)
-        cp = (u32)(sizeof q - 1 - qn);
-      memcpy(q + qn, payload_buf + s.off, cp);
-      qn += cp;
+    if (rec->query.len) {
+      u32 cp = rec->query.len;
+      if (cp > sizeof q - 1)
+        cp = (u32)(sizeof q - 1);
+      memcpy(q, payload_buf + rec->query.off, cp);
+      qn = cp;
+    } else {
+      for (i = 0; i < rec->focus_count; i++) {
+        Span s = rec->focus[i];
+        u32 cp = s.len;
+        if (qn && qn + 1 < sizeof q)
+          q[qn++] = ' ';
+        if (cp > sizeof q - 1 - qn)
+          cp = (u32)(sizeof q - 1 - qn);
+        memcpy(q + qn, payload_buf + s.off, cp);
+        qn += cp;
+      }
     }
     q[qn] = 0;
     out->focus_query = qn ? q : NULL;
@@ -9782,6 +9798,10 @@ static const char MCP_TOOLS_JSON[] =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{"
     "\"focus\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
     "\"description\":\"entity names or topics; omit for an orientation packet\"},"
+    "\"query\":{\"type\":\"string\",\"description\":\"optional: what you want to "
+    "know; ranks the focus's facts by relevance to it. Give the discriminating "
+    "intent (e.g. 'date of birth'), NOT the whole question or the entity name "
+    "again. Omit for a general recall (recency order).\"},"
     "\"limit\":{\"type\":\"integer\",\"description\":\"max related items (default 40)\"},"
     "\"history_depth\":{\"type\":\"integer\",\"description\":\"past values per fact (default 2)\"},"
     "\"observe\":{\"type\":\"boolean\",\"description\":\"read-only; do not record the access\"}}}},"

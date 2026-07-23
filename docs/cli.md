@@ -176,14 +176,22 @@ Starts the long-lived MCP server over stdio (see [mcp-server.md](mcp-server.md))
 ## Recall payload
 
 ```json
-{ "focus": ["Inferno", "the fire spell"], "observe": false,
-  "limit": 20, "since": 0, "history_depth": 3 }
+{ "focus": ["Inferno", "the fire spell"], "query": "cast time",
+  "observe": false, "limit": 20, "since": 0, "history_depth": 3 }
 ```
 
 `focus` terms are resolved through the tiered index (exact name → alias → lexical
 → embedding). The frame reports what resolved, near-misses, the focused
 subgraph, and supporting bands (current state, decisions, constraints, history,
 related, sources). `observe: true` records the access (used by the eval probes).
+
+`query` (optional) is the F1 ranking signal: the focus neighborhood's facts are
+ranked by relevance to it instead of by recency. It is **never resolved to an
+element**, so passing intent here is safe — unlike stuffing intent into `focus`,
+which forces a full-store tier-2 miss scan when it doesn't resolve. Give the
+*discriminating* intent (`"date of birth"`), not the whole question with the
+entity name repeated (that dilutes the lexical pre-filter). Omit it for a general
+recall (recency order). No effect when the embedder is off (`LEGEND_EMBED=0`).
 
 ## Environment
 
