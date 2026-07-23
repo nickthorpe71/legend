@@ -20,8 +20,31 @@
 >   values (`Bikini_Atoll: Trust funds and failed claims`).
 >
 > Phase 1 (`must_exist` refs) still shipped and stands. The rest of this doc is
-> retained as the *original* (now-superseded) scoping. See the recall-harm probe
-> results for which real lever to pursue next.
+> retained as the *original* (now-superseded) scoping.
+>
+> **RECALL-HARM PROBE (2026-07-22, `scratchpad/recall_harm.py`) — the real root:**
+> recalled 5 SimpleQA head entities against the store and looked at what fills the
+> frame. Findings:
+> - **Provenance is INVISIBLE to recall** — `src`/`source` meta-facts appeared in
+>   **0** of the frames (they're subject=`rel:` facts-about-facts; bands are
+>   element-anchored). So the 58% provenance overhead is a *store-size* cost, **not
+>   a recall-quality lever.** Ruled out.
+> - **The answers are PRESENT but BURIED under extractor greed.** David Sweet has
+>   **102 facts** (`date of birth: 1957-06-24` is fact #1, drowned by "tow truck
+>   business began 1978", "number of grandchildren 4"…); John Williams has **144**
+>   (every Grammy nom 1976–2026 as its own fact; the Hall-of-Fame answer is 1 of
+>   144). The real over-extraction is **content-fact count per entity**, not
+>   scalars, not provenance, not predicate identity.
+> - **Cold recall on the polluted store times out (>110s)** — over-extraction also
+>   destroys latency, not just precision.
+> - **Bonus:** one "miss" (Jensen wheelbase, gold `2,845 mm`) is present as
+>   `wheelbase: 112 in` — a **units/canonicalization** gap, not a retrieval miss.
+>   True retrieval accuracy was understated by unit/format mismatches.
+>
+> **So the real lever = reduce content facts per entity** (ingest-side: extract
+> fewer, salient facts — already ½'d the count in the subset re-ingest) **backed by
+> F1 ranking + cap** (recall-side). Both about *content* facts. NOT this doc's
+> substrate change.
 
 **Status:** ~~scoped, not built~~ **Phase 2 dropped (see verdict above).** The *free,
 permanent* version of the over-extraction fix (`retrieval-redesign.md` #3,
@@ -174,10 +197,12 @@ Measure-first, like the rest of this session:
   (was Phase 2's validation).
 - [ ] **Milestone** — re-pin the trial on a build with F1 (+ Phase 1). No longer
   waits on literals.
-- [ ] **NEXT LEVER (from the measurement)** — pick between provenance-overhead
-  (58% of facts) and predicate-sprawl, gated on the **recall-harm probe**
-  (`scratchpad/recall_harm.py`): whichever actually pollutes the neighborhood /
-  buries answers is the one worth building. Counts ≠ harm.
+- [ ] **NEXT LEVER (decided by the recall-harm probe)** — **reduce content-facts
+  per entity.** The probe ruled out provenance (invisible to recall) and confirmed
+  answers are buried under 100+ facts/entity. Primary = ingest-side extraction
+  restraint (already ½'d the count, `ingest_subset.py`); secondary = F1 ranking +
+  cap robustness for 100+-fact entities. Separately: a units/format canonicalization
+  pass (the Jensen `112 in` vs `2,845 mm` class of miss).
 
 Loose ends to interleave (free, ~1hr): Elena's 3 science-doc corrections;
 `apply_plan` non-reentrancy comment. Dropped: paid extractor re-ingest (superseded
