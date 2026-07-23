@@ -22,29 +22,34 @@
 > Phase 1 (`must_exist` refs) still shipped and stands. The rest of this doc is
 > retained as the *original* (now-superseded) scoping.
 >
-> **RECALL-HARM PROBE (2026-07-22, `scratchpad/recall_harm.py`) — the real root:**
-> recalled 5 SimpleQA head entities against the store and looked at what fills the
-> frame. Findings:
+> **RECALL-HARM PROBE (2026-07-22, `scratchpad/recall_harm.py`) — PARTLY RETRACTED.**
+> Recalled 5 SimpleQA head entities and looked at what fills the frame. **Adversarial
+> review later found the probe was measured wrong** (see the ⛔ correction below).
+> What SURVIVES (structural, probe-independent):
 > - **Provenance is INVISIBLE to recall** — `src`/`source` meta-facts appeared in
->   **0** of the frames (they're subject=`rel:` facts-about-facts; bands are
->   element-anchored). So the 58% provenance overhead is a *store-size* cost, **not
->   a recall-quality lever.** Ruled out.
-> - **The answers are PRESENT but BURIED under extractor greed.** David Sweet has
->   **102 facts** (`date of birth: 1957-06-24` is fact #1, drowned by "tow truck
->   business began 1978", "number of grandchildren 4"…); John Williams has **144**
->   (every Grammy nom 1976–2026 as its own fact; the Hall-of-Fame answer is 1 of
->   144). The real over-extraction is **content-fact count per entity**, not
->   scalars, not provenance, not predicate identity.
-> - **Cold recall on the polluted store times out (>110s)** — over-extraction also
->   destroys latency, not just precision.
-> - **Bonus:** one "miss" (Jensen wheelbase, gold `2,845 mm`) is present as
->   `wheelbase: 112 in` — a **units/canonicalization** gap, not a retrieval miss.
->   True retrieval accuracy was understated by unit/format mismatches.
+>   **0** frames (subject=`rel:` facts-about-facts; bands are element-anchored). The
+>   58% overhead is a *store-size* cost, not a recall lever. STANDS.
+> - **Units/format gap** — the Jensen "miss" (gold `2,845 mm`) is present as
+>   `wheelbase: 112 in`; some eval misses were unit mismatches, understating accuracy.
+>   STANDS (a separate small lever).
 >
-> **So the real lever = reduce content facts per entity** (ingest-side: extract
-> fewer, salient facts — already ½'d the count in the subset re-ingest) **backed by
-> F1 ranking + cap** (recall-side). Both about *content* facts. NOT this doc's
-> substrate change.
+> **⛔ RETRACTED by 3-reviewer adversarial pass (2026-07-22):**
+> - **"Answers PRESENT but BURIED under extractor greed" — FALSE, a probe artifact.**
+>   `recall_harm.py` passed only the **bare entity** as focus; F1's ranking query is
+>   the joined focus terms (`legend.c:6360-6376`), so F1 ranked 102 facts against
+>   "David Sweet" with zero discrimination. **Verified:** bare focus → DOB absent at
+>   limit=100; focus `["David Sweet","date of birth"]` → **DOB rank #1** in **0.1s**
+>   on the unmodified store. F1 already surfaces the answer given query intent.
+> - **">110s cold recall" — FALSE.** Normal recall ~86ms; the timeout only fires on an
+>   *unresolved* focus term (full-store tier-2 scan). Not a fact-count problem.
+> - So the "reduce content-facts per entity" lever (`docs/ingest-restraint.md`) is
+>   **KILLED**. The pathology is a bulk-Wikipedia artifact (live store maxes at 18
+>   facts/entity, not 100+).
+>
+> **The Phase 2 (`TERM_LIT`) drop above still STANDS** — it rests on the structural
+> dump (scalars are degree-1 leaves, hubs are entities), not on this probe.
+> **The surviving real lever** = decouple F1's ranking query from focus resolution
+> (add a `query` field to `recall`); but it ranks below the trial backlog + F3.
 
 **Status:** ~~scoped, not built~~ **Phase 2 dropped (see verdict above).** The *free,
 permanent* version of the over-extraction fix (`retrieval-redesign.md` #3,
@@ -197,12 +202,16 @@ Measure-first, like the rest of this session:
   (was Phase 2's validation).
 - [ ] **Milestone** — re-pin the trial on a build with F1 (+ Phase 1). No longer
   waits on literals.
-- [ ] **NEXT — ingest restraint, SPEC'd in `docs/ingest-restraint.md`.** Decided by
-  the recall-harm probe: reduce content-facts per entity. Primary lever = **multi-attr
-  consolidation** (Legend already supports 5-attr facts; ingester emits flat ones only
-  because the prompt says so) — cuts count ~2x with zero info loss, no code/golden
-  change. Secondary = enumeration roll-up. Recall-side F1/cap is the complement.
-  Units/format canonicalization tracked separately.
+- [x] ~~**NEXT — ingest restraint**~~ **KILLED 2026-07-22** by the 3-reviewer pass
+  (`docs/ingest-restraint.md` banner). The motivating "buried answer" was a probe
+  artifact (bare-entity focus → empty F1 query); with query intent F1 returns the
+  answer at rank #1 in 0.1s on the unmodified store. Pathology is bulk-Wikipedia-only
+  (live store maxes at 18 facts/entity).
+- [ ] **Surviving small lever** — decouple F1's ranking query from focus resolution
+  (a `query` field on `recall`; also fixes unresolved-term tier-2 slowness). No
+  re-ingest/golden. **Priority: below the live-trial GO-DEEPEN backlog** (summary
+  bloat, `changes.to` prose, orientation packet) **and F3 traversal.** Plus a
+  separate units/format canonicalization pass.
 
 Loose ends to interleave (free, ~1hr): Elena's 3 science-doc corrections;
 `apply_plan` non-reentrancy comment. Dropped: paid extractor re-ingest (superseded

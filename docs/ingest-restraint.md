@@ -1,8 +1,39 @@
 # Design — ingest restraint: fewer content-facts per entity
 
-**Status:** SPEC / NEXT. The evidence-decided lever from the 2026-07-22 recall-harm
-probe (`docs/substrate-literals.md` verdict, `scratchpad/recall_harm.py`). Replaces
-the dropped `TERM_LIT` substrate fix.
+> **⛔ KILLED 2026-07-22 — the premise was a measurement artifact.** A 3-reviewer
+> adversarial pass demolished this spec:
+> - **The "buried answer" was a broken probe.** `recall_harm.py` passed only the
+>   **bare entity** as focus, and F1's ranking query is the joined focus terms
+>   (`legend.c:6360-6376`) — so F1 ranked 102 facts against the string "David Sweet"
+>   (which every fact contains → zero discrimination). **Verified:** bare focus →
+>   DOB absent at limit=100; focus `["David Sweet","date of birth"]` → **DOB rank #1**,
+>   in **0.1s**, on the *unmodified* store. F1 already solves this given query intent.
+> - **The ">110s cold recall" was also an artifact** — an *unresolved* focus term
+>   ("date of birth born", "tow truck business year") triggers a full-store tier-2
+>   semantic scan over 14,730 elements. Normal recall is ~86ms. Consolidating facts
+>   does not touch that path.
+> - **The pathology doesn't exist in the product.** The live trial store maxes at
+>   **18 facts/entity** (mean 2.67); 100+/entity is a bulk-Wikipedia artifact of the
+>   "be exhaustive" ingest prompt. Over-fit to SimpleQA.
+> - **Lever 1 does ~0% on its own worst case** (John Williams: 125 of 131 predicates
+>   are unique → nothing to consolidate) and **Lever 2 reverses `counting-out-of-scope`**
+>   (persisting an aggregate + dropping members is exactly the out-of-scope condition,
+>   and breaks the staleness guarantee).
+> - **Even the mechanism's examples were wrong** (`{s,p,o,extra}` is a parse error;
+>   real budget is ≤3 qualifier slots; `changes` can't supersede one attr of a
+>   multi-attr fact).
+>
+> **The one real (small) lever that survived:** decouple F1's ranking query from
+> focus resolution — add a `query` field to `recall` that feeds `rerank_relevance`
+> directly and bypasses element resolution (fixes both the no-discrimination case and
+> the unresolved-term tier-2 slowness). **No re-ingest, no golden regen.** But it
+> ranks **below** the live-trial backlog (summary bloat, `changes.to` prose, the
+> orientation packet) and F3 traversal — see the synthesis in
+> `docs/substrate-literals.md`. Retained below as a record of what was refuted.
+
+**Status:** ~~SPEC / NEXT~~ **KILLED (see banner).** Was: the evidence-decided lever
+from the 2026-07-22 recall-harm probe — but that probe was measured with an empty F1
+query.
 
 ## The problem, measured
 
