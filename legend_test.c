@@ -2874,8 +2874,9 @@ static void test_audit(void) {
         CHECK(tg.clock == before);
     }
 
-    /* phantom_close: a resolves whose target nobody ever opened closed
-     * nothing and left a decoy (the finding-6 papercut) */
+    /* resolves.o must_exist (Phase 1): a resolves whose target nobody opened is
+     * now REJECTED at the source -- the finding-6 papercut is PREVENTED, not just
+     * flagged by the audit after the phantom lands. */
     TRY(run_save("{\"elements\":[{\"name\":\"real question\",\"kind\":\"question\","
                  "\"summary\":\"genuinely open\"},"
                  "{\"name\":\"the fix\",\"kind\":\"decision\",\"summary\":\"what landed\"}]}"),
@@ -2884,17 +2885,13 @@ static void test_audit(void) {
     TRY(run_save("{\"facts\":[{\"s\":\"the fix\",\"p\":\"resolves\","
                  "\"o\":\"a question nobody opened\"}]}"),
         failed);
-    CHECK(!failed);
+    CHECK(failed); /* rejected: the resolves target must already exist */
     capture_audit();
-    CHECK(strstr(t_audit, "\"reason\":\"phantom_close\"") != NULL);
-    CHECK(strstr(t_audit, "\"name\":\"a question nobody opened\"") != NULL);
-    CHECK(strstr(t_audit, "\"phantom_close\":1") != NULL);
-    /* resolving a REAL open item is correct usage and stays silent */
+    CHECK(strstr(t_audit, "a question nobody opened") == NULL); /* no phantom minted */
+    /* resolving a REAL open item is correct usage and succeeds */
     TRY(run_save("{\"facts\":[{\"s\":\"the fix\",\"p\":\"resolves\",\"o\":\"real question\"}]}"),
         failed);
     CHECK(!failed);
-    capture_audit();
-    CHECK(strstr(t_audit, "\"phantom_close\":1") != NULL); /* still just the one */
 
     /* status_fact: a status-flavored property written as a plain fact
      * accretes instead of superseding (trial doc §11) */

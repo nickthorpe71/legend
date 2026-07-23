@@ -4131,11 +4131,42 @@ static void plan_log_homonym(Plan *pl, const char *path, Span submitted,
   op->cand_start = op->cand_count = 0;
 }
 
+/* must_exist reference miss: stage the closest lexical (Jaccard) matches as
+ * "did you mean" candidates in the error envelope. Runs only on the error path,
+ * so the full element scan is fine. */
+static void stage_must_exist_cands(const Hypergraph *g, const char *q, u32 qlen) {
+  static ScoredVec sv;
+  static U32Vec ids;
+  u32 e, n;
+  sv.count = 0;
+  {
+    static U32Vec qtri;
+    tier2_trigrams(q, qlen, &qtri);
+    for (e = 0; e < g->element_count; e++) {
+      double s;
+      if (g->elements[e].redirect != NONE_U32)
+        continue;
+      s = tier2_near_score(g, &qtri, e);
+      if (s >= 0.3)
+        scored_push(&sv, e, s);
+    }
+  }
+  if (sv.count > 1)
+    qsort(sv.v, sv.count, sizeof *sv.v, scored_cmp);
+  ids.count = 0;
+  n = sv.count < TIER2_CAND_CAP ? sv.count : TIER2_CAND_CAP;
+  for (e = 0; e < n; e++)
+    u32vec_push(&ids, sv.v[e].elem);
+  stage_error_candidates(g, ids.v, ids.count);
+}
+
 /* Resolve a name (spec §8 write-position rules) to a pend idx. The bytes are
- * either a payload span (surface) or a constructed form living in pl->raw. */
+ * either a payload span (surface) or a constructed form living in pl->raw.
+ * must_exist: reference positions (changes.target, resolves.o) that must name an
+ * existing element -- on a miss, error with candidates rather than mint a phantom. */
 static u32 plan_name_ref(Plan *pl, const char *bytes, u32 blen, Span surface,
                          u32 raw, const char *path, u32 want_kind_pend,
-                         int forced_new, int listable) {
+                         int forced_new, int listable, int must_exist) {
   u32 nlen, nid, pend, count = 1;
   nlen = normalize_into_scratch(bytes, blen);
   if (nlen == 0)
@@ -4169,6 +4200,13 @@ static u32 plan_name_ref(Plan *pl, const char *bytes, u32 blen, Span surface,
       }
     }
   }
+  if (must_exist) {
+    stage_must_exist_cands(pl->g, bytes, blen);
+    fail(ERR_UNKNOWN_REF, path,
+         "no element named \"%.*s\" -- a reference here must resolve to an "
+         "existing element (recall it first, or fix the name)",
+         (int)(blen > 80 ? 80 : blen), bytes);
+  }
   pend = plan_pend_push(pl, nid, surface, raw, NONE_U32);
   pl->pends[pend].forced = (u8)(forced_new != 0);
   snprintf(pl->pends[pend].path, sizeof pl->pends[pend].path, "%s", path);
@@ -4178,9 +4216,10 @@ static u32 plan_name_ref(Plan *pl, const char *bytes, u32 blen, Span surface,
   return pend;
 }
 
-/* Resolve one element ref (spec §8 write-position rules) to a pend idx. */
-static u32 plan_ref(Plan *pl, Span s, const char *path, u32 want_kind_pend,
-                    int forced_new, int listable) {
+/* Resolve one element ref (spec §8 write-position rules) to a pend idx.
+ * must_exist: error (with candidates) on a name miss instead of minting. */
+static u32 plan_ref_ex(Plan *pl, Span s, const char *path, u32 want_kind_pend,
+                       int forced_new, int listable, int must_exist) {
   u32 id, pend;
   if (span_is_rel_ref(pl->buf, s))
     fail(ERR_PARSE, path, "expected an element ref, got a relation ref");
@@ -4201,7 +4240,13 @@ static u32 plan_ref(Plan *pl, Span s, const char *path, u32 want_kind_pend,
     return pend;
   }
   return plan_name_ref(pl, pl->buf + s.off, s.len, s, NONE_U32, path,
-                       want_kind_pend, forced_new, listable);
+                       want_kind_pend, forced_new, listable, must_exist);
+}
+
+/* The common case: a reference that may mint on a miss. */
+static u32 plan_ref(Plan *pl, Span s, const char *path, u32 want_kind_pend,
+                    int forced_new, int listable) {
+  return plan_ref_ex(pl, s, path, want_kind_pend, forced_new, listable, 0);
 }
 
 /* A constructed name (current_<property>, active): NUL-terminated bytes kept
@@ -4210,12 +4255,13 @@ static u32 plan_ref_raw(Plan *pl, const char *bytes, u32 blen, const char *path,
                         int listable) {
   u32 raw = str_intern(&pl->raw, bytes, blen);
   return plan_name_ref(pl, str_ptr(&pl->raw, raw), blen, span_none(), raw, path,
-                       NONE_U32, 0, listable);
+                       NONE_U32, 0, listable, 0);
 }
 
-/* A slot value: an element ref or "rel:<id>". */
+/* A slot value: an element ref or "rel:<id>". must_exist forbids minting the
+ * value element (used for resolves.o, whose object must already exist). */
 static void plan_slot_value(Plan *pl, Span s, const char *path, int listable,
-                            u8 *vtag, u32 *vid) {
+                            u8 *vtag, u32 *vid, int must_exist) {
   u32 id;
   if (span_parse_rel_id(pl->buf, s, &id)) {
     if (id >= pl->g->relation_count)
@@ -4225,7 +4271,7 @@ static void plan_slot_value(Plan *pl, Span s, const char *path, int listable,
     return;
   }
   *vtag = VT_EPEND;
-  *vid = plan_ref(pl, s, path, NONE_U32, 0, listable);
+  *vid = plan_ref_ex(pl, s, path, NONE_U32, 0, listable, must_exist);
 }
 
 /* Canonical plan-space slot key: collapses pends that wrap the same existing
@@ -5012,7 +5058,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
           vids[0] = name_pend;
           names[1] = key_pend;
           plan_slot_value(pl, sub->span_pool[ae->val_start + v], path, 1,
-                          &tags[1], &vids[1]);
+                          &tags[1], &vids[1], 0);
           plan_relation(pl, names, tags, vids, 2, ST_ASSERTED,
                         sub->intent[INTENT_CONVICTION], 0.0, 0, 1);
         }
@@ -5071,11 +5117,14 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
       u8 tags[2];
       names[0] = plan_pend_for_elem(pl, WK_SUBJECT);
       snprintf(path, sizeof path, "facts[%u].s", i);
-      plan_slot_value(pl, f->s, path, 1, &tags[0], &vids[0]);
+      plan_slot_value(pl, f->s, path, 1, &tags[0], &vids[0], 0);
       snprintf(path, sizeof path, "facts[%u].p", i);
       names[1] = plan_ref(pl, f->p, path, NONE_U32, 0, 0);
       snprintf(path, sizeof path, "facts[%u].o", i);
-      plan_slot_value(pl, f->o, path, 1, &tags[1], &vids[1]);
+      /* a `resolves` fact closes an existing question/task: its object must
+       * already exist, else it silently mints a phantom (spec §8, MCP note). */
+      plan_slot_value(pl, f->o, path, 1, &tags[1], &vids[1],
+                      pl->pends[names[1]].existing == WK_RESOLVES);
       rp = plan_relation(pl, names, tags, vids, 2, f->status, conf, f->salience,
                          (u8)f->has_salience, 1);
       if (!span_absent(f->src)) {
@@ -5131,7 +5180,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
           keys[a] = plan_ref(pl, ae->key, vpath, NONE_U32, 0, 0);
           names[a] = keys[a];
           plan_slot_value(pl, sub->span_pool[ae->val_start], vpath, listable,
-                          &tags[a], &vids[a]);
+                          &tags[a], &vids[a], 0);
           if ((a == target_i || a == property_i || a == from_i || a == to_i) &&
               tags[a] != VT_EPEND)
             fail(ERR_PARSE, vpath, "expected an element ref");
@@ -5167,7 +5216,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
                "fact expands to more than %d relations", LEGEND_LIST_CAP);
         for (v = 0; v < ae->val_count; v++) {
           plan_slot_value(pl, sub->span_pool[ae->val_start + v], vpath, 1,
-                          &vals[vtotal].tag, &vals[vtotal].id);
+                          &vals[vtotal].tag, &vals[vtotal].id, 0);
           vtotal++;
         }
       }
@@ -5216,6 +5265,9 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     CurNamePeek cn;
     Prior prior;
     snprintf(path, sizeof path, "changes[%u].target", i);
+    /* NOTE: changes.target may legitimately mint (one-shot "set a property on a
+     * new element" -- spec fixtures f05/f08 rely on it), so it is NOT must_exist;
+     * the typo-phantom footgun is a UX concern for a future warning, not an error. */
     target_pend = plan_ref(pl, c->target, path, NONE_U32, 0, 1);
     snprintf(path, sizeof path, "changes[%u].property", i);
     property_pend = plan_ref(pl, c->property, path, NONE_U32, 0, 0);

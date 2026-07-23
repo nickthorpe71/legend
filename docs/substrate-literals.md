@@ -126,8 +126,23 @@ Measure-first, like the rest of this session:
   distinct per fact, so "average N ages" still works (each is a distinct literal on a
   distinct relation) — confirm this holds.
 
-## Suggested build order
+## Build order / phase tracker
 
-1. `must_exist` refs (independent, smaller, retires 2 audit checks).
-2. `TERM_LIT` + rule (b) in `plan_slot_value`, then walk the blast-radius list.
-3. Regenerate goldens; validate over-extraction drop on a re-ingested page.
+- [x] **Phase 1 — `must_exist` refs** *(DONE 2026-07-23)*. Added a `must_exist`
+  mode to `plan_name_ref` (`plan_ref_ex`/`plan_slot_value` thread it) that errors
+  with near-miss "did you mean" candidates instead of minting. **Scope corrected
+  while building:** only **`resolves.o`** is a true must-exist invariant (you can't
+  close a question that never existed). **`changes.target` is NOT** — spec fixtures
+  f05/f08 legitimately mint the target to set a property in one shot (the phantom
+  there is a typo footgun for a future *warning*, not an error). **`merge` was
+  already must-exist** (`resolve_precise_elem`). Net: `resolves.o` phantom_close is
+  now prevented at the source (test updated), gate green.
+- [ ] **Phase 2 — `TERM_LIT` + rule (b)** in `plan_slot_value`, then walk the
+  blast-radius list. The core data-model change.
+- [ ] **Phase 3 — regenerate goldens; validate over-extraction drop** on a
+  re-ingested page (+ retrieval/latency regression via `measure_tight.py`).
+- [ ] **Milestone** — re-pin the trial on a build with F1 + literals-not-nodes.
+
+Loose ends to interleave (free, ~1hr): Elena's 3 science-doc corrections;
+`apply_plan` non-reentrancy comment. Dropped: paid extractor re-ingest (superseded
+by Phase 2).
