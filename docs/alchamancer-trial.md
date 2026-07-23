@@ -878,6 +878,25 @@ does prose-name pollution stop growing now that the model is warned? Baseline
 the 20 KB cap and whether `correlated_with` ever leaves 0. Close when convenient;
 not a formal round.
 
+**MID-ROUND READ 2026-07-23 (clock 409, 1168 elements, 269 invocations on
+`9d745ee`; read-only on a store copy). The gauge FAILED:**
+- **`prose_name` grew 20 → 36.** The warning is **instruction-only** (MCP tool
+  text, no code check) and the model ignores it under load: **16 of 27 Round-5
+  `changes` set a prose `to` >120 chars** on `build_status`/`current_state`
+  ("BUILT 2026-07-21 sim-side, ART IS PLACEHOLDER…" 685). Soft nudge is dead —
+  → mechanical backstop spec'd: `docs/prose-value-backstop.md` (reject a
+  `changes.to` mint >120, guide the prose into the summary). Scope decided by
+  measurement: `changes.to` only (0 legit values >120 across all 62 trial
+  `changes.to`; fact-objects/attr-values go legitimately long, so a broad gate
+  would false-reject real work).
+- **Packet 15.0 → ~16.0 KB, still whole.** Climbing toward the 20 KB cap (`#141`).
+- **`correlated_with` still 0** as a fact predicate — invariant holds (`#137`).
+  `phantom_close` and `status_fact` still 0.
+
+The prose backstop is the **last piece before the next deliberate re-pin**, which
+should bundle it with F1 ranking + the recall `query` field + Phase-1
+`resolves.o must_exist`. The re-pin is the natural Round-5 close.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
