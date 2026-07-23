@@ -3254,6 +3254,13 @@ static const double TIER2_AMBIENT_BOOKKEEPING_FACTOR = 0.5;
  * top-salience defaults as clutter. Below it, an ambient recall skips the
  * semantic/backfill append and stays quiet; deliberate recalls never abstain. */
 static const double TIER2_AMBIENT_ANCHOR = 0.6;
+/* Ambient recall with a weak lexical anchor is NOT automatically off-domain: a
+ * paraphrase ("verge region music" -> "The Verge") has little trigram overlap but a
+ * strong SEMANTIC match. When the lexical anchor is below TIER2_AMBIENT_ANCHOR, fall
+ * back to the semantic ranking and surface it only if its best clears this bar;
+ * genuine off-domain prompts clear neither and stay quiet. Tuned on the trial store:
+ * on-domain best scores >=0.76, off-domain <=0.74 (thin margin -- watch/retune). */
+static const double TIER2_AMBIENT_SEMANTIC_MIN = 0.75;
 enum { TIER2_LIST_CAP = 100 }; /* miss candidate list bound after salience backfill */
 enum { TIER2_SEMANTIC_CAP = 30 }; /* shorter list when semantic: the target ranks high,
                                      so a fraction of the salience roster suffices */
@@ -3574,15 +3581,25 @@ static u32 tier2_focus_miss(const Hypergraph *g, const char *q, u32 qlen,
     *out_score = scan.v[0].score;
     return scan.v[0].elem;
   }
-  /* Ambient abstention: a passive sweep whose best lexical hit doesn't clear the
-   * anchor shares no real vocabulary with the store — an off-domain prompt whose
-   * candidate list would just be clutter. Surface nothing there; a deliberate
-   * recall always gets the full list (lexical + semantic/backfill). */
+  /* A deliberate recall, or an ambient sweep with a real lexical anchor, gets the
+   * full list: lexical near-matches, then the semantic ranking (or salience
+   * backfill when embeddings are off). */
   if (!ambient || tier2_name_anchor(g, q, qlen) >= TIER2_AMBIENT_ANCHOR) {
     for (c = 0; c < scan.count && c < TIER2_CAND_CAP; c++)
       scored_push(cands, scan.v[c].elem, scan.v[c].score);
     if (!tier2_semantic(g, cands, start, TIER2_LIST_CAP, q, qlen))
       tier2_backfill(g, cands, start, TIER2_LIST_CAP);
+  } else if (tier2_semantic(g, cands, start, TIER2_LIST_CAP, q, qlen)) {
+    /* Ambient sweep, weak lexical anchor, embeddings available: don't abstain
+     * blindly — surface the semantic ranking only if its best clears the bar (a
+     * strong paraphrase match); otherwise stay quiet (off-domain clutter). The
+     * lexical scan is skipped here, so its low-overlap noise never leaks in. */
+    double best = 0.0;
+    for (c = start; c < cands->count; c++)
+      if (cands->v[c].score > best)
+        best = cands->v[c].score;
+    if (best < TIER2_AMBIENT_SEMANTIC_MIN)
+      cands->count = start; /* semantic is clutter too — abstain */
   }
   /* Ambient miss: demote bookkeeping kinds, then re-sort the whole pool
    * (lexical + semantic together) by the adjusted score. Reorder only — no
