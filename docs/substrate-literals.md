@@ -197,12 +197,12 @@ Measure-first, like the rest of this session:
   (was Phase 2's validation).
 - [ ] **Milestone** — re-pin the trial on a build with F1 (+ Phase 1). No longer
   waits on literals.
-- [ ] **NEXT LEVER (decided by the recall-harm probe)** — **reduce content-facts
-  per entity.** The probe ruled out provenance (invisible to recall) and confirmed
-  answers are buried under 100+ facts/entity. Primary = ingest-side extraction
-  restraint (already ½'d the count, `ingest_subset.py`); secondary = F1 ranking +
-  cap robustness for 100+-fact entities. Separately: a units/format canonicalization
-  pass (the Jensen `112 in` vs `2,845 mm` class of miss).
+- [ ] **NEXT — ingest restraint, SPEC'd in `docs/ingest-restraint.md`.** Decided by
+  the recall-harm probe: reduce content-facts per entity. Primary lever = **multi-attr
+  consolidation** (Legend already supports 5-attr facts; ingester emits flat ones only
+  because the prompt says so) — cuts count ~2x with zero info loss, no code/golden
+  change. Secondary = enumeration roll-up. Recall-side F1/cap is the complement.
+  Units/format canonicalization tracked separately.
 
 Loose ends to interleave (free, ~1hr): Elena's 3 science-doc corrections;
 `apply_plan` non-reentrancy comment. Dropped: paid extractor re-ingest (superseded
