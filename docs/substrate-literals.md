@@ -52,6 +52,13 @@ and it directly implements "stop minting nodes for values that aren't entities."
 
 ## The mechanism
 
+> **Line numbers below are approximate and drift with every edit** (Phase 1 already
+> shifted everything past ~`plan_ref`). The **grep target is authoritative**: `grep -n
+> 'value.tag' legend.c` finds every blast-radius site; `plan_slot_value` /
+> `plan_ref_ex` / the `VT_` enum (`enum { VT_EPEND, VT_RCONST, VT_RPEND }`, note the
+> third) are the named anchors. Verify by name, not by number.
+
+
 1. **Term:** add `TERM_LIT = 2`; when `tag == TERM_LIT`, `id` is a **string-arena
    id** (the interned literal), not an element id. Literals intern like everything
    else, so equal strings share an id → dedup and supersession keep working by
@@ -82,14 +89,15 @@ Each must handle `TERM_LIT` (grep `value.tag`):
   Bump the snapshot version; old stores are all-`TERM_ELEM` and load unchanged
   (forward-compat).
 
-## Sub-fix: `must_exist` reference positions
+## Sub-fix: `must_exist` reference positions — **SHIPPED as Phase 1** (see tracker)
 
-Separate, smaller, high-value: `changes.target`, `resolves.o`, and `merge` operands
-are **entity references that must already exist** — today an unknown one silently
-mints a phantom (`phantom_close`, `orphan`). Make these positions **error with the
-near-miss candidates** the resolver already computes (`near_matches`) instead of
-minting. This retires `phantom_close`/`orphan` and is independent of the literal
-work — could ship first.
+*Historical framing; Phase 1 corrected it.* Of the three positions originally
+grouped here, only **`resolves.o`** turned out to be a true must-exist invariant and
+is the one that shipped: an unknown one now **errors with near-miss candidates**
+instead of minting a phantom. **`changes.target` is NOT must-exist** — spec fixtures
+f05/f08 legitimately mint the change target in one shot (a typo there is a future
+*warning*, not an error). **`merge` operands were already** must-exist
+(`resolve_precise_elem`). See the phase tracker for the shipped scope.
 
 ## Validation plan
 
