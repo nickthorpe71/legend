@@ -66,6 +66,22 @@ One JSONL line per invocation, appended under the store lock:
 
 ## Diagnosis playbook
 
+**0. Round close (all gauges in one command)** — run at every round close so nothing
+is forgotten; reads the journal + a read-only store copy, runs the pinned binary:
+
+```sh
+python3 harness/round_report.py [build_sha]   # default: latest build in the journal
+```
+
+Reports, for the round's build segment: activity + save-op mix; **prose-backstop**
+firing/recovery + whether prose slipped through; **reroute watch** (`fact.o` prose that
+would indicate the backstop just moved pollution); audit health, packet size, and the
+`correlated_with` invariant; and — the gauge the journal can't give directly —
+**ambient-recall quality** by replaying the round's ambient queries and tallying
+surface-vs-abstain (too-quiet → lower `TIER2_AMBIENT_SEMANTIC_MIN`; clutter → raise).
+Compare its snapshot to the round's baseline (recorded in the round section). This does
+NOT check determinism — that's step 1.
+
 **1. Determinism in the wild** — the journal is a replayable corpus; rebuilding
 the store from it must reproduce the live snapshot byte-for-byte:
 
