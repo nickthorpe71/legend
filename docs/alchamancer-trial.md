@@ -904,7 +904,29 @@ Round 6 opened organically the moment a live session recalled on the new binary.
 Cross-version replay diverges at this boundary by design (fix-bearing) — not
 corruption; replay stays byte-identical within `19868c3`.
 
-## ROUND 6 IN PROGRESS · from 2026-07-23 · `19868c3` · `#155`
+## ROUND 6 CLOSED 2026-07-25 · `19868c3` · prose backstop UNEXERCISED (inconclusive)
+
+**Closed after 2 days / 120 invocations — but the round was recall-heavy and
+save-light, so the prose backstop was never exercised** (like the modal fix
+`#127`/`#134`). Delta over the `19868c3` segment:
+- **8 saves, 112 recalls; ZERO `changes`/`retract`/`merge` ops** — every save was
+  `elements`+`facts` only. The backstop targets `changes.to`, so with no `changes`
+  it couldn't fire: **0 `prose_value` rejections, 0 prose `changes.to`.** The
+  reduce-vs-relocate question stays **OPEN** — carry the backstop forward untested.
+- `fact.o` prose (>120) added this round: **0** (no relocation, but also nothing to
+  relocate).
+- **Store health stable/good:** prose_name **36→36** (flat), bloat 397→409 (+12
+  noise, out of tally `#153`), stale_open/orphan/near_dup unchanged, phantom_close &
+  status_fact still **0**, `correlated_with` still **0** (invariant holds).
+- **Packet 16.0 → 13.9 KB** — *shrank* ~2 KB (activation decay redistributed the
+  top-16 salient set). Good for the `#141` cap-pressure watch; not climbing.
+
+Verdict: no signal on the backstop — it needs a **save/`changes`-heavy** round (like
+R4/R5) to test. **Next re-pin should bundle the ambient-abstention fix (`31bdb5e`,
+never deployed — the trial ran R6 on 19868c3, not the intended "Round 7" binary) and
+carry the prose backstop forward; watch BOTH next round.**
+
+## ~~ROUND 6~~ (original setup, for reference) · from 2026-07-23 · `19868c3` · `#155`
 
 **First round carrying the retrieval work + the prose backstop.** Four changes now
 live: F1 query→fact ranking, the recall `query` field (decouples ranking from focus
