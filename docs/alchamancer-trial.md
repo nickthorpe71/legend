@@ -926,6 +926,32 @@ R4/R5) to test. **Next re-pin should bundle the ambient-abstention fix (`31bdb5e
 never deployed — the trial ran R6 on 19868c3, not the intended "Round 7" binary) and
 carry the prose backstop forward; watch BOTH next round.**
 
+## ROUND 7 IN PROGRESS · from 2026-07-25 · re-pinned `19868c3` → `c1f1b06` · `#155`
+
+Re-pinned mid-agent (safe: binary swap doesn't disturb a running process, lock
+serializes writes, `c1f1b06` reuses the warm `vectors.bin` — no cold re-embed).
+Adds the **ambient-abstention fix** (`31bdb5e`) on top of the R6 bundle; carries the
+still-untested **prose backstop** forward. Verified live: an ambient recall of
+"verge region music" now surfaces **The Verge @0.76** (was empty on `19868c3`).
+
+**Baseline at re-pin** (clock 425, 1202 elements): prose_name **36**, bloat 409,
+stale_open 16, orphan 11, near_dup 2, phantom_close 0, status_fact 0; packet
+**13.9 KB**; `correlated_with` 0.
+
+**Gauges:**
+1. **Ambient recall in the wild** (new): does the passive hook now surface useful
+   on-domain candidates in real sessions? **Too quiet → lower the 0.75 dial
+   (`TIER2_AMBIENT_SEMANTIC_MIN`); clutter → raise it.** No further tuning without
+   wild data — the 14-query sample is exhausted ([[project_ambient_hook_findings]]).
+2. **Prose backstop — finally exercise it** (`#149`/`#152`): R6 had **0 `changes`
+   ops** so it never fired. If this round has save/`changes` activity, count
+   `prose_value` rejections + whether the model recovers (short value + summary), and
+   track the reroute (`facts[].o` prose + `bloat`) to answer reduce-vs-relocate.
+   Needs an R4/R5-style save-heavy round.
+3. **Packet** (`#141`): was *shrinking* (16→14 KB); keep watching it stays clear of
+   the 20 KB cap.
+4. **`correlated_with` stays 0** (`#137`) — invariant watch continues.
+
 ## ~~ROUND 6~~ (original setup, for reference) · from 2026-07-23 · `19868c3` · `#155`
 
 **First round carrying the retrieval work + the prose backstop.** Four changes now
