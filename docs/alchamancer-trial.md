@@ -942,7 +942,36 @@ R4/R5) to test. **Next re-pin should bundle the ambient-abstention fix (`31bdb5e
 never deployed — the trial ran R6 on 19868c3, not the intended "Round 7" binary) and
 carry the prose backstop forward; watch BOTH next round.**
 
-## ROUND 7 IN PROGRESS · from 2026-07-25 · re-pinned `19868c3` → `c1f1b06` · `#155`
+## ROUND 7 CLOSED 2026-07-27 · `c1f1b06` · ambient fix VALIDATED
+
+**67 invocations over 2 days** (12 saves — 49 elements / 70 facts / **11 changes /
+3 retract** — and 55 recalls; 0 rejections). Determinism **byte-identical: True**
+(build-aware replay, all 15 binaries). The round finally had `changes` activity (R6
+had none). Gauge results:
+
+1. **Ambient recall — VALIDATED in the wild (the round's headline).** 49 real ambient
+   queries, **77% surfaced** with relevant candidates (`"make the default for shape a
+   bolt"` → *bolt is the default shape* @0.85; `"…after they cast"` → *every cast
+   selects a target* @0.74), and it **correctly abstained on contentless prompts**
+   ("try again", "continue"). The 0.75 dial is well-placed — no tuning needed. The
+   lexical-only gate that returned empty is fixed.
+2. **Prose backstop — clean outcome, mechanically UNEXERCISED.** 11 `changes.to`, all
+   short (max **17** chars), **0 prose, 0 `prose_value` rejections, 0 reroute** into
+   `fact.o`; `prose_name` flat at **36**. Pollution did NOT recur (R5 was **16/27**
+   prose paragraphs → R7 **0/11**). But the backstop never *fired* (no prose attempt),
+   so reduce-vs-relocate resolves to "nothing to reduce/relocate." **The mechanical
+   catch stays unproven — carry it forward; it may never fire if the model has
+   genuinely stopped producing prose `changes.to`** (which is the goal).
+3. **Packet** shrank **13.9 → 11.2 KB** — the `#141` cap-pressure keeps easing.
+4. **Invariants hold:** `correlated_with` / `phantom_close` / `status_fact` all **0**.
+
+**Verdict: healthy round, GO-quality.** The ambient fix is confirmed working on real
+prompts; prose pollution did not return; no new pathologies; determinism faithful.
+**No re-pin — nothing new is built to deploy.** The trial continues on `c1f1b06`; the
+next round opens on the next fix (candidate levers: summary discipline `#66` — the
+ceiling for both ambient *recall* and packet size — and F3 traversal).
+
+## ~~ROUND 7~~ (original setup, for reference) · from 2026-07-25 · `19868c3` → `c1f1b06`
 
 Re-pinned mid-agent (safe: binary swap doesn't disturb a running process, lock
 serializes writes, `c1f1b06` reuses the warm `vectors.bin` — no cold re-embed).
