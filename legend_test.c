@@ -1417,17 +1417,17 @@ static void test_prose_backstop(void) {
     TRY(run_save("{\"changes\":[{\"target\":\"build\",\"property\":\"build_status\","
                  "\"to\":\"built\"}]}"), failed);
     CHECK(!failed);
-    /* mint-only: a >120-char value that RESOLVES to an existing element is a
-     * legitimate reference, not a new prose mint -> passes */
+    /* entity-model name gate: a fresh element name over 5 words reads as a claim,
+     * not an entity -> rejected at elements[i].name */
     fresh_graph(&tg);
-    TRY(run_save("{\"elements\":[{\"name\":\"the fully spelled out canonical name that "
-                 "happens to exceed one hundred and twenty characters in total so the "
-                 "gate would catch it as a fresh mint\"}]}"), failed);
-    CHECK(!failed);
-    TRY(run_save("{\"changes\":[{\"target\":\"build\",\"property\":\"ref\",\"to\":"
-                 "\"the fully spelled out canonical name that happens to exceed one "
-                 "hundred and twenty characters in total so the gate would catch it as "
-                 "a fresh mint\"}]}"), failed);
+    expect_save_err(
+        "{\"elements\":[{\"name\":\"input latency stays under one frame\","
+        "\"kind\":\"constraint\"}]}",
+        ERR_PROSE_VALUE, "elements[0].name");
+    /* a short noun handle (<=5 words) passes */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"input latency budget\","
+                 "\"kind\":\"constraint\"}]}"), failed);
     CHECK(!failed);
     unsetenv("LEGEND_NOW");
 }

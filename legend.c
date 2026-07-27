@@ -5033,6 +5033,32 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     } else {
       name_pend = plan_ref(pl, el->name, path, NONE_U32, el->is_new, 1);
     }
+    /* Name cap (entity-model): a NAME is a short noun for one thing. Reject a name
+     * that would MINT a new element and runs over 5 words -- that reads as a claim
+     * or a log, not an entity. Mint-only (a long name that resolves to an existing
+     * element is a legacy reference, not a new one). The rejected attempt is captured
+     * verbatim in the journal for analysis. */
+    if (pl->pends[name_pend].existing == NONE_U32) {
+      const char *ns = buf + el->name.off;
+      u32 wi, words = 0;
+      int inword = 0;
+      for (wi = 0; wi < el->name.len; wi++) {
+        char c = ns[wi];
+        int alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9');
+        if (alnum) {
+          if (!inword) { words++; inword = 1; }
+        } else {
+          inword = 0;
+        }
+      }
+      if (words > 5)
+        fail(ERR_PROSE_VALUE, path,
+             "name is %u words -- a NAME is a short noun (<=5 words) for ONE thing. "
+             "This reads as a claim or a log: name the entities (nouns) and write the "
+             "claim as a fact; put detail in the summary.",
+             words);
+    }
     if (!span_absent(el->kind)) {
       snprintf(path, sizeof path, "elements[%u].kind", i);
       kind_pend = plan_ref(pl, el->kind, path, NONE_U32, 0, 1);
@@ -9786,7 +9812,14 @@ static const char MCP_INSTRUCTIONS[] =
     "(project, function, module, system, mechanic, parameter, constraint, "
     "decision, spell, enemy, character, place, question); each has a canonical "
     "name, a kind, optional aliases, and a one-line summary. FACTS are {s,p,o} "
-    "triples on elements. Discipline: (1) recall before you save, to find the "
+    "triples on elements. A NAME is a short NOUN -- the subject of one "
+    "intentional thing (`trap spells`, `Epic`, `the spell bar`): at most 5 "
+    "words, most just one or two, and NEVER a claim, sentence, status, or log. "
+    "A CLAIM -- anything asserting something between entities -- is a FACT "
+    "between them, never a name: if your name would assert something, name the "
+    "entities (the nouns) and write the claim as a fact; detail and reasoning "
+    "go in the summary or in facts, never the name. Discipline: (1) recall "
+    "before you save, to find the "
     "canonical name of anything that already exists and reuse it verbatim -- "
     "never mint a second element for the same thing. Reuse an existing "
     "predicate; prefer short verbs. (2) To change a current "
@@ -9995,44 +10028,45 @@ static const char MCP_MAINTAIN_PROMPT[] =
  * (clients surface it as a slash command) so the flow travels with the binary
  * into any project `legend init` touches. */
 static const char MCP_ONBOARD_PROMPT[] =
-    "Onboard Legend onto this EXISTING project. The store is fresh; build it "
-    "a real understanding of the WHOLE project -- docs, code, and git "
-    "history -- and capture the WHY only the humans know, so any future "
-    "session can orient instantly.\n\n"
-    "Phase 1 -- INVENTORY. List every documentation file, every top-level "
-    "source module/directory, the build and test setup, and the git history "
-    "(commit count, the first commits, the subjects of major milestones). "
-    "This is your reading list; do not skip items because they look minor.\n\n"
-    "Phase 2 -- READ. Work through the inventory: every doc fully; every "
-    "module far enough to state its purpose in one line; the git log for "
-    "turning points (rewrites, pivots, renames, reverts). Note as you go: "
-    "the systems and what each does; choices that look deliberate (what was "
-    "the alternative?); constraints; places where docs and code disagree; "
-    "anything parked, dead, or experimental.\n\n"
-    "Phase 3 -- INTERVIEW. Ask the user grounded questions, a few at a time, "
-    "as many rounds as it takes. Ask only what the artifacts cannot tell "
-    "you:\n"
-    "- what is this for, and who is it for?\n"
-    "- for each major choice: \"I see X rather than Y -- deliberate? what "
-    "was rejected, and why?\"\n"
-    "- which constraints still hold, and what is the current focus?\n"
-    "- confirm every place the docs and code disagree\n"
-    "- what is dead or legacy? what questions and tasks are open?\n\n"
-    "Phase 4 -- SAVE, in batches. One legend_save per area -- project + "
-    "systems, then decisions, then constraints, then tasks/questions, then "
-    "doc pointers -- recalling between batches to reuse canonical names. "
-    "Include: the project element; EVERY real system/module as an element "
-    "with a one-line summary; each deliberate choice as a decision (chose / "
-    "rejected / reason / about); constraints (applies_to / reason); open "
-    "questions and tasks; a pointer element per key document. Everything "
-    "gets a src pointer (file path or commit). Save durable facts, not "
-    "narration of your reading: if a future session would not need it, do "
-    "not save it.\n\n"
-    "Phase 5 -- CONFIRM. Run legend_recall with no focus and show the user "
-    "the orientation packet verbatim; then spot-check 2-3 specific systems "
-    "with focused recalls and confirm those frames read true. Fix problems "
-    "with merge / retract / changes / rename_to. Done when the user signs "
-    "off.";
+    "Onboard Legend onto this project by building a real ONTOLOGY of it, "
+    "collaboratively. This is a deep session -- take the time it needs (an hour "
+    "or two is fine). The goal is not to index the repo; it is to genuinely "
+    "UNDERSTAND the project and lay down a small, intentional, well-connected "
+    "graph -- including what is not written down anywhere.\n\n"
+    "1 -- READ EVERYTHING, taking working notes as you go. Every doc, all the "
+    "source, the configs, the full git history -- the whole AUTHORED project, "
+    "not a curated subset (skip only generated code, dependencies, and build "
+    "output -- no intent lives there). Keep a running SCRATCH FILE with four "
+    "sections: ENTITIES (nouns), RELATIONSHIPS (facts between them), WHY (the "
+    "reasoning behind what you see), and QUESTIONS FOR THE HUMAN (gaps + what "
+    "you cannot infer). Your context window will not hold the whole project -- "
+    "do not trust your memory, write it down as you read. This scratch is your "
+    "draft ontology; do not touch Legend yet.\n\n"
+    "2 -- MODEL THE ONTOLOGY from the full scratch, now that you have seen "
+    "everything. An ENTITY is a short NOUN (<=5 words, most one or two) for one "
+    "intentional thing. A CLAIM -- anything asserting something between entities "
+    "-- is a RELATIONSHIP (a fact), never a name. Consolidate duplicates; "
+    "sharpen the relationships.\n\n"
+    "3 -- HUNT FOR THE WHY. The source shows WHAT exists; find the WHY -- why "
+    "this architecture, why each decision, what was tried and rejected. Most of "
+    "it is not written down. Record what you can infer under WHY, and what you "
+    "cannot under QUESTIONS.\n\n"
+    "4 -- FIND WHAT IS MISSING from the source: undocumented decisions, tacit "
+    "conventions, known pitfalls, the intent behind the structure. This "
+    "unwritten knowledge is the highest-value memory -- exactly what code and "
+    "docs cannot hold. Add it to QUESTIONS.\n\n"
+    "5 -- INTERVIEW THE HUMAN. Ask everything in QUESTIONS, a few at a time, as "
+    "many rounds as it takes. Fold the answers back into the scratch.\n\n"
+    "6 -- BUILD INTENTIONALLY into Legend, from the refined scratch. Reify the "
+    "meaningful entities + durable facts + the why + the interview knowledge -- "
+    "not every phrase. Names are short nouns; claims are facts between entities. "
+    "Recall before each save and reuse canonical names; save in batches (project "
+    "+ systems, then decisions, then constraints, then tasks/questions, then doc "
+    "pointers); give everything a src pointer (file path or commit). After each "
+    "batch check writes.minted_elements -- a prose or phantom name there means "
+    "you named a claim; fix it with rename_to / merge / retract.\n\n"
+    "DONE when legend_recall with no focus shows an orientation packet the human "
+    "signs off on, and 2-3 focused recalls read true.";
 
 /* value token index of member `key` in object `obj`; -1 if absent */
 static long mcp_obj_get(const Json *j, u32 obj, const char *key) {
