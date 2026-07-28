@@ -2965,6 +2965,30 @@ static void test_audit(void) {
     capture_audit();
     CHECK(strstr(t_audit, "\"status_fact\":0") != NULL);
 
+    /* flat_decision: a decision whose choice lives only in its name + summary
+     * -- no chose/rejected/about/resolves -- is flagged, because the entities
+     * it decides over ("Bolt", "Melee") never became nodes. */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"Bolt as the default\",\"kind\":\"decision\","
+                 "\"summary\":\"a dropped shape note yields Bolt, not Melee\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"reason\":\"flat_decision\"") != NULL);
+    CHECK(strstr(t_audit, "\"name\":\"Bolt as the default\"") != NULL);
+    /* the same decision as a hub -- named for the topic, the choice broken out
+     * into chose/rejected -- is the right shape and clears the flag (and this
+     * is what mints Bolt + Melee as real, linkable nodes) */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"default fumble shape\",\"kind\":\"decision\","
+                 "\"summary\":\"what a dropped shape note yields\","
+                 "\"attrs\":{\"chose\":\"Bolt\",\"rejected\":\"Melee\","
+                 "\"reason\":\"Bolt is the neutral option\"}}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"flat_decision\":0") != NULL);
+
     /* near_dup: catches a typo twin, and the digit guard keeps numbered
      * siblings apart -- "round 1" vs "round 2" scores HIGHER on trigrams
      * (0.83) than the real duplicate does (0.63), so similarity alone

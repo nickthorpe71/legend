@@ -9301,6 +9301,7 @@ enum {
   AUD_STATUS_FACT,
   AUD_NEAR_DUP,
   AUD_PROSE_NAME,
+  AUD_FLAT_DECISION,
   AUD_STALE_OPEN,
   AUD_ORPHAN,
   AUD_BLOAT,
@@ -9308,8 +9309,8 @@ enum {
 };
 
 static const char *const AUD_REASONS[AUD_REASON_COUNT] = {
-    "phantom_close", "status_fact", "near_dup", "prose_name",
-    "stale_open",    "orphan",      "bloat"};
+    "phantom_close", "status_fact",   "near_dup", "prose_name",
+    "flat_decision", "stale_open",    "orphan",   "bloat"};
 
 /* Thresholds. Mutable so tests can drive each check from a small store. */
 static u32 g_aud_bloat_chars = 400; /* a terse core + its result lands ~300; a wall starts ~400 (#66, #122) */
@@ -9571,10 +9572,11 @@ static void audit_put_suspect(const Hypergraph *g, const Suspect *s, int first) 
 static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
                        u32 *counts, int with_near_dup) {
   u8 *structural = (u8 *)calloc(g->element_count ? g->element_count : 1, 1);
+  u8 *dec_content = (u8 *)calloc(g->element_count ? g->element_count : 1, 1);
   Suspect *sus = NULL;
   u32 cap = 0, n = 0, e, r, i;
   U32Vec ta, tb;
-  if (!structural) {
+  if (!structural || !dec_content) {
     fprintf(stderr, "legend: out of memory\n");
     exit(1);
   }
@@ -9583,6 +9585,30 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
   for (i = 0; i < AUD_REASON_COUNT; i++)
     counts[i] = 0;
   audit_mark_structural(g, structural);
+
+  /* Which elements carry a decision's defining content: at least one live
+   * chose/rejected/about/resolves relation. A decision with none recorded its
+   * choice only in its name + summary, so the entities it decides over never
+   * became nodes (the "Bolt as the default" shape). */
+  for (r = 0; r < g->relation_count; r++) {
+    const Relation *rel = &g->relations[r];
+    u32 a, subj = NONE_U32;
+    int has = 0;
+    if (rel->status >= ST_SUPERSEDED)
+      continue;
+    for (a = 0; a < rel->attr_count; a++) {
+      if (rel->attrs[a].name == WK_SUBJECT &&
+          rel->attrs[a].value.tag == TERM_ELEM)
+        subj = rel->attrs[a].value.id;
+      else if (rel->attrs[a].name == WK_CHOSE ||
+               rel->attrs[a].name == WK_REJECTED ||
+               rel->attrs[a].name == WK_ABOUT ||
+               rel->attrs[a].name == WK_RESOLVES)
+        has = 1;
+    }
+    if (has && subj < g->element_count)
+      dec_content[subj] = 1;
+  }
 
 #define AUD_PUSH(rsn, subj, oth, rf, sv)                                       \
   do {                                                                         \
@@ -9618,6 +9644,8 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
       AUD_PUSH(AUD_ORPHAN, e, NONE_U32, refs, 0);
     if (elem_name_l(g, e) > g_aud_name_chars)
       AUD_PUSH(AUD_PROSE_NAME, e, NONE_U32, refs, elem_name_l(g, e));
+    if (g->elem_kind[e] == WK_KIND_DECISION && !dec_content[e])
+      AUD_PUSH(AUD_FLAT_DECISION, e, NONE_U32, refs, 0);
     if (el->summary != NONE_U32 && str_len(&g->strs, el->summary) > g_aud_bloat_chars)
       AUD_PUSH(AUD_BLOAT, e, NONE_U32, refs, str_len(&g->strs, el->summary));
     if (audit_kind_is_open(g, e) && !audit_is_resolved(g, e) &&
@@ -9687,6 +9715,7 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
   if (n > 1)
     qsort(sus, n, sizeof *sus, suspect_cmp);
   free(structural);
+  free(dec_content);
   free(ta.v);
   free(tb.v);
   *out_sus = sus;
@@ -9814,7 +9843,9 @@ static const char MCP_INSTRUCTIONS[] =
     "name, a kind, optional aliases, and a one-line summary. FACTS are {s,p,o} "
     "triples on elements. A NAME is a short NOUN -- the subject of one "
     "intentional thing (`trap spells`, `Epic`, `the spell bar`): at most 5 "
-    "words, most just one or two, and NEVER a claim, sentence, status, or log. "
+    "words, most just one or two, and NEVER a claim, sentence, status, or log -- "
+    "a name shaped `X as the Y`, `X over Y`, `no X`, `X dropped/cut`, or `X is Y` "
+    "is a claim wearing a noun costume; split it into the entities plus a fact. "
     "A CLAIM -- anything asserting something between entities -- is a FACT "
     "between them, never a name: if your name would assert something, name the "
     "entities (the nouns) and write the claim as a fact; detail and reasoning "
@@ -9847,7 +9878,14 @@ static const char MCP_INSTRUCTIONS[] =
     "elements and durable facts; over-extraction buries the signal. The "
     "highest-value saves are what the code cannot hold: next levers, "
     "negative results, decisions with reasons. A choice that settles a design "
-    "question is a decision even when the request looked cosmetic. (9) A saved "
+    "question is a decision even when the request looked cosmetic. A decision is "
+    "a HUB, not a headline: name it for the topic it settles (a noun) and record "
+    "the choice as STRUCTURE -- chose and rejected point at the option ENTITIES "
+    "(so they become real, linkable nodes), reason holds the why, about/resolves "
+    "link what it decides. Never bury the choice in the name or summary: "
+    "`Bolt as the default` should be a decision named `default fumble shape` with "
+    "chose=Bolt, rejected=Melee, reason=`Bolt is the neutral option`, not one "
+    "opaque node. (9) A saved "
     "measurement "
     "without its method is half lost -- record how to reproduce it (a src "
     "pointer or a harness/pointer element). (10) For cause and effect, use the "
@@ -9941,7 +9979,10 @@ static const char MCP_TOOLS_JSON[] =
     "resolves that closed nothing and left a decoy), `status_fact` (a "
     "changing value written as a plain fact instead of `changes`), "
     "`near_dup` (two names dedup should probably have folded), `prose_name` "
-    "(a sentence where a canonical name belongs), `stale_open` (an open item "
+    "(a sentence where a canonical name belongs), `flat_decision` (a decision "
+    "whose choice lives only in its name/summary -- no chose/rejected/about/"
+    "resolves, so the entities it decides over were never broken out), "
+    "`stale_open` (an open item "
     "long untouched), `orphan` (nothing references it), `bloat` (a summary "
     "that should split into children). `counts` is the full tally even when "
     "the printed list is capped per reason; `truncated` names what was "
@@ -10060,6 +10101,12 @@ static const char MCP_ONBOARD_PROMPT[] =
     "6 -- BUILD INTENTIONALLY into Legend, from the refined scratch. Reify the "
     "meaningful entities + durable facts + the why + the interview knowledge -- "
     "not every phrase. Names are short nouns; claims are facts between entities. "
+    "A DECISION is a hub, not a headline: name it for the topic it settles and "
+    "break out what it chose between -- chose/rejected point at the option "
+    "entities and reason holds the why, so `Bolt as the default` becomes a "
+    "decision `default fumble shape` with chose=Bolt, rejected=Melee, reason=..., "
+    "never one opaque node (that leaves Bolt and Melee as nodes that never "
+    "existed). "
     "Recall before each save and reuse canonical names; save in batches (project "
     "+ systems, then decisions, then constraints, then tasks/questions, then doc "
     "pointers); give everything a src pointer (file path or commit). After each "
