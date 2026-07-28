@@ -2989,6 +2989,19 @@ static void test_audit(void) {
     capture_audit();
     CHECK(strstr(t_audit, "\"flat_decision\":0") != NULL);
 
+    /* an option a decision hub broke out is NOT itself a flat decision, even
+     * when the model mis-kinds it `decision` (the C/Rust/SDL case): it is
+     * referenced as a chose/rejected value, so it is a target, not a flat hub. */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":["
+                 "{\"name\":\"implementation language\",\"kind\":\"decision\","
+                 "\"attrs\":{\"chose\":\"C\",\"rejected\":\"Rust\"}},"
+                 "{\"name\":\"C\",\"kind\":\"decision\",\"summary\":\"the language\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"flat_decision\":0") != NULL);
+
     /* near_dup: catches a typo twin, and the digit guard keeps numbered
      * siblings apart -- "round 1" vs "round 2" scores HIGHER on trigrams
      * (0.83) than the real duplicate does (0.63), so similarity alone

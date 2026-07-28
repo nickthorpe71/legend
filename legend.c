@@ -9573,10 +9573,11 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
                        u32 *counts, int with_near_dup) {
   u8 *structural = (u8 *)calloc(g->element_count ? g->element_count : 1, 1);
   u8 *dec_content = (u8 *)calloc(g->element_count ? g->element_count : 1, 1);
+  u8 *is_option = (u8 *)calloc(g->element_count ? g->element_count : 1, 1);
   Suspect *sus = NULL;
   u32 cap = 0, n = 0, e, r, i;
   U32Vec ta, tb;
-  if (!structural || !dec_content) {
+  if (!structural || !dec_content || !is_option) {
     fprintf(stderr, "legend: out of memory\n");
     exit(1);
   }
@@ -9586,10 +9587,12 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
     counts[i] = 0;
   audit_mark_structural(g, structural);
 
-  /* Which elements carry a decision's defining content: at least one live
-   * chose/rejected/about/resolves relation. A decision with none recorded its
-   * choice only in its name + summary, so the entities it decides over never
-   * became nodes (the "Bolt as the default" shape). */
+  /* Which elements carry a decision's defining content (dec_content: at least
+   * one live chose/rejected/about/resolves relation — a decision with none
+   * recorded its choice only in its name + summary, the "Bolt as the default"
+   * shape), and which are the option/target VALUES those slots point at
+   * (is_option). An option that a hub broke out is not itself a flat decision
+   * even if it happens to carry kind:decision. */
   for (r = 0; r < g->relation_count; r++) {
     const Relation *rel = &g->relations[r];
     u32 a, subj = NONE_U32;
@@ -9603,8 +9606,12 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
       else if (rel->attrs[a].name == WK_CHOSE ||
                rel->attrs[a].name == WK_REJECTED ||
                rel->attrs[a].name == WK_ABOUT ||
-               rel->attrs[a].name == WK_RESOLVES)
+               rel->attrs[a].name == WK_RESOLVES) {
         has = 1;
+        if (rel->attrs[a].value.tag == TERM_ELEM &&
+            rel->attrs[a].value.id < g->element_count)
+          is_option[rel->attrs[a].value.id] = 1;
+      }
     }
     if (has && subj < g->element_count)
       dec_content[subj] = 1;
@@ -9644,7 +9651,7 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
       AUD_PUSH(AUD_ORPHAN, e, NONE_U32, refs, 0);
     if (elem_name_l(g, e) > g_aud_name_chars)
       AUD_PUSH(AUD_PROSE_NAME, e, NONE_U32, refs, elem_name_l(g, e));
-    if (g->elem_kind[e] == WK_KIND_DECISION && !dec_content[e])
+    if (g->elem_kind[e] == WK_KIND_DECISION && !dec_content[e] && !is_option[e])
       AUD_PUSH(AUD_FLAT_DECISION, e, NONE_U32, refs, 0);
     if (el->summary != NONE_U32 && str_len(&g->strs, el->summary) > g_aud_bloat_chars)
       AUD_PUSH(AUD_BLOAT, e, NONE_U32, refs, str_len(&g->strs, el->summary));
@@ -9716,6 +9723,7 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
     qsort(sus, n, sizeof *sus, suspect_cmp);
   free(structural);
   free(dec_content);
+  free(is_option);
   free(ta.v);
   free(tb.v);
   *out_sus = sus;
@@ -9881,8 +9889,10 @@ static const char MCP_INSTRUCTIONS[] =
     "question is a decision even when the request looked cosmetic. A decision is "
     "a HUB, not a headline: name it for the topic it settles (a noun) and record "
     "the choice as STRUCTURE -- chose and rejected point at the option ENTITIES "
-    "(so they become real, linkable nodes), reason holds the why, about/resolves "
-    "link what it decides. Never bury the choice in the name or summary: "
+    "(so they become real, linkable nodes -- each takes its OWN kind, a language "
+    "or library or mechanic, never kind:decision), reason holds the why, "
+    "about/resolves link what it decides. Never bury the choice in the name or "
+    "summary: "
     "`Bolt as the default` should be a decision named `default fumble shape` with "
     "chose=Bolt, rejected=Melee, reason=`Bolt is the neutral option`, not one "
     "opaque node. (9) A saved "
