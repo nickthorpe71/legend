@@ -62,6 +62,17 @@ static double cam_x, cam_y, zoom = 1.0;
 static int show_meta, show_dead, show_vocab, show_labels = 1;
 static int panel_scroll;
 
+/* ---- recall probe: type a query, run the real recall, light up the frame ---- */
+static const char *g_store;        /* store dir, for capture_frame_json */
+static int query_mode;             /* 1 while the user is typing a query */
+static char query_buf[256];
+static int query_len;
+static int recall_active;          /* a recall result is currently on screen */
+static char recall_status[256];    /* one-line resolution summary for the box */
+static unsigned char *hl_e;        /* per element: 0 none, 1 in-frame, 2 anchor */
+static unsigned char *hl_r;        /* per relation: 0 none, 1 in-frame */
+static u32 hl_frame_e, hl_frame_r; /* frame ref counts, for the status line */
+
 /* panel click targets: row -> what it selects */
 typedef struct {
   int y0, y1;
@@ -70,6 +81,24 @@ typedef struct {
 } PanelRow;
 static PanelRow prows[PANEL_ROWS];
 static int prow_count;
+
+/* ---- parsed recall result: top-level frame arrays become foldable sections,
+ * each entry a row that jumps to its element/relation when it carries a ref ---- */
+enum { REC_MAX_SEC = 24, REC_MAX_ROWS = 700 };
+typedef struct {
+  char name[24];
+  int first_row, row_count;
+} RecSec;
+typedef struct {
+  int kind; /* 0 plain, 1 elem, 2 rel */
+  u32 id;
+  char label[128];
+} RecRow;
+static RecSec rec_secs[REC_MAX_SEC];
+static int rec_sec_count;
+static RecRow rec_rows[REC_MAX_ROWS];
+static int rec_row_count;
+static unsigned char sec_open[REC_MAX_SEC];
 
 /* ---- deterministic pseudo-random from ids (no rand(): reshake-stable) ---- */
 static double id_hash01(u32 id, u32 salt) {
@@ -118,6 +147,288 @@ static void recompute_visibility(void) {
   }
   for (i = 0; i < ne; i++)
     ve[i].r = 6.0 + 2.5 * sqrt((double)ve[i].degree);
+}
+
+static void hl_clear(void) {
+  if (hl_e)
+    memset(hl_e, 0, ne);
+  if (hl_r)
+    memset(hl_r, 0, nr);
+  hl_frame_e = hl_frame_r = 0;
+}
+
+/* Scan the captured frame JSON for every #<id> and rel:<id> reference and light
+ * up the matching node / boundary. This is exactly the set the consumer LLM
+ * receives — nothing inferred, just what recall actually emitted. */
+static void hl_scan_frame(const char *s) {
+  const char *p = s;
+  while (*p) {
+    if (p[0] == 'r' && p[1] == 'e' && p[2] == 'l' && p[3] == ':' && p[4] >= '0' &&
+        p[4] <= '9') {
+      u32 id = 0;
+      p += 4;
+      while (*p >= '0' && *p <= '9')
+        id = id * 10 + (u32)(*p++ - '0');
+      if (id < nr && !hl_r[id]) {
+        hl_r[id] = 1;
+        hl_frame_r++;
+      }
+    } else if (p[0] == '#' && p[1] >= '0' && p[1] <= '9') {
+      u32 id = 0;
+      p++;
+      while (*p >= '0' && *p <= '9')
+        id = id * 10 + (u32)(*p++ - '0');
+      if (id < ne && hl_e[id] == 0) {
+        hl_e[id] = 1;
+        hl_frame_e++;
+      }
+    } else {
+      p++;
+    }
+  }
+}
+
+static void rec_copy_tok(const char *buf, const Tok *t, u32 i, char *out,
+                         size_t cap) {
+  u32 n = t[i].end - t[i].start;
+  if (n > (u32)cap - 1)
+    n = (u32)cap - 1;
+  memcpy(out, buf + t[i].start, n);
+  out[n] = 0;
+}
+
+static int rec_tok_is(const char *buf, const Tok *t, u32 i, const char *lit) {
+  u32 n = t[i].end - t[i].start;
+  return t[i].type == J_STR && strlen(lit) == n &&
+         memcmp(buf + t[i].start, lit, n) == 0;
+}
+
+static int rec_ref_of(const char *buf, const Tok *t, u32 vi, int *kind,
+                      u32 *id) {
+  const char *s = buf + t[vi].start;
+  u32 n = t[vi].end - t[vi].start, k, v = 0;
+  if (t[vi].type != J_STR)
+    return 0;
+  if (n >= 2 && s[0] == '#' && s[1] >= '0' && s[1] <= '9') {
+    for (k = 1; k < n && s[k] >= '0' && s[k] <= '9'; k++)
+      v = v * 10 + (u32)(s[k] - '0');
+    *kind = 1;
+    *id = v;
+    return 1;
+  }
+  if (n >= 5 && memcmp(s, "rel:", 4) == 0) {
+    for (k = 4; k < n && s[k] >= '0' && s[k] <= '9'; k++)
+      v = v * 10 + (u32)(s[k] - '0');
+    *kind = 2;
+    *id = v;
+    return 1;
+  }
+  return 0;
+}
+
+static int rec_sec_default_open(const char *name) {
+  return strcmp(name, "focus") == 0 || strcmp(name, "resolution") == 0 ||
+         strcmp(name, "state") == 0 || strcmp(name, "decisions") == 0 ||
+         strcmp(name, "constraints") == 0 || strcmp(name, "open") == 0 ||
+         strcmp(name, "causal") == 0;
+}
+
+/* Turn the captured frame into foldable panel sections. Each top-level non-empty
+ * array is a section; each entry becomes a row labelled from its ref (jumps to
+ * that node), else its name/submitted/source text. */
+static void rec_parse(char *frame, u32 flen) {
+  static Json j;
+  const Tok *t;
+  u32 np, p, ti;
+  rec_sec_count = 0;
+  rec_row_count = 0;
+  json_parse(&j, frame, flen);
+  t = j.toks;
+  if (j.count == 0 || t[0].type != J_OBJ)
+    return;
+  np = t[0].size;
+  ti = 1;
+  for (p = 0; p < np && rec_sec_count < REC_MAX_SEC; p++) {
+    u32 key = ti, val = ti + 1, m, ei, kn;
+    RecSec *sec;
+    ti = tok_skip(t, val);
+    if (t[val].type != J_ARR || t[val].size == 0)
+      continue;
+    sec = &rec_secs[rec_sec_count];
+    kn = t[key].end - t[key].start;
+    if (kn > 23)
+      kn = 23;
+    memcpy(sec->name, frame + t[key].start, kn);
+    sec->name[kn] = 0;
+    sec->first_row = rec_row_count;
+    sec->row_count = 0;
+    ei = val + 1;
+    for (m = 0; m < t[val].size && rec_row_count < REC_MAX_ROWS; m++) {
+      u32 elem = ei;
+      RecRow *row = &rec_rows[rec_row_count];
+      ei = tok_skip(t, ei);
+      row->kind = 0;
+      row->id = 0;
+      row->label[0] = 0;
+      if (t[elem].type == J_OBJ) {
+        u32 pn = t[elem].size, q, eti = elem + 1;
+        int got = 0, have_name = 0, have_subm = 0, have_src = 0;
+        u32 name_v = 0, subm_v = 0, src_v = 0;
+        for (q = 0; q < pn; q++) {
+          u32 k2 = eti, v2 = eti + 1;
+          eti = tok_skip(t, v2);
+          if (!got && rec_tok_is(frame, t, k2, "ref"))
+            got = rec_ref_of(frame, t, v2, &row->kind, &row->id);
+          else if (rec_tok_is(frame, t, k2, "name")) {
+            name_v = v2;
+            have_name = 1;
+          } else if (rec_tok_is(frame, t, k2, "submitted")) {
+            subm_v = v2;
+            have_subm = 1;
+          } else if (rec_tok_is(frame, t, k2, "source") ||
+                     rec_tok_is(frame, t, k2, "src")) {
+            src_v = v2;
+            have_src = 1;
+          }
+        }
+        if (got && row->kind == 1 && row->id < ne)
+          snprintf(row->label, sizeof row->label, "#%u %s", row->id,
+                   elem_name(&g_graph, row->id));
+        else if (got && row->kind == 2 && row->id < nr)
+          frame_rel_text(&g_graph, row->id, row->label, sizeof row->label);
+        else if (have_name) {
+          row->kind = 0;
+          rec_copy_tok(frame, t, name_v, row->label, sizeof row->label);
+        } else if (have_subm) {
+          size_t l;
+          row->kind = 0;
+          rec_copy_tok(frame, t, subm_v, row->label, sizeof row->label);
+          l = strlen(row->label);
+          snprintf(row->label + l, sizeof row->label - l, "  (no match)");
+        } else if (have_src) {
+          row->kind = 0;
+          rec_copy_tok(frame, t, src_v, row->label, sizeof row->label);
+        } else {
+          row->kind = 0;
+          snprintf(row->label, sizeof row->label, "{...}");
+        }
+      } else {
+        row->kind = 0;
+        rec_copy_tok(frame, t, elem, row->label, sizeof row->label);
+      }
+      rec_row_count++;
+      sec->row_count++;
+    }
+    sec_open[rec_sec_count] = (unsigned char)rec_sec_default_open(sec->name);
+    rec_sec_count++;
+  }
+}
+
+/* Run the real recall against the in-memory graph (resolves + reinforces; the
+ * store on disk is never rewritten here), then highlight the frame it returns. */
+static void run_query(void) {
+  static Json json;
+  static WriteReport report;
+  static char payload[512];
+  Rd rd;
+  Recall rec;
+  char *frame;
+  u32 flen, k, plen;
+  int qi, seg_start = 0, any = 0, pi = 0;
+
+  if (query_len == 0)
+    return;
+  hl_clear();
+  recall_active = 1;
+  panel_scroll = 0;
+
+  /* split the box on ';' into multiple focus terms: {"focus":["a","b",...]} */
+  pi += snprintf(payload + pi, sizeof payload - (size_t)pi, "{\"focus\":[");
+  for (qi = 0; qi <= query_len; qi++) {
+    if (qi != query_len && query_buf[qi] != ';')
+      continue;
+    {
+      int a2 = seg_start, b2 = qi, c;
+      while (a2 < b2 && query_buf[a2] == ' ')
+        a2++;
+      while (b2 > a2 && query_buf[b2 - 1] == ' ')
+        b2--;
+      if (b2 > a2 && pi < (int)sizeof payload - 8) {
+        if (any)
+          payload[pi++] = ',';
+        payload[pi++] = '"';
+        for (c = a2; c < b2 && pi < (int)sizeof payload - 4; c++) {
+          char ch = query_buf[c];
+          if (ch == '"' || ch == '\\')
+            payload[pi++] = '\\';
+          payload[pi++] = ch;
+        }
+        payload[pi++] = '"';
+        any = 1;
+      }
+    }
+    seg_start = qi + 1;
+  }
+  pi += snprintf(payload + pi, sizeof payload - (size_t)pi, "]}");
+  plen = (u32)pi;
+  if (!any) {
+    recall_active = 0;
+    snprintf(recall_status, sizeof recall_status, "empty query");
+    return;
+  }
+  memcpy(g_payload, payload, plen + 1);
+
+  g_err_trap = 1;
+  if (setjmp(g_err_jmp)) {
+    g_err_trap = 0;
+    recall_active = 0;
+    hl_clear();
+    snprintf(recall_status, sizeof recall_status, "recall error: %.200s",
+             g_err.message);
+    return;
+  }
+  memset(&rec, 0, sizeof rec);
+  json_parse(&json, g_payload, plen);
+  rd.t = json.toks;
+  rd.buf = g_payload;
+  read_recall(&rd, &rec);
+  report_reset(&report);
+  tick_recall(&g_graph, &rec, g_payload, &report);
+  frame = capture_frame_json(&g_graph, &report, g_store, rec.limit,
+                             rec.history_depth, rec.since, &flen);
+  g_err_trap = 0;
+
+  hl_scan_frame(frame);
+  for (k = 0; k < report.focus_elems.count; k++) {
+    u32 id = report.focus_elems.v[k];
+    if (id < ne)
+      hl_e[id] = 2; /* anchors win over plain frame membership */
+  }
+
+  if (report.focus_elems.count == 0) {
+    snprintf(recall_status, sizeof recall_status,
+             "no resolution — %u elems, %u rels in frame (orientation recall)",
+             hl_frame_e, hl_frame_r);
+  } else {
+    int off = snprintf(recall_status, sizeof recall_status,
+                       "%u anchor%s, %u elems, %u rels in frame  <-  ",
+                       report.focus_elems.count,
+                       report.focus_elems.count == 1 ? "" : "s", hl_frame_e,
+                       hl_frame_r);
+    for (k = 0; k < report.focus_elems.count &&
+                off < (int)sizeof recall_status - 2;
+         k++) {
+      u32 id = report.focus_elems.v[k];
+      if (id < ne)
+        off += snprintf(recall_status + off, sizeof recall_status - (size_t)off,
+                        "%s%.*s", k ? ", " : "", (int)elem_name_l(&g_graph, id),
+                        elem_name(&g_graph, id));
+    }
+  }
+
+  rec_parse(frame, flen); /* frame text -> foldable panel sections */
+  free(frame);
+  recall_free(&rec);
 }
 
 static void collect_members(u32 rid) {
@@ -521,6 +832,33 @@ static int panel_relation(int y, u32 rid) {
   return y;
 }
 
+/* The full recall result: a header, the resolution summary, then every frame
+ * section as a foldable list of rows. j/k scroll; a row jumps to its node. */
+static int panel_recall(int y) {
+  char buf[192];
+  int s, r;
+  y -= panel_scroll * 15;
+  snprintf(buf, sizeof buf, "recall  \"%.150s\"", query_buf);
+  y = panel_line(y, col_fg, 0, 0, buf);
+  y = panel_line(y, col_dim, 0, 0, recall_status);
+  y = panel_line(y + 4, col_sel, 0, 0,
+                 "/ new  (;=multi-focus)   c clear   click a header to fold");
+  for (s = 0; s < rec_sec_count; s++) {
+    const RecSec *sec = &rec_secs[s];
+    snprintf(buf, sizeof buf, "%s %.30s (%d)", sec_open[s] ? "[-]" : "[+]",
+             sec->name, sec->row_count);
+    y = panel_line(y + 6, col_sel, 3, (u32)s, buf);
+    if (!sec_open[s])
+      continue;
+    for (r = sec->first_row; r < sec->first_row + sec->row_count; r++) {
+      const RecRow *row = &rec_rows[r];
+      snprintf(buf, sizeof buf, "   %s", row->label);
+      y = panel_line(y, row->kind ? col_fg : col_dim, row->kind, row->id, buf);
+    }
+  }
+  return y;
+}
+
 static void render(void) {
   u32 i;
   char buf[256];
@@ -535,10 +873,12 @@ static void render(void) {
     int selected = sel_kind == 2 && sel_id == i;
     if (!vr[i].visible || vr[i].hull_n < 4)
       continue;
-    XSetForeground(dpy, gc, selected  ? col_sel
+    XSetForeground(dpy, gc, selected       ? col_sel
+                            : recall_active ? (hl_r[i] ? col_fg : col_grid)
                             : rel_is_dead(i) ? col_dead
                                              : col_live);
-    XSetLineAttributes(dpy, gc, selected ? 3 : 1,
+    XSetLineAttributes(dpy, gc,
+                       selected ? 3 : (recall_active && hl_r[i]) ? 2 : 1,
                        rel_is_dead(i) ? LineOnOffDash : LineSolid, CapRound,
                        JoinRound);
     XDrawLines(dpy, back, gc, vr[i].hull, vr[i].hull_n, CoordModeOrigin);
@@ -564,21 +904,36 @@ static void render(void) {
     if (sx < -rr || sx > WIN_W - PANEL_W + rr || sy < -rr || sy > WIN_H + rr)
       continue;
     ki = kind_index(i);
-    XSetForeground(dpy, gc, ki >= 0 ? col_kind[ki] : col_nokind);
+    if (recall_active)
+      XSetForeground(dpy, gc, hl_e[i] == 2   ? col_sel
+                              : hl_e[i] == 1 ? (ki >= 0 ? col_kind[ki]
+                                                       : col_nokind)
+                                             : col_grid);
+    else
+      XSetForeground(dpy, gc, ki >= 0 ? col_kind[ki] : col_nokind);
     XFillArc(dpy, back, gc, sx - rr, sy - rr, (unsigned)(2 * rr),
              (unsigned)(2 * rr), 0, 360 * 64);
-    if (sel_kind == 1 && sel_id == i) {
-      XSetForeground(dpy, gc, col_sel);
+    if ((sel_kind == 1 && sel_id == i) || (recall_active && hl_e[i] == 2)) {
+      XSetForeground(dpy, gc,
+                     (recall_active && hl_e[i] == 2) ? col_fg : col_sel);
       XSetLineAttributes(dpy, gc, 3, LineSolid, CapRound, JoinRound);
       XDrawArc(dpy, back, gc, sx - rr - 3, sy - rr - 3, (unsigned)(2 * rr + 6),
                (unsigned)(2 * rr + 6), 0, 360 * 64);
       XSetLineAttributes(dpy, gc, 1, LineSolid, CapButt, JoinMiter);
     }
-    if (show_labels && (zoom > 0.55 || (sel_kind == 1 && sel_id == i))) {
-      u32 n = elem_name_l(&g_graph, i);
-      if (n > 28)
-        n = 28;
-      draw_text(sx + rr + 4, sy + 4, col_fg, elem_name(&g_graph, i), (int)n);
+    {
+      int want_label = recall_active
+                           ? hl_e[i] != 0
+                           : (show_labels &&
+                              (zoom > 0.55 || (sel_kind == 1 && sel_id == i)));
+      if (want_label) {
+        u32 n = elem_name_l(&g_graph, i);
+        if (n > 28)
+          n = 28;
+        draw_text(sx + rr + 4, sy + 4,
+                  (recall_active && hl_e[i] == 2) ? col_sel : col_fg,
+                  elem_name(&g_graph, i), (int)n);
+      }
     }
   }
 
@@ -594,6 +949,8 @@ static void render(void) {
       y = panel_element(y, sel_id);
     else if (sel_kind == 2)
       y = panel_relation(y, sel_id);
+    else if (recall_active)
+      y = panel_recall(y);
     else {
       u32 live_r = 0;
       for (i = 0; i < nr; i++)
@@ -605,12 +962,31 @@ static void render(void) {
                g_graph.clock, ne, live_r);
       y = panel_line(y, col_dim, 0, 0, buf);
       y = panel_line(y + 10, col_sel, 0, 0, "click an element or a boundary");
+      y = panel_line(y + 4, col_sel, 0, 0,
+                     "/ run a recall   (;=multi-focus)   result lights the frame");
       y = panel_line(y + 10, col_dim, 0, 0,
                      "drag/arrows pan | wheel +/- zoom | m meta | d dead | "
-                     "v vocab | l labels | r reshake | q quit");
+                     "v vocab | l labels | r reshake | / recall | q quit");
     }
     (void)y;
   }
+
+  /* recall query box / status overlay, bottom-left of the graph area */
+  if (query_mode || recall_active) {
+    int bx = 12, by = WIN_H - 40, bw = WIN_W - PANEL_W - 24, bh = 26;
+    char line[640];
+    XSetForeground(dpy, gc, col_panel);
+    XFillRectangle(dpy, back, gc, bx, by, (unsigned)bw, (unsigned)bh);
+    XSetForeground(dpy, gc, query_mode ? col_sel : col_grid);
+    XDrawRectangle(dpy, back, gc, bx, by, (unsigned)bw, (unsigned)bh);
+    if (query_mode)
+      snprintf(line, sizeof line, "recall> %s_", query_buf);
+    else
+      snprintf(line, sizeof line, "recall \"%s\":  %s", query_buf,
+               recall_status);
+    draw_text(bx + 8, by + 17, col_fg, line, (int)strlen(line));
+  }
+
   XCopyArea(dpy, back, win, gc, 0, 0, WIN_W, WIN_H, 0, 0);
   XFlush(dpy);
 }
@@ -623,6 +999,11 @@ static void pick(int px, int py) {
   if (px >= WIN_W - PANEL_W) { /* panel rows */
     for (p = 0; p < prow_count; p++)
       if (py >= prows[p].y0 && py <= prows[p].y1) {
+        if (prows[p].kind == 3) { /* fold/unfold a recall section */
+          if (prows[p].id < (u32)rec_sec_count)
+            sec_open[prows[p].id] = !sec_open[prows[p].id];
+          return;
+        }
         sel_kind = prows[p].kind;
         sel_id = prows[p].id;
         panel_scroll = 0;
@@ -730,17 +1111,21 @@ static int resolve_input(const char *arg, char *store, size_t cap) {
 int main(int argc, char **argv) {
   static char store[4200];
   const char *input = NULL;
-  int check_only = 0, a;
+  const char *volatile recall_q = NULL; /* live across setjmp below */
+  volatile int check_only = 0;
+  int a;
   u32 i;
 
   for (a = 1; a < argc; a++) {
     if (strcmp(argv[a], "--check") == 0)
       check_only = 1;
+    else if (strcmp(argv[a], "--recall") == 0 && a + 1 < argc)
+      recall_q = argv[++a];
     else if (!input)
       input = argv[a];
     else {
-      fprintf(stderr,
-              "usage: legend-viz [store-dir | legend.snapshot] [--check]\n");
+      fprintf(stderr, "usage: legend-viz [store-dir | legend.snapshot] "
+                      "[--check] [--recall <query>]\n");
       return 1;
     }
   }
@@ -750,6 +1135,11 @@ int main(int argc, char **argv) {
                       "LEGEND_STATE_DIR)\n");
     return 1;
   }
+  /* Point the embedder at THIS store's vectors.bin so a semantic (tier-2)
+   * recall reuses the cached element vectors and only embeds the query (~0.1s) --
+   * exactly the LLM's recall path. Without this, embed.c looks for ./vectors.bin,
+   * misses, and re-embeds all elements (~15s, a full freeze) on the UI thread. */
+  setenv("LEGEND_STATE_DIR", store, 1);
   g_err_trap = 1;
   if (setjmp(g_err_jmp)) {
     fprintf(stderr, "legend-viz: %s\n", g_err.message);
@@ -765,10 +1155,13 @@ int main(int argc, char **argv) {
   nr = g_graph.relation_count;
   ve = calloc(ne ? ne : 1, sizeof *ve);
   vr = calloc(nr ? nr : 1, sizeof *vr);
-  if (!ve || !vr) {
+  hl_e = calloc(ne ? ne : 1, 1);
+  hl_r = calloc(nr ? nr : 1, 1);
+  if (!ve || !vr || !hl_e || !hl_r) {
     fprintf(stderr, "legend-viz: out of memory\n");
     return 1;
   }
+  g_store = store;
   for (i = 0; i < nr; i++)
     collect_members(i);
   recompute_visibility();
@@ -785,6 +1178,63 @@ int main(int argc, char **argv) {
     printf("legend-viz --check: store %s\n", store);
     printf("elements %u (%u visible), relations %u (%u visible), clock %u\n",
            ne, vis_e, nr, vis_r, g_graph.clock);
+    {
+      u32 hv[12] = {0}, ha[12] = {0}, k, mc, orphan = 0, vsum = 0;
+      for (i = 0; i < nr; i++) {
+        mc = vr[i].member_count; if (mc > 11) mc = 11;
+        ha[mc]++;
+        if (vr[i].visible) { hv[mc]++; vsum += vr[i].member_count; }
+      }
+      printf("relation size (distinct member values) histogram:\n");
+      printf("  size:      0    1    2    3    4    5    6    7    8    9   10  11+\n");
+      printf("  visible:");
+      for (k = 0; k <= 11; k++) printf("%5u", hv[k]);
+      printf("\n  all:    ");
+      for (k = 0; k <= 11; k++) printf("%5u", ha[k]);
+      printf("\n  mean visible size: %.2f\n", vis_r ? (double)vsum / vis_r : 0.0);
+      for (i = 0; i < ne; i++)
+        if (ve[i].visible && ve[i].degree == 0) orphan++;
+      printf("orphan elements (visible, degree 0 in the visible graph): %u\n",
+             orphan);
+      printf("orphan names:");
+      for (i = 0; i < ne && orphan; i++)
+        if (ve[i].visible && ve[i].degree == 0)
+          printf(" [%.*s]", (int)elem_name_l(&g_graph, i),
+                 elem_name(&g_graph, i));
+      printf("\n");
+    }
+    return 0;
+  }
+
+  if (recall_q) { /* headless: run one recall through the real path, no window */
+    size_t ql = strlen(recall_q);
+    u32 na = 0, nf = 0, nrh = 0;
+    if (ql >= sizeof query_buf)
+      ql = sizeof query_buf - 1;
+    memcpy(query_buf, recall_q, ql);
+    query_buf[ql] = 0;
+    query_len = (int)ql;
+    run_query();
+    for (i = 0; i < ne; i++) {
+      if (hl_e[i] == 2)
+        na++;
+      else if (hl_e[i] == 1)
+        nf++;
+    }
+    for (i = 0; i < nr; i++)
+      nrh += hl_r[i];
+    printf("query: \"%s\"\n%s\n", query_buf, recall_status);
+    printf("highlights: %u anchors, %u frame elems, %u frame rels\n", na, nf,
+           nrh);
+    {
+      int s, r;
+      for (s = 0; s < rec_sec_count; s++) {
+        const RecSec *sec = &rec_secs[s];
+        printf("  %s (%d)\n", sec->name, sec->row_count);
+        for (r = sec->first_row; r < sec->first_row + sec->row_count; r++)
+          printf("      %s\n", rec_rows[r].label);
+      }
+    }
     return 0;
   }
 
@@ -875,12 +1325,38 @@ int main(int argc, char **argv) {
           }
           break;
         case KeyPress: {
-          KeySym k = XLookupKeysym(&ev.xkey, 0);
-          double pan = 60.0 / zoom;
+          KeySym k;
+          double pan;
+          if (query_mode) {
+            char tb[8];
+            KeySym ks;
+            int nkey = XLookupString(&ev.xkey, tb, sizeof tb, &ks, NULL);
+            if (ks == XK_Return || ks == XK_KP_Enter) {
+              query_mode = 0;
+              run_query();
+            } else if (ks == XK_Escape) {
+              query_mode = 0;
+            } else if (ks == XK_BackSpace) {
+              if (query_len > 0)
+                query_buf[--query_len] = 0;
+            } else if (nkey > 0 && (unsigned char)tb[0] >= 0x20 &&
+                       (unsigned char)tb[0] < 0x7f &&
+                       query_len < (int)sizeof query_buf - 1) {
+              query_buf[query_len++] = tb[0];
+              query_buf[query_len] = 0;
+            }
+            break;
+          }
+          k = XLookupKeysym(&ev.xkey, 0);
+          pan = 60.0 / zoom;
           if (k == XK_q || k == XK_Escape) {
             if (k == XK_Escape && sel_kind)
-              sel_kind = 0;
-            else
+              sel_kind = 0; /* deselect first -> back to the recall list */
+            else if (k == XK_Escape && recall_active) {
+              recall_active = 0;
+              hl_clear();
+              recall_status[0] = 0;
+            } else
               running = 0;
           } else if (k == XK_Left)
             cam_x -= pan;
@@ -912,6 +1388,14 @@ int main(int argc, char **argv) {
           else if (k == XK_r) {
             layout_seed();
             settle = 400;
+          } else if (k == XK_slash) {
+            query_mode = 1;
+            query_len = 0;
+            query_buf[0] = 0;
+          } else if (k == XK_c) {
+            recall_active = 0;
+            hl_clear();
+            recall_status[0] = 0;
           }
           break;
         }
