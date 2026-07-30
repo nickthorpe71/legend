@@ -929,6 +929,53 @@ static void test_tier1_resolution(void) {
     unsetenv("LEGEND_NOW");
 }
 
+/* the "immutable kind" trial fix: resubmitting an element with a different kind
+ * supersedes the old instance_of and moves elem_kind to the new kind (even when
+ * the new kind is minted this tick); resubmitting the same kind is a no-op. */
+static void test_kind_change(void) {
+    u32 foo, decision_k, module_k, rid, a, live, live_kind;
+    int failed;
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"foo\",\"kind\":\"decision\",\"summary\":\"x\"}]}"), failed);
+    CHECK(!failed);
+    foo = elem_by_name(&tg, "foo");
+    decision_k = elem_by_name(&tg, "decision");
+    CHECK(foo != NONE_U32 && tg.elem_kind[foo] == decision_k);
+
+    /* correct the kind: decision -> module (module is minted this tick) */
+    TRY(run_save("{\"elements\":[{\"name\":\"foo\",\"kind\":\"module\",\"summary\":\"x\"}]}"), failed);
+    CHECK(!failed);
+    module_k = elem_by_name(&tg, "module");
+    CHECK(module_k != NONE_U32 && tg.elem_kind[foo] == module_k);
+
+    /* exactly one LIVE instance_of on foo, pointing at module (old superseded) */
+    live = 0;
+    live_kind = NONE_U32;
+    for (rid = 0; rid < tg.relation_count; rid++) {
+        const Relation *r = &tg.relations[rid];
+        int subj = 0;
+        u32 kv = NONE_U32;
+        if (r->status >= ST_SUPERSEDED || r->attr_count != 2)
+            continue;
+        for (a = 0; a < 2; a++) {
+            if (r->attrs[a].name == WK_SUBJECT && r->attrs[a].value.tag == TERM_ELEM &&
+                r->attrs[a].value.id == foo)
+                subj = 1;
+            if (r->attrs[a].name == WK_INSTANCE_OF && r->attrs[a].value.tag == TERM_ELEM)
+                kv = r->attrs[a].value.id;
+        }
+        if (subj && kv != NONE_U32) {
+            live++;
+            live_kind = kv;
+        }
+    }
+    CHECK(live == 1 && live_kind == module_k);
+
+    /* resubmit the SAME kind -> idempotent, kind stays module */
+    TRY(run_save("{\"elements\":[{\"name\":\"foo\",\"kind\":\"module\",\"summary\":\"x\"}]}"), failed);
+    CHECK(!failed && tg.elem_kind[foo] == module_k);
+}
+
 static void test_relation_dedup(void) {
     int failed;
     u32 rel, before;
@@ -3248,6 +3295,7 @@ int main(void) {
     test_iso_format();
     test_ontology_ids();
     test_tier1_resolution();
+    test_kind_change();
     test_relation_dedup();
     test_write_report_shape();
     test_supersession_chain();

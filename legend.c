@@ -2276,7 +2276,7 @@ typedef struct {
   u32 *meta_by_target; /* "which meta-relations point AT this relation?" ->
                           RelLink head (per relation) */
   u32 meta_by_target_cap;
-  u32 *elem_kind; /* "what kind is this element?" -> kind element id (first live
+  u32 *elem_kind; /* "what kind is this element?" -> kind element id (latest live
                      instance_of), per element */
   u32 elem_kind_cap;
   u32 *dedup_slots; /* "does a relation with this exact slot set already exist?"
@@ -2632,8 +2632,11 @@ static void index_relation(Hypergraph *g, u32 rid) {
     const char *nb = str_ptr(&g->strs, name_id);
     u32 nl = str_len(&g->strs, name_id);
     if (nl == 11 && memcmp(nb, "instance_of", 11) == 0 &&
-        r->attrs[a].value.tag == TERM_ELEM && subject_elem != NONE_U32 &&
-        g->elem_kind[subject_elem] == NONE_U32)
+        r->attrs[a].value.tag == TERM_ELEM && subject_elem != NONE_U32)
+      /* latest LIVE instance_of wins: this block runs only for live relations
+       * (see !live guard above), and a kind correction supersedes the old
+       * instance_of, so on load exactly one is live. Last-in-arena == last
+       * minted, so warm accumulation and cold reload agree. */
       g->elem_kind[subject_elem] = r->attrs[a].value.id;
     if (nl > 8 && memcmp(nb, "current_", 8) == 0 && subject_elem != NONE_U32)
       cur_put(g, subject_elem, name_elem, rid);
@@ -4638,6 +4641,39 @@ static void plan_heal_plain_attrs(Plan *pl, u32 target_pend, u32 property_pend,
   }
 }
 
+/* Kind correction: resubmitting an existing element with a different `kind`
+ * supersedes its old live instance_of so exactly one kind stays live (the
+ * latest). Without this the old instance_of lingers and the derived elem_kind
+ * cannot move — the "immutable kind" trial issue. */
+static void plan_supersede_old_kind(Plan *pl, u32 elem, u32 newk) {
+  u32 link, cur;
+  if (elem == NONE_U32)
+    return;
+  cur = pl->g->elem_kind[elem];
+  /* newk == NONE_U32 means the new kind is minted THIS tick -- still a change,
+   * since the current kind is an existing id. Skip only when truly unchanged. */
+  if (cur == NONE_U32 || cur == newk)
+    return; /* newly minted element, or kind unchanged */
+  link = pl->g->rels_by_elem[elem];
+  while (link != NONE_U32) {
+    u32 rid = pl->g->rel_links[link].rel, a;
+    const Relation *r = &pl->g->relations[rid];
+    int subj = 0, inst = 0;
+    link = pl->g->rel_links[link].next;
+    if (r->status >= ST_SUPERSEDED || r->attr_count != 2)
+      continue;
+    for (a = 0; a < 2; a++) {
+      if (r->attrs[a].name == WK_SUBJECT && r->attrs[a].value.tag == TERM_ELEM &&
+          r->attrs[a].value.id == elem)
+        subj = 1;
+      if (r->attrs[a].name == WK_INSTANCE_OF)
+        inst = 1;
+    }
+    if (subj && inst && !plan_flip_staged_already(pl, 0, rid))
+      plan_push_flip(pl, 0, rid, ST_SUPERSEDED);
+  }
+}
+
 /* The shared state-flip core for changes and event-shaped facts — this is
  * SUPERSESSION in code. Given the new value (to_pend) and the existing current
  * value (prior, already looked up), there are three outcomes:
@@ -5491,6 +5527,9 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     u8 tags[2];
     if (pl->elem_entry_kind[i] == NONE_U32)
       continue;
+    /* correcting an existing element's kind supersedes the old instance_of */
+    plan_supersede_old_kind(pl, pl->pends[pl->elem_entry_pend[i]].existing,
+                            pl->pends[pl->elem_entry_kind[i]].existing);
     names[0] = plan_pend_for_elem(pl, WK_SUBJECT);
     tags[0] = VT_EPEND;
     vids[0] = pl->elem_entry_pend[i];
@@ -9876,7 +9915,8 @@ static const char MCP_INSTRUCTIONS[] =
     "resolves target shows up in the frame's writes.minted_elements, you "
     "created a phantom -- there was no open item to close; retract it). "
     "(7) To update an element's summary, resubmit the element with the new "
-    "summary (latest write wins); `changes` is for domain property VALUES "
+    "summary (latest write wins); to CORRECT its kind, resubmit with the new "
+    "`kind` (it supersedes the old, latest wins). `changes` is for domain property VALUES "
     "(a fact object -- and every attr value -- becomes an element named by it, "
     "so never pass prose as a fact object or an attr value; prose belongs in "
     "summaries). When a summary outgrows a line, "
