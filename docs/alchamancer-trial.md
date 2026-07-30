@@ -1030,6 +1030,32 @@ showed it may move pollution, not remove it):**
 Close when convenient; the relocation question (gauge 1) is the decision this round
 exists to make.
 
+## ENTITY-MODEL RESET + RE-PIN SEQUENCE (2026-07-27 → 07-30)
+
+After Round 7 the trial pivoted to the **small-intentional-entities / decision-hub**
+work. The longitudinal store was deliberately **WIPED and re-onboarded** (2026-07-27,
+archived to `.legend.archive-*`; the pre-pivot store is preserved and reversible), so
+the live store restarts from a fresh deep onboard — 312 elements at clock ~9, median
+name 2 words. This resets the longitudinal accumulation on purpose: the hypothesis is
+now the entity model, not raw weeks-of-capture.
+
+**Re-pin log (never upgrade silently — each stamped in the journal):**
+- `f83b436` — naming instruction + 5-word name cap + onboard reframe.
+- `8c546be` — `flat_decision` audit reason + "decision is a hub" instructions; store
+  re-onboarded on this build (**decisions structured 7/30 → 21/24**).
+- `7f42f61` — audit refinement (options referenced by a hub aren't flat) + kind nudge.
+- **`ddb9f7b` (current, 2026-07-30)** — mutable element kind: resubmitting with a new
+  `kind` supersedes the old `instance_of` (fixes the in-band "immutable kind" issue).
+  Maintenance save 2026-07-30 corrected C/Rust/SDL `decision`→`language`/`library` and
+  closed the issue. Build-aware replay **byte-identical across all 3 builds** after
+  every swap (`elem_kind` is derived/never serialized, so the fix needs no migration).
+
+Store health at the re-pin (read-only): `flat_decision 0 · prose_name 0 · status_fact
+0 · phantom 0`, 1 near_dup + 1 bloat. Activity light (sessions were game-dev-code-heavy
+— a spell-system overhaul — not Legend-heavy). Co-activation miner
+(`harness/coactivation.py`, read-only) available but still batch-noise on the fresh
+store; meaningful only once organic per-session saves accumulate.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
