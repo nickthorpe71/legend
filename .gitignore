@@ -96,7 +96,7 @@ benchmarks/venv/
 
 # SimpleQA distillation eval — generated artifacts (regenerate via run_all.sh)
 benchmarks/simpleqa/corpus/
-benchmarks/simpleqa/store/
+benchmarks/simpleqa/store*/
 benchmarks/simpleqa/runs/
 benchmarks/simpleqa/results/
 benchmarks/simpleqa/.venv/
