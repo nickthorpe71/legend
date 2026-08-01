@@ -1148,8 +1148,17 @@ this bundle does not address.
 **To close:** `python3 harness/round_report.py <sha>` then
 `python3 harness/bundle_gauges.py`, and compare to the table above.
 
-**Deploy is still pending.** Kill the old `mcp-serve` processes as part of the
-re-pin — `foreign_build` warns, it does not prevent.
+**RE-PINNED 2026-08-01 15:26 to `aede89d`** — `check.sh` green, clean tree, real
+stamp (verified: a fresh store's journal line reads `"build":"aede89d"`). Copied
+to a sibling and `mv -f`'d, so the one live `mcp-serve` (started 13:55) kept its
+`ddb9f7b` inode rather than being killed — see the re-pin hazard section for why
+killing it would have been worse.
+
+**Round 8's clock effectively starts when that last old-build writer stops.**
+Until then the journal carries both builds and `foreign_build` fires on the
+overlap; `bundle_gauges.py` will show exactly when the cut happened. Phase 3
+(repairing `#574`'s kind and `#602`'s duplicate cache) runs after it ends, so the
+new guards are the ones holding the repairs.
 
 ## What the store was seeded with (baseline)
 
