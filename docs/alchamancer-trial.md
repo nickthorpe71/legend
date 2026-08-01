@@ -1154,11 +1154,34 @@ to a sibling and `mv -f`'d, so the one live `mcp-serve` (started 13:55) kept its
 `ddb9f7b` inode rather than being killed — see the re-pin hazard section for why
 killing it would have been worse.
 
-**Round 8's clock effectively starts when that last old-build writer stops.**
-Until then the journal carries both builds and `foreign_build` fires on the
-overlap; `bundle_gauges.py` will show exactly when the cut happened. Phase 3
-(repairing `#574`'s kind and `#602`'s duplicate cache) runs after it ends, so the
-new guards are the ones holding the repairs.
+**CUT CLEAN at 15:27:20.** Last `ddb9f7b` write 15:23:00, first `aede89d` 15:27:20,
+no interleaving — the old session ended before the new one started, so Round 8's
+segment has a single build. `foreign_build` never had to fire.
+
+**PHASE 3 APPLIED 15:57**, one stamped maintenance save, two surgical retracts:
+
+- `rel:1966` `{Bio Weapon, instance_of: nothing resolves on cast}` — a mechanic
+  (`#577`, Trickster's signature texture) had been written into the kind slot.
+  Both `instance_of` edges were live and `elem_kind` picked the wrong one, so the
+  clobber here was an ambiguity rather than the supersession the guard was built
+  for. `rel:1955 instance_of spell` was untouched and is now the only one.
+- `rel:2071` `{the brake count, current_standing: active}` — stale beside
+  `rel:2096 settled`, which the element's own summary confirms ("SETTLED by Nick
+  2026-08-01").
+
+Dry-run on a copy first, then applied. Gauges `[1]` and `[3]` both **1 → 0**, and
+the new guards reject re-breaking either (`prose_value` on the kind, `parse` on a
+plain `current_*` write).
+
+**Left deliberately unrepaired:** the 12 `status_fact` plain `standing` facts.
+They are harmless and self-heal on the next lift (proven by the review), and
+`78416af` stops new ones at mint. The gauge grades "no NEW ones", not the
+backlog.
+
+**Open for Nick:** the retracted edge may have been reaching for a real
+relationship — Bio Weapon does exhibit that texture. No replacement predicate was
+invented, because asserting one is a design call. `#577`'s summary already states
+the connection in prose.
 
 ## What the store was seeded with (baseline)
 
