@@ -1086,6 +1086,58 @@ pkill -f 'legend mcp-serve'   # then let sessions respawn on the new binary
 Verified end to end: a warm server on the new build detected a save from the
 previously pinned binary and surfaced it in the next frame.
 
+## ROUND 8 OPEN 2026-08-01 — baseline recorded, NOT YET DEPLOYED
+
+Round 7 closed 2026-07-27; the entity-model reset that followed was a re-pin
+sequence, not a measured round. Nothing has been gauged since. This round opens
+**before** the re-pin so the save-path bundle can be attributed — the failure
+this whole roster diagnosed is instruction fixes shipping into an unmeasured
+window and nobody noticing they did nothing.
+
+**Under test:** the bundle in `docs/fix-roster-2026-08-01.md` — `e6973ae`
+(kind cap), `78416af` (constraint standing seeds its cache), `bbc9c8c` (pin-25
+heal bounded), `f76d3e6` (no plain writes to `current_*`), `ade943b` (prose
+metric), `00a0d52` (`foreign_build`). Three of these close defects that were
+LIVE in this store and that no audit check could see.
+
+**Baseline, on `ddb9f7b`, 2026-08-01** (`round_report.py ddb9f7b` +
+`bundle_gauges.py`):
+
+```
+segment      259 invocations · saves 60 · recalls 199 · rejections 9
+save ops     elements 213 · facts 348 · changes 16 · retract 38
+store        clock 115 · elements 684 · live relations 2437
+audit        status_fact 12 · near_dup 1 · prose_name 0 · flat_decision 13
+             stale_open 20 · orphan 0 · phantom_close 0 · bloat 124
+prose        summaries 357 · max 815 · p90 543 · mean 344
+packet       9090 B (cap 20000)
+ambient      167 queries · 74% surfaced · 42 abstained
+invariant    correlated_with 0
+```
+
+**Pre-registered gauges** — decided before deploy, so the round cannot be graded
+on whatever happens to move:
+
+| gauge | baseline | target |
+|---|---|---|
+| clobbered kinds (>2 words) | **1** (`#574 Bio Weapon`) | 0 after repair, stays 0 |
+| duplicate live `current_*` caches | **1** (`#602 the brake count`) | 0 after repair, stays 0 |
+| `status_fact` | **12** | falls; no NEW ones minted |
+| `phantom_close` · `orphan` · `prose_name` · `correlated_with` | **0** | must not move |
+| multi-valued groups (exposure) | **70 groups / 167 facts** | preserved across any `changes` |
+| distinct predicates · single-use | **80 · 37** | watch only — Watch #1, untouched by this bundle |
+| `foreign_build` in any frame | n/a | fires iff a stale server writes |
+
+**Deliberately NOT graded:** `bloat` (a size signal — read `prose` instead,
+`#122`/`#153`), and `flat_decision`, whose 13 are predicate false positives that
+this bundle does not address.
+
+**To close:** `python3 harness/round_report.py <sha>` then
+`python3 harness/bundle_gauges.py`, and compare to the table above.
+
+**Deploy is still pending.** Kill the old `mcp-serve` processes as part of the
+re-pin — `foreign_build` warns, it does not prevent.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview
