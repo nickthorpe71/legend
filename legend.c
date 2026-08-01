@@ -4588,7 +4588,7 @@ static void plan_heal_plain_attrs(Plan *pl, u32 target_pend, u32 property_pend,
                                   u32 cache_idx) {
   u32 t = pl->pends[target_pend].existing;
   u32 p = pl->pends[property_pend].existing;
-  u32 r;
+  u32 r, matches = 0, only = NONE_U32;
   if (t != NONE_U32 && p != NONE_U32) {
     u32 link = pl->g->rels_by_elem[t];
     while (link != NONE_U32) {
@@ -4610,13 +4610,23 @@ static void plan_heal_plain_attrs(Plan *pl, u32 target_pend, u32 property_pend,
         }
         if (!subj_is_target || !prop_named)
           continue;
-        if (plan_flip_staged_already(pl, 0, rid))
-          continue;
-        plan_push_flip(pl, 0, rid, ST_SUPERSEDED);
-        plan_push_supmeta(pl, cache_idx, 0, rid);
+        matches++;
+        only = rid;
       }
     }
+    /* Several live values means the property is multi-valued on this subject,
+     * and one change does not speak for all of them -- superseding the set drops
+     * scopes with no record that it happened. Widening a multi-valued property
+     * is retract's job. rel:0..9 are the ontology templates, whose `expects`
+     * edges retract already refuses to touch. */
+    if (matches == 1 && only >= WK_RELATION_COUNT &&
+        !plan_flip_staged_already(pl, 0, only)) {
+      plan_push_flip(pl, 0, only, ST_SUPERSEDED);
+      plan_push_supmeta(pl, cache_idx, 0, only);
+    }
   }
+  matches = 0;
+  only = NONE_U32;
   for (r = 0; r < pl->rel_count; r++) {
     PlanRel *pr = &pl->rels[r];
     int subj_is_target = 0, prop_named = 0;
@@ -4634,10 +4644,12 @@ static void plan_heal_plain_attrs(Plan *pl, u32 target_pend, u32 property_pend,
     }
     if (!subj_is_target || !prop_named)
       continue;
-    if (plan_flip_staged_already(pl, 1, r))
-      continue;
-    plan_push_flip(pl, 1, r, ST_SUPERSEDED);
-    plan_push_supmeta(pl, cache_idx, 1, r);
+    matches++;
+    only = r;
+  }
+  if (matches == 1 && !plan_flip_staged_already(pl, 1, only)) {
+    plan_push_flip(pl, 1, only, ST_SUPERSEDED);
+    plan_push_supmeta(pl, cache_idx, 1, only);
   }
 }
 

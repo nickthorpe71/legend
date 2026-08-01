@@ -2736,6 +2736,41 @@ static void test_heal_staged_plain_fact(void) {
         u32 cv = elem_by_name(&tg, "current_value");
         CHECK(cur_get_live(&tg, xx, cv) == cache);
     }
+    /* several live values means the property is multi-valued on this subject:
+     * one change does not speak for all of them, so none are superseded */
+    fresh_graph(&tg);
+    TRY(run_save("{\"facts\":[{\"s\":\"rule\",\"p\":\"applies_to\",\"o\":\"editor\"},"
+                 "{\"s\":\"rule\",\"p\":\"applies_to\",\"o\":\"sim\"},"
+                 "{\"s\":\"rule\",\"p\":\"applies_to\",\"o\":\"view\"}]}"), failed);
+    CHECK(!failed);
+    TRY(run_save("{\"changes\":[{\"target\":\"rule\",\"property\":\"applies_to\","
+                 "\"to\":\"audio\"}]}"), failed);
+    CHECK(!failed);
+    {
+        u32 e = elem_by_name(&tg, "rule");
+        u32 ap = elem_by_name(&tg, "applies_to");
+        u32 r, live = 0;
+        for (r = 0; r < tg.relation_count; r++) {
+            const Relation *rel = &tg.relations[r];
+            if (rel->status >= ST_SUPERSEDED || rel->attr_count != 2)
+                continue;
+            if (rel->attrs[0].value.id == e && rel->attrs[1].name == ap)
+                live++;
+        }
+        CHECK(live == 3);
+    }
+    /* the ontology templates are expects edges the retract guard protects; a
+     * change on `expects` must not reach them either, even for a kind whose
+     * template lists exactly one (which would otherwise read as single-valued) */
+    fresh_graph(&tg);
+    TRY(run_save("{\"changes\":[{\"target\":\"question\",\"property\":\"expects\","
+                 "\"to\":\"vibes\"}]}"), failed);
+    CHECK(!failed);
+    {
+        u32 r;
+        for (r = 0; r < WK_RELATION_COUNT; r++)
+            CHECK(tg.relations[r].status < ST_SUPERSEDED);
+    }
     unsetenv("LEGEND_NOW");
 }
 
