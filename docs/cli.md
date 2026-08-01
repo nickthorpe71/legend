@@ -119,6 +119,27 @@ defects across 815 elements; treat it as advisory. The sharp checks are
 `phantom_close` and `status_fact`. `prose_name` triggers past 120 bytes against
 a measured median name of 29.
 
+### The prose block — read this instead of the `bloat` count
+
+`legend audit` closes with the summary-length distribution over the same
+elements the `bloat` check ranges on:
+
+```json
+"prose":{"summaries":328,"chars":110776,"max":815,"p90":543,"mean":337,"over":400}
+```
+
+**The `bloat` count tracks store size, not store health, and should not be read
+as a health signal.** Applying the documented remedy — split a wall into a short
+core plus child elements — moves the count the *wrong* way, because the detail
+still has to live somewhere and every child clears the threshold too (measured:
+272 → 286). What improved on that same split was `max`, 4047 → 1405. So `max`,
+`p90` and `chars` are what answer "are summaries becoming walls"; `over` just
+echoes the threshold the count used.
+
+Worked example: a store reporting `bloat: 108` alongside `max: 815, p90: 543,
+mean: 337` is **healthy** — 108 summaries sit just past a 400-byte line and none
+is a wall. Reading the count alone there produces a false alarm.
+
 ### The orientation tally
 
 A `recall` with no focus carries a store-health tally in its `overview` header:

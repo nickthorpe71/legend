@@ -9846,6 +9846,36 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
   *out_n = n;
 }
 
+/* The summary-length distribution over the elements the bloat check ranges on.
+ * The bloat COUNT tracks store size rather than health (#122, #153): splitting a
+ * wall into a short core plus children moves it the wrong way, because the detail
+ * still has to live somewhere and every child clears the threshold too. What
+ * moved on that same split was max (4047 -> 1405), so max/p90/total is the metric
+ * that answers "are summaries becoming walls". */
+static void audit_put_prose(const Hypergraph *g) {
+  u8 *structural = (u8 *)calloc(g->element_count ? g->element_count : 1, 1);
+  u32 *len = NULL, n = 0, cap = 0, e;
+  u64 total = 0;
+  audit_mark_structural(g, structural);
+  for (e = 0; e < g->element_count; e++) {
+    const Element *el = &g->elements[e];
+    if (structural[e] || el->redirect != NONE_U32 || el->summary == NONE_U32)
+      continue;
+    len = (u32 *)xgrow(len, n + 1, &cap, sizeof *len);
+    len[n] = str_len(&g->strs, el->summary);
+    total += len[n++];
+  }
+  if (n)
+    qsort(len, n, sizeof *len, u32_cmp);
+  printf(",\"prose\":{\"summaries\":%u,\"chars\":%lu,\"max\":%u,\"p90\":%u,"
+         "\"mean\":%u,\"over\":%u}",
+         n, (unsigned long)total, n ? len[n - 1] : 0,
+         n ? len[(n * 9) / 10 < n ? (n * 9) / 10 : n - 1] : 0,
+         n ? (u32)(total / n) : 0, g_aud_bloat_chars);
+  free(len);
+  free(structural);
+}
+
 /* Rank, cap, print. `per_reason` < 0 prints every suspect. */
 static void audit_graph(const Hypergraph *g, i64 per_reason) {
   Suspect *sus;
@@ -9877,7 +9907,9 @@ static void audit_graph(const Hypergraph *g, i64 per_reason) {
           first = 0;
         }
     }
-    printf("},\"shown\":%u,\"total\":%u}\n", put, n);
+    printf("},\"shown\":%u,\"total\":%u", put, n);
+    audit_put_prose(g);
+    fputs("}\n", stdout);
   }
   free(sus);
 }
