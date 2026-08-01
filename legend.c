@@ -5158,6 +5158,10 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     }
     {
       u32 attr_keys[LEGEND_LIST_CAP];
+      u32 seed_standing = NONE_U32;
+      int mints_constraint = kind_pend != NONE_U32 &&
+                             pl->pends[kind_pend].existing == WK_KIND_CONSTRAINT &&
+                             pl->pends[name_pend].existing == NONE_U32;
       for (a = 0; a < el->attr_count; a++) {
         const AttrEntry *ae = &sub->attr_pool[el->attr_start + a];
         u32 key_pend, v;
@@ -5174,33 +5178,43 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
           names[1] = key_pend;
           plan_slot_value(pl, sub->span_pool[ae->val_start + v], path, 1,
                           &tags[1], &vids[1], 0);
+          /* a new constraint's standing seeds the current_standing cache below.
+           * Writing it as a plain fact as well leaves a second copy of a value
+           * that changes, and only the cache supersedes. */
+          if (mints_constraint && ae->val_count == 1 && tags[1] == VT_EPEND &&
+              pl->pends[key_pend].existing == WK_STANDING) {
+            seed_standing = vids[1];
+            continue;
+          }
           plan_relation(pl, names, tags, vids, 2, ST_ASSERTED,
                         sub->intent[INTENT_CONVICTION], 0.0, 0, 1);
         }
       }
       if (kind_pend != NONE_U32 && el->attr_count > 0)
         plan_check_drift(pl, name_pend, kind_pend, attr_keys, el->attr_count);
-    }
-    /* minting a constraint-kind element mints its current_standing =
-     * active cache, so lifting it later is a real supersession (spec §5) */
-    if (kind_pend != NONE_U32 &&
-        pl->pends[kind_pend].existing == WK_KIND_CONSTRAINT &&
-        pl->pends[name_pend].existing == NONE_U32) {
-      u32 curstand, active, cache;
-      u32 names[2], vids[2];
-      u8 tags[2];
-      snprintf(path, sizeof path, "elements[%u].kind", i);
-      curstand = plan_ref_raw(pl, "current_standing", 16, path, 0);
-      active = plan_ref_raw(pl, "active", 6, path, 0);
-      names[0] = plan_pend_for_elem(pl, WK_SUBJECT);
-      tags[0] = VT_EPEND;
-      vids[0] = name_pend;
-      names[1] = curstand;
-      tags[1] = VT_EPEND;
-      vids[1] = active;
-      cache = plan_relation(pl, names, tags, vids, 2, ST_ASSERTED,
-                            g->policy.default_confidence, 0.0, 0, 1);
-      plan_curov_push(pl, name_pend, curstand, cache, active);
+      /* minting a constraint-kind element mints its current_standing cache, so
+       * lifting it later is a real supersession (spec §5). The value comes from
+       * the caller's `standing` when it supplied one -- hardcoding `active`
+       * contradicts a constraint declared retired at mint, and
+       * constraint_is_active reads only the cache. */
+      if (mints_constraint) {
+        u32 curstand, cache;
+        u32 names[2], vids[2];
+        u8 tags[2];
+        snprintf(path, sizeof path, "elements[%u].kind", i);
+        curstand = plan_ref_raw(pl, "current_standing", 16, path, 0);
+        if (seed_standing == NONE_U32)
+          seed_standing = plan_ref_raw(pl, "active", 6, path, 0);
+        names[0] = plan_pend_for_elem(pl, WK_SUBJECT);
+        tags[0] = VT_EPEND;
+        vids[0] = name_pend;
+        names[1] = curstand;
+        tags[1] = VT_EPEND;
+        vids[1] = seed_standing;
+        cache = plan_relation(pl, names, tags, vids, 2, ST_ASSERTED,
+                              g->policy.default_confidence, 0.0, 0, 1);
+        plan_curov_push(pl, name_pend, curstand, cache, seed_standing);
+      }
     }
     /* element-form src (pin 26): a {subject, src: pointer} base relation;
      * the pointers section aggregates both forms */

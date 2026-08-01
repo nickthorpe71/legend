@@ -2039,6 +2039,30 @@ static void test_constraint_cache(void) {
         CHECK(tg.relations[cache].status == ST_SUPERSEDED);
         CHECK(cur_get_live(&tg, e, cs) != cache);
     }
+    /* a supplied standing seeds the cache instead of being written beside it:
+     * hardcoding active contradicted a constraint declared retired at mint, and
+     * constraint_is_active reads only the cache */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"dead rule\",\"kind\":\"constraint\","
+                 "\"attrs\":{\"standing\":\"retired\"}}]}"), failed);
+    CHECK(!failed);
+    {
+        u32 e = elem_by_name(&tg, "dead rule");
+        u32 cs = elem_by_name(&tg, "current_standing");
+        u32 cache, r;
+        CHECK(e != NONE_U32 && cs != NONE_U32);
+        cache = cur_get_live(&tg, e, cs);
+        CHECK(cache != NONE_U32);
+        CHECK(elem_name_is(&tg, tg.relations[cache].attrs[1].value.id, "retired"));
+        CHECK(!constraint_is_active(&tg, e));
+        /* and no second copy lingers as a plain standing fact */
+        for (r = 0; r < tg.relation_count; r++) {
+            const Relation *rel = &tg.relations[r];
+            if (rel->status >= ST_SUPERSEDED || rel->attr_count != 2)
+                continue;
+            CHECK(!(rel->attrs[0].value.id == e && rel->attrs[1].name == WK_STANDING));
+        }
+    }
     unsetenv("LEGEND_NOW");
 }
 
