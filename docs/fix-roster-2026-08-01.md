@@ -22,8 +22,29 @@ bitmask was dropped in favour of counting live priors in the store: the count is
 measured rather than declared, so it also covers properties no template lists —
 which is exactly the `expects` case that produced the ontology wipe.
 
+## PHASE 2 SHIPPED 2026-08-01 — three commits, `check.sh` green on each
+
+| commit | item | what changed |
+|---|---|---|
+| `401b82a` | R6a | Hebbian spec committed with a `SUPERSEDED` banner (same handling `3d2191f` gave the killed ingest-restraint spec); `.gitignore` widened to `benchmarks/simpleqa/store*/`. The roster's "gitignore **or delete**" was wrong — that directory is a 3.0 MB store `measure_tight.py` reads, built with paid ingest. Not deleted. |
+| `ade943b` | R4a | `legend audit` emits `prose{summaries,chars,max,p90,mean,over}` — `#136`'s explicitly-open metric half. Threshold stays 400; the 600 raise was dropped as relitigating `#122`/`#153`. Documented in `docs/cli.md` with the false-alarm worked example. |
+| `00a0d52` | R5 | `graph_sync` compares the journal's last `build` to its own on a reload it did not cause, and puts a mismatch in the frame as `foreign_build`. |
+
+R5 was **relocated, not built as specified.** The roster's start-time check is
+blind to the hazard: the stale server's build *matched* the store when it
+started, and the mismatch only appeared 1.3 days later at the re-pin. It would
+also have false-positived on every legitimate upgrade. Verified end to end using
+the previously pinned binary as a real foreign writer.
+
+Measured on a copy of the live store, the new metric makes the R4 argument
+concrete: `bloat: 108` alongside `max 815 · p90 543 · mean 337`.
+
+## Still pending
+
 Phase 3 (live-store repair of the 4 clobbered kinds and `#602`'s duplicate
-cache) still pending, and must run against the re-pinned binary.
+cache) must run against the re-pinned binary. Phase 0's baseline and round-open
+come **before** the re-pin. C4, C5, `changes.target`, the predicate
+consolidation and the `#110` near-dup call are the round after.
 
 
 **v1 was written by the agent that diagnosed most of it. Four independent
