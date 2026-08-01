@@ -1476,6 +1476,21 @@ static void test_prose_backstop(void) {
     TRY(run_save("{\"elements\":[{\"name\":\"input latency budget\","
                  "\"kind\":\"constraint\"}]}"), failed);
     CHECK(!failed);
+    /* kind gate: a multi-word kind is a claim, and accepting one supersedes the
+     * element's real kind -- which drops it out of every kind-keyed check */
+    fresh_graph(&tg);
+    expect_save_err("{\"elements\":[{\"name\":\"Bio Weapon\",\"kind\":\"spell\"},"
+                    "{\"name\":\"Bio Weapon\",\"kind\":\"nothing resolves on cast\"}]}",
+                    ERR_PROSE_VALUE, "elements[1].kind");
+    /* the real kind is untouched by the rejected resubmit */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"Bio Weapon\",\"kind\":\"spell\"}]}"), failed);
+    CHECK(!failed);
+    expect_save_err("{\"elements\":[{\"name\":\"Bio Weapon\","
+                    "\"kind\":\"nothing resolves on cast\"}]}",
+                    ERR_PROSE_VALUE, "elements[0].kind");
+    CHECK(tg.elem_kind[elem_by_name(&tg, "Bio Weapon")] ==
+          elem_by_name(&tg, "spell"));
     unsetenv("LEGEND_NOW");
 }
 

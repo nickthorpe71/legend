@@ -4998,6 +4998,27 @@ static u32 plan_resolve_fact_shape(Plan *pl, const SubFact *f,
 /* Fixed walk order (plan §3.17): templates -> elements -> facts -> changes ->
  * retract -> merge, then the metas phase (instance_of typing, change metas,
  * src pointers, source provenance) and focus (read positions, never mint). */
+/* Words in a name: runs of alphanumerics. The element name and the kind slot
+ * are both nouns, and both carry a word cap. */
+static u32 name_word_count(const char *s, u32 len) {
+  u32 i, words = 0;
+  int inword = 0;
+  for (i = 0; i < len; i++) {
+    char c = s[i];
+    int alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9');
+    if (alnum) {
+      if (!inword) {
+        words++;
+        inword = 1;
+      }
+    } else {
+      inword = 0;
+    }
+  }
+  return words;
+}
+
 static void plan_submission(Plan *pl, const Hypergraph *g,
                             const Submission *sub, const char *buf) {
   char path[224];
@@ -5075,19 +5096,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
      * element is a legacy reference, not a new one). The rejected attempt is captured
      * verbatim in the journal for analysis. */
     if (pl->pends[name_pend].existing == NONE_U32) {
-      const char *ns = buf + el->name.off;
-      u32 wi, words = 0;
-      int inword = 0;
-      for (wi = 0; wi < el->name.len; wi++) {
-        char c = ns[wi];
-        int alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    (c >= '0' && c <= '9');
-        if (alnum) {
-          if (!inword) { words++; inword = 1; }
-        } else {
-          inword = 0;
-        }
-      }
+      u32 words = name_word_count(buf + el->name.off, el->name.len);
       if (words > 5)
         fail(ERR_PROSE_VALUE, path,
              "name is %u words -- a NAME is a short noun (<=5 words) for ONE thing. "
@@ -5096,7 +5105,19 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
              words);
     }
     if (!span_absent(el->kind)) {
+      /* A KIND is a one-word noun -- every kind a real store carries (spell,
+       * mechanic, constraint, module) is a single word. The cap is not mint-only
+       * like the name cap: resubmitting an element with a multi-word kind
+       * supersedes its real kind, and an element whose kind is a claim drops out
+       * of every kind-keyed check and recall band. */
+      u32 kwords = name_word_count(buf + el->kind.off, el->kind.len);
       snprintf(path, sizeof path, "elements[%u].kind", i);
+      if (kwords > 2)
+        fail(ERR_PROSE_VALUE, path,
+             "kind is %u words -- a KIND is a one-word noun (spell, mechanic, "
+             "constraint, module). This reads as a claim: keep the kind a noun and "
+             "put the claim in the summary or write it as a fact.",
+             kwords);
       kind_pend = plan_ref(pl, el->kind, path, NONE_U32, 0, 1);
     }
     pl->elem_entry_pend[i] = name_pend;
