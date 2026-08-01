@@ -2063,6 +2063,23 @@ static void test_constraint_cache(void) {
             CHECK(!(rel->attrs[0].value.id == e && rel->attrs[1].name == WK_STANDING));
         }
     }
+    /* the current_* cache is the change path's to write: a plain fact there sits
+     * beside it instead of superseding it, and the audit skips the prefix, so
+     * two contradicting values would read as clean */
+    fresh_graph(&tg);
+    expect_save_err("{\"facts\":[{\"s\":\"brakes\",\"p\":\"current_standing\","
+                    "\"o\":\"active\"}]}",
+                    ERR_PARSE, "facts[0].p");
+    fresh_graph(&tg);
+    expect_save_err("{\"elements\":[{\"name\":\"X\",\"attrs\":{\"current_phase\":\"two\"}}]}",
+                    ERR_PARSE, "elements[0].attrs.current_phase");
+    /* changes still write it */
+    fresh_graph(&tg);
+    TRY(run_save("{\"changes\":[{\"target\":\"brakes\",\"property\":\"standing\","
+                 "\"to\":\"settled\"}]}"), failed);
+    CHECK(!failed);
+    CHECK(cur_get_live(&tg, elem_by_name(&tg, "brakes"),
+                       elem_by_name(&tg, "current_standing")) != NONE_U32);
     unsetenv("LEGEND_NOW");
 }
 

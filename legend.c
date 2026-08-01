@@ -5010,6 +5010,32 @@ static u32 plan_resolve_fact_shape(Plan *pl, const SubFact *f,
 /* Fixed walk order (plan §3.17): templates -> elements -> facts -> changes ->
  * retract -> merge, then the metas phase (instance_of typing, change metas,
  * src pointers, source provenance) and focus (read positions, never mint). */
+/* `current_<property>` is the namespace the change path constructs for its value
+ * cache. A plain fact written there sits beside the cache rather than
+ * superseding it, and the audit's status-flavor check skips the prefix on the
+ * grounds that a current_* name is one `changes` already wrote -- so two
+ * contradicting values live in the state band with every check reporting clean. */
+static void reject_cache_predicate(Plan *pl, Span s, const char *path) {
+  const char *b = pl->buf + s.off;
+  static const char *const PFX = "current_";
+  u32 i;
+  if (s.len <= 8)
+    return;
+  for (i = 0; i < 8; i++) {
+    char c = b[i];
+    if (c >= 'A' && c <= 'Z')
+      c = (char)(c - 'A' + 'a');
+    if (c != PFX[i])
+      return;
+  }
+  fail(ERR_PARSE, path,
+       "\"%.*s\" is the value cache the change path owns -- write "
+       "changes {target, property: \"%.*s\", to} instead, which supersedes the "
+       "prior value and keeps the history",
+       (int)(s.len > 64 ? 64 : s.len), b,
+       (int)(s.len - 8 > 56 ? 56 : s.len - 8), b + 8);
+}
+
 /* Words in a name: runs of alphanumerics. The element name and the kind slot
  * are both nouns, and both carry a word cap. */
 static u32 name_word_count(const char *s, u32 len) {
@@ -5179,6 +5205,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
         u32 key_pend, v;
         snprintf(path, sizeof path, "elements[%u].attrs.%.*s", i,
                  (int)(ae->key.len > 64 ? 64 : ae->key.len), buf + ae->key.off);
+        reject_cache_predicate(pl, ae->key, path);
         key_pend = plan_ref(pl, ae->key, path, NONE_U32, 0, 0);
         attr_keys[a] = key_pend;
         for (v = 0; v < ae->val_count; v++) {
@@ -5260,6 +5287,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
       snprintf(path, sizeof path, "facts[%u].s", i);
       plan_slot_value(pl, f->s, path, 1, &tags[0], &vids[0], 0);
       snprintf(path, sizeof path, "facts[%u].p", i);
+      reject_cache_predicate(pl, f->p, path);
       names[1] = plan_ref(pl, f->p, path, NONE_U32, 0, 0);
       snprintf(path, sizeof path, "facts[%u].o", i);
       /* a `resolves` fact closes an existing question/task: its object must
@@ -5318,6 +5346,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
           snprintf(vpath, sizeof vpath, "facts[%u].attrs.%.*s", i,
                    (int)(ae->key.len > 64 ? 64 : ae->key.len),
                    buf + ae->key.off);
+          reject_cache_predicate(pl, ae->key, vpath);
           keys[a] = plan_ref(pl, ae->key, vpath, NONE_U32, 0, 0);
           names[a] = keys[a];
           plan_slot_value(pl, sub->span_pool[ae->val_start], vpath, listable,
@@ -5348,6 +5377,7 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
         char vpath[224];
         snprintf(vpath, sizeof vpath, "facts[%u].attrs.%.*s", i,
                  (int)(ae->key.len > 64 ? 64 : ae->key.len), buf + ae->key.off);
+        reject_cache_predicate(pl, ae->key, vpath);
         keys[a] = plan_ref(pl, ae->key, vpath, NONE_U32, 0, 0);
         val_off[a] = vtotal;
         val_cnt[a] = ae->val_count;
