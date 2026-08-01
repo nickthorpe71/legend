@@ -1077,11 +1077,24 @@ MATCHED the store when it started, and the mismatch only appeared later at the
 re-pin, so a start-time compare is blind to the actual hazard and false-positives
 on every legitimate upgrade.
 
-**It warns, it does not prevent.** Kill the old servers as part of the re-pin:
+**It warns, it does not prevent — and do NOT kill the servers.** Measured
+2026-08-01: killing a session's `mcp-serve` does **not** respawn it. The client
+marks the server disconnected and its tools vanish for the remaining life of that
+session — no recall, no save, no Legend at all. That is strictly worse than a
+stale build, which at least still works.
 
-```sh
-pkill -f 'legend mcp-serve'   # then let sessions respawn on the new binary
-```
+The only clean cut is **ending the session**; the next one spawns on the new
+binary. So the re-pin has two honest modes:
+
+| | what happens | cost |
+|---|---|---|
+| End sessions, then `mv -f` | every writer is on the new build immediately | you stop work at a boundary |
+| `mv -f` now, let sessions finish | old sessions keep writing the old build until they end | overlap muddies the round's attribution — now **visible** via `foreign_build` rather than silent |
+
+`mv -f` itself is always safe with servers running (that is the `ETXTBSY`
+workaround above) — it never needs a kill. The choice is only about how long the
+overlap lasts, and `foreign_build` is what makes that overlap measurable instead
+of a 2.5-day blind spot.
 
 Verified end to end: a warm server on the new build detected a save from the
 previously pinned binary and surfaced it in the next frame.
