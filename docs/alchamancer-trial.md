@@ -1056,6 +1056,36 @@ Store health at the re-pin (read-only): `flat_decision 0 · prose_name 0 · stat
 (`harness/coactivation.py`, read-only) available but still batch-noise on the fresh
 store; meaningful only once organic per-session saves accumulate.
 
+## Re-pin hazard: a server left behind keeps writing (guarded 2026-08-01)
+
+`mv -f` swaps the binary but does not disturb a running `mcp-serve`, so a server
+from an ended session keeps serving on its old image. Measured over the last
+round: a `7f42f61` process wrote **60 journal lines over 2.5 days** after
+`ddb9f7b` was pinned, interleaving with the new build 17 times. The journal
+`build` column recorded it faithfully; nothing surfaced it, so nobody looked.
+
+`graph_sync` now compares the journal's last `build` to its own whenever it
+reloads a graph it was holding warm -- which happens exactly when another
+process wrote. On a mismatch the frame carries `foreign_build`:
+
+```json
+{"tick":7,"at":"...","store":"...","foreign_build":"ddb9f7b","resolution":[...]}
+```
+
+A start-time check was proposed first and rejected: the stale server's build
+MATCHED the store when it started, and the mismatch only appeared later at the
+re-pin, so a start-time compare is blind to the actual hazard and false-positives
+on every legitimate upgrade.
+
+**It warns, it does not prevent.** Kill the old servers as part of the re-pin:
+
+```sh
+pkill -f 'legend mcp-serve'   # then let sessions respawn on the new binary
+```
+
+Verified end to end: a warm server on the new build detected a save from the
+previously pinned binary and surfaced it in the next frame.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview

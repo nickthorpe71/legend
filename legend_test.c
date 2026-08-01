@@ -651,6 +651,50 @@ static void test_payload_cap(void) {
     fclose(f);
 }
 
+/* The journal tail carries the build of the last writer; graph_sync compares it
+ * to ours on a reload it did not cause, which is how a server left behind by a
+ * re-pin gets surfaced instead of writing unnoticed for days. */
+static void test_journal_last_build(void) {
+    char root_tmpl[] = "/tmp/legend_wp0_jb_XXXXXX";
+    char *root = mkdtemp(root_tmpl);
+    char p[4400], got[24];
+    FILE *f;
+    CHECK(root != NULL);
+    if (!root) return;
+
+    /* no journal at all */
+    journal_last_build(root, got, sizeof got);
+    CHECK(got[0] == '\0');
+
+    snprintf(p, sizeof p, "%s/journal.jsonl", root);
+    f = fopen(p, "wb");
+    CHECK(f != NULL);
+    if (!f) return;
+    fputs("{\"ts\":1,\"build\":\"aaaaaaa\",\"verb\":\"save\"}\n", f);
+    fputs("{\"ts\":2,\"build\":\"bbbbbbb\",\"verb\":\"recall\"}\n", f);
+    fclose(f);
+    /* the LAST line wins, not the first */
+    journal_last_build(root, got, sizeof got);
+    CHECK(strcmp(got, "bbbbbbb") == 0);
+
+    /* a journal longer than the tail window still reads its final line */
+    f = fopen(p, "wb");
+    CHECK(f != NULL);
+    if (!f) return;
+    {
+        int i;
+        for (i = 0; i < 400; i++)
+            fprintf(f, "{\"ts\":%d,\"build\":\"aaaaaaa\",\"verb\":\"save\","
+                       "\"payload\":\"%0200d\"}\n", i, i);
+        fputs("{\"ts\":999,\"build\":\"ccccccc\",\"verb\":\"save\"}\n", f);
+    }
+    fclose(f);
+    journal_last_build(root, got, sizeof got);
+    CHECK(strcmp(got, "ccccccc") == 0);
+    unlink(p);
+    rmdir(root);
+}
+
 static void test_store_discovery(void) {
     char root_tmpl[] = "/tmp/legend_wp0_store_XXXXXX";
     char *root = mkdtemp(root_tmpl);
@@ -3379,6 +3423,7 @@ int main(void) {
     test_reader_rejections();
     test_reader_recall();
     test_payload_cap();
+    test_journal_last_build();
     test_store_discovery();
     test_flock_conflict();
     test_now_unix_seconds();

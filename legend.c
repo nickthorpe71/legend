@@ -6845,11 +6845,19 @@ static void frame_put_rel_entry(const Hypergraph *g, u32 rid, int first) {
  * key, so it is rejected at plan time (spec §5). Kept beside the emitter so the
  * list cannot drift from what the frame actually writes. */
 static const char *const FRAME_RESERVED_KEYS[] = {
-    "tick",         "at",        "store",          "resolution", "writes",
-    "near_matches", "conflicts", "template_drift", "focus",      "overview",
-    "state",        "decisions", "constraints",    "open",       "recent",
-    "history",      "related",   "pointers",       "sources",    "causal",
-    "omitted"};
+    "tick",         "at",        "store",          "resolution",    "writes",
+    "near_matches", "conflicts", "template_drift", "focus",         "overview",
+    "state",        "decisions", "constraints",    "open",          "recent",
+    "history",      "related",   "pointers",       "sources",       "causal",
+    "omitted",      "foreign_build"};
+
+/* The build stamp of another process that wrote this store while we held it
+ * warm. A re-pin swaps the binary on disk but leaves running servers on their
+ * old image (docs/alchamancer-trial.md), so an ended session's server can keep
+ * serving saves for days: one stale image wrote 60 journal lines over 2.5 days
+ * of the last round, interleaved with the new build 17 times. Empty when every
+ * writer has matched us. */
+static char g_foreign_build[24];
 
 /* Entries per typed section (decisions, constraints, open, causal, and each
  * custom-kind section). These were emitted UNCAPPED — `limit` budgets only
@@ -7473,7 +7481,13 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
   format_iso_utc(w->at_secs, at);
   printf("{\"tick\":%u,\"at\":\"%s\",\"store\":\"", w->tick, at);
   json_escape_fputs(store, stdout);
-  fputs("\",\"resolution\":[", stdout);
+  fputc('"', stdout);
+  if (g_foreign_build[0]) {
+    fputs(",\"foreign_build\":\"", stdout);
+    json_escape_fputs(g_foreign_build, stdout);
+    fputc('"', stdout);
+  }
+  fputs(",\"resolution\":[", stdout);
   for (i = 0; i < w->res_count; i++) {
     const ResEntry *e = &w->res[i];
     if (i)
@@ -10486,14 +10500,62 @@ static int graph_traced(void) {
 
 /* Reload g_graph only when the snapshot changed on disk (or a prior call left
  * it dirty). snapshot_load appends, so a reload resets the graph first. */
+/* The `build` of the last journal line, or "" when the store has no journal.
+ * The tail is enough: lines are appended and the newest is last. */
+static void journal_last_build(const char *store, char *out, size_t outn) {
+  char path[4300], tail[8192];
+  FILE *f;
+  long size;
+  size_t got, i;
+  static const char KEY[] = "\"build\":\"";
+  out[0] = '\0';
+  snprintf(path, sizeof path, "%s/journal.jsonl", store);
+  f = fopen(path, "rb");
+  if (!f)
+    return;
+  if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0) {
+    fclose(f);
+    return;
+  }
+  if ((size_t)size > sizeof tail)
+    fseek(f, size - (long)sizeof tail, SEEK_SET);
+  else
+    fseek(f, 0, SEEK_SET);
+  got = fread(tail, 1, sizeof tail, f);
+  fclose(f);
+  for (i = got; i-- > 0;) {
+    if (i + sizeof KEY - 1 > got || memcmp(tail + i, KEY, sizeof KEY - 1) != 0)
+      continue;
+    {
+      const char *v = tail + i + sizeof KEY - 1;
+      size_t n = 0;
+      while (v + n < tail + got && v[n] != '"' && n + 1 < outn)
+        n++;
+      memcpy(out, v, n);
+      out[n] = '\0';
+    }
+    return;
+  }
+}
+
 static void graph_sync(const char *store) {
   i64 size = -1, mtime = 0, ns = 0;
   int present = snapshot_fingerprint(store, &size, &mtime, &ns);
+  int was_warm = g_graph_warm;
   if (g_graph_warm && present && size == g_snap_size && mtime == g_snap_mtime &&
       ns == g_snap_mtime_ns) {
     if (graph_traced())
       fprintf(stderr, "[graph] warm hit (%u elements)\n", g_graph.element_count);
     return; /* unchanged: keep the warm graph */
+  }
+  /* Reloading a graph we already held warm means another process wrote. A
+   * writer on a different build is a re-pin that left this server behind (or
+   * left another one behind), which the journal stamps but nothing surfaces. */
+  if (was_warm) {
+    char last[24];
+    journal_last_build(store, last, sizeof last);
+    if (last[0] && strcmp(last, LEGEND_BUILD) != 0)
+      snprintf(g_foreign_build, sizeof g_foreign_build, "%s", last);
   }
   if (graph_traced())
     fprintf(stderr, "[graph] reload (%s)\n",
