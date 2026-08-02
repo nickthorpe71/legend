@@ -24,16 +24,16 @@
         "resolution": [],
         "writes": {
           "minted_elements": [
-            { "ref": "#42", "name": "character" },
-            { "ref": "#43", "name": "role" },
-            { "ref": "#44", "name": "wants" },
-            { "ref": "#45", "name": "flaw" },
-            { "ref": "#46", "name": "arc" },
-            { "ref": "#47", "name": "Maren" },
-            { "ref": "#48", "name": "mentor" },
-            { "ref": "#49", "name": "find successor" },
-            { "ref": "#50", "name": "atonement" },
-            { "ref": "#51", "name": "pride" }
+            { "ref": "#43", "name": "character" },
+            { "ref": "#44", "name": "role" },
+            { "ref": "#45", "name": "wants" },
+            { "ref": "#46", "name": "flaw" },
+            { "ref": "#47", "name": "arc" },
+            { "ref": "#48", "name": "Maren" },
+            { "ref": "#49", "name": "mentor" },
+            { "ref": "#50", "name": "find successor" },
+            { "ref": "#51", "name": "atonement" },
+            { "ref": "#52", "name": "pride" }
           ],
           "reused_elements": [],
           "minted_relations": [ "rel:10", "rel:11", "rel:12", "rel:13",
@@ -63,12 +63,12 @@
         "resolution": [],
         "writes": {
           "minted_elements": [
-            { "ref": "#52", "name": "Ilex" },
-            { "ref": "#53", "name": "rival" },
-            { "ref": "#54", "name": "theme_song" },
-            { "ref": "#55", "name": "storm coda" }
+            { "ref": "#53", "name": "Ilex" },
+            { "ref": "#54", "name": "rival" },
+            { "ref": "#55", "name": "theme_song" },
+            { "ref": "#56", "name": "storm coda" }
           ],
-          "reused_elements": [ { "ref": "#42", "name": "character" } ],
+          "reused_elements": [ { "ref": "#43", "name": "character" } ],
           "minted_relations": [ "rel:19", "rel:20" ],
           "reused_relations": [],
           "retracted": [],
@@ -77,7 +77,7 @@
         "near_matches": [],
         "conflicts": [],
         "template_drift": [
-          { "instance": "#52", "kind": "character", "unexpected": ["theme_song"] }
+          { "instance": "#53", "kind": "character", "unexpected": ["theme_song"] }
         ]
       },
       "notes": "#55 theme_song is an attribute-name mint (audit-listed in minted_elements); 'role' is now vocabulary so its reuse is excluded"
@@ -98,13 +98,13 @@
         "near_matches": [],
         "conflicts": [],
         "template_drift": [],
-        "focus": [ { "ref": "#47", "name": "Maren", "kind": "character" } ],
+        "focus": [ { "ref": "#48", "name": "Maren", "kind": "character" } ],
         "state": [],
         "decisions": [],
         "constraints": [],
         "open": [],
         "character": [
-          { "ref": "#47", "name": "Maren", "role": "mentor",
+          { "ref": "#48", "name": "Maren", "role": "mentor",
             "wants": ["find successor", "atonement"], "flaw": "pride",
             "date": "2026-06-10" }
         ],

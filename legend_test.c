@@ -778,6 +778,7 @@ static void fresh_graph(Hypergraph *g) {
     graph_free(g);
     ontology_seed(g);
     seed_ext_vocab(g); /* mirror cmd_init: extended vocab is part of a live store */
+    seed_self(g);      /* ...as is the self anchor */
 }
 
 static void run_save_on(Hypergraph *g, const char *payload) {
@@ -882,7 +883,7 @@ static void test_iso_format(void) {
 static void test_ontology_ids(void) {
     u32 i;
     fresh_graph(&tg);
-    CHECK(tg.element_count == WK_ELEMENT_COUNT + EXT_COUNT); /* 32 core + 10 ext */
+    CHECK(tg.element_count == WK_ELEMENT_COUNT + EXT_COUNT + 1); /* 32 core + 10 ext + self */
     CHECK(tg.relation_count == 10);
     CHECK(tg.clock == 0);
     for (i = 0; i < WK_ELEMENT_COUNT; i++)
@@ -909,6 +910,80 @@ static void test_ontology_ids(void) {
     snapshot_serialize(&tg, &tbb1);
     snapshot_serialize(&tg2, &tbb2);
     CHECK(tbb1.len == tbb2.len && memcmp(tbb1.v, tbb2.v, tbb1.len) == 0);
+}
+
+/* The self anchor: one seeded referent for first person, so `me` in a fact is
+ * always the agent that wrote it (see SELF_NAME). */
+static void test_self_anchor(void) {
+    char tmpl[] = "/tmp/legend_self_XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    u32 self, a, b;
+    int failed;
+    CHECK(dir != NULL);
+    if (!dir) return;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+
+    self = tg.wk_self;
+    CHECK(self != NONE_U32 && elem_name_is(&tg, self, "me"));
+    /* vocabulary, not content: salience 0 keeps it out of the embed list and
+     * the orientation packet, and it carries no kind */
+    CHECK(tg.elements[self].stats.salience == 0.0);
+    CHECK(tg.elem_kind[self] == NONE_U32);
+    CHECK(tg.elements[self].summary != NONE_U32);
+
+    /* every alias resolves to the ONE self -- a session reaching for a
+     * different surface form must not mint a second agent */
+    TRY(run_save("{\"facts\":[{\"s\":\"the assistant\",\"p\":\"removes\","
+                 "\"o\":\"em dash\"}]}"), failed);
+    CHECK(!failed);
+    CHECK(twr.reused_elems.count == 1 && twr.reused_elems.v[0] == self);
+    TRY(run_save("{\"facts\":[{\"s\":\"myself\",\"p\":\"removes\",\"o\":\"em dash\"}]}"),
+        failed);
+    CHECK(!failed && twr.minted_elems.count == 0);
+    TRY(run_save("{\"facts\":[{\"s\":\"ME\",\"p\":\"removes\",\"o\":\"em dash\"}]}"),
+        failed);
+    CHECK(!failed && twr.minted_elems.count == 0);
+
+    /* the qualified form: {s,p,o} plus a qualifier on the statement */
+    TRY(run_save("{\"elements\":[{\"name\":\"Nick\",\"kind\":\"person\"}],"
+                 "\"facts\":[{\"s\":\"Nick\",\"p\":\"asked\",\"o\":\"me\"},"
+                 "{\"attrs\":{\"subject\":\"me\",\"removes\":\"em dash\","
+                 "\"from\":\"text\"}}]}"),
+        failed);
+    CHECK(!failed);
+    a = tg.wk_self;
+    CHECK(a == self); /* the anchor never moves */
+
+    /* protected: renaming or merging it away would orphan every claim on it */
+    TRY(run_save("{\"elements\":[{\"name\":\"me\",\"rename_to\":\"the bot\"}]}"), failed);
+    CHECK(failed);
+    TRY(run_save("{\"merge\":[{\"from\":\"me\",\"into\":\"Nick\"}]}"), failed);
+    CHECK(failed);
+
+    /* re-opening a store that already carries the anchor adopts it rather than
+     * minting a second one */
+    b = tg.element_count;
+    snapshot_write(&tg, dir);
+    graph_free(&tg2);
+    CHECK(snapshot_load(&tg2, dir) == 1);
+    CHECK(tg2.element_count == b && tg2.wk_self == self);
+    CHECK(elem_name_is(&tg2, tg2.wk_self, "me"));
+
+    /* and a store written BEFORE the anchor existed gains it on open, with no
+     * migration: exactly one new element, no relation churn (the seed_ext_vocab
+     * contract -- this is the path every live store takes at the upgrade) */
+    graph_free(&tg);
+    ontology_seed(&tg);
+    seed_ext_vocab(&tg); /* deliberately no seed_self: a pre-anchor store */
+    b = tg.element_count;
+    a = tg.relation_count;
+    snapshot_write(&tg, dir);
+    graph_free(&tg2);
+    CHECK(snapshot_load(&tg2, dir) == 1);
+    CHECK(tg2.element_count == b + 1);
+    CHECK(tg2.relation_count == a);
+    CHECK(tg2.wk_self == b && elem_name_is(&tg2, tg2.wk_self, "me"));
 }
 
 static void test_tier1_resolution(void) {
@@ -1323,7 +1398,7 @@ static void test_snapshot_corrupt(void) {
     CHECK(len > 200 && len < sizeof mut);
     eoff = snap_elements_off(tbb1.v);
     roff = snap_relations_off(tbb1.v);
-    CHECK(rd32le(tbb1.v + eoff) == 42 && rd32le(tbb1.v + roff) == 10);
+    CHECK(rd32le(tbb1.v + eoff) == 43 && rd32le(tbb1.v + roff) == 10);
 
     /* truncation at every prefix: declared-length mismatch, cleanly */
     for (n = 0; n < len; n += (n < 256 ? 1 : 17)) {
@@ -1452,7 +1527,7 @@ static void test_snapshot_corrupt(void) {
         graph_free(&tg2);
         TRY((void)snapshot_load(&tg2, t_corrupt_dir), failed);
         CHECK(!failed);
-        CHECK(tg2.element_count == 42 && tg2.relation_count == 10);
+        CHECK(tg2.element_count == 43 && tg2.relation_count == 10);
     }
 }
 
@@ -2468,10 +2543,10 @@ static void test_orientation_frame(void) {
     CHECK(twr.orientation == 1 && twr.focus_elems.count == 0);
     CHECK(twr.tick == 2);
     capture_frame(40, 2, -1);
-    /* 42 seeds (32 core + 10 ext) + proj1/c1/q1 + current_standing/active */
-    CHECK(strstr(t_frame, "\"overview\":{\"elements\":47,\"relations\":") != NULL);
+    /* 43 seeds (32 core + 10 ext + self) + proj1/c1/q1 + current_standing/active */
+    CHECK(strstr(t_frame, "\"overview\":{\"elements\":48,\"relations\":") != NULL);
     CHECK(strstr(t_frame, "\"clock\":2") != NULL);
-    CHECK(strstr(t_frame, "\"scope\":{\"ref\":\"#42\",\"name\":\"proj1\",\"kind\":\"project\","
+    CHECK(strstr(t_frame, "\"scope\":{\"ref\":\"#43\",\"name\":\"proj1\",\"kind\":\"project\","
                           "\"summary\":\"the project\"}") != NULL);
     CHECK(strstr(t_frame, "\"focus\":[") == NULL); /* overview replaces focus */
     CHECK(strstr(t_frame, "\"active\":[{\"ref\"") != NULL);
@@ -3430,6 +3505,7 @@ int main(void) {
     test_number_formatter();
     test_iso_format();
     test_ontology_ids();
+    test_self_anchor();
     test_tier1_resolution();
     test_kind_change();
     test_relation_dedup();

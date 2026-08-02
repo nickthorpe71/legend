@@ -1,6 +1,6 @@
 {
   "name": "f03_compact",
-  "notes": "A focus-less save returns the compact frame: tick, at, store, resolution, writes, near_matches, conflicts, template_drift only (spec §7). 'merged': [] included per pin §3.14 despite the §7 example omitting it — see README contradictions. Ids reconciled at M2: seeds are 0-based, #0-#31/rel:0-rel:9 (README assumptions 2-3); first user mint #42, first user relation rel:10; instance_of relations are never listed in minted_relations (assumption 5).",
+  "notes": "A focus-less save returns the compact frame: tick, at, store, resolution, writes, near_matches, conflicts, template_drift only (spec §7). 'merged': [] included per pin §3.14 despite the §7 example omitting it — see README contradictions. Ids reconciled at M2: seeds are 0-based, #0-#31/rel:0-rel:9 (README assumptions 2-3); first user mint #43, first user relation rel:10; instance_of relations are never listed in minted_relations (assumption 5).",
   "steps": [
     { "now": 1782864000, "verb": "init", "payload": null, "expect": null },
     {
@@ -17,10 +17,10 @@
         "resolution": [],
         "writes": {
           "minted_elements": [
-            { "ref": "#42", "name": "coyote_time" },
-            { "ref": "#43", "name": "mechanic" },
-            { "ref": "#44", "name": "player_jump" },
-            { "ref": "#45", "name": "uses" }
+            { "ref": "#43", "name": "coyote_time" },
+            { "ref": "#44", "name": "mechanic" },
+            { "ref": "#45", "name": "player_jump" },
+            { "ref": "#46", "name": "uses" }
           ],
           "reused_elements": [],
           "minted_relations": [ "rel:10" ],
@@ -32,7 +32,7 @@
         "conflicts": [],
         "template_drift": []
       },
-      "notes": "minted_elements in first-touch payload-walk order (pin §3.17): elements[0].name, elements[0].kind, facts[0].s, facts[0].p (attribute-name mint, audit-listed); facts[0].o re-touches #42, not a reuse. rel:10 = the uses fact; the instance_of relation takes rel:11 silently."
+      "notes": "minted_elements in first-touch payload-walk order (pin §3.17): elements[0].name, elements[0].kind, facts[0].s, facts[0].p (attribute-name mint, audit-listed); facts[0].o re-touches #43, not a reuse. rel:10 = the uses fact; the instance_of relation takes rel:11 silently."
     }
   ]
 }

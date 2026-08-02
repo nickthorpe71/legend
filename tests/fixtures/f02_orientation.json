@@ -1,6 +1,6 @@
 {
   "name": "f02_orientation",
-  "notes": "A focus-less recall is the session-boot call (spec §6): `focus` is replaced by an `overview` object {elements, relations, clock, scope, active} (pin §3.15), sections scoped store-wide. M4 update (as the M3 notes anticipated): active ranks by activation x recency (score = activation * last_seen; ties last_seen desc then id desc), cap 5, eligibility = live non-seed non-attribute-name elements that carry a summary or sit in the subject slot of a live non-expects relation — so the leaf value #45 'active' no longer pollutes the list, and #42 platformer ranks first (touched at ticks 1 and 3: highest activation x recency). Overview counts are arena totals incl. the 42 seed elements / 10 seed relations. Ids (0-based, reconciled): #42 platformer, #43 constraint instance, #44 current_standing, #45 active, #46 question instance, #47 gravity; rel:10/12/14 instance_of, rel:11 standing cache, rel:13 fact.",
+  "notes": "A focus-less recall is the session-boot call (spec §6): `focus` is replaced by an `overview` object {elements, relations, clock, scope, active} (pin §3.15), sections scoped store-wide. M4 update (as the M3 notes anticipated): active ranks by activation x recency (score = activation * last_seen; ties last_seen desc then id desc), cap 5, eligibility = live non-seed non-attribute-name elements that carry a summary or sit in the subject slot of a live non-expects relation — so the leaf value #46 'active' no longer pollutes the list, and #43 platformer ranks first (touched at ticks 1 and 3: highest activation x recency). Overview counts are arena totals incl. the 43 seed elements / 10 seed relations. Ids (0-based, reconciled): #43 platformer, #44 constraint instance, #45 current_standing, #46 active, #47 question instance, #48 gravity; rel:10/12/14 instance_of, rel:11 standing cache, rel:13 fact.",
   "steps": [
     { "now": 1780272000, "verb": "init", "payload": null, "expect": null },
     {
@@ -18,7 +18,7 @@
         "elements": [ { "name": "keep latency under one frame", "kind": "constraint" } ]
       },
       "expect": null,
-      "notes": "constraint mint side-effect: current_standing = active cache (spec §5), minting #45 current_standing and #46 active (README assumption 7)"
+      "notes": "constraint mint side-effect: current_standing = active cache (spec §5), minting #46 current_standing and #47 active (README assumption 7)"
     },
     {
       "now": 1781222400, "verb": "save",
@@ -45,17 +45,17 @@
         "conflicts": [],
         "template_drift": [],
         "overview": {
-          "elements": 48,
+          "elements": 49,
           "relations": 15,
           "clock": 4,
-          "scope": { "ref": "#42", "name": "platformer", "kind": "project",
+          "scope": { "ref": "#43", "name": "platformer", "kind": "project",
                      "summary": "a 2D platformer" },
           "active": [
-            { "ref": "#42", "name": "platformer", "kind": "project",
+            { "ref": "#43", "name": "platformer", "kind": "project",
               "summary": "a 2D platformer" },
-            { "ref": "#47", "name": "gravity" },
-            { "ref": "#46", "name": "tune gravity?", "kind": "question" },
-            { "ref": "#43", "name": "keep latency under one frame", "kind": "constraint" }
+            { "ref": "#48", "name": "gravity" },
+            { "ref": "#47", "name": "tune gravity?", "kind": "question" },
+            { "ref": "#44", "name": "keep latency under one frame", "kind": "constraint" }
           ]
         },
         "state": [
@@ -66,11 +66,11 @@
         ],
         "decisions": [],
         "constraints": [
-          { "ref": "#43", "name": "keep latency under one frame",
+          { "ref": "#44", "name": "keep latency under one frame",
             "standing": "active", "date": "2026-06-11" }
         ],
         "open": [
-          { "ref": "#46", "name": "tune gravity?", "kind": "question", "date": "2026-06-12" }
+          { "ref": "#47", "name": "tune gravity?", "kind": "question", "date": "2026-06-12" }
         ],
         "recent": [
           { "ref": "rel:13",

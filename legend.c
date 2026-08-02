@@ -2288,6 +2288,8 @@ typedef struct {
   u32 wk_ext[EXT_COUNT]; /* resolved element id of each extended-vocab name in
                             THIS store; set by seed_ext_vocab at init and load,
                             never a raw enum id (see EXT_NAMES) */
+  u32 wk_self;           /* resolved element id of SELF_NAME in THIS store; set
+                            by seed_self at init and load (see SELF_NAME) */
 } Hypergraph;
 
 static void graph_free(Hypergraph *g) {
@@ -3053,12 +3055,63 @@ static void seed_ext_vocab(Hypergraph *g) {
   }
 }
 
-/* Is `id` a protected vocabulary element (legacy core 0..WK_ELEMENT_COUNT-1 or
- * an extended-vocab name)? Renaming or merging one away would break resolution
- * of every claim that uses it. */
+/* The SELF element: the agent whose memory this store is.
+ *
+ * A store is written by exactly one class of author -- the model that reads it
+ * back -- so first person has a single referent here, and `me` in a fact means
+ * the writer in every session, forever. That is what makes a deictic word safe
+ * as a canonical name: there is no second speaker to confuse it with. (Human
+ * first person does occur in the store, but only INSIDE quoted source strings,
+ * which are opaque text, never references.)
+ *
+ * It is vocabulary, not content -- the deictic anchor, the same category as
+ * `subject` and `source` -- so it seeds at salience 0 like the rest: the hub
+ * itself never surfaces in the orientation packet or gets embedded, while
+ * facts ABOUT it do. Seeded resolve-or-mint at init and on every load, exactly
+ * as the extended vocabulary is, so a store predating this build gains it with
+ * no migration. Protected from rename/merge because every claim binding the
+ * agent resolves through it.
+ *
+ * The aliases are not for disambiguation -- there is nothing to disambiguate --
+ * but so a session reaching for a different surface form lands on this node
+ * instead of minting a second self. "Claude" is deliberately NOT among them:
+ * a store may need to talk about the model as a subject in its own right. */
+static const char SELF_NAME[] = "me";
+static const char *const SELF_ALIASES[] = {"the assistant", "the agent",
+                                           "myself"};
+static const char SELF_SUMMARY[] =
+    "The agent whose memory this store is: the model that reads and writes it, "
+    "across every session. First person in a fact resolves here.";
+
+static void seed_self(Hypergraph *g) {
+  u32 len = (u32)strlen(SELF_NAME);
+  u32 nlen = normalize_into_scratch(SELF_NAME, len);
+  u32 id = resolve_tier1(g, g_norm_buf, nlen, NONE_U32);
+  if (id == NONE_U32) {
+    u32 a;
+    id = mint_element(g, SELF_NAME, len, 1.0, 0.0, 0);
+    g->elements[id].summary =
+        graph_intern(g, SELF_SUMMARY, (u32)strlen(SELF_SUMMARY));
+    /* aliases attach at MINT only: re-running on an adopted element would
+     * re-push names every load */
+    for (a = 0; a < sizeof SELF_ALIASES / sizeof SELF_ALIASES[0]; a++) {
+      u32 alen = (u32)strlen(SELF_ALIASES[a]);
+      u32vec_push(&g->elements[id].names,
+                  graph_intern(g, SELF_ALIASES[a], alen));
+      index_norm_name(g, id, SELF_ALIASES[a], alen);
+    }
+  }
+  g->wk_self = id;
+}
+
+/* Is `id` a protected vocabulary element (legacy core 0..WK_ELEMENT_COUNT-1,
+ * an extended-vocab name, or the self anchor)? Renaming or merging one away
+ * would break resolution of every claim that uses it. */
 static int is_core_vocab(const Hypergraph *g, u32 id) {
   u32 i;
   if (id < WK_ELEMENT_COUNT)
+    return 1;
+  if (g->wk_self == id)
     return 1;
   for (i = 0; i < EXT_COUNT; i++)
     if (g->wk_ext[i] == id)
@@ -7933,6 +7986,11 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
           u32 link;
           if (g->elements[i].redirect != NONE_U32 || is_aname[i])
             continue;
+          if (is_core_vocab(g, i)) /* vocabulary is plumbing, never a topic --
+                                      the self anchor carries a summary and
+                                      subjects facts, so it would otherwise
+                                      qualify on both counts */
+            continue;
           for (link = g->rels_by_elem[i]; !topic && link != NONE_U32;
                link = g->rel_links[link].next) {
             const Relation *r = &g->relations[g->rel_links[link].rel];
@@ -8697,6 +8755,7 @@ static int snapshot_load(Hypergraph *g, const char *store) {
   }
   rebuild_indices(g);
   seed_ext_vocab(g); /* older stores gain the extended vocabulary on open */
+  seed_self(g);      /* ...and the self anchor */
   return 1;
 }
 
@@ -9304,6 +9363,7 @@ static int cmd_init(int reset) {
   if (!snapshot_load(&g_graph, store)) {
     ontology_seed(&g_graph);
     seed_ext_vocab(&g_graph);
+    seed_self(&g_graph);
     snapshot_write(&g_graph, store);
   }
   /* Idempotent status report (spec §4). */
@@ -10070,7 +10130,17 @@ static const char MCP_INSTRUCTIONS[] =
     "general (habitual/generic). Recall tags each fact with its modality "
     "wherever it surfaces -- a `negated` fact is asserted to be FALSE, so read "
     "the modal, don't take the bare claim -- and gathers causal edges into a "
-    "`causal` section with their rung. Recall "
+    "`causal` section with their rung. (11) This store is YOUR memory and you "
+    "are IN it: the seeded element `me` is you, the agent reading and writing "
+    "here. Write yourself in wherever you are a DISTINGUISHING participant -- "
+    "a directive that binds you, a correction you were given, an error you "
+    "repeated, a standing commitment you now hold -- so that a later session "
+    "recalls what it was ASKED, not just what is true. Resolve person at write "
+    "time: the user's `you` is `me`, the user's `I` is the user by name, and no "
+    "pronoun other than `me` ever enters a name or a fact slot (inside a quoted "
+    "source string it is opaque text and stays as written). Do NOT anchor "
+    "authorship on `me` -- every save here is yours, so `source` stays the "
+    "material you drew on, never the fact that you wrote it. Recall "
     "with no focus returns an orientation packet for session start.";
 
 static const char MCP_TOOLS_JSON[] =

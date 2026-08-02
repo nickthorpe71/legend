@@ -59,8 +59,8 @@
           "code": "ambiguous_ref",
           "at": "merge[0].from",
           "candidates": [
-            { "ref": "#42", "name": "Mercury", "kind": "planet", "score": 1 },
-            { "ref": "#44", "name": "Mercury", "kind": "god", "score": 1 }
+            { "ref": "#43", "name": "Mercury", "kind": "planet", "score": 1 },
+            { "ref": "#45", "name": "Mercury", "kind": "god", "score": 1 }
           ]
         }
       },

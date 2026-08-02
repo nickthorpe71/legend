@@ -1183,6 +1183,61 @@ relationship — Bio Weapon does exhibit that texture. No replacement predicate 
 invented, because asserting one is a design call. `#577`'s summary already states
 the connection in prose.
 
+## Round 8 mid-round read, 2026-08-02 (round still OPEN)
+
+~20h into the segment: 65 invocations, 22 saves, 43 recalls, 4 rejections.
+Store clock 115 → 146, 684 → 787 elements. Every pre-registered target holding:
+
+| gauge | baseline | now |
+|---|---|---|
+| clobbered kinds · duplicate `current_*` | 1 · 1 | **0 · 0** (repaired, staying) |
+| `status_fact` | 12 | 12 (no NEW ones) |
+| `phantom_close`/`orphan`/`prose_name`/`correlated_with` | 0 | 0 / 0 / 0 / 0 |
+| multi-valued groups | 70 / 167 | 84 / 202 (grew, none collapsed) |
+| predicates · single-use | 80 · 37 | **90 · 42** — Watch #1 accelerating |
+| `foreign_build` | n/a | never fired (single-build segment) |
+
+The strongest result was not pre-registered: the prose backstop **fired 4
+times** (all 4 rejections were `prose_value`), **0 prose slipped through
+`changes.to`**, and the reroute watch shows **0 prose displaced into `fact.o`**.
+The guard does real work and does not merely move the behavior.
+
+Two things to carry into the close: `flat_decision` moved 13 → **19**, which is
+more than "false positives holding steady" predicts and may share Watch #1's
+root; and `status_fact` being flat at 12 is *consistent* with none minted but a
+bare count cannot separate that from one healing and one appearing — check by
+identity at close.
+
+## ROUND 9 PRE-REGISTERED (not yet open) — the self anchor
+
+Built 2026-08-02, `check.sh` green, **deliberately NOT re-pinned**: round 8 is
+open, and shipping an instruction change into it is precisely the failure the
+fix roster diagnosed. Lands at the round 8 → 9 boundary.
+
+**Under test:** the self anchor (`docs/self-node.md`) — a seeded `me` element
+plus MCP instruction clause (11), so the agent can write itself into facts as a
+participant. Fixes unresolvable deixis already in the store (30 elements use
+first person with no referent; `#458` is a constraint binding the agent with no
+subject to bind to) and unblocks `#157 prior-miss count`.
+
+| gauge | baseline (2026-08-02) | target |
+|---|---|---|
+| self-anchored live facts | **0** (0.0%) | rises off 0; **bound <5%** of live |
+| self on `source`/`src` | **0** | stays **0** — authorship never anchors here |
+| unresolved first person | **30** | falls |
+| provenance share | **1402 (48.3%)** | must not rise |
+| seed element count | 42 | 43 (32 core + 10 ext + self) |
+
+Read with `python3 harness/bundle_gauges.py` (gauges `[6]`–`[8]`).
+
+**Graded as representational correctness, not retrieval.** The recorded
+retrieval lever is still summary bloat / over-extraction (`#66`); this bundle
+does not address it and must not be credited for it.
+
+**Two failure modes pull opposite ways** — a dead node (nobody writes themselves
+in, gauge `[6]` stays 0) and a mega-hub (everything anchors on `me`, `[6]` past
+5%). Both are failures; the target is the band between them.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview

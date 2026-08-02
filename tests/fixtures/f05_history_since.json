@@ -24,7 +24,7 @@
         "writes": { "minted_elements": [], "reused_elements": [], "minted_relations": [],
                     "reused_relations": [], "retracted": [], "merged": [] },
         "near_matches": [], "conflicts": [], "template_drift": [],
-        "focus": [ { "ref": "#42", "name": "gauge" } ],
+        "focus": [ { "ref": "#43", "name": "gauge" } ],
         "state": [
           { "ref": "rel:22", "attrs": { "subject": "gauge", "current_value": "4" },
             "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" }
@@ -54,7 +54,7 @@
         "writes": { "minted_elements": [], "reused_elements": [], "minted_relations": [],
                     "reused_relations": [], "retracted": [], "merged": [] },
         "near_matches": [], "conflicts": [], "template_drift": [],
-        "focus": [ { "ref": "#42", "name": "gauge" } ],
+        "focus": [ { "ref": "#43", "name": "gauge" } ],
         "state": [
           { "ref": "rel:22", "attrs": { "subject": "gauge", "current_value": "4" },
             "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" }
@@ -85,7 +85,7 @@
         "writes": { "minted_elements": [], "reused_elements": [], "minted_relations": [],
                     "reused_relations": [], "retracted": [], "merged": [] },
         "near_matches": [], "conflicts": [], "template_drift": [],
-        "focus": [ { "ref": "#42", "name": "gauge" } ],
+        "focus": [ { "ref": "#43", "name": "gauge" } ],
         "state": [
           { "ref": "rel:22", "attrs": { "subject": "gauge", "current_value": "4" },
             "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" }
@@ -118,7 +118,7 @@
         "writes": { "minted_elements": [], "reused_elements": [], "minted_relations": [],
                     "reused_relations": [], "retracted": [], "merged": [] },
         "near_matches": [], "conflicts": [], "template_drift": [],
-        "focus": [ { "ref": "#42", "name": "gauge" } ],
+        "focus": [ { "ref": "#43", "name": "gauge" } ],
         "state": [
           { "ref": "rel:22", "attrs": { "subject": "gauge", "current_value": "4" },
             "status": "asserted", "confidence": 0.7, "support_count": 1, "date": "2026-06-20" }
