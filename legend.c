@@ -6789,7 +6789,38 @@ static void frame_put_day(const Hypergraph *g, u32 tick) {
   printf("%04lld-%02u-%02u", (long long)yy, mm, dd);
 }
 
-static void frame_put_rel_attrs(const Hypergraph *g, u32 rid) {
+static u32 rel_modal_count(const Hypergraph *g, u32 rid);
+static void frame_put_modal_values(const Hypergraph *g, u32 rid);
+
+/* A statement can be the CONTENT of another statement -- `Nick asked me [to
+ * remove em dashes from prose]` -- and that nesting is what a chain of arrows
+ * actually means: the inner statement is an ARGUMENT of the outer one, and the
+ * shared node (`me`) pivots between them. Written as two sibling facts instead,
+ * the pivot and the containment are both lost: `{Nick asked me}` no longer says
+ * WHAT was asked, and `{me removes em dash}` asserts as standing truth what was
+ * only requested.
+ *
+ * The store has been able to hold this since TERM_REL existed. The frame could
+ * not SHOW it -- an inner statement rendered as a bare `"rel:10"` pointer -- so
+ * the one surface a model ever reads got the parts and lost the whole.
+ *
+ * `subject: rel:N` is NOT nesting. That is a meta ABOUT a statement (provenance,
+ * modality); it is already carried by the sources/modal machinery, and expanding
+ * it would inline the target statement beneath every one of the 1167 source
+ * metas in the trial store. `derived_from` and `supersedes` are versioning
+ * bookkeeping, surfaced through history and superseded_by. Everything else that
+ * points at a statement is content. */
+static int frame_slot_nests(const Attr *at) {
+  return at->value.tag == TERM_REL && at->name != WK_SUBJECT &&
+         at->name != WK_DERIVED_FROM && at->name != WK_SUPERSEDES;
+}
+
+/* Nesting depth a frame will expand. 1 covers a directive; 2 covers "A asked B
+ * to ask C". Past the budget the pointer stands, so no chain can balloon a
+ * frame -- orientation-packet size is already the live constraint (#91). */
+enum { FRAME_NEST_MAX = 2 };
+
+static void frame_put_rel_attrs_n(const Hypergraph *g, u32 rid, u32 budget) {
   const Relation *r = &g->relations[rid];
   u32 a;
   fputc('{', stdout);
@@ -6803,11 +6834,32 @@ static void frame_put_rel_attrs(const Hypergraph *g, u32 rid) {
       fputc('"', stdout);
       json_escape_fputs(elem_name(g, r->attrs[a].value.id), stdout);
       fputc('"', stdout);
+    } else if (budget && frame_slot_nests(&r->attrs[a])) {
+      u32 in = r->attrs[a].value.id;
+      printf("{\"ref\":\"rel:%u\",\"attrs\":", in);
+      frame_put_rel_attrs_n(g, in, budget - 1);
+      /* The inner statement's modality is the whole difference between "asked
+       * for" and "is true": a `non_actual` inner claim rendered bare reads as
+       * an assertion, the same inversion frame_put_rel_entry guards against.
+       * Status likewise -- a retracted inner statement must not read live.
+       * Both emitted only when they say something, to keep nesting cheap. */
+      if (rel_modal_count(g, in)) {
+        fputs(",\"modal\":[", stdout);
+        frame_put_modal_values(g, in);
+        fputc(']', stdout);
+      }
+      if (g->relations[in].status != ST_ASSERTED)
+        printf(",\"status\":\"%s\"", ST_NAMES[g->relations[in].status]);
+      fputc('}', stdout);
     } else {
       printf("\"rel:%u\"", r->attrs[a].value.id);
     }
   }
   fputc('}', stdout);
+}
+
+static void frame_put_rel_attrs(const Hypergraph *g, u32 rid) {
+  frame_put_rel_attrs_n(g, rid, FRAME_NEST_MAX);
 }
 
 /* The uniform relation-object shape (pin §3.22). */
@@ -7690,6 +7742,32 @@ static void print_frame(const Hypergraph *g, const WriteReport *w,
         while (link != NONE_U32) {
           u32vec_push_unique(&hood, g->rel_links[link].rel);
           link = g->rel_links[link].next;
+        }
+      }
+      /* A statement that CONTAINS a focused one is part of the answer: focusing
+       * `em dash` must reach `Nick asked me [to remove em dashes]`, or the
+       * request is invisible from the only term the reader has. Containment
+       * only -- a `subject: rel` meta is provenance/modality, already carried by
+       * its own section, and lifting those here would drag all 1167 source metas
+       * into the neighborhood. Bounded to the depth the frame will actually
+       * render, so the walk can never outrun what the reader gets shown. */
+      {
+        u32 d;
+        for (d = 0; d < FRAME_NEST_MAX; d++) {
+          u32 grown = hood.count;
+          for (i = 0; i < grown; i++) {
+            u32 inner = hood.v[i];
+            u32 link = g->meta_by_target[inner];
+            while (link != NONE_U32) {
+              u32 up = g->rel_links[link].rel;
+              const Relation *c = &g->relations[up];
+              u32 a;
+              for (a = 0; a < c->attr_count; a++)
+                if (c->attrs[a].value.id == inner && frame_slot_nests(&c->attrs[a]))
+                  u32vec_push_unique(&hood, up);
+              link = g->rel_links[link].next;
+            }
+          }
         }
       }
     }
@@ -9450,7 +9528,10 @@ static void dump_graph(const Hypergraph *g) {
       fputc(',', stdout);
     printf("{\"ref\":\"rel:%u\",\"status\":\"%s\",\"attrs\":", r,
            ST_NAMES[g->relations[r].status]);
-    frame_put_rel_attrs(g, r);
+    /* dump is the archival view: every relation is already listed on its own,
+     * so expanding a nested one here would print it twice and break the flat
+     * shape the harness scripts parse */
+    frame_put_rel_attrs_n(g, r, 0);
     fputs(",\"stats\":{", stdout);
     dump_stats(&g->relations[r].stats);
     fputs("}}", stdout);
@@ -10140,7 +10221,19 @@ static const char MCP_INSTRUCTIONS[] =
     "pronoun other than `me` ever enters a name or a fact slot (inside a quoted "
     "source string it is opaque text and stays as written). Do NOT anchor "
     "authorship on `me` -- every save here is yours, so `source` stays the "
-    "material you drew on, never the fact that you wrote it. Recall "
+    "material you drew on, never the fact that you wrote it. (12) A statement "
+    "can be the CONTENT of another statement, and that is how a request, a "
+    "report, or a quote is written. `Nick asked me to stop using em dashes` is "
+    "ONE fact {s: Nick, p: asked, o: me} carrying the asked-for statement in a "
+    "`content` slot -- NOT two loose facts, which lose both the pivot (the same "
+    "`me` in two roles) and the containment ({Nick asked me} stops saying WHAT, "
+    "and {me removes em dash} asserts as standing truth what was only "
+    "requested). Mark the inner statement `modal:[\"non_actual\"]` when it is "
+    "wanted rather than already true. A `content` slot takes a rel: id, which "
+    "means TWO saves: write the inner statement, read its id from the frame's "
+    "writes.minted_relations, then write the outer one referencing it. Recall "
+    "expands a nested statement inline with its modal, and reaches a container "
+    "from any term inside it, so the reader gets the whole. Recall "
     "with no focus returns an orientation packet for session start.";
 
 static const char MCP_TOOLS_JSON[] =

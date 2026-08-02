@@ -162,6 +162,39 @@ def main():
     print(f"\n[8] provenance share of live facts  : {prov} "
           f"({100.0 * prov / len(rels) if rels else 0:.1f}%)   must not RISE")
 
+    # 9. nested statements (docs/nested-statements.md). A statement carried as
+    #    the CONTENT of another. `subject: rel` is a meta ABOUT a statement, not
+    #    nesting; derived_from/supersedes are versioning plumbing. Everything
+    #    else pointing at a statement is content.
+    PLUMBING = {"derived_from", "supersedes"}
+    isrel = lambda v: isinstance(v, str) and re.match(r"^rel:\d+$", str(v))
+    byref = {r["ref"]: r for r in dump["relations"]}
+    nested = [(r, k, v) for r in rels for k, v in r["attrs"].items()
+              if k != "subject" and k not in PLUMBING and isrel(v)]
+    print(f"\n[9] nested content statements       : {len(nested)}   "
+          f"(baseline 0 at 2026-08-02; rises iff adopted)")
+    # the directive shape done right: the inner statement marked not-yet-true
+    marked = sum(1 for _, _, v in nested
+                 if "non_actual" in (byref.get(str(v), {}).get("modal") or []))
+    print(f"      inner marked non_actual       : {marked} of {len(nested)}")
+    for r, k, v in nested[:5]:
+        print(f"      {r['ref']} {k} -> {v}")
+
+    # 10. wanted-to-nest-but-didn't. A speech act whose object is the agent but
+    #     that carries NO content slot is a directive with its content dropped —
+    #     the signal that the two-save flow (not the shape) is what blocks
+    #     adoption. Distinguishes "models won't nest" from "models can't".
+    SPEECH = {"asked", "said", "told", "requested", "wants", "directed",
+              "instructed", "decided", "reported", "claimed"}
+    stranded = [r for r in rels
+                if any(k in SPEECH for k in r["attrs"])
+                and not any(k != "subject" and k not in PLUMBING and isrel(v)
+                            for k, v in r["attrs"].items())]
+    print(f"\n[10] speech acts with no content    : {len(stranded)}   "
+          f"(high + [9] low => the two-save flow is the blocker, not the shape)")
+    for r in stranded[:5]:
+        print(f"      {r['ref']} {json.dumps(r['attrs'])[:88]}")
+
 
 if __name__ == "__main__":
     main()

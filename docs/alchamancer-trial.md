@@ -1238,6 +1238,52 @@ does not address it and must not be credited for it.
 in, gauge `[6]` stays 0) and a mega-hub (everything anchors on `me`, `[6]` past
 5%). Both are failures; the target is the band between them.
 
+### Baselines drift — RE-TAKE them at each re-pin
+
+The trial store is live. During the two hours of 2026-08-02 spent building the
+round-10 work it moved measurably: provenance 1402 → 1461, unresolved first
+person 30 → 31, bloat 168 → 187, near_dup 1 → 2. Numbers recorded in a design
+doc describe the SHAPE of a gauge, not the grading baseline. **Capture the
+baseline at the boundary, immediately before the re-pin**, or the round is graded
+against a number that was already stale when it was written down. This applies to
+round 9's table above as much as to round 10's.
+
+## ROUND 10 PRE-REGISTERED (not yet open) — nested statements
+
+Built 2026-08-02, `check.sh` green, NOT re-pinned. Rides AFTER the self anchor in
+its own round: both change how models write, so bundling them would make gauge
+`[6]` move for two reasons at once and neither would be attributable.
+
+**Under test:** nested statements (`docs/nested-statements.md`) — a statement
+carried as the CONTENT of another, which is how a request, report, or quote is
+written. Frames now expand a nested statement inline with its modal, and focus
+reaches a container from any term inside it. Instruction clause (12) carries the
+discipline.
+
+Measured first: of 2908 relations, **zero** carry a content-bearing nested
+statement. The 37 that nest are all `derived_from`/`supersedes` plumbing; the
+other 1209 relation-to-relation links are metas ABOUT a statement, not nesting.
+
+| gauge | baseline (2026-08-02, re-take at boundary) | target |
+|---|---|---|
+| `[9]` nested content statements | **0** | rises iff adopted |
+| `[9]` inner marked `non_actual` | **0 of 0** | the directive shape done right |
+| `[10]` speech acts with no content | **0** | see below |
+| packet bytes (`round_report.py`) | 9250 | expansion costs size; watch it |
+
+**A zero on `[9]` is only meaningful together with `[10]`.** Writing a nested
+statement currently takes TWO saves — `content` needs a `rel:` id, and a relation
+minted in the same payload cannot be referenced. Gauge `[10]` counts speech acts
+whose content was dropped: models reaching for the shape and failing to complete
+it.
+
+- `[9]` rises → adopted; the ergonomics are fine.
+- `[9]` flat, `[10]` rises → the two-save FLOW is the blocker, not the shape.
+  That justifies building the `facts[<n>]` same-payload ref form on evidence.
+- both flat → models never reached for it; the instruction or the shape is wrong.
+
+Low adoption is therefore an ACTIONABLE result, not a failed round.
+
 ## What the store was seeded with (baseline)
 
 Deep onboarding (all docs, module tree, 255-commit history + two interview

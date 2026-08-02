@@ -2288,6 +2288,52 @@ static u32 count_occ(const char *hay, const char *needle) {
     return n;
 }
 
+/* A statement nested as the CONTENT of another: the store has always held it,
+ * the frame used to render it as a bare pointer (see frame_slot_nests). */
+static void test_nested_statement(void) {
+    u32 inner, outer;
+    int failed;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+
+    TRY(run_save("{\"elements\":[{\"name\":\"Nick\",\"kind\":\"person\"}],"
+                 "\"facts\":[{\"attrs\":{\"subject\":\"me\",\"removes\":\"em dash\","
+                 "\"from\":\"prose\"},\"modal\":[\"non_actual\"]}]}"),
+        failed);
+    CHECK(!failed && twr.minted_rels.count >= 1);
+    inner = twr.minted_rels.v[0];
+
+    {
+        char pay[192];
+        snprintf(pay, sizeof pay,
+                 "{\"facts\":[{\"attrs\":{\"subject\":\"Nick\",\"asked\":\"me\","
+                 "\"content\":\"rel:%u\"}}]}", inner);
+        TRY(run_save(pay), failed);
+    }
+    CHECK(!failed && twr.minted_rels.count == 1);
+    outer = twr.minted_rels.v[0];
+    CHECK(outer != inner);
+
+    /* the frame expands the inner statement AND carries its modal -- rendered
+     * bare, a non_actual claim reads as a plain assertion */
+    TRY(run_recall("{\"focus\":[\"Nick\"]}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "\"content\":{\"ref\":\"rel:") != NULL);
+    CHECK(strstr(t_frame, "\"modal\":[\"non_actual\"]") != NULL);
+    CHECK(strstr(t_frame, "\"content\":\"rel:") == NULL); /* no bare pointer */
+
+    /* a container is reachable from a term appearing ONLY in the inner
+     * statement, else the request is invisible from the term the reader has */
+    TRY(run_recall("{\"focus\":[\"em dash\"]}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "\"asked\":\"me\"") != NULL);
+
+    /* the nesting is one slot on the outer relation, not a copy */
+    CHECK(tg.relations[outer].attr_count == 3);
+}
+
 static void test_tier2_read(void) {
     int failed;
     fresh_graph(&tg);
@@ -3522,6 +3568,7 @@ int main(void) {
     test_element_src();
     test_constraint_cache();
     test_recall_tick();
+    test_nested_statement();
     test_tier2_read();
     test_near_matches();
     test_section_filters();
