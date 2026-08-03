@@ -1286,6 +1286,29 @@ Carried in from round 8, not this bundle's to fix: `status_fact` 17,
 `flat_decision` 18, `near_dup` 2, `stale_open` 23, `bloat` 235, predicates 99 ·
 single-use 46.
 
+### Close criterion, pre-registered before any data
+
+Close at **≥40 saves** in the segment (round 8 ran 50) **or** the first natural
+session boundary past **2026-08-05**, whichever comes first. Registered now
+because gauge `[6]` starts at 0 and a rising count is exactly the kind of number
+one is tempted to stop on — "it moved, ship it" — or to keep running until it
+does. Neither is a reading.
+
+**Two things would invalidate the round, so do not do them while it runs:**
+
+- **Do not coach the model toward `me`.** Asking for something to be recorded is
+  ordinary use and fine; going out of the way to exercise the self anchor is not.
+  The gauge measures whether clause (11) changes behavior on its own.
+- **Do not run the first-person backfill (task #3) mid-round.** It injects
+  agent-authored self facts into the exact gauge measuring organic adoption. It
+  waits for the close, or its contribution gets recorded separately.
+
+Verified at the boundary, so a null result cannot be blamed on plumbing:
+`.mcp.json` and the SessionStart hook both invoke `~/.local/bin/legend`; the
+pinned binary reports clause (11) present and clause (12) absent; the hook packet
+renders at 9641 B against the 20000 cap; the anchor mints on open and does NOT
+appear in `overview.active`.
+
 Read with `python3 harness/bundle_gauges.py` (gauges `[6]`–`[8]`).
 
 **Graded as representational correctness, not retrieval.** The recorded
