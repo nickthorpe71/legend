@@ -151,7 +151,7 @@ def main():
                   and (pron.search(e["name"] or "")
                        or pron.search(e.get("summary") or ""))]
     print(f"\n[7] unresolved first person         : {len(unresolved)}   "
-          f"(baseline 30 at 2026-08-02; should FALL)")
+          f"(round 9 baseline 37 at the 2026-08-03 boundary; should FALL)")
     for e in unresolved[:5]:
         print(f"      {e['ref']} {e['name'][:60]!r}")
 

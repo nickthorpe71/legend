@@ -1183,36 +1183,86 @@ relationship — Bio Weapon does exhibit that texture. No replacement predicate 
 invented, because asserting one is a design call. `#577`'s summary already states
 the connection in prose.
 
-## Round 8 mid-round read, 2026-08-02 (round still OPEN)
+## ROUND 8 CLOSED 2026-08-03 20:52 — 6 of 7 gauges pass, `status_fact` FAILS
 
-~20h into the segment: 65 invocations, 22 saves, 43 recalls, 4 rejections.
-Store clock 115 → 146, 684 → 787 elements. Every pre-registered target holding:
+Segment: **168 invocations, 50 saves, 118 recalls, 13 rejections** (10
+`prose_value`, 2 `unknown_ref`, 1 `parse`) across 2 days on a single build.
+Save ops: 150 elements, 246 facts, 19 changes, 5 retracts. Store clock 115 →
+167, elements 684 → 934, live relations 2437 → 3401.
 
-| gauge | baseline | now |
-|---|---|---|
-| clobbered kinds · duplicate `current_*` | 1 · 1 | **0 · 0** (repaired, staying) |
-| `status_fact` | 12 | 12 (no NEW ones) |
-| `phantom_close`/`orphan`/`prose_name`/`correlated_with` | 0 | 0 / 0 / 0 / 0 |
-| multi-valued groups | 70 / 167 | 84 / 202 (grew, none collapsed) |
-| predicates · single-use | 80 · 37 | **90 · 42** — Watch #1 accelerating |
-| `foreign_build` | n/a | never fired (single-build segment) |
+| gauge | baseline | close | verdict |
+|---|---|---|---|
+| clobbered kinds (>2 words) | 1 | **0** | **PASS** — repaired, held all round |
+| duplicate live `current_*` | 1 | **0** | **PASS** — repaired, held all round |
+| `status_fact` | 12 | **17** | **FAIL** — 0 healed, 5 new (below) |
+| `phantom_close`·`orphan`·`prose_name`·`correlated_with` | 0 | 0·0·0·0 | **PASS** — unmoved |
+| multi-valued groups | 70 / 167 | 100 / 236 | **PASS** — grew, none collapsed |
+| predicates · single-use | 80 · 37 | 99 · 46 | watch only — Watch #1 climbing |
+| `foreign_build` | n/a | never fired | **PASS** — single-build segment |
 
-The strongest result was not pre-registered: the prose backstop **fired 4
-times** (all 4 rejections were `prose_value`), **0 prose slipped through
-`changes.to`**, and the reroute watch shows **0 prose displaced into `fact.o`**.
-The guard does real work and does not merely move the behavior.
+### The unregistered win: the prose backstop works
 
-Two things to carry into the close: `flat_decision` moved 13 → **19**, which is
-more than "false positives holding steady" predicts and may share Watch #1's
-root; and `status_fact` being flat at 12 is *consistent* with none minted but a
-bare count cannot separate that from one healing and one appearing — check by
-identity at close.
+10 `prose_value` rejections, **0 prose slipped through `changes.to`** (19 change
+ops, max value length 14), and the reroute watch shows **0 prose displaced into
+`fact.o`**. The guard does real work and does not merely move the behavior
+somewhere else. This was the clearest result of the round and it was not on the
+pre-registered table.
 
-## ROUND 9 PRE-REGISTERED (not yet open) — the self anchor
+### The failure: `status_fact`, and why the mid-round read hid it
 
-Built 2026-08-02, `check.sh` green, **deliberately NOT re-pinned**: round 8 is
-open, and shipping an instruction change into it is precisely the failure the
-fix roster diagnosed. Lands at the round 8 → 9 boundary.
+Read at 12 mid-round, which looked like "no new ones minted". It was not. By
+identity at close:
+
+- **All 12 baseline facts are still present. Zero healed.**
+- **Five are new**, all minted during the round:
+
+```
+rel:3246  {no new currency,         standing: active}
+rel:3353  {the Lightning branch,    status:   locked}
+rel:3392  {the Dragon Mother redraw,status:   locked}
+rel:3424  {the Evolution branch,    status:   locked}
+rel:3425  {the form system,         status:   scheduled}
+```
+
+**Four of the five use `status`, not `standing`.** The guard keys on the
+predicate name `standing`, so anything else status-shaped walks straight past
+it — and `status: locked` recurs three times, so this is a real recurring need
+being expressed through a predicate the guard does not cover.
+
+This falsifies two claims recorded here at the re-pin:
+
+- *"`78416af` stops new ones at mint"* — it does not. `rel:3246` is the exact
+  `standing` shape it targets and still got through, and the other four were
+  never in scope.
+- *"harmless, self-heals on the next lift"* — 12 sat unhealed through a full
+  round with 50 saves. The self-heal is not happening in practice.
+
+Follow-up is task #9: find the path that bypasses the guard for `rel:3246`, and
+decide whether guarding on a predicate NAME is viable at all when a model will
+reach for `status`/`state`/`phase`/`standing` interchangeably. That question
+overlaps Watch #1.
+
+### Other movement, not graded
+
+`flat_decision` 13 → 18 (peaked at 19 mid-round), `near_dup` 1 → 2, `stale_open`
+20 → 23, `bloat` 124 → 235. Packet 9090 → 9570 B, still under half the 20000
+cap. Prose: 357 → 508 summaries, mean 344 → 379, **max unchanged at 815** — the
+long tail did not get longer. Ambient surfaced 74% (167 q) → **64% (106 q)**,
+worth watching but the query mix changed with the work.
+
+## ROUND 9 OPEN — re-pinned to `970d039` 2026-08-03 20:59
+
+**Built from `970d039`, NOT from HEAD.** HEAD (`c7582ce`) also carries nested
+statements; pinning it would have made round 9 grade two independent changes at
+once — the exact confound separate rounds exist to prevent. The binary was built
+in a detached worktree at `970d039` so the stamp is honest, verified on a fresh
+store: `{"build":"970d039","verb":"init"}`.
+
+Cut was clean: no alchamancer2 `mcp-serve` was running, last `aede89d` write
+20:52, re-pin 20:59. `mv -f` over a copied sibling, no kill (the ETXTBSY path).
+
+Pre-flight on a copy of the live store: **934 → 935 elements (+1, the anchor),
+relations unchanged at 3401.** No migration step, no relation churn.
 
 **Under test:** the self anchor (`docs/self-node.md`) — a seeded `me` element
 plus MCP instruction clause (11), so the agent can write itself into facts as a
@@ -1220,13 +1270,21 @@ participant. Fixes unresolvable deixis already in the store (30 elements use
 first person with no referent; `#458` is a constraint binding the agent with no
 subject to bind to) and unblocks `#157 prior-miss count`.
 
-| gauge | baseline (2026-08-02) | target |
+**Baseline taken AT the boundary 2026-08-03 20:59** (not from the design doc —
+the 2026-08-02 figures had already drifted: first person read 30 then, 37 now):
+
+| gauge | baseline at boundary | target |
 |---|---|---|
-| self-anchored live facts | **0** (0.0%) | rises off 0; **bound <5%** of live |
+| self-anchored live facts | **0** (0.0% of 3401) | rises off 0; **bound <5%** of live |
 | self on `source`/`src` | **0** | stays **0** — authorship never anchors here |
-| unresolved first person | **30** | falls |
-| provenance share | **1402 (48.3%)** | must not rise |
+| unresolved first person | **37** | falls |
+| provenance share | **1608 (47.3%)** | must not rise |
+| packet bytes | **9570** (cap 20000) | watch |
 | seed element count | 42 | 43 (32 core + 10 ext + self) |
+
+Carried in from round 8, not this bundle's to fix: `status_fact` 17,
+`flat_decision` 18, `near_dup` 2, `stale_open` 23, `bloat` 235, predicates 99 ·
+single-use 46.
 
 Read with `python3 harness/bundle_gauges.py` (gauges `[6]`–`[8]`).
 
