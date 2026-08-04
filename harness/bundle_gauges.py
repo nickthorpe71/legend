@@ -140,20 +140,39 @@ def main():
                    if k in ("source", "src") and str(v) in SELF)
     print(f"      on source/src (must stay 0)   : {src_self}   TARGET 0")
 
-    # unresolved first person: pronouns in a NAME or SUMMARY with no referent.
-    # Quoted source strings are opaque text and are excluded — they are not refs.
+    # 7. OPPORTUNITIES: an agent self-reference written as prose instead of a
+    #    fact on `me`. This is the DENOMINATOR for [6] -- self-anchored facts
+    #    mean nothing without the count of times the situation actually arose.
+    #
+    #    The first version of this gauge counted any first-person pronoun in a
+    #    name or summary and read 37. It was wrong by 5x. Three false-positive
+    #    classes, all confirmed by hand on 2026-08-04:
+    #      - the HUMAN's pronouns quoted inside a summary ("I dont love it") --
+    #        the speaker's, not an unresolved agent reference
+    #      - proper nouns ("Who I Would Have Been", "I Wish Two Drinks Were
+    #        Always In Me" are spell names)
+    #      - `\bI\b` matching the I in "I/O", because / is a word boundary
+    #    `we`/`our`/`us` are also dropped: they are the project-collective voice
+    #    ("we reach their sub-tree"), not a missing referent.
     srcobjs = {str(v) for r in dump["relations"]
                for k, v in r.get("attrs", {}).items() if k in ("source", "src")}
-    pron = re.compile(r"\b(I|me|my|myself|we|our|us)\b")
-    unresolved = [e for e in els
-                  if e["name"] not in srcobjs
-                  and e["name"] not in SELF
-                  and (pron.search(e["name"] or "")
-                       or pron.search(e.get("summary") or ""))]
-    print(f"\n[7] unresolved first person         : {len(unresolved)}   "
-          f"(round 9 baseline 37 at the 2026-08-03 boundary; should FALL)")
-    for e in unresolved[:5]:
+    quoted = re.compile(r"'[^']{6,}'|\"[^\"]{6,}\"|‘[^’]{6,}’"
+                        r"|“[^”]{6,}”")
+    pron = re.compile(r"(?<![\w/])(I|me|my|myself)(?![\w/])")
+    strip = lambda t: quoted.sub(" ", t or "")
+    opps = [e for e in els
+            if e["name"] not in srcobjs
+            and e["name"] not in SELF
+            and (pron.search(strip(e["name"])) or pron.search(strip(e.get("summary") or "")))]
+    print(f"\n[7] agent self-ref written as prose : {len(opps)}   "
+          f"(the DENOMINATOR for [6] — see below)")
+    rate = f"{len(self_rels)}/{len(opps)}" if opps else "undefined — NO OPPORTUNITIES"
+    print(f"      adoption [6]/[7]              : {rate}")
+    print(f"      base rate over the store      : {100.0*len(opps)/len(els):.1f}% of elements")
+    for e in opps[:5]:
         print(f"      {e['ref']} {e['name'][:60]!r}")
+    print("      NOTE still ~50% false positives (apostrophes break the quote")
+    print("           stripper: \"'I don't...'\"). Hand-check before grading.")
 
     # provenance share: the self node must not make this worse (it replaces
     # nothing today — this is the no-regression read, Watch on inflation).

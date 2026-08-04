@@ -7,10 +7,19 @@ narrator.
 
 ## Why: the store already spoke in first person with nothing to point at
 
+> **CORRECTION 2026-08-04.** The "30 elements" figure below came from a broken
+> measure and is overstated by roughly 4x. It counted the human's pronouns
+> quoted inside summaries, proper nouns (*Who I Would Have Been* is a spell), and
+> `\bI\b` matching the I in `I/O`. The genuine population is **~7 across the
+> whole month-long trial** — see the round 9 close in `alchamancer-trial.md`.
+> The cases below are real and the argument stands, but the SCALE does not: this
+> is a rare, high-value event class (~1/month), not a pervasive one. That is why
+> round 9 could not measure it.
+
 Measured on the live alchamancer2 store (787 elements, 2908 relations):
 
 - **30 elements** carry `I`/`me`/`my`/`we` in a **name or summary**, outside any
-  quoted source string. They had no referent.
+  quoted source string. They had no referent. *(See correction above: ~7.)*
 - The pronouns did not even share one. `#381` *"just let **me** select it from
   the menu"* is Nick; `#412` *"correcting **my** third push for survivability"*
   is the agent; `#525` *"better than **my** One True Sentence"* is the agent.

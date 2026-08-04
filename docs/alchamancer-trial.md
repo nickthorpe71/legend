@@ -1286,6 +1286,81 @@ Carried in from round 8, not this bundle's to fix: `status_fact` 17,
 `flat_decision` 18, `near_dup` 2, `stale_open` 23, `bloat` 235, predicates 99 ·
 single-use 46.
 
+## ROUND 9 CLOSED 2026-08-04 — INCONCLUSIVE. The gauge had no power.
+
+Segment: **56 invocations, 27 saves, 29 recalls, 7 rejections**. Clock 167 →
+190, elements 934 → 1049, live relations 3401 → 4091. Save ops: 72 elements,
+135 facts, **36 changes**, 9 retracts.
+
+**Verdict: the round cannot answer its question, and the fault is in the
+measurement, not the sessions.**
+
+Gauge `[6]` self-anchored facts read **0**. That looks like the pre-registered
+"dead node" failure. It is not, and the reason is gauge `[7]`.
+
+### Gauge [7] was wrong by 5x, and that invalidated the round
+
+`[7]` was written to count agent self-references sitting in prose with no
+referent — the OPPORTUNITIES for clause (11) to fire. It counted any first-person
+pronoun in a name or summary, read **37 at the boundary and 44 at close**, and
+was wrong in three ways, all confirmed by hand:
+
+- **the human's pronouns, quoted inside a summary** — `#950` "*I dont love it*"
+  is Nick speaking, not an unresolved agent reference. This was the dominant
+  class.
+- **proper nouns** — `#1029` *Who I Would Have Been* and `#870` *I Wish Two
+  Drinks Were Always In Me* are spell names.
+- **`\bI\b` matching the I in `I/O`** — `#50`, `#219` are "no I/O", "file I/O".
+
+Corrected, the genuine population is **~7 across the whole month-long trial**:
+
+```
+#329  "I propose the 7, Nick reacts, I build"
+#411  "after I proposed survivability three times"
+#471  "settled by Nick over my Bad Breath and Heartburn"
+#525  "better than my One True Sentence"
+#585  "I recommended the same table as DURATION instead"
+#602  "SETTLED by Nick, overruling my concern"
+#777  "I designed a resource loop and never asked what the player does"
+```
+
+**All 3 apparent new hits in round 9 are false positives.** The round produced
+**zero genuine opportunities** in 27 saves. Base rate is ~7 in ~780 elements
+(0.9%); round 9 added 115 elements, so the expected count was **~1**. Observing
+0 self-anchored facts is exactly what a perfectly-working instruction produces
+at this sample size. The round had no power to detect anything.
+
+This also corrects the justification recorded in `docs/self-node.md`: the "30
+elements carry first person with no referent" figure was the same broken measure
+and is overstated by roughly 4x.
+
+### What this means for the self anchor
+
+It targets a **rare, high-value** event class — an agent recording its own
+repeated error is precisely the `#157` prior-miss case. Rare is not worthless,
+but it is **not measurable by round-length observation**: at ~1/month you would
+need 4–8 weeks to accumulate a readable sample.
+
+`[7]` is now rebuilt as the DENOMINATOR: `[6]/[7]` is an adoption rate, and with
+`[7]` at 0 for the round the rate is reported as *undefined — no opportunities*
+rather than as a zero. It still carries ~50% false positives (apostrophes break
+the quote stripper on "I don't"), so it is **hand-check-before-grading**, not an
+automated verdict.
+
+The anchor stays: it costs one element, it holds its mega-hub guard (`[6]` on
+`source`/`src` never moved off 0), and its logic is sound. It rides un-graded.
+
+### What did hold in round 9
+
+`phantom_close`/`orphan`/`prose_name`/`correlated_with` all 0. `status_fact`
+flat at 17 — no new ones this round, though the round-8 guard gap (task #9) is
+untouched. The prose backstop keeps working: 36 change ops, max value length 14,
+0 prose through `changes.to`, 0 rerouted to `fact.o`. Models leaned much harder
+on `changes` this round — 36 in 27 saves, against 19 in round 8's 50.
+
+Still climbing, ungraded: `bloat` 235 → 301, `flat_decision` 18 → 21,
+provenance 47.3% → 48.1%. Packet 9753 B, comfortably under cap.
+
 ### Close criterion, pre-registered before any data
 
 Close at **≥40 saves** in the segment (round 8 ran 50) **or** the first natural
