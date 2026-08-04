@@ -1286,6 +1286,90 @@ Carried in from round 8, not this bundle's to fix: `status_fact` 17,
 `flat_decision` 18, `near_dup` 2, `stale_open` 23, `bloat` 235, predicates 99 ·
 single-use 46.
 
+## ROUND 10 OPEN — re-pinned to `a881751` 2026-08-04 17:16
+
+First round with a **ship deadline behind it** (target: Legend usable in a
+project that is not this trial, within a month). That reframes what is worth
+measuring — see "Ship readiness" below.
+
+**Under test (primary): the summary wall.** A hard 600-char reject on element
+summaries, mirroring the `changes.to` prose backstop — the single most
+successful intervention in the trial (26 fires, 0 prose through, 0 rerouted).
+
+**Rider: nested statements** (`docs/nested-statements.md`), built at `c7582ce`.
+It moves gauges `[9]`/`[10]`, which are disjoint from `[11]`, so both can ride
+one round without confounding. The one-change rule is about two changes moving
+the SAME gauge, which is not the case here.
+
+### Why bloat and nothing else
+
+Normalizing every health metric for store growth inverted the picture. Per 1k
+elements across rounds 8–9:
+
+| per 1k | R8 open | R8 close | R9 close | |
+|---|---|---|---|---|
+| **bloat** | 181 | 252 | **287** | ↑ +59% |
+| status_fact | 17.5 | 18.2 | 16.2 | flat |
+| flat_decision | 19.0 | 19.3 | 20.0 | flat |
+| stale_open | 29.2 | 24.6 | 21.9 | ↓ improving |
+| predicates (per 1k rel) | 32.8 | 29.1 | 25.2 | ↓ improving |
+
+**Watch #1 is not accelerating — it is improving.** Predicate density falls as
+the store matures; single-use has been flat at 46–47% throughout. The raw count
+rose only because the store grew faster than the predicate set. Earlier entries
+in this file calling it "climbing" were reading raw counts and had the direction
+wrong. Same for `status_fact` and `flat_decision`: proportional, not decaying.
+
+Bloat is the one real degradation, and `#66` already records it as the retrieval
+ceiling.
+
+**Baseline at the boundary 2026-08-04 17:16** (clock 191, 1053 elements, 4116
+live relations):
+
+| gauge | baseline | target |
+|---|---|---|
+| `[11]` per 1k elements over 400 | **289** | **FALLS** — the primary |
+| `[11]` summaries over the 600 cap | 75 (12.4%) | pre-existing; **NEW ones 0** |
+| `[11]` mean · p50 · p90 · max | 401 · 401 · 636 · **1114** | mean and p90 fall; max ≤600 for new |
+| `[9]` nested content statements | 0 | rises iff adopted |
+| `[10]` speech acts with no content | 0 | high + `[9]` low ⇒ two-save flow is the blocker |
+| packet bytes | 9525 | must not balloon |
+| `[6]` self-anchored facts | 0 | un-graded (round 9: no power at ~1/month) |
+
+**Expected side effect, watch it:** the cap applies on resubmit, so touching any
+of the 75 legacy bloated elements now forces a split. Rejection rate should rise
+above round 9's 7 and then fall as the backlog clears. If it stays high, the cap
+is fighting real work rather than teaching.
+
+**A stale server is alive.** PID 448205 (`970d039`, started 08-03 17:10, last
+wrote 12:55) survived the re-pin. It was NOT killed — killing strips Legend from
+that session for its remaining life. End that session before working, or its
+writes land in round 10 on the old build and `foreign_build` fires.
+
+## Ship readiness — what is actually blocking a second project
+
+Distribution is largely done: `make install`, `legend init` writes the MCP
+config + hooks + AGENTS.md, and the journal IS the analytics stream
+(`docs/production-roadmap.md` W1–W4). Linux/WSL is deployable today.
+
+The real blocker is **self-diagnosis**. Every round of this trial, a human plus
+an agent read `round_report.py` and `bundle_gauges.py` and interpreted them. A
+second project has only `legend audit` — and this trial has now produced three
+separate demonstrations that `audit` is not enough:
+
+1. **It missed both graded defects of round 8.** A claim in a kind slot and an
+   element holding two `current_standing` values were live and invisible to
+   every check.
+2. **It reports false positives.** `flat_decision`'s 13 were predicate false
+   positives; `near_dup` sits at 2 with no verdict.
+3. **It reports raw counts, which say the wrong thing.** `bloat 303` reads as
+   catastrophic; `bloat` per 1k elements is the number that carries the signal,
+   and `audit` does not compute it. Reading raw counts is exactly the mistake
+   made repeatedly in this file.
+
+None of the harness intelligence ships. That is the gap to close before a second
+project, and it is bigger than the Windows port.
+
 ## ROUND 9 CLOSED 2026-08-04 — INCONCLUSIVE. The gauge had no power.
 
 Segment: **56 invocations, 27 saves, 29 recalls, 7 rejections**. Clock 167 →
