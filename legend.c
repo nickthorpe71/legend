@@ -228,6 +228,11 @@ static u32 g_aud_name_chars = 120;  /* Measured on the trial store: median name
                                        29 bytes, p90 92, tail to 1177 — the tail is
                                        whole sentences passed where a canonical
                                        name belongs */
+static u32 g_sum_chars = 600;       /* Summary wall. Measured on the trial store
+                                       2026-08-04: p50 401, p90 636, max 1114, so
+                                       600 rejects the 12.4% tail rather than the
+                                       median. The instruction's ~400 stays the
+                                       aspiration; see the cap's own comment. */
 
 typedef struct {
   int code;
@@ -5211,6 +5216,33 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
              kwords);
       kind_pend = plan_ref(pl, el->kind, path, NONE_U32, 0, 1);
     }
+    /* Summary cap. Instruction (7) has asked for a short core "under ~400 chars"
+     * since the entity-model reset and is ignored by HALF the store: measured on
+     * the trial 2026-08-04, p50 was 401 and the tail ran to 1114. Bloat is the
+     * only store-health metric that degrades once normalized for growth (181 ->
+     * 287 per 1k elements over two rounds, while predicate density and
+     * stale_open both IMPROVED), and #66 records it as the retrieval ceiling --
+     * a bloated summary embeds diffusely, so semantic matching weakens exactly
+     * as the store becomes worth searching.
+     *
+     * Instruction-only guidance does not hold; a hard reject does. The
+     * changes.to backstop is the proof in this same store: 26 fires, zero prose
+     * through, zero displaced into fact.o.
+     *
+     * The cap is NOT the instruction's 400. Rejecting there would bounce 50% of
+     * summaries and models would fight it. 600 bounces 12.4%, matching the
+     * friction the changes.to backstop already sustains (14.9% of saves), and it
+     * cuts the tail rather than legislating the median. 400 stays the aspiration
+     * in prose; this is the wall. */
+    if (!span_absent(el->summary) && el->summary.len > g_sum_chars) {
+      snprintf(path, sizeof path, "elements[%u].summary", i);
+      fail(ERR_PROSE_VALUE, path,
+           "summary is %u chars (cap %u) -- keep a SHORT core and split the "
+           "detail into child elements linked with part_of. An "
+           "everything-dump summary buries the signal and embeds diffusely, so "
+           "recall stops finding it.",
+           el->summary.len, g_sum_chars);
+    }
     pl->elem_entry_pend[i] = name_pend;
     pl->elem_entry_kind[i] = kind_pend;
     /* aliases and rename_to bind their norms to this pend so later refs
@@ -10184,9 +10216,10 @@ static const char MCP_INSTRUCTIONS[] =
     "(a fact object -- and every attr value -- becomes an element named by it, "
     "so never pass prose as a fact object or an attr value; prose belongs in "
     "summaries). When a summary outgrows a line, "
-    "split the detail into child elements and keep a short core (under "
-    "~400 chars) -- an "
-    "everything-dump summary buries the signal. (8) Prefer few precise "
+    "split the detail into child elements linked with part_of and keep a short "
+    "core -- aim under ~400 chars; 600 is a HARD CAP and is rejected. An "
+    "everything-dump summary buries the signal AND embeds diffusely, so the "
+    "longer you write the less findable it becomes. (8) Prefer few precise "
     "elements and durable facts; over-extraction buries the signal. The "
     "highest-value saves are what the code cannot hold: next levers, "
     "negative results, decisions with reasons. A choice that settles a design "
@@ -10266,7 +10299,7 @@ static const char MCP_TOOLS_JSON[] =
     "element (latest write wins) -- `changes` is for domain property values, "
     "and fact objects AND attr values become element names, so keep them short "
     "(prose goes in summaries); when a summary outgrows a line, split the detail into "
-    "child elements and keep a short core (under ~400 chars). Best saves: what code cannot hold "
+    "child elements and keep a short core (aim ~400 chars, 600 is a hard cap). Best saves: what code cannot hold "
     "(next levers, negative "
     "results, reasons); a choice that settles a design question is a decision "
     "even when the request looked cosmetic; measurements include how to "

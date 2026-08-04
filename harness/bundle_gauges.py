@@ -214,6 +214,28 @@ def main():
     for r in stranded[:5]:
         print(f"      {r['ref']} {json.dumps(r['attrs'])[:88]}")
 
+    # 11. THE SUMMARY WALL — round 10's primary. Bloat is the only health metric
+    #     that degrades once normalized for store growth (181 -> 287 per 1k
+    #     elements across rounds 8-9, while predicate density and stale_open both
+    #     IMPROVED), and #66 records it as the retrieval ceiling. Read the RATE,
+    #     never the raw count: raw always rises with volume and says nothing.
+    CAP, AIM = 600, 400
+    lens = sorted(len(e["summary"]) for e in els if e.get("summary"))
+    if lens:
+        n = len(lens)
+        pct = lambda p: lens[min(n - 1, int(n * p / 100))]
+        over_cap = sum(1 for x in lens if x > CAP)
+        over_aim = sum(1 for x in lens if x > AIM)
+        print(f"\n[11] summary wall (cap {CAP})")
+        print(f"      per 1k elements > {AIM}          : "
+              f"{1000.0 * over_aim / len(els):.0f}   "
+              f"(R8 open 181 -> R8 close 252 -> R9 close 287; must FALL)")
+        print(f"      mean {sum(lens)/n:.0f}  p50 {pct(50)}  p90 {pct(90)}  max {lens[-1]}"
+              f"   (R9 close: mean 414 p50 401 p90 636 max 1114)")
+        print(f"      over the {CAP} cap             : {over_cap} "
+              f"({100.0*over_cap/n:.1f}%)   pre-existing; NEW ones must be 0")
+        print(f"      over the {AIM} aim             : {over_aim} ({100.0*over_aim/n:.1f}%)")
+
 
 if __name__ == "__main__":
     main()

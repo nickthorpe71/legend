@@ -2290,6 +2290,47 @@ static u32 count_occ(const char *hay, const char *needle) {
 
 /* A statement nested as the CONTENT of another: the store has always held it,
  * the frame used to render it as a bare pointer (see frame_slot_nests). */
+/* The summary wall. Instruction-only guidance ran at 50% compliance on the
+ * trial store; this is the changes.to backstop's pattern applied to the one
+ * health metric that degrades once normalized for growth. */
+static void test_summary_cap(void) {
+    char pay[1400];
+    char big[900];
+    int failed;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+
+    memset(big, 'x', sizeof big - 1);
+    big[sizeof big - 1] = 0;
+
+    /* at the cap passes, one over is rejected -- the boundary is exact */
+    big[g_sum_chars] = 0;
+    snprintf(pay, sizeof pay,
+             "{\"elements\":[{\"name\":\"at cap\",\"summary\":\"%s\"}]}", big);
+    TRY(run_save(pay), failed);
+    CHECK(!failed);
+
+    big[g_sum_chars] = 'x';
+    big[g_sum_chars + 1] = 0;
+    snprintf(pay, sizeof pay,
+             "{\"elements\":[{\"name\":\"over cap\",\"summary\":\"%s\"}]}", big);
+    TRY(run_save(pay), failed);
+    CHECK(failed && g_err.code == ERR_PROSE_VALUE);
+
+    /* it applies on RESUBMIT too, not only at mint: a resubmit overwrites the
+     * summary, so a long one there does exactly the same damage */
+    TRY(run_save("{\"elements\":[{\"name\":\"grower\",\"summary\":\"short\"}]}"), failed);
+    CHECK(!failed);
+    snprintf(pay, sizeof pay,
+             "{\"elements\":[{\"name\":\"grower\",\"summary\":\"%s\"}]}", big);
+    TRY(run_save(pay), failed);
+    CHECK(failed && g_err.code == ERR_PROSE_VALUE);
+
+    /* an element with no summary at all is untouched */
+    TRY(run_save("{\"elements\":[{\"name\":\"bare\",\"kind\":\"mechanic\"}]}"), failed);
+    CHECK(!failed);
+}
+
 static void test_nested_statement(void) {
     u32 inner, outer;
     int failed;
@@ -3568,6 +3609,7 @@ int main(void) {
     test_element_src();
     test_constraint_cache();
     test_recall_tick();
+    test_summary_cap();
     test_nested_statement();
     test_tier2_read();
     test_near_matches();
