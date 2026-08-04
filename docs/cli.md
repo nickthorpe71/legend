@@ -119,6 +119,47 @@ defects across 815 elements; treat it as advisory. The sharp checks are
 `phantom_close` and `status_fact`. `prose_name` triggers past 120 bytes against
 a measured median name of 29.
 
+### Read `per_1k_elements`, not `counts`
+
+Every count ships with a rate beside it:
+
+```json
+"counts":{"bloat":303,"status_fact":17,"stale_open":23,"flat_decision":1},
+"per_1k_elements":{"bloat":287.7,"status_fact":16.1,"stale_open":21.8,"flat_decision":0.9}
+```
+
+**A raw count rises with the store and says nothing about health.** Read raw,
+the trial store's numbers across two rounds looked like collapse — bloat 124 →
+235 → 303, status_fact 12 → 17, stale_open 20 → 23. Per 1k elements the same
+period reads: bloat 181 → 252 → 287 (a real but far smaller decay), status_fact
+17.5 → 18.2 → 16.2 (**flat**), stale_open 29.2 → 24.6 → 21.9 (**improving**).
+
+Everyone who read the old output drew the wrong conclusion, including the people
+who wrote it — "predicate proliferation is accelerating" was recorded three
+times while predicate density was in fact *falling*. The rate is the number that
+carries the signal.
+
+### `health.jsonl` — the series `audit` cannot give you
+
+`audit` is a snapshot: it says bloat is 303 and cannot say whether that is
+climbing, flat, or recovering. Direction is usually the actual question.
+
+Each session-start recall appends one line to `.legend/health.jsonl`:
+
+```json
+{"ts":1785800000,"build":"a881751","clock":193,"elements":1053,"live_relations":4121,
+ "counts":{...},"per_1k_elements":{...},
+ "summaries":{"n":605,"mean":401,"p50":401,"p90":636,"max":1114}}
+```
+
+Session start is the cadence deliberately — per-save would be noise and would
+put a scan on the write path; on demand only exists once someone already
+suspects something. One line per session tracks the unit of work, and the file
+is append-only, cheap, and safe to delete.
+
+To read a trend, diff the first and last lines; the rates are directly
+comparable across any two points, which the raw counts are not.
+
 ### The prose block — read this instead of the `bloat` count
 
 `legend audit` closes with the summary-length distribution over the same

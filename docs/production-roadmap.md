@@ -26,6 +26,65 @@ periodically gather + analyze across all of them.
 ## Workstreams
 
 ### W1 — Cross-platform portability (Linux ✓ · WSL ✓ · Windows: port)
+
+> **RE-AUDITED 2026-08-04. The "~6 shims" estimate below is wrong.** A full
+> source sweep found **23 shim sites in `legend.c`+`embed.c`, five of them
+> semantic differences rather than shims**, plus ~130 mechanical sites in
+> `legend_test.c` (the gate cannot run on Windows without them) and
+> `legend_viz.c`, which is X11 and should be **excluded from the Windows
+> target** entirely. Four of the five line references below are also stale.
+> Spot-verified by hand: the `rename`, binary-mode, path-parsing, and `st_mtim`
+> findings are all confirmed against current source.
+>
+> **The five that are not shims — do these first, in this order:**
+>
+> 1. **`rename()` over an existing file fails on Windows** (`legend.c:8552`).
+>    `legend.snapshot` always exists after `init`, so **every save after the
+>    first fails**. `MoveFileExA(..., MOVEFILE_REPLACE_EXISTING)` is the
+>    replacement, but it is still not equivalent: it fails with
+>    `ERROR_SHARING_VIOLATION` if any process holds the destination open without
+>    `FILE_SHARE_DELETE`, and MSVCRT's `open`/`fopen` never pass that flag. This
+>    collides with our own design — `mcp_serve` loads the snapshot OUTSIDE the
+>    lock (deliberately, so a SessionStart hook never blocks), so a warm server
+>    holding the file makes a concurrent save fail **on Windows only**. This is a
+>    design problem, not a porting problem.
+> 2. **Text-mode translation silently corrupts the snapshot.** The four snapshot
+>    fds (`legend.c:8531/8536/8661/8681`) need `_O_BINARY`, and the journal
+>    (`legend.c:8946`, `fopen(path,"a")`) needs `"ab"`. Without it every `0x0A`
+>    becomes `0x0D 0x0A`, the declared length stops matching `st_size`, and a
+>    store written on Windows is unreadable on Linux. Fails at the format level,
+>    silently, with no compile error.
+> 3. **`strrchr(path, '/')` over OS-returned paths.** `getcwd` returns
+>    backslashes, so `discover_store` (`legend.c:9031`, root logic at `:9034`)
+>    returns "no store" for every invocation without `LEGEND_STATE_DIR`, and
+>    `embed.c:469` never finds the model dir so **embeddings silently disable**.
+>    Needs a separator helper plus drive-root-aware walk-up, not a `#define`.
+>    (The roadmap's "forward slashes work in fopen" is true and irrelevant — the
+>    problem is parsing paths the OS hands back, not building them.)
+> 4. **`st_mtim.tv_nsec` does not exist on Windows** (`legend.c:10775-10776`) —
+>    hard compile error, and glibc-specific even on Unix. Use `FILETIME`, not
+>    `st_mtime`: dropping to second resolution lets the warm-graph gate miss an
+>    external write landing in the same second.
+> 5. **`tmpfile()`** (`legend.c:9178` `--pretty`, `legend.c:10644` every MCP
+>    `tools/call`). MSVCRT creates it in the drive root, which fails unelevated.
+>    One path kills `--pretty` (which is what the generated hooks invoke); the
+>    other falls through to writing frame JSON onto the MCP stdout channel,
+>    **corrupting the JSON-RPC stream**.
+>
+> **Toolchain: MinGW-w64, not MSVC** — and more strongly than stated below. The
+> blocker is GCC *extensions* in `embed.c` (`__attribute__((target("avx2,fma")))`
+> at `embed.c:171`, `__builtin_cpu_supports` at `:192`) plus missing `getline`,
+> `S_ISDIR`, `O_CLOEXEC`, and `ssize_t`. MinGW supplies all of them. Also note
+> `embed.c:29` gates SIMD on `__x86_64__`, which MSVC does not define, so MSVC
+> would silently compile out the SIMD path.
+>
+> **`legend.lock` case sensitivity** (`legend.c:8571`): the orphan-tmp sweep
+> skips the lock by `strcmp`. NTFS is case-insensitive but case-preserving, so a
+> `Legend.lock` is the same file yet fails the compare — and the sweep would
+> **unlink the live lock**. Needs `_stricmp`.
+
+The original estimate, kept for reference (line numbers stale as noted):
+
 WSL runs the Linux build unchanged. Native Windows needs a small platform-shim layer
 (`#ifdef _WIN32`) for the audited Unix-isms — bounded, ~6 shims, not a rewrite:
 - `readlink("/proc/self/exe")` → `GetModuleFileNameA` (binary-relative model dir;

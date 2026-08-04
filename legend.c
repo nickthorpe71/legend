@@ -9601,6 +9601,8 @@ static void dump_graph(const Hypergraph *g) {
 
 enum {
   AUD_PHANTOM_CLOSE = 0,
+  AUD_CLOBBERED_KIND,
+  AUD_DUP_CACHE,
   AUD_STATUS_FACT,
   AUD_NEAR_DUP,
   AUD_PROSE_NAME,
@@ -9612,8 +9614,9 @@ enum {
 };
 
 static const char *const AUD_REASONS[AUD_REASON_COUNT] = {
-    "phantom_close", "status_fact",   "near_dup", "prose_name",
-    "flat_decision", "stale_open",    "orphan",   "bloat"};
+    "phantom_close", "clobbered_kind", "dup_cache", "status_fact",
+    "near_dup",      "prose_name",     "flat_decision", "stale_open",
+    "orphan",        "bloat"};
 
 /* Thresholds. Mutable so tests can drive each check from a small store. */
 static u32 g_aud_bloat_chars = 400; /* a terse core + its result lands ~300; a wall starts ~400 (#66, #122) */
@@ -9890,12 +9893,25 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
     counts[i] = 0;
   audit_mark_structural(g, structural);
 
-  /* Which elements carry a decision's defining content (dec_content: at least
-   * one live chose/rejected/about/resolves relation — a decision with none
-   * recorded its choice only in its name + summary, the "Bolt as the default"
-   * shape), and which are the option/target VALUES those slots point at
-   * (is_option). An option that a hub broke out is not itself a flat decision
-   * even if it happens to carry kind:decision. */
+  /* Which elements carry a decision's defining content (dec_content), and which
+   * are the option VALUES a decision's slots point at (is_option) — an option a
+   * hub broke out is not itself a flat decision even if it carries
+   * kind:decision.
+   *
+   * Content is ANY live outgoing relation that is not plumbing (source, src,
+   * instance_of). It was once only the four SEEDED slots — chose, rejected,
+   * about, resolves — and that made the check nearly useless: measured on the
+   * trial store 2026-08-04 it flagged 20 decisions of which 19 were structured
+   * perfectly well, just through predicates a model reached for instead
+   * (decided_by x11, applies_to x14, justifies, prevents, serves, caused,
+   * selected). One true positive in twenty.
+   *
+   * A check people cannot trust is worse than no check, and this one shipped
+   * while the trial doc carried "the 13 are predicate false positives" as a
+   * known-and-tolerated note for two rounds. Precision beats recall here: the
+   * defect is a decision whose choice lives ONLY in prose, and any substantive
+   * edge is evidence against that. The rule now flags exactly 1 of 56
+   * decisions, and that one has no outgoing content at all. */
   for (r = 0; r < g->relation_count; r++) {
     const Relation *rel = &g->relations[r];
     u32 a, subj = NONE_U32;
@@ -9906,12 +9922,15 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
       if (rel->attrs[a].name == WK_SUBJECT &&
           rel->attrs[a].value.tag == TERM_ELEM)
         subj = rel->attrs[a].value.id;
-      else if (rel->attrs[a].name == WK_CHOSE ||
-               rel->attrs[a].name == WK_REJECTED ||
-               rel->attrs[a].name == WK_ABOUT ||
-               rel->attrs[a].name == WK_RESOLVES) {
+      else if (rel->attrs[a].name != WK_SOURCE &&
+               rel->attrs[a].name != WK_SRC &&
+               rel->attrs[a].name != WK_INSTANCE_OF) {
         has = 1;
-        if (rel->attrs[a].value.tag == TERM_ELEM &&
+        if ((rel->attrs[a].name == WK_CHOSE ||
+             rel->attrs[a].name == WK_REJECTED ||
+             rel->attrs[a].name == WK_ABOUT ||
+             rel->attrs[a].name == WK_RESOLVES) &&
+            rel->attrs[a].value.tag == TERM_ELEM &&
             rel->attrs[a].value.id < g->element_count)
           is_option[rel->attrs[a].value.id] = 1;
       }
@@ -9954,6 +9973,18 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
       AUD_PUSH(AUD_ORPHAN, e, NONE_U32, refs, 0);
     if (elem_name_l(g, e) > g_aud_name_chars)
       AUD_PUSH(AUD_PROSE_NAME, e, NONE_U32, refs, elem_name_l(g, e));
+    /* A claim written into the kind slot. Round 8 found one by hand (#574 "Bio
+     * Weapon" typed as "nothing resolves on cast") after it had been live and
+     * INVISIBLE to every check here — and a clobbered kind is not cosmetic: the
+     * element drops out of every kind-keyed check and recall band, so each
+     * count below is a floor until this reads 0. The save path rejects new ones
+     * (e6973ae), but nothing surfaced the ones already in the store. */
+    if (g->elem_kind[e] != NONE_U32 &&
+        name_word_count(elem_name(g, g->elem_kind[e]),
+                        elem_name_l(g, g->elem_kind[e])) > 2)
+      AUD_PUSH(AUD_CLOBBERED_KIND, e, g->elem_kind[e], refs,
+               name_word_count(elem_name(g, g->elem_kind[e]),
+                               elem_name_l(g, g->elem_kind[e])));
     if (g->elem_kind[e] == WK_KIND_DECISION && !dec_content[e] && !is_option[e])
       AUD_PUSH(AUD_FLAT_DECISION, e, NONE_U32, refs, 0);
     if (el->summary != NONE_U32 && str_len(&g->strs, el->summary) > g_aud_bloat_chars)
@@ -9993,6 +10024,48 @@ static void audit_scan(const Hypergraph *g, Suspect **out_sus, u32 *out_n,
       continue;
     if (audit_name_is_status_flavored(g, prop))
       AUD_PUSH(AUD_STATUS_FACT, r, NONE_U32, 0, 0);
+  }
+
+  /* Two live current_* caches on the same (subject, property). The cur index
+   * holds ONE entry per pair, so a second live cache is invisible there while
+   * both sit in the graph and recall can surface either — the element reads as
+   * holding two current values at once. Round 8 found one by hand (#602 "the
+   * brake count", live `active` beside `settled`) after it had gone unnoticed
+   * through every audit run.
+   *
+   * O(k^2) over current_* relations only: ~113 of 4116 in the trial store, so
+   * the sweep is nothing next to the snapshot load. */
+  {
+    u32 *cs = NULL, csn = 0, cscap = 0, i2, j2;
+    for (r = 0; r < g->relation_count; r++) {
+      const Relation *rel = &g->relations[r];
+      u32 a2, sj = NONE_U32, pr = NONE_U32;
+      if (rel->status >= ST_SUPERSEDED || rel->attr_count != 2)
+        continue;
+      for (a2 = 0; a2 < 2; a2++) {
+        if (rel->attrs[a2].name == WK_SUBJECT &&
+            rel->attrs[a2].value.tag == TERM_ELEM)
+          sj = rel->attrs[a2].value.id;
+        else
+          pr = rel->attrs[a2].name;
+      }
+      if (sj == NONE_U32 || pr == NONE_U32)
+        continue;
+      if (elem_name_l(g, pr) <= 8 || memcmp(elem_name(g, pr), "current_", 8) != 0)
+        continue;
+      cs = (u32 *)xgrow(cs, (csn + 1) * 3, &cscap, sizeof *cs);
+      cs[csn * 3] = sj;
+      cs[csn * 3 + 1] = pr;
+      cs[csn * 3 + 2] = r;
+      csn++;
+    }
+    for (i2 = 0; i2 < csn; i2++)
+      for (j2 = 0; j2 < i2; j2++)
+        if (cs[i2 * 3] == cs[j2 * 3] && cs[i2 * 3 + 1] == cs[j2 * 3 + 1]) {
+          AUD_PUSH(AUD_DUP_CACHE, cs[i2 * 3], cs[i2 * 3 + 2], 0, 0);
+          break; /* one report per extra cache, not one per pair */
+        }
+    free(cs);
   }
 
   /* Near-duplicate names, O(n^2) over live non-structural elements. A store
@@ -10084,6 +10157,32 @@ static void audit_graph(const Hypergraph *g, i64 per_reason) {
     fputs("],\"counts\":{", stdout);
     for (i = 0; i < AUD_REASON_COUNT; i++)
       printf("%s\"%s\":%u", i ? "," : "", AUD_REASONS[i], counts[i]);
+    /* Rates per 1000 live elements, beside every count.
+     *
+     * A raw count rises with the store and says nothing about health. Read raw,
+     * this store's bloat went 124 -> 235 -> 303 across two rounds and looked
+     * like collapse; per 1k elements it went 181 -> 252 -> 287, which IS a real
+     * decay but a far smaller one — while status_fact (17.5 -> 18.2 -> 16.2)
+     * and flat_decision (19.0 -> 19.3 -> 20.0) were flat and stale_open (29.2
+     * -> 24.6 -> 21.9) was IMPROVING the whole time.
+     *
+     * Everyone who read this output, including the people who built it, drew
+     * the wrong conclusion from the raw numbers and called the flat metrics
+     * "climbing" for two rounds. The rate is the number that carries the
+     * signal, so it ships in the same object rather than living in a harness
+     * script the user does not have. */
+    fputs("},\"per_1k_elements\":{", stdout);
+    {
+      u32 live = 0;
+      for (i = 0; i < g->element_count; i++)
+        if (g->elements[i].redirect == NONE_U32)
+          live++;
+      if (!live)
+        live = 1;
+      for (i = 0; i < AUD_REASON_COUNT; i++)
+        printf("%s\"%s\":%.1f", i ? "," : "", AUD_REASONS[i],
+               1000.0 * (double)counts[i] / (double)live);
+    }
     fputs("},\"truncated\":{", stdout);
     {
       u32 first = 1;
@@ -10133,12 +10232,100 @@ static i64 read_audit_limit(const Rd *r) {
  * lands inside overview.active, so a counter anywhere further down would never
  * reach the model. Emitted only when something is flagged: a clean store says
  * nothing, and maintenance stays the user's move rather than a standing nag. */
+/* One health sample per session start, appended to `.legend/health.jsonl`.
+ *
+ * `legend audit` is a SNAPSHOT: it says bloat is 303 and cannot say whether
+ * that is climbing, flat, or recovering. Direction is the whole question — this
+ * project spent two rounds calling flat metrics "climbing" because nobody had a
+ * series to look at, and the only reason the truth surfaced is that a human and
+ * an agent kept hand-computed tables in a design doc. That does not ship.
+ *
+ * The journal already records every invocation, but deriving health from it
+ * means replaying the whole store per sample. This is the derived series: one
+ * line, cheap, taken where a scan is already being computed.
+ *
+ * Session start is the cadence deliberately. Per-save would be noise and would
+ * put a scan on the write path; on demand means it is only there when someone
+ * already suspected something. Once per session tracks the unit of work.
+ *
+ * Rates are emitted, not just counts, for the same reason they now ship in the
+ * audit: a raw count rises with the store and reads as decay when nothing is
+ * decaying. Failure is silent — a health line is diagnostics, and losing one
+ * must never break a recall. */
+static void health_append(const Hypergraph *g, const u32 *counts) {
+  char path[4400];
+  FILE *f;
+  u32 i, live = 0, rels = 0;
+  if (!g_journal_dir[0])
+    return;
+  snprintf(path, sizeof path, "%s/health.jsonl", g_journal_dir);
+  f = fopen(path, "a");
+  if (!f)
+    return;
+  for (i = 0; i < g->element_count; i++)
+    if (g->elements[i].redirect == NONE_U32)
+      live++;
+  for (i = 0; i < g->relation_count; i++)
+    if (g->relations[i].status < ST_SUPERSEDED)
+      rels++;
+  fprintf(f, "{\"ts\":%lld,\"build\":\"" LEGEND_BUILD "\",\"clock\":%u",
+          (long long)now_unix_seconds(), g->clock);
+  fprintf(f, ",\"elements\":%u,\"live_relations\":%u", live, rels);
+  if (!live)
+    live = 1;
+  fputs(",\"counts\":{", f);
+  for (i = 0; i < AUD_REASON_COUNT; i++)
+    fprintf(f, "%s\"%s\":%u", i ? "," : "", AUD_REASONS[i], counts[i]);
+  fputs("},\"per_1k_elements\":{", f);
+  for (i = 0; i < AUD_REASON_COUNT; i++)
+    fprintf(f, "%s\"%s\":%.1f", i ? "," : "", AUD_REASONS[i],
+            1000.0 * (double)counts[i] / (double)live);
+  /* summary length distribution: bloat's count is a threshold crossing, and the
+   * distribution is what says whether the wall is working */
+  {
+    u32 *len = (u32 *)malloc((size_t)(g->element_count ? g->element_count : 1) *
+                             sizeof *len);
+    u32 ln = 0;
+    u64 tot = 0;
+    if (len) {
+      for (i = 0; i < g->element_count; i++)
+        if (g->elements[i].redirect == NONE_U32 &&
+            g->elements[i].summary != NONE_U32) {
+          len[ln] = str_len(&g->strs, g->elements[i].summary);
+          tot += len[ln++];
+        }
+      if (ln) {
+        u32 a, b, mx = 0;
+        for (a = 0; a < ln; a++) /* insertion sort: ln is ~hundreds */
+          for (b = a; b && len[b] < len[b - 1]; b--) {
+            u32 t = len[b];
+            len[b] = len[b - 1];
+            len[b - 1] = t;
+          }
+        mx = len[ln - 1];
+        fprintf(f,
+                "},\"summaries\":{\"n\":%u,\"mean\":%u,\"p50\":%u,\"p90\":%u,"
+                "\"max\":%u",
+                ln, (u32)(tot / ln), len[ln / 2], len[(ln * 9) / 10], mx);
+      } else {
+        fputs("},\"summaries\":{\"n\":0", f);
+      }
+      free(len);
+    } else {
+      fputs("},\"summaries\":{\"n\":0", f);
+    }
+  }
+  fputs("}}\n", f);
+  fclose(f);
+}
+
 static void frame_put_audit_tally(const Hypergraph *g) {
   Suspect *sus;
   u32 n, i, put = 0, shown = 0;
   u32 counts[AUD_REASON_COUNT];
   audit_scan(g, &sus, &n, counts, 0);
   free(sus);
+  health_append(g, counts);
   /* bloat is excluded from the standing tally: its count climbs with store
    * size and cannot be acted on mid-session, so it belongs in `legend audit`,
    * not the session-start signal (#122, confirmed by trial round 4 — count

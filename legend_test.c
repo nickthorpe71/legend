@@ -3245,6 +3245,78 @@ static void capture_audit_limit(i64 per_reason) {
 
 static void capture_audit(void) { capture_audit_limit((i64)g_aud_per_reason); }
 
+/* The two defect classes round 8 found BY HAND after they sat live and
+ * invisible to every audit check. Neither can be produced through the save path
+ * any more (e6973ae rejects a claim in the kind slot, f76d3e6 rejects a plain
+ * current_* write), so the state is built directly -- a check that reads 0 on a
+ * clean store proves nothing about whether it can fire. */
+static void test_audit_finds_round8_defects(void) {
+    u32 subj, bogus, standing, active, settled;
+    Attr at[2];
+    int failed;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+
+    TRY(run_save("{\"elements\":[{\"name\":\"Bio Weapon\",\"kind\":\"spell\","
+                 "\"summary\":\"a poison mask\"}]}"), failed);
+    CHECK(!failed);
+    subj = twr.minted_elems.v[0];
+    CHECK(elem_name_is(&tg, subj, "Bio Weapon"));
+    capture_audit();
+    CHECK(strstr(t_audit, "clobbered_kind\":0") != NULL); /* clean to start */
+
+    /* a SECOND instance_of carrying a claim -- exactly #574's shape: both edges
+     * live, elem_kind picks the wrong one, and the element silently drops out of
+     * every kind-keyed check */
+    bogus = mint_element(&tg, "nothing resolves on cast", 24, 1.0, 0.0, tg.clock);
+    at[0].name = WK_SUBJECT; at[0].value.tag = TERM_ELEM; at[0].value.id = subj;
+    at[1].name = WK_INSTANCE_OF; at[1].value.tag = TERM_ELEM; at[1].value.id = bogus;
+    mint_relation(&tg, at, 2, ST_ASSERTED, 1.0, 0.0, tg.clock, NONE_U32);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"clobbered_kind\":1") != NULL);
+    CHECK(strstr(t_audit, "nothing resolves on cast") != NULL);
+
+    /* two LIVE current_standing caches on one subject -- #602's shape. The cur
+     * index holds one entry per pair, so the second is invisible there while
+     * both sit in the graph and recall can surface either. */
+    fresh_graph(&tg);
+    TRY(run_save("{\"elements\":[{\"name\":\"the brake count\",\"kind\":\"question\","
+                 "\"summary\":\"how many limiters\"}]}"), failed);
+    CHECK(!failed);
+    subj = twr.minted_elems.v[0];
+    standing = mint_element(&tg, "current_standing", 16, 1.0, 0.0, tg.clock);
+    active = mint_element(&tg, "active", 6, 1.0, 0.0, tg.clock);
+    settled = mint_element(&tg, "settled", 7, 1.0, 0.0, tg.clock);
+    at[0].name = WK_SUBJECT; at[0].value.tag = TERM_ELEM; at[0].value.id = subj;
+    at[1].name = standing; at[1].value.tag = TERM_ELEM; at[1].value.id = active;
+    mint_relation(&tg, at, 2, ST_ASSERTED, 1.0, 0.0, tg.clock, NONE_U32);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"dup_cache\":0") != NULL); /* one cache is correct */
+    at[1].value.id = settled;
+    mint_relation(&tg, at, 2, ST_ASSERTED, 1.0, 0.0, tg.clock, NONE_U32);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"dup_cache\":1") != NULL); /* the second is the defect */
+
+    /* a SUPERSEDED second cache is the normal history shape, not a defect */
+    tg.relations[tg.relation_count - 1].status = ST_SUPERSEDED;
+    capture_audit();
+    CHECK(strstr(t_audit, "\"dup_cache\":0") != NULL);
+}
+
+/* Rates ship beside counts, because a raw count rises with the store and misled
+ * everyone who read this output -- including its authors -- for two rounds. */
+static void test_audit_rates(void) {
+    int failed;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+    TRY(run_save("{\"elements\":[{\"name\":\"a\",\"kind\":\"system\",\"summary\":\"x\"}]}"),
+        failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"per_1k_elements\":{") != NULL);
+    CHECK(strstr(t_audit, "\"bloat\":0.0") != NULL);
+}
+
 static void test_audit(void) {
     int failed;
     fresh_graph(&tg);
@@ -3636,6 +3708,8 @@ int main(void) {
     test_causal();
     test_frame_section_caps();
     test_audit();
+    test_audit_finds_round8_defects();
+    test_audit_rates();
 
     json_free(&tj);
     sub_free(&tsub);
