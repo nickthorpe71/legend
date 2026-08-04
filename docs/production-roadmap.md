@@ -43,11 +43,21 @@ periodically gather + analyze across all of them.
 >    first fails**. `MoveFileExA(..., MOVEFILE_REPLACE_EXISTING)` is the
 >    replacement, but it is still not equivalent: it fails with
 >    `ERROR_SHARING_VIOLATION` if any process holds the destination open without
->    `FILE_SHARE_DELETE`, and MSVCRT's `open`/`fopen` never pass that flag. This
->    collides with our own design — `mcp_serve` loads the snapshot OUTSIDE the
->    lock (deliberately, so a SessionStart hook never blocks), so a warm server
->    holding the file makes a concurrent save fail **on Windows only**. This is a
->    design problem, not a porting problem.
+>    `FILE_SHARE_DELETE`, and MSVCRT's `open`/`fopen` never pass that flag.
+>
+>    **Scope corrected 2026-08-04** — an earlier note here called this a design
+>    problem on the grounds that `mcp_serve` keeps the snapshot open outside the
+>    lock. It does not. `snapshot_load` (`legend.c:8661-8690`) opens, `fstat`s,
+>    reads the whole file into `g_snap_buf`, and **closes the fd before
+>    parsing**; a warm server holds the parsed graph in memory, not a file
+>    handle. The exposure is therefore a narrow race — a save landing in the
+>    millisecond window while another process is reading the snapshot — not a
+>    structural conflict, and `legend_viz.c:1148` follows the same
+>    open-read-close shape. Fix it by opening the snapshot for reading via
+>    `CreateFileA` with `FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE` +
+>    `_open_osfhandle`, which restores exactly the POSIX semantics the code
+>    already assumes. No architecture change, and the documented non-blocking
+>    hook behavior stays as-is.
 > 2. **Text-mode translation silently corrupts the snapshot.** The four snapshot
 >    fds (`legend.c:8531/8536/8661/8681`) need `_O_BINARY`, and the journal
 >    (`legend.c:8946`, `fopen(path,"a")`) needs `"ab"`. Without it every `0x0A`

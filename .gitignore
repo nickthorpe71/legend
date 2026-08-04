@@ -110,3 +110,7 @@ benchmarks/conflictqa/*.log
 # point-in-time trial store snapshots kept for rollback; the journal is the
 # committed record and replays byte-identical, so these are belt not braces
 .trial-backups/
+
+# Windows cross-build artifacts (check.sh advisory step)
+/legend.exe
+/wincross.log

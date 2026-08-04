@@ -140,10 +140,11 @@
  * valid, well-formed JSON no matter where it was truncated.
  */
 
+#ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#endif
 
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -154,10 +155,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <direct.h>
+#include <io.h>
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <sys/file.h>
 #include <unistd.h>
+#endif
 
 #include "embed.h" /* pure-C MiniLM: semantic miss-fallback (embed.c) */
 
@@ -168,6 +178,179 @@ typedef int32_t i32;
 typedef int64_t i64;
 
 #define NONE_U32 0xFFFFFFFFu
+
+/* ======================= S0 — platform seam ==============================
+ *
+ * Every OS-dependent call in this file goes through a `plat_*` function. The
+ * POSIX bodies are the ones this project has run on since the start; the Win32
+ * bodies exist so a native Windows build is a compile-fix loop rather than a
+ * rewrite, and are marked where they are NOT yet compiler-verified.
+ *
+ * The seam exists because five of the differences are SEMANTIC, not syntactic
+ * (audited 2026-08-04, docs/production-roadmap.md §W1). Naming them as
+ * functions is what keeps the semantics in one reviewable place:
+ *
+ *  - plat_replace   POSIX rename() atomically replaces an existing destination.
+ *                   Win32 rename() FAILS if it exists, so every save after the
+ *                   first would break. MoveFileEx with REPLACE_EXISTING is the
+ *                   equivalent, and it needs readers to have opened with
+ *                   FILE_SHARE_DELETE or it hits a sharing violation.
+ *  - plat_open_read The reason plat_replace can work: a reader must not block a
+ *                   replace. POSIX gives this for free (the writer swaps the
+ *                   directory entry; readers keep the old inode). Win32 gives
+ *                   it only if the reader passed FILE_SHARE_DELETE, which the
+ *                   CRT's open()/fopen() never do.
+ *  - O_BINARY       POSIX has no text mode. Win32 CRT defaults to it, and the
+ *                   snapshot is BINARY: every 0x0A would become 0x0D 0x0A, the
+ *                   declared length would stop matching the file size, and a
+ *                   store written on Windows would not load on Linux. Silent,
+ *                   with no compile error. Defined as 0 here so the POSIX build
+ *                   is bit-identical to before this seam existed.
+ *  - plat_sep_rchr  Path parsing, not path building. Forward slashes work fine
+ *                   in Win32 fopen, but getcwd/GetModuleFileName HAND BACK
+ *                   backslashes, and strrchr(p,'/') then returns NULL: store
+ *                   discovery dies and the model dir is never found. Accepting
+ *                   '\\' must NOT happen on POSIX, where a backslash is an
+ *                   ordinary filename byte.
+ *  - plat_name_eq   NTFS is case-insensitive but case-preserving, so a
+ *                   `Legend.lock` IS the lock file while failing strcmp -- and
+ *                   the orphan sweep would unlink it. Case-sensitive on POSIX,
+ *                   where two such names are genuinely different files.
+ * ===================================================================== */
+
+#ifdef _WIN32
+typedef SSIZE_T plat_ssize;
+#ifndef O_BINARY
+#define O_BINARY _O_BINARY
+#endif
+#ifndef O_CLOEXEC
+#define O_CLOEXEC _O_NOINHERIT
+#endif
+#define plat_mkdir(p) _mkdir(p)
+#define plat_getcwd(b, n) _getcwd((b), (int)(n))
+#define plat_unlink(p) _unlink(p)
+#define plat_fsync(fd) _commit(fd)
+#define plat_fileno(f) _fileno(f)
+#define plat_dup(fd) _dup(fd)
+#define plat_dup2(a, b) _dup2((a), (b))
+#define plat_close(fd) _close(fd)
+#define plat_read(fd, b, n) _read((fd), (b), (unsigned)(n))
+#define plat_write(fd, b, n) _write((fd), (b), (unsigned)(n))
+#define plat_open(p, fl, md) _open((p), (fl), (md))
+#define PLAT_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#define PLAT_SEP '\\'
+#else
+typedef ssize_t plat_ssize;
+#ifndef O_BINARY
+#define O_BINARY 0 /* POSIX has no text mode; keeps the flag a no-op here */
+#endif
+#define plat_mkdir(p) mkdir((p), 0777)
+#define plat_getcwd(b, n) getcwd((b), (n))
+#define plat_unlink(p) unlink(p)
+#define plat_fsync(fd) fsync(fd)
+#define plat_fileno(f) fileno(f)
+#define plat_dup(fd) dup(fd)
+#define plat_dup2(a, b) dup2((a), (b))
+#define plat_close(fd) close(fd)
+#define plat_read(fd, b, n) read((fd), (b), (n))
+#define plat_write(fd, b, n) write((fd), (b), (n))
+#define plat_open(p, fl, md) open((p), (fl), (md))
+#define PLAT_ISDIR(m) S_ISDIR(m)
+#define PLAT_SEP '/'
+#endif
+
+/* Last path separator, or NULL. On Windows both separators count, because the
+ * OS hands back backslashes; on POSIX only '/' does, because a backslash is a
+ * legal byte in a filename and treating it as a separator would split real
+ * paths in the wrong place. */
+static char *plat_sep_rchr(char *p) {
+#ifdef _WIN32
+  char *a = strrchr(p, '/');
+  char *b = strrchr(p, '\\');
+  return (a && b) ? (a > b ? a : b) : (a ? a : b);
+#else
+  return strrchr(p, '/');
+#endif
+}
+
+/* Do two path components name the same file? Case-insensitive exactly where the
+ * filesystem is. */
+static int plat_name_eq(const char *a, const char *b) {
+#ifdef _WIN32
+  return _stricmp(a, b) == 0;
+#else
+  return strcmp(a, b) == 0;
+#endif
+}
+
+static int plat_name_eq_n(const char *a, const char *b, size_t n) {
+#ifdef _WIN32
+  return _strnicmp(a, b, n) == 0;
+#else
+  return strncmp(a, b, n) == 0;
+#endif
+}
+
+/* Absolute, canonical path into `out`. Non-zero on success. Win32 `_fullpath`
+ * differs from POSIX `realpath` in two ways worth stating: it does not resolve
+ * symlinks/junctions, and it does not fail on a path that does not exist. Both
+ * callers treat failure as "use the literal string", so the weaker guarantee
+ * only makes the result less canonical, never wrong. */
+static int plat_realpath(const char *in, char *out, size_t cap) {
+#ifdef _WIN32
+  /* UNVERIFIED: not yet compiled for Windows. */
+  return _fullpath(out, in, cap) != NULL;
+#else
+  char buf[4200];
+  if (cap > sizeof buf)
+    cap = sizeof buf;
+  if (!realpath(in, buf))
+    return 0;
+  snprintf(out, cap, "%s", buf);
+  return 1;
+#endif
+}
+
+/* Atomically replace `dst` with `src`. 0 on success. */
+static int plat_replace(const char *src, const char *dst) {
+#ifdef _WIN32
+  /* UNVERIFIED: not yet compiled for Windows. MOVEFILE_WRITE_THROUGH makes the
+   * replace durable, matching the fsync the POSIX path does around rename. */
+  return MoveFileExA(src, dst,
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+             ? 0
+             : -1;
+#else
+  return rename(src, dst);
+#endif
+}
+
+/* Open a file for reading in a way that does NOT block a concurrent replace.
+ * Returns a CRT fd, or -1 with errno set (ENOENT distinguished). */
+static int plat_open_read(const char *path) {
+#ifdef _WIN32
+  /* UNVERIFIED: not yet compiled for Windows. FILE_SHARE_DELETE is the whole
+   * point -- without it a reader makes plat_replace fail with a sharing
+   * violation, which POSIX never does. */
+  HANDLE h = CreateFileA(path, GENERIC_READ,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  int fd;
+  if (h == INVALID_HANDLE_VALUE) {
+    errno = (GetLastError() == ERROR_FILE_NOT_FOUND ||
+             GetLastError() == ERROR_PATH_NOT_FOUND)
+                ? ENOENT
+                : EACCES;
+    return -1;
+  }
+  fd = _open_osfhandle((intptr_t)h, _O_RDONLY | _O_BINARY);
+  if (fd < 0)
+    CloseHandle(h);
+  return fd;
+#else
+  return open(path, O_RDONLY | O_CLOEXEC); /* O_BINARY is 0 here by definition */
+#endif
+}
 
 /* Build identity, stamped into the invocation journal and the init report so
  * a weeks-old store records which binary wrote each line. check.sh passes the
@@ -8528,12 +8711,13 @@ static void snapshot_write(const Hypergraph *g, const char *store) {
   snapshot_serialize(g, &b);
   snprintf(tmp, sizeof tmp, "%s/legend.snapshot.tmp", store);
   snprintf(final_path, sizeof final_path, "%s/legend.snapshot", store);
-  fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+  fd = plat_open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_BINARY,
+                 0666);
   if (fd < 0)
     fail(ERR_NO_STORE, NULL, "cannot write snapshot %s: %s", tmp,
          strerror(errno));
   while (off < b.len) {
-    ssize_t n = write(fd, b.v + off, b.len - off);
+    plat_ssize n = plat_write(fd, b.v + off, b.len - off);
     if (n < 0) {
       if (errno == EINTR)
         continue;
@@ -8549,7 +8733,7 @@ static void snapshot_write(const Hypergraph *g, const char *store) {
          strerror(errno));
   }
   close(fd);
-  if (rename(tmp, final_path) != 0)
+  if (plat_replace(tmp, final_path) != 0)
     fail(ERR_NO_STORE, NULL, "cannot rename snapshot into place: %s",
          strerror(errno));
   fd = open(store, O_RDONLY | O_CLOEXEC);
@@ -8568,9 +8752,9 @@ static void sweep_orphan_tmps(const char *store) {
     return;
   while ((ent = readdir(d)) != NULL) {
     char p[4500];
-    if (strcmp(ent->d_name, "legend.lock") == 0)
+    if (plat_name_eq(ent->d_name, "legend.lock"))
       continue;
-    if (strncmp(ent->d_name, "legend.snapshot.tmp", 19) != 0)
+    if (!plat_name_eq_n(ent->d_name, "legend.snapshot.tmp", 19))
       continue;
     snprintf(p, sizeof p, "%s/%s", store, ent->d_name);
     unlink(p);
@@ -8658,7 +8842,7 @@ static int snapshot_load(Hypergraph *g, const char *store) {
   u32 clock, string_count, element_count, relation_count, i, k;
 
   snprintf(path, sizeof path, "%s/legend.snapshot", store);
-  fd = open(path, O_RDONLY | O_CLOEXEC);
+  fd = plat_open_read(path);
   if (fd < 0) {
     if (errno == ENOENT)
       return 0;
@@ -8678,7 +8862,8 @@ static int snapshot_load(Hypergraph *g, const char *store) {
   {
     u64 off = 0;
     while (off < (u64)st.st_size) {
-      ssize_t n = read(fd, g_snap_buf + off, (size_t)((u64)st.st_size - off));
+      plat_ssize n =
+          plat_read(fd, g_snap_buf + off, (size_t)((u64)st.st_size - off));
       if (n < 0 && errno == EINTR)
         continue;
       if (n <= 0) {
@@ -8943,7 +9128,7 @@ static void journal_append(i64 ts, int ok, int errcode) {
     return;
   g_journal_armed = 0;
   snprintf(path, sizeof path, "%s/journal.jsonl", g_journal_dir);
-  f = fopen(path, "a");
+  f = fopen(path, "ab"); /* binary: CRLF here would change replay bytes */
   if (!f)
     return;
   fprintf(f, "{\"ts\":%lld,\"build\":\"" LEGEND_BUILD "\",\"verb\":\"%s\"",
@@ -9028,7 +9213,7 @@ static int discover_store(char *out, size_t out_cap) {
     snprintf(out, out_cap, "%s/.legend", cwd);
     if (dir_exists(out))
       return 1;
-    slash = strrchr(cwd, '/');
+    slash = plat_sep_rchr(cwd);
     if (!slash)
       return 0;
     if (slash == cwd) {
@@ -9036,6 +9221,17 @@ static int discover_store(char *out, size_t out_cap) {
         return 0; /* already at "/" */
       cwd[1] = 0;
     } else {
+#ifdef _WIN32
+      /* A drive root is "C:\\", three bytes. Truncating it to "C:" would name
+       * the drive's CURRENT directory rather than its root -- the same string
+       * meaning a different place -- so the walk stops here instead. */
+      if (slash == cwd + 2 && cwd[1] == ':') {
+        if (slash[1] == 0)
+          return 0; /* already at "C:\\" */
+        slash[1] = 0;
+        continue;
+      }
+#endif
       *slash = 0;
     }
   }
@@ -9231,9 +9427,9 @@ static void emit_frame(const Hypergraph *g, const WriteReport *w,
 static void store_project_dir(const char *store, char *out, size_t cap) {
   char abs[4200];
   const char *slash;
-  if (!realpath(store, abs))
+  if (!plat_realpath(store, abs, sizeof abs))
     snprintf(abs, sizeof abs, "%s", store);
-  slash = strrchr(abs, '/');
+  slash = plat_sep_rchr(abs);
   if (!slash || slash == abs) {
     snprintf(out, cap, "/");
     return;
@@ -10259,7 +10455,7 @@ static void health_append(const Hypergraph *g, const u32 *counts) {
   if (!g_journal_dir[0])
     return;
   snprintf(path, sizeof path, "%s/health.jsonl", g_journal_dir);
-  f = fopen(path, "a");
+  f = fopen(path, "ab");
   if (!f)
     return;
   for (i = 0; i < g->element_count; i++)

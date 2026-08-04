@@ -24,6 +24,34 @@ $CC $CFLAGS $STAMP -g -O1 $SAN legend.c      embed.c -o legend.asan      -lm || 
 $CC $CFLAGS $STAMP -g -O1 $SAN legend_test.c embed.c -o legend_test.asan -lm || { echo "FATAL: legend_test asan build failed"; exit 1; }
 pass "4 binaries built with -Werror"
 
+# Windows cross-build (advisory until the port lands). The platform seam in
+# legend.c carries Win32 bodies that have never been through a compiler, which
+# is exactly the state that produces confident-looking broken code. This step
+# turns that into a fact the moment a cross-compiler exists on the box:
+#
+#   sudo pacman -S mingw-w64-gcc      # Arch
+#   apt install gcc-mingw-w64         # Debian/Ubuntu
+#
+# Advisory, not a gate, because the port is INCOMPLETE by design right now
+# (dirent/flock/tmpfile/getline/st_mtim are still POSIX-only). Flip the `fail`
+# in once it builds clean, and it becomes the thing that keeps it building.
+echo "== windows cross-build (advisory; skipped if no mingw) =="
+WCC=""
+for c in x86_64-w64-mingw32-gcc x86_64-w64-mingw32-cc i686-w64-mingw32-gcc; do
+  command -v "$c" >/dev/null 2>&1 && { WCC="$c"; break; }
+done
+if [ -z "$WCC" ]; then
+  echo "  --: no mingw-w64 cross-compiler; Win32 seam bodies remain UNVERIFIED"
+else
+  if $WCC -std=c99 -Wall -Wextra $STAMP -O2 legend.c embed.c -o legend.exe -lm \
+       2>wincross.log; then
+    pass "windows cross-build clean ($WCC)"
+  else
+    echo "  --: windows cross-build not clean yet ($(grep -c 'error:' wincross.log) errors); see wincross.log"
+    grep 'error:' wincross.log | head -5 | sed 's/^/      /'
+  fi
+fi
+
 # Embedder golden: the semantic tier is the least-exercised code (the gates below
 # run with LEGEND_EMBED=0), and its architecture (BGE-small: 12-layer, CLS-pool)
 # is easy to break silently when regenerating the weight blob. embed.c's own
