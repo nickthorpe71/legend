@@ -9702,9 +9702,26 @@ static char *capture_frame_json(const Hypergraph *g, const WriteReport *w,
   return buf;
 }
 
-static void emit_frame(const Hypergraph *g, const WriteReport *w,
-                       const char *store, i64 limit, i32 history_depth,
-                       i64 since) {
+/* --max-bytes: cap what reaches stdout, in-process.
+ *
+ * This replaces the `| head -c N` the generated hooks used to pipe through. A
+ * pipeline needs a shell, and the hooks must run where there is none: native
+ * Windows executes them under PowerShell unless Git for Windows is installed,
+ * so `head`, `sed` and `tr` are simply absent. Capping here lets the hook be
+ * written in EXEC form (argv, no shell) and run identically everywhere.
+ *
+ * The cap is a safety valve against a pathological store, not a routine
+ * trimmer -- the packet is already bounded by the section caps and `limit`.
+ * When it was 4000 it WAS doing the trimming, and the cut landed inside
+ * `overview`, so the model got scope plus a few active items and never the
+ * decisions or open questions (#91). Truncating mid-JSON is acceptable only
+ * because the pretty renderer is line-oriented; the compact form stays valid
+ * only if uncapped, which is why the hooks pass --pretty. */
+static i64 g_max_bytes = 0;
+
+static void emit_frame_raw(const Hypergraph *g, const WriteReport *w,
+                           const char *store, i64 limit, i32 history_depth,
+                           i64 since) {
   static Json pj;
   char *buf;
   u32 len;
@@ -9716,6 +9733,50 @@ static void emit_frame(const Hypergraph *g, const WriteReport *w,
   json_parse(&pj, buf, len);
   pretty_render(&pj);
   free(buf);
+}
+
+static void emit_frame(const Hypergraph *g, const WriteReport *w,
+                       const char *store, i64 limit, i32 history_depth,
+                       i64 since) {
+  FILE *cap;
+  int saved;
+  if (g_max_bytes <= 0) {
+    emit_frame_raw(g, w, store, limit, history_depth, since);
+    return;
+  }
+  cap = plat_tmpfile();
+  if (!cap) { /* no staging file: better whole output than none */
+    emit_frame_raw(g, w, store, limit, history_depth, since);
+    return;
+  }
+  fflush(stdout);
+  saved = plat_dup(1);
+  if (saved < 0 || plat_dup2(plat_fileno(cap), 1) < 0) {
+    fclose(cap);
+    emit_frame_raw(g, w, store, limit, history_depth, since);
+    return;
+  }
+  emit_frame_raw(g, w, store, limit, history_depth, since);
+  fflush(stdout);
+  plat_dup2(saved, 1);
+  plat_close(saved);
+  {
+    long n = ftell(cap);
+    long want = (long)g_max_bytes;
+    char *b;
+    if (n < 0)
+      n = 0;
+    if (want > n)
+      want = n;
+    b = (char *)malloc((size_t)want ? (size_t)want : 1);
+    if (b) {
+      rewind(cap);
+      if (want > 0 && fread(b, 1, (size_t)want, cap) == (size_t)want)
+        fwrite(b, 1, (size_t)want, stdout);
+      free(b);
+    }
+  }
+  fclose(cap);
 }
 
 /* The project dir a store belongs to: the store's parent (the normal flow is
@@ -9792,7 +9853,7 @@ static int write_mcp_config(const char *store, char *out_path, size_t out_cap) {
  * settings.json; a failure never fails init. Returns 1 iff written. */
 static int write_hooks_config(const char *store, char *out_path,
                               size_t out_cap) {
-  char proj[4096], dir[4300], exe[4096], cmd[8704];
+  char proj[4096], dir[4300], exe[4096];
   struct stat st;
   FILE *f;
   out_path[0] = 0;
@@ -9811,55 +9872,33 @@ static int write_hooks_config(const char *store, char *out_path,
     out_path[0] = 0;
     return 0;
   }
+  /* EXEC form: a command plus an argv, never a shell string. The bodies these
+   * replaced were bash -- pipes, sed, tr, head -c, command substitution -- and
+   * Claude Code on native Windows runs hooks under PowerShell unless Git for
+   * Windows is installed, so none of it exists there. A Windows user would hit
+   * that before anything about the store mattered.
+   *
+   * Everything those pipelines did now lives in the binary: `--max-bytes`
+   * replaces `head -c`, and `legend hook prompt|stop` replaces the prompt
+   * extraction, the debounce stamp and the changed-file check. The hooks below
+   * are byte-identical on every platform. */
   fputs("{\n  \"hooks\": {\n"
         "    \"SessionStart\": [{\"matcher\": \"*\", \"hooks\": "
         "[{\"type\": \"command\", \"command\": \"",
         f);
-  /* The packet is bounded by the section caps and `limit`, so `head -c` is a
-   * safety valve against a pathological store, not a routine trimmer. It was
-   * doing the trimming when it was 4000: on the live trial store the cut
-   * landed inside `overview`, so the model received the project scope and a
-   * few active items and NEVER the decisions, constraints, open questions or
-   * causal edges — the sections that are the whole point of orienting. */
-  snprintf(cmd, sizeof cmd,
-           "%s recall '{\"limit\":16}' --pretty 2>/dev/null | head -c 20000",
-           exe);
-  json_escape_fputs(cmd, f);
-  fputs("\"}]}],\n"
+  json_escape_fputs(exe, f);
+  fputs("\", \"args\": [\"recall\", \"{\\\"limit\\\":16}\", "
+        "\"--pretty\", \"--max-bytes\", \"20000\"]}]}],\n"
         "    \"UserPromptSubmit\": [{\"matcher\": \"*\", \"hooks\": "
         "[{\"type\": \"command\", \"command\": \"",
         f);
-  snprintf(cmd, sizeof cmd,
-           "input=$(cat); now=$(date +%%s); d=${CLAUDE_PROJECT_DIR:-.}; "
-           "stamp=\"$d/.legend/.last_hook_recall\"; "
-           "last=$(cat \"$stamp\" 2>/dev/null || echo 0); "
-           "[ $((now-last)) -lt 20 ] && exit 0; "
-           /* system-injected blocks (task notifications, reminders) arrive
-            * as prompts too; a leading '<' marks them — skip, not recall */
-           "p0=$(printf %%s \"$input\" | "
-           "sed -n 's/.*\"prompt\" *: *\"\\(.\\{1,4\\}\\).*/\\1/p'); "
-           "case \"$p0\" in \"<\"*|\"\\\\u003c\"*) exit 0;; esac; "
-           "p=$(printf %%s \"$input\" | "
-           "sed -n 's/.*\"prompt\" *: *\"\\([^\"]*\\)\".*/\\1/p' | "
-           "tr -cd 'A-Za-z0-9 _.,:()/-' | head -c 120); "
-           "[ -z \"$p\" ] && exit 0; echo \"$now\" > \"$stamp\"; "
-           "%s recall \"{\\\"focus\\\":[\\\"$p\\\"],\\\"observe\\\":true}\" "
-           "--pretty 2>/dev/null | head -c 1500",
-           exe);
-  json_escape_fputs(cmd, f);
-  fputs("\"}]}],\n"
+  json_escape_fputs(exe, f);
+  fputs("\", \"args\": [\"hook\", \"prompt\"]}]}],\n"
         "    \"Stop\": [{\"matcher\": \"*\", \"hooks\": "
         "[{\"type\": \"command\", \"command\": \"",
         f);
-  snprintf(cmd, sizeof cmd,
-           "changed=$(git diff --name-only 2>/dev/null | head -5); "
-           "[ -z \"$changed\" ] && exit 0; "
-           "n=$(printf '%%s\\n' \"$changed\" | wc -l | tr -d ' '); "
-           "printf '{\"additionalContext\":\"[Legend] %%s file(s) changed "
-           "this session. Save durable decisions/facts/changes via "
-           "legend_save before finishing.\"}' \"$n\"");
-  json_escape_fputs(cmd, f);
-  fputs("\"}]}]\n  }\n}\n", f);
+  json_escape_fputs(exe, f);
+  fputs("\", \"args\": [\"hook\", \"stop\"]}]}]\n  }\n}\n", f);
   fclose(f);
   return 1;
 }
@@ -11600,8 +11639,139 @@ static int mcp_serve(void) {
   return 0;
 }
 
+/* ===================== S10.5 — hook bodies in-process =====================
+ *
+ * `legend init` used to generate three bash hooks: pipes, `sed`, `tr`,
+ * `head -c`, command substitution, a `case` on the first bytes. All of it
+ * assumes a POSIX shell. Claude Code on native Windows runs hooks under
+ * PowerShell unless Git for Windows is installed, so every one of them fails
+ * there -- and a Windows user hits that before any of the store internals
+ * matter.
+ *
+ * The logic moves here so the generated hooks can be EXEC form (a command and
+ * an argv, no shell at all), identical on every platform. Each verb reads the
+ * hook's JSON on stdin and writes the hook's JSON on stdout, which is the
+ * contract Claude Code already defines.
+ * ===================================================================== */
+
+/* Debounce stamp: ambient recall fires per prompt, and a burst of short
+ * follow-ups does not want one recall each. Kept beside the store rather than
+ * in the store: it is hook bookkeeping, not memory. */
+static int hook_debounced(const char *store, int window_s) {
+  char path[4400];
+  FILE *f;
+  i64 now = now_unix_seconds(), last = 0;
+  snprintf(path, sizeof path, "%s/.last_hook_recall", store);
+  f = fopen(path, "rb");
+  if (f) {
+    char buf[32] = {0};
+    if (fread(buf, 1, sizeof buf - 1, f) > 0)
+      last = (i64)strtoll(buf, NULL, 10);
+    fclose(f);
+  }
+  if (now - last < window_s)
+    return 1;
+  f = fopen(path, "wb");
+  if (f) {
+    fprintf(f, "%lld", (long long)now);
+    fclose(f);
+  }
+  return 0;
+}
+
+/* The prompt text a UserPromptSubmit hook carries, sanitized into a focus
+ * phrase. Returns 0 when there is nothing worth recalling on. */
+static int hook_focus_from_stdin(char *out, size_t cap) {
+  static Json hj;
+  static char in[LEGEND_PAYLOAD_CAP];
+  size_t n = 0, k;
+  u32 t;
+  Rd rd;
+  const char *p = NULL;
+  u32 plen = 0;
+  while (n < sizeof in - 1) {
+    size_t got = fread(in + n, 1, sizeof in - 1 - n, stdin);
+    if (got == 0)
+      break;
+    n += got;
+  }
+  in[n] = 0;
+  if (!n)
+    return 0;
+  json_parse(&hj, in, (u32)n);
+  rd.t = hj.toks;
+  rd.buf = in;
+  if (!hj.count || hj.toks[0].type != J_OBJ)
+    return 0;
+  t = 1;
+  for (k = 0; k < (size_t)hj.toks[0].size; k++) {
+    u32 key = t, val = t + 1;
+    if (rd_str_eq(&rd, key, "prompt")) {
+      p = in + hj.toks[val].start;
+      plen = (u32)(hj.toks[val].end - hj.toks[val].start);
+      break;
+    }
+    t = tok_skip(hj.toks, val);
+  }
+  if (!p || !plen)
+    return 0;
+  /* System-injected blocks (task notifications, reminders) arrive as prompts
+   * too and open with '<' -- recalling on them surfaces nothing and spends a
+   * tick. The escaped form is what lands when the harness JSON-encodes it. */
+  if (p[0] == '<' || (plen >= 6 && memcmp(p, "\\u003c", 6) == 0))
+    return 0;
+  for (k = 0; k < plen && k < cap - 1; k++) {
+    char c = p[k];
+    int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+             (c >= '0' && c <= '9') || c == ' ' || c == '_' || c == '.' ||
+             c == ',' || c == ':' || c == '(' || c == ')' || c == '/' ||
+             c == '-';
+    out[k] = ok ? c : ' ';
+  }
+  out[k] = 0;
+  if (k > 120)
+    out[120] = 0; /* a focus phrase, not a paragraph */
+  for (k = 0; out[k] == ' '; k++)
+    ;
+  return out[k] != 0;
+}
+
+/* Did this session save anything? The Stop nudge used to shell out to
+ * `git diff --name-only` and count changed files. The journal answers a
+ * better-aimed question without git or a shell: work happened (recalls) and
+ * nothing was written down. */
+static int hook_session_saved_nothing(const char *store) {
+  char path[4400];
+  FILE *f;
+  char line[8192];
+  int recalls = 0, saves = 0;
+  snprintf(path, sizeof path, "%s/journal.jsonl", store);
+  f = fopen(path, "rb");
+  if (!f)
+    return 0;
+  while (fgets(line, sizeof line, f)) {
+    if (strstr(line, "\"verb\":\"recall\"")) {
+      /* A focus-less recall is the session-start orientation call: everything
+       * before it belongs to an earlier session. Matched WITHOUT quotes because
+       * the payload is JSON-escaped inside the journal line, so it reads
+       * \"focus\" there -- quoting the needle silently matched nothing and made
+       * every recall look like a session start. */
+      if (!strstr(line, "focus")) {
+        recalls = 0;
+        saves = 0;
+      }
+      recalls++;
+    } else if (strstr(line, "\"verb\":\"save\"") && strstr(line, "\"ok\":true")) {
+      saves++;
+    }
+  }
+  fclose(f);
+  return recalls > 1 && saves == 0;
+}
+
 LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   const char *verb = NULL, *inline_payload = NULL;
+  static char hook_pay[512];
   int pretty = 0, reset = 0, i;
   /* a truncating consumer (a hook's `head -c`) closing stdout must not kill
    * the process — writes fail with EPIPE instead and the invocation finishes */
@@ -11614,6 +11784,8 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
       pretty = 1;
     else if (strcmp(a, "--reset") == 0)
       reset = 1;
+    else if (strcmp(a, "--max-bytes") == 0 && i + 1 < argc)
+      g_max_bytes = strtoll(argv[++i], NULL, 10);
     else if (a[0] == '-' && a[1] != 0)
       fail(ERR_PARSE, NULL, "unknown flag %s", a);
     else if (!verb)
@@ -11626,8 +11798,40 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   g_pretty = pretty;
   if (!verb)
     fail(ERR_PARSE, NULL,
-         "usage: legend save|recall|init|dump|audit|mcp-serve [payload] "
-         "[--pretty] [--reset]");
+         "usage: legend save|recall|init|dump|audit|hook|mcp-serve [payload] "
+         "[--pretty] [--reset] [--max-bytes N]");
+  if (strcmp(verb, "hook") == 0) {
+    static char store[4200];
+    static char focus[256];
+    if (!inline_payload)
+      fail(ERR_PARSE, NULL, "hook takes `prompt` or `stop`");
+    if (!discover_store(store, sizeof store))
+      return 0; /* no store: a hook must never fail a session */
+    if (strcmp(inline_payload, "stop") == 0) {
+      if (hook_session_saved_nothing(store))
+        fputs("{\"additionalContext\":\"[Legend] This session recalled but saved "
+              "nothing. Record durable decisions, constraints and changes via "
+              "legend_save before finishing.\"}\n",
+              stdout);
+      return 0;
+    }
+    if (strcmp(inline_payload, "prompt") != 0)
+      fail(ERR_PARSE, NULL, "hook takes `prompt` or `stop`");
+    if (hook_debounced(store, 20))
+      return 0;
+    if (!hook_focus_from_stdin(focus, sizeof focus))
+      return 0;
+    /* Rewrite into the ordinary observe-recall this hook always was, and fall
+     * through: the hook is a CALLER of recall, not a second implementation of
+     * it, so it inherits the frame, the lock discipline and the journal line. */
+    snprintf(hook_pay, sizeof hook_pay,
+             "{\"focus\":[\"%s\"],\"observe\":true}", focus);
+    verb = "recall";
+    inline_payload = hook_pay;
+    g_pretty = 1;
+    if (g_max_bytes <= 0)
+      g_max_bytes = 1500;
+  }
   if (strcmp(verb, "init") == 0) {
     if (inline_payload)
       fail(ERR_PARSE, NULL, "init takes no payload");

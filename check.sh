@@ -163,6 +163,59 @@ else
     fail "empty stdin: exit=$rc out=$out"
 fi
 
+# Hooks run WITHOUT a shell (exec form), so everything the old bash pipelines did
+# has to work in-process. These are the four behaviors a Windows user depends on.
+SH="$TMPROOT/storehook"
+LEGEND_STATE_DIR="$SH" ./legend init >/dev/null || fail "init storehook"
+LEGEND_STATE_DIR="$SH" ./legend save '{"source":"t","elements":[{"name":"coyote time","kind":"mechanic","summary":"grace window"}]}' >/dev/null 2>&1
+full=$(LEGEND_STATE_DIR="$SH" ./legend recall '{"limit":16}' --pretty 2>/dev/null | wc -c)
+capped=$(LEGEND_STATE_DIR="$SH" ./legend recall '{"limit":16}' --pretty --max-bytes 120 2>/dev/null | wc -c)
+if [ "$capped" -eq 120 ] && [ "$full" -gt 120 ]; then
+    pass "--max-bytes caps stdout in-process (replaces the hook's head -c)"
+else
+    fail "--max-bytes: full=$full capped=$capped"
+fi
+
+# the generated hooks must be exec form: a command plus argv, never a shell string
+if python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for k,v in d["hooks"].items():
+    h=v[0]["hooks"][0]
+    assert "args" in h, k+" is not exec form"
+    assert " " not in h["command"], k+" command has a space (shell string?)"
+' "$TMPROOT/.claude/settings.json" 2>/dev/null; then
+    pass "generated hooks are exec form (no shell on any platform)"
+else
+    fail "generated hooks are not exec form"
+fi
+
+# hook prompt: extracts the focus, debounces the immediate retry, skips
+# system-injected blocks (which arrive as prompts and open with '<')
+o1=$(printf '{"prompt":"how does coyote time work"}' | LEGEND_STATE_DIR="$SH" ./legend hook prompt 2>/dev/null | wc -c)
+o2=$(printf '{"prompt":"again right away"}' | LEGEND_STATE_DIR="$SH" ./legend hook prompt 2>/dev/null | wc -c)
+rm -f "$SH/.last_hook_recall"
+o3=$(printf '{"prompt":"<system-reminder>noise</system-reminder>"}' | LEGEND_STATE_DIR="$SH" ./legend hook prompt 2>/dev/null | wc -c)
+if [ "$o1" -gt 0 ] && [ "$o2" -eq 0 ] && [ "$o3" -eq 0 ]; then
+    pass "hook prompt: recalls, debounces, skips injected blocks"
+else
+    fail "hook prompt: first=$o1 debounced=$o2 injected=$o3"
+fi
+
+# hook stop: nudge only when a session recalled and saved nothing
+SS="$TMPROOT/storestop"
+LEGEND_STATE_DIR="$SS" ./legend init >/dev/null || fail "init storestop"
+LEGEND_STATE_DIR="$SS" ./legend recall '{"limit":16}' >/dev/null 2>&1
+LEGEND_STATE_DIR="$SS" ./legend recall '{"focus":["x"]}' >/dev/null 2>&1
+n1=$(LEGEND_STATE_DIR="$SS" ./legend hook stop 2>/dev/null | wc -c)
+LEGEND_STATE_DIR="$SS" ./legend save '{"source":"t","elements":[{"name":"a thing","summary":"s"}]}' >/dev/null 2>&1
+n2=$(LEGEND_STATE_DIR="$SS" ./legend hook stop 2>/dev/null | wc -c)
+if [ "$n1" -gt 0 ] && [ "$n2" -eq 0 ]; then
+    pass "hook stop: nudges when nothing was saved, silent once something was"
+else
+    fail "hook stop: nothing-saved=$n1 after-save=$n2"
+fi
+
 # a focus-less recall is the orientation frame: overview object, no focus key
 S2="$TMPROOT/store2"
 LEGEND_STATE_DIR="$S2" ./legend init >/dev/null || fail "init store2"

@@ -111,6 +111,36 @@ WSL runs the Linux build unchanged. Native Windows needs a small platform-shim l
   or need shell variants. WSL uses bash → fine. **Resolve before claiming Windows-native
   hook support.**
 
+### W1b — Hooks and generated config (DONE 2026-08-05)
+
+`legend init` used to write three **bash** hooks — pipes, `sed`, `tr`,
+`head -c`, command substitution. Claude Code on native Windows runs hooks under
+**PowerShell** unless Git for Windows is installed, so all three failed there,
+and that is what a Windows user hits *before* anything about the store matters.
+
+All three are now **exec form** (a command plus an argv, no shell on any
+platform), because the logic moved into the binary:
+
+| was | now |
+|---|---|
+| `\| head -c 20000` | `--max-bytes N`, capped in-process |
+| the UserPromptSubmit `sed`/`tr`/debounce pipeline | `legend hook prompt` |
+| the Stop `git diff \| wc -l` nudge | `legend hook stop` |
+
+`legend hook prompt` reads the hook's JSON on stdin, applies the 20-second
+debounce, skips system-injected blocks (they arrive as prompts and open with
+`<`), sanitizes the text to a focus phrase, and then **rewrites itself into an
+ordinary observe-recall** — the hook is a caller of recall, not a second
+implementation of it, so it inherits the frame, the lock discipline and the
+journal line.
+
+`legend hook stop` replaces the changed-file count with a better-aimed question
+the journal can answer without git or a shell: *this session recalled and saved
+nothing*. Session start is the last focus-less recall.
+
+Note this removes the last need for `SIGPIPE` handling in the hook path — there
+is no pipe to be truncated any more.
+
 ### W2 — Build & install (per platform)
 - **Linux/WSL (first):** a `Makefile` — `make` (strict, sha-stamped build), `make install`
   (binary → `~/.local/bin`, model `minilm.int8.bin`+`vocab.txt` → `~/.local/share/legend/…`).
