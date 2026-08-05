@@ -5481,6 +5481,29 @@ static u32 plan_resolve_fact_shape(Plan *pl, const SubFact *f,
  * superseding it, and the audit's status-flavor check skips the prefix on the
  * grounds that a current_* name is one `changes` already wrote -- so two
  * contradicting values live in the state band with every check reporting clean. */
+/* The status-flavored predicate names -- values that CHANGE, and so belong in
+ * the value cache the `changes` verb owns rather than in a plain fact that
+ * accretes beside its own successors.
+ *
+ * ONE list, read by the save-time guard below and by the audit's status_fact
+ * check. They were separate before, and the guard covered a strict subset of
+ * what the audit flagged, so the audit reported a defect the save path had just
+ * created and nobody could see the two were the same rule. */
+static int name_is_status_flavored(const char *nb, u32 nl) {
+  static const char *const FLAVORS[] = {"status",   "state",    "progress",
+                                        "phase",    "standing", "stage",
+                                        "version",  "result"};
+  u32 i;
+  if (nl > 8 && memcmp(nb, "current_", 8) == 0)
+    return 0; /* the cache itself, handled by reject_cache_predicate */
+  for (i = 0; i < sizeof FLAVORS / sizeof FLAVORS[0]; i++) {
+    u32 fl = (u32)strlen(FLAVORS[i]);
+    if (nl == fl && memcmp(nb, FLAVORS[i], fl) == 0)
+      return 1;
+  }
+  return 0;
+}
+
 static void reject_cache_predicate(Plan *pl, Span s, const char *path) {
   const char *b = pl->buf + s.off;
   static const char *const PFX = "current_";
@@ -5689,16 +5712,48 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
     }
     {
       u32 attr_keys[LEGEND_LIST_CAP];
+      u8 attr_status[LEGEND_LIST_CAP];
+      u32 seed_curname = NONE_U32;
       u32 seed_standing = NONE_U32;
+      /* Widened 2026-08-05. This was `mints_constraint`: kind supplied AND kind
+       * == constraint AND element newly minted. All three had to hold, so the
+       * guard covered the narrowest possible case while the audit flagged every
+       * case -- status_fact grew to 25 on the trial store, ~1 per save, and 18
+       * of those used `standing`, the very predicate the guard was written for.
+       * Three uncovered paths, all observed live:
+       *   (a) resubmitting an EXISTING element with a status attr
+       *   (b) a non-constraint element (`the inverse clause` is kind:decision)
+       *   (c) any status-flavored predicate other than `standing` (`status`
+       *       accounted for 7, from a recurring branch-locking workflow)
+       * The kind restriction is gone: what makes a value belong in the cache is
+       * that it CHANGES, not what kind of thing carries it. */
+      int is_mint = pl->pends[name_pend].existing == NONE_U32;
       int mints_constraint = kind_pend != NONE_U32 &&
                              pl->pends[kind_pend].existing == WK_KIND_CONSTRAINT &&
-                             pl->pends[name_pend].existing == NONE_U32;
+                             is_mint;
       for (a = 0; a < el->attr_count; a++) {
         const AttrEntry *ae = &sub->attr_pool[el->attr_start + a];
         u32 key_pend, v;
         snprintf(path, sizeof path, "elements[%u].attrs.%.*s", i,
                  (int)(ae->key.len > 64 ? 64 : ae->key.len), buf + ae->key.off);
         reject_cache_predicate(pl, ae->key, path);
+        {
+          u32 kl = normalize_into_scratch(buf + ae->key.off, ae->key.len);
+          attr_status[a] = (u8)name_is_status_flavored(g_norm_buf, kl);
+        }
+        /* A status value on an element that ALREADY EXISTS cannot be seeded --
+         * seeding assumes no prior, and writing a second cache beside a live one
+         * is the dup_cache defect. `changes` is the path that supersedes, so
+         * point at it rather than guessing which value is current. */
+        if (attr_status[a] && !is_mint)
+          fail(ERR_PARSE, path,
+               "\"%.*s\" is a status-like value on an element that already "
+               "exists, so it has a current value to supersede -- write "
+               "changes {target, property: \"%.*s\", to} instead. A plain fact "
+               "here accretes beside the prior value and only the cache "
+               "supersedes.",
+               (int)(ae->key.len > 48 ? 48 : ae->key.len), buf + ae->key.off,
+               (int)(ae->key.len > 48 ? 48 : ae->key.len), buf + ae->key.off);
         key_pend = plan_ref(pl, ae->key, path, NONE_U32, 0, 0);
         attr_keys[a] = key_pend;
         for (v = 0; v < ae->val_count; v++) {
@@ -5713,9 +5768,19 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
           /* a new constraint's standing seeds the current_standing cache below.
            * Writing it as a plain fact as well leaves a second copy of a value
            * that changes, and only the cache supersedes. */
-          if (mints_constraint && ae->val_count == 1 && tags[1] == VT_EPEND &&
-              pl->pends[key_pend].existing == WK_STANDING) {
-            seed_standing = vids[1];
+          /* Seed the cache instead of writing a plain fact. Only at MINT, where
+           * there is no prior to supersede -- the case this path already
+           * handled correctly for constraints. */
+          if (is_mint && attr_status[a] && ae->val_count == 1 &&
+              tags[1] == VT_EPEND) {
+            if (seed_curname == NONE_U32) {
+              char cur[80];
+              u32 kl = ae->key.len > 60 ? 60 : ae->key.len;
+              snprintf(cur, sizeof cur, "current_%.*s", (int)kl,
+                       buf + ae->key.off);
+              seed_curname = plan_ref_raw(pl, cur, (u32)strlen(cur), path, 0);
+              seed_standing = vids[1];
+            }
             continue;
           }
           plan_relation(pl, names, tags, vids, 2, ST_ASSERTED,
@@ -5729,12 +5794,16 @@ static void plan_submission(Plan *pl, const Hypergraph *g,
        * the caller's `standing` when it supplied one -- hardcoding `active`
        * contradicts a constraint declared retired at mint, and
        * constraint_is_active reads only the cache. */
-      if (mints_constraint) {
+      /* Also when a non-constraint mint seeded one: skipping the plain fact
+       * above without creating the cache here would DROP the value outright. */
+      if (mints_constraint || seed_curname != NONE_U32) {
         u32 curstand, cache;
         u32 names[2], vids[2];
         u8 tags[2];
         snprintf(path, sizeof path, "elements[%u].kind", i);
-        curstand = plan_ref_raw(pl, "current_standing", 16, path, 0);
+        curstand = seed_curname != NONE_U32
+                       ? seed_curname
+                       : plan_ref_raw(pl, "current_standing", 16, path, 0);
         if (seed_standing == NONE_U32)
           seed_standing = plan_ref_raw(pl, "active", 6, path, 0);
         names[0] = plan_pend_for_elem(pl, WK_SUBJECT);
@@ -10113,19 +10182,8 @@ static void audit_mark_structural(const Hypergraph *g, u8 *structural) {
  * accrete and the old value stays live next to the new one. current_* names
  * are the cache `changes` already wrote, so they are the correct shape. */
 static int audit_name_is_status_flavored(const Hypergraph *g, u32 name_elem) {
-  static const char *const FLAVORS[] = {"status",  "state",   "progress",
-                                        "phase",   "standing", "stage",
-                                        "version", "result"};
-  const char *nb = elem_name(g, name_elem);
-  u32 nl = elem_name_l(g, name_elem), i;
-  if (nl > 8 && memcmp(nb, "current_", 8) == 0)
-    return 0;
-  for (i = 0; i < sizeof FLAVORS / sizeof FLAVORS[0]; i++) {
-    u32 fl = (u32)strlen(FLAVORS[i]);
-    if (nl == fl && memcmp(nb, FLAVORS[i], fl) == 0)
-      return 1;
-  }
-  return 0;
+  return name_is_status_flavored(elem_name(g, name_elem),
+                                 elem_name_l(g, name_elem));
 }
 
 /* Live relations touching `e`, and whether any of them is a plain fact with

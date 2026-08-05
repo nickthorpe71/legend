@@ -38,6 +38,14 @@ def main():
         del args[i:i + 2]  # its VALUE is not a positional store path
     # the store copy is read with cwd=tmp, so a relative binary would not resolve
     binary = os.path.abspath(os.path.expanduser(binary))
+    # Element refs are assigned in creation order, so a ref is a timestamp: every
+    # element at or past the round's opening count is a NEW write. Pass the
+    # baseline element count from the round's own table.
+    since_ref = None
+    if "--since-ref" in args:
+        i = args.index("--since-ref")
+        since_ref = int(args[i + 1])
+        del args[i:i + 2]
     argv = [a for a in args if not a.startswith("--")]
     store = argv[0] if argv else os.path.expanduser("~/Code/alchamancer2/.legend")
     store = os.path.abspath(store)
@@ -51,6 +59,30 @@ def main():
         shutil.rmtree(tmp, ignore_errors=True)
 
     els = dump["elements"]
+
+    # THE COHORT SPLIT. Every intervention in this project changes what gets
+    # WRITTEN NEXT; it cannot touch what is already stored. A gauge over the
+    # whole store therefore measures mostly backlog and reports "no effect" for
+    # a change that worked.
+    #
+    # Round 10 is the case that forced this: the summary wall took new-write p90
+    # from 636 to 471 and the tail from 1114 to 497, while the whole-store gauge
+    # moved 289 -> 290 because 605 backlog elements drowned 29 new ones. Closing
+    # on the whole-store number would have recorded a working fix as a null --
+    # the same shape of error as reading raw counts instead of rates.
+    #
+    # `--since-ref N` takes the round's opening element count. Without it the
+    # newest 10% (min 20) stands in, so the split is never simply absent.
+    ref_of = lambda e: int(e["ref"][1:])
+    if since_ref is None:
+        ordered = sorted(ref_of(e) for e in els)
+        cut = ordered[-max(20, len(ordered) // 10)] if ordered else 0
+        cohort_label = f"newest {max(20, len(ordered) // 10)} (rolling)"
+    else:
+        cut = since_ref
+        cohort_label = f"since #{since_ref}"
+    fresh = [e for e in els if ref_of(e) >= cut]
+    backlog = [e for e in els if ref_of(e) < cut]
     rels = [r for r in dump["relations"] if r.get("status") == "asserted"]
     print(f"BUNDLE GAUGES — {store}")
     print(f"  clock={dump['clock']} elements={len(els)} live_relations={len(rels)}")
@@ -220,21 +252,31 @@ def main():
     #     IMPROVED), and #66 records it as the retrieval ceiling. Read the RATE,
     #     never the raw count: raw always rises with volume and says nothing.
     CAP, AIM = 600, 400
-    lens = sorted(len(e["summary"]) for e in els if e.get("summary"))
-    if lens:
+    print(f"\n[11] summary wall (cap {CAP})   cohort: {cohort_label}")
+
+    def summary_row(group, label):
+        lens = sorted(len(e["summary"]) for e in group if e.get("summary"))
+        if not lens:
+            print(f"      {label:<22} (no summaries)")
+            return
         n = len(lens)
         pct = lambda p: lens[min(n - 1, int(n * p / 100))]
-        over_cap = sum(1 for x in lens if x > CAP)
-        over_aim = sum(1 for x in lens if x > AIM)
-        print(f"\n[11] summary wall (cap {CAP})")
-        print(f"      per 1k elements > {AIM}          : "
-              f"{1000.0 * over_aim / len(els):.0f}   "
-              f"(R8 open 181 -> R8 close 252 -> R9 close 287; must FALL)")
-        print(f"      mean {sum(lens)/n:.0f}  p50 {pct(50)}  p90 {pct(90)}  max {lens[-1]}"
-              f"   (R9 close: mean 414 p50 401 p90 636 max 1114)")
-        print(f"      over the {CAP} cap             : {over_cap} "
-              f"({100.0*over_cap/n:.1f}%)   pre-existing; NEW ones must be 0")
-        print(f"      over the {AIM} aim             : {over_aim} ({100.0*over_aim/n:.1f}%)")
+        print(f"      {label:<22} n={n:<4} mean={sum(lens)/n:>4.0f} "
+              f"p50={pct(50):>4} p90={pct(90):>4} max={lens[-1]:>5}  "
+              f">{AIM}:{100.0*sum(1 for x in lens if x > AIM)/n:>5.1f}%  "
+              f">{CAP}:{100.0*sum(1 for x in lens if x > CAP)/n:>5.1f}%")
+
+    # READ THE `new writes` ROW. The wall only governs what is written from here
+    # on; `backlog` is the population it was never able to touch and only moves
+    # when a bloated element is resubmitted (which the cap then forces to split).
+    summary_row(backlog, "backlog")
+    summary_row(fresh, "new writes")
+    print(f"      TARGET  new writes >{CAP} must be 0.0%, p90 and max well under {CAP}")
+    lens_all = sorted(len(e["summary"]) for e in els if e.get("summary"))
+    if lens_all:
+        print(f"      whole store per 1k >{AIM}: "
+              f"{1000.0 * sum(1 for x in lens_all if x > AIM) / len(els):.0f}"
+              f"   (lags by design -- backlog-dominated, do NOT grade on it)")
 
 
 if __name__ == "__main__":

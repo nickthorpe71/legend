@@ -3323,6 +3323,64 @@ static void test_audit_rates(void) {
     CHECK(strstr(t_audit, "\"bloat\":0.0") != NULL);
 }
 
+/* Status-like values belong in the cache the `changes` verb owns. The guard
+ * used to require kind==constraint AND a new mint AND the literal predicate
+ * `standing`; the audit flagged every case, so the save path kept creating a
+ * defect the audit then reported. These are the three paths that were live on
+ * the trial store. */
+static void test_status_value_paths(void) {
+    int failed;
+    fresh_graph(&tg);
+    setenv("LEGEND_NOW", "1780272000", 1);
+
+    /* (b) a NON-constraint mint: kind is irrelevant, what matters is that the
+     * value changes */
+    TRY(run_save("{\"elements\":[{\"name\":\"the inverse clause\",\"kind\":\"decision\","
+                 "\"summary\":\"s\",\"attrs\":{\"standing\":\"active\"}}]}"), failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"status_fact\":0") != NULL);
+
+    /* (c) a status-flavored predicate that is not `standing` */
+    TRY(run_save("{\"elements\":[{\"name\":\"the Lightning branch\",\"kind\":\"system\","
+                 "\"summary\":\"s\",\"attrs\":{\"status\":\"locked\"}}]}"), failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"status_fact\":0") != NULL);
+
+    /* the value must be SEEDED, not dropped: skipping the plain fact without
+     * creating the cache would lose it outright */
+    TRY(run_recall("{\"focus\":[\"the Lightning branch\"]}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "current_status") != NULL);
+    CHECK(strstr(t_frame, "locked") != NULL);
+
+    /* (a) the same attr on an element that ALREADY EXISTS is refused: it has a
+     * current value to supersede, and seeding a second live cache beside it is
+     * the dup_cache defect */
+    TRY(run_save("{\"elements\":[{\"name\":\"the inverse clause\",\"summary\":\"s2\","
+                 "\"attrs\":{\"standing\":\"retired\"}}]}"), failed);
+    CHECK(failed && g_err.code == ERR_PARSE);
+
+    /* ...and the path it names works, superseding rather than accreting */
+    TRY(run_save("{\"changes\":[{\"target\":\"the inverse clause\","
+                 "\"property\":\"standing\",\"to\":\"retired\"}]}"), failed);
+    CHECK(!failed);
+    capture_audit();
+    CHECK(strstr(t_audit, "\"status_fact\":0") != NULL);
+    CHECK(strstr(t_audit, "\"dup_cache\":0") != NULL);
+
+    /* a constraint mint still seeds `active` with no attr supplied at all */
+    TRY(run_save("{\"elements\":[{\"name\":\"no bespoke counters\","
+                 "\"kind\":\"constraint\",\"summary\":\"s\"}]}"), failed);
+    CHECK(!failed);
+    TRY(run_recall("{\"focus\":[\"no bespoke counters\"]}"), failed);
+    CHECK(!failed);
+    capture_frame(40, 2, -1);
+    CHECK(strstr(t_frame, "current_standing") != NULL);
+}
+
 static void test_audit(void) {
     int failed;
     fresh_graph(&tg);
@@ -3714,6 +3772,7 @@ int main(void) {
     test_causal();
     test_frame_section_caps();
     test_audit();
+    test_status_value_paths();
     test_audit_finds_round8_defects();
     test_audit_rates();
 
