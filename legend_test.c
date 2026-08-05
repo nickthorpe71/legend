@@ -734,36 +734,42 @@ static void test_flock_conflict(void) {
     char tmpl[] = "/tmp/legend_wp0_lock_XXXXXX";
     char *dir = mkdtemp(tmpl);
     char lockp[4400];
-    int fd1, fd2, fd3;
+    PlatLock a, b;
     CHECK(dir != NULL);
     if (!dir) return;
     snprintf(lockp, sizeof lockp, "%s/legend.lock", dir);
 
-    /* flock conflicts across two open()s in one process — the reason plan
-     * §3.12 chose flock over fcntl record locks */
-    fd1 = open(lockp, O_RDWR | O_CREAT, 0666);
-    CHECK(fd1 >= 0);
-    CHECK(flock(fd1, LOCK_EX | LOCK_NB) == 0);
-    fd2 = open(lockp, O_RDWR);
-    CHECK(fd2 >= 0);
-    errno = 0;
-    CHECK(flock(fd2, LOCK_EX | LOCK_NB) == -1 && errno == EWOULDBLOCK);
-    CHECK(flock(fd1, LOCK_UN) == 0);
-    CHECK(flock(fd2, LOCK_EX | LOCK_NB) == 0);
-    close(fd1);
-    close(fd2);
+    /* Two independent opens of one lock file must conflict INTRA-process. This
+     * is the property plan §3.12 chose flock over fcntl record locks to get,
+     * and it is the executable spec for the lock: fcntl would release on any
+     * fd close and never conflict within a process, which would make the lock
+     * silently useless AND untestable.
+     *
+     * Written through the seam rather than against flock(2) directly, so it
+     * checks whichever implementation is compiled. The Win32 LockFileEx port
+     * preserves both properties natively (locks are per-HANDLE), but it reports
+     * contention as ERROR_LOCK_VIOLATION rather than EWOULDBLOCK -- so the test
+     * asserts the seam's own three-way result (0 acquired / 1 busy / -1 error)
+     * instead of an errno that does not exist on the other platform. Asserting
+     * EWOULDBLOCK here is precisely how a wrong lock port would slip through. */
+    CHECK(plat_lock_open(&a, lockp) >= 0);
+    CHECK(plat_lock_try(&a) == 0);
+    CHECK(plat_lock_open(&b, lockp) >= 0);
+    CHECK(plat_lock_try(&b) == 1); /* busy, and NOT a hard error */
+    plat_lock_close(&a);           /* release is by close, on both platforms */
+    CHECK(plat_lock_try(&b) == 0);
+    plat_lock_close(&b);
 
-    /* acquire_lock() holds the same exclusive lock */
+    /* acquire_lock() holds that same exclusive lock, and release_lock() drops
+     * it -- the path mcp-serve uses per tools/call so it coexists with a
+     * SessionStart hook running in another process. */
     acquire_lock(dir);
-    CHECK(g_lock_fd >= 0);
-    fd3 = open(lockp, O_RDWR);
-    CHECK(fd3 >= 0);
-    errno = 0;
-    CHECK(flock(fd3, LOCK_EX | LOCK_NB) == -1 && errno == EWOULDBLOCK);
-    close(g_lock_fd);
-    g_lock_fd = -1;
-    CHECK(flock(fd3, LOCK_EX | LOCK_NB) == 0); /* released with the fd */
-    close(fd3);
+    CHECK(g_lock.fd >= 0);
+    CHECK(plat_lock_open(&a, lockp) >= 0);
+    CHECK(plat_lock_try(&a) == 1);
+    release_lock();
+    CHECK(plat_lock_try(&a) == 0);
+    plat_lock_close(&a);
 }
 
 /* --------------------------- S3-S9 (M1) tests -------------------------- */

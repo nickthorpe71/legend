@@ -2,7 +2,9 @@
  *
  * (feature macro: strdup/getline are POSIX.1-2008, not in strict c99)
  */
+#ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
+#endif
 /*
  * Reads two committed assets produced once by tools/embed_prep (offline, Rust):
  *   minilm.int8.bin  int8 weight blob (per-row int8 + fp32 small) in embed.c's
@@ -21,9 +23,43 @@
 #include <math.h>
 #include <stdint.h>
 #include <sys/stat.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "embed.h"
+
+/* Locate the running binary so the model dir can be found beside it. Kept local
+ * to this translation unit: embed.c builds standalone under EMBED_TEST and
+ * cannot see legend.c's platform seam. Windows hands back backslashes, so the
+ * separator search below must accept both -- on POSIX it must NOT, since a
+ * backslash is an ordinary byte in a filename. */
+static int embed_self_dir(char *out, size_t cap) {
+#ifdef _WIN32
+    DWORD n = GetModuleFileNameA(NULL, out, (DWORD)cap);
+    char *a, *b, *slash;
+    if (n == 0 || n >= cap) return 0;
+    a = strrchr(out, '/');
+    b = strrchr(out, '\\');
+    slash = (a && b) ? (a > b ? a : b) : (a ? a : b);
+    if (!slash) return 0;
+    *slash = 0;
+    return 1;
+#else
+    char *slash;
+    ssize_t k = readlink("/proc/self/exe", out, cap - 1);
+    if (k <= 0) return 0;
+    out[k] = 0;
+    slash = strrchr(out, '/');
+    if (!slash) return 0;
+    *slash = 0;
+    return 1;
+#endif
+}
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -460,20 +496,13 @@ static int ec_probe(void) {
          * fall back to the CWD-relative path. LEGEND_EMBED_DIR still wins. */
         dir = "models/bge-small-en-v1.5";
         char exe[400];
-        ssize_t k = readlink("/proc/self/exe", exe, sizeof exe - 1);
-        if (k > 0) {
+        if (embed_self_dir(exe, sizeof exe)) {
             char probe[600];
             struct stat bs;
-            char *slash;
-            exe[k] = 0;
-            slash = strrchr(exe, '/');
-            if (slash) {
-                *slash = 0; /* exe -> the binary's directory */
-                snprintf(binrel, sizeof binrel, "%s/models/bge-small-en-v1.5", exe);
-                snprintf(probe, sizeof probe, "%s/minilm.int8.bin", binrel);
-                if (stat(probe, &bs) == 0)
-                    dir = binrel;
-            }
+            snprintf(binrel, sizeof binrel, "%s/models/bge-small-en-v1.5", exe);
+            snprintf(probe, sizeof probe, "%s/minilm.int8.bin", binrel);
+            if (stat(probe, &bs) == 0)
+                dir = binrel;
         }
     }
     snprintf(EC.binpath, sizeof EC.binpath, "%s/minilm.int8.bin", dir);

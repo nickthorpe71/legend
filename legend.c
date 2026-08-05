@@ -352,6 +352,231 @@ static int plat_open_read(const char *path) {
 #endif
 }
 
+/* Path of the running binary into `out`. Non-zero on success. Used to write
+ * absolute paths into the configs `legend init` generates, and (in embed.c) to
+ * find the model dir beside the binary. */
+static int plat_self_exe(char *out, size_t cap) {
+#ifdef _WIN32
+  DWORD n = GetModuleFileNameA(NULL, out, (DWORD)cap);
+  return n > 0 && n < cap;
+#else
+  ssize_t n = readlink("/proc/self/exe", out, cap - 1);
+  if (n <= 0 || (size_t)n >= cap)
+    return 0;
+  out[n] = 0;
+  return 1;
+#endif
+}
+
+/* Last-modified time, seconds + nanoseconds. `st_mtim` is glibc-specific (macOS
+ * spells it st_mtimespec, Windows has neither), and the nanoseconds are not
+ * decoration: graph_sync fingerprints (size, mtime, ns) to decide whether a warm
+ * graph is stale, so second resolution would miss an external write landing in
+ * the same second as the last one. Win32 FILETIME is 100ns ticks, finer than
+ * POSIX gives. */
+static int plat_mtime(const char *path, i64 *sec, i64 *ns) {
+#ifdef _WIN32
+  WIN32_FILE_ATTRIBUTE_DATA fa;
+  u64 t;
+  if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fa))
+    return 0;
+  t = ((u64)fa.ftLastWriteTime.dwHighDateTime << 32) |
+      fa.ftLastWriteTime.dwLowDateTime;
+  t -= 116444736000000000ULL; /* FILETIME epoch 1601 -> Unix epoch 1970 */
+  *sec = (i64)(t / 10000000ULL);
+  *ns = (i64)((t % 10000000ULL) * 100ULL);
+  return 1;
+#else
+  struct stat st;
+  if (stat(path, &st) != 0)
+    return 0;
+  *sec = (i64)st.st_mtim.tv_sec;
+  *ns = (i64)st.st_mtim.tv_nsec;
+  return 1;
+#endif
+}
+
+static void plat_sleep_ms(int ms) {
+#ifdef _WIN32
+  Sleep((DWORD)ms);
+#else
+  struct timespec nap;
+  nap.tv_sec = ms / 1000;
+  nap.tv_nsec = (long)(ms % 1000) * 1000000L;
+  nanosleep(&nap, NULL);
+#endif
+}
+
+/* Store lock. Three properties the rest of the file relies on (plan §3.12):
+ * it conflicts INTRA-process across two opens (so the behavior is testable),
+ * it releases on close, and it is non-blocking so the caller owns the deadline.
+ *
+ * POSIX uses flock(2) rather than fcntl record locks precisely because fcntl
+ * releases on ANY fd close and cannot conflict within one process. Win32
+ * LockFileEx has both properties natively (locks are per-HANDLE). Two porting
+ * traps, both taken care of here: the range must be non-zero, since locking 0
+ * bytes is a no-op that never conflicts; and contention reports
+ * ERROR_LOCK_VIOLATION, which must map to "retry", not to the hard-error path.
+ *
+ * Windows byte-range locks are MANDATORY where POSIX flock is advisory. That
+ * difference is invisible here because nothing ever reads or writes
+ * legend.lock's contents -- it exists only to be locked. */
+typedef struct {
+  int fd;
+#ifdef _WIN32
+  HANDLE h;
+#endif
+} PlatLock;
+
+static int plat_lock_open(PlatLock *l, const char *path) {
+#ifdef _WIN32
+  l->h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
+                     FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
+                     FILE_ATTRIBUTE_NORMAL, NULL);
+  l->fd = (l->h == INVALID_HANDLE_VALUE) ? -1 : 0;
+  return l->fd;
+#else
+  l->fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+  return l->fd;
+#endif
+}
+
+/* 0 = acquired, 1 = busy (retry), -1 = hard error. */
+static int plat_lock_try(PlatLock *l) {
+#ifdef _WIN32
+  OVERLAPPED ov;
+  memset(&ov, 0, sizeof ov);
+  if (LockFileEx(l->h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1,
+                 0, &ov))
+    return 0;
+  return (GetLastError() == ERROR_LOCK_VIOLATION ||
+          GetLastError() == ERROR_IO_PENDING)
+             ? 1
+             : -1;
+#else
+  if (flock(l->fd, LOCK_EX | LOCK_NB) == 0)
+    return 0;
+  return (errno == EWOULDBLOCK || errno == EINTR) ? 1 : -1;
+#endif
+}
+
+static void plat_lock_close(PlatLock *l) {
+#ifdef _WIN32
+  if (l->h != INVALID_HANDLE_VALUE) {
+    CloseHandle(l->h); /* closing the handle releases the lock */
+    l->h = INVALID_HANDLE_VALUE;
+  }
+#else
+  if (l->fd >= 0)
+    close(l->fd); /* closing the fd releases the flock */
+#endif
+  l->fd = -1;
+}
+
+/* Directory iteration, only ever used for the orphan-tmp sweep. */
+typedef struct {
+#ifdef _WIN32
+  HANDLE h;
+  WIN32_FIND_DATAA fd;
+  int first;
+#else
+  DIR *d;
+#endif
+} PlatDir;
+
+static int plat_dir_open(PlatDir *pd, const char *path) {
+#ifdef _WIN32
+  char pat[4400];
+  snprintf(pat, sizeof pat, "%s\\*", path); /* the wildcard is required */
+  pd->h = FindFirstFileA(pat, &pd->fd);
+  pd->first = 1;
+  return pd->h != INVALID_HANDLE_VALUE;
+#else
+  pd->d = opendir(path);
+  return pd->d != NULL;
+#endif
+}
+
+static const char *plat_dir_next(PlatDir *pd) {
+#ifdef _WIN32
+  if (pd->first) {
+    pd->first = 0;
+    return pd->fd.cFileName;
+  }
+  return FindNextFileA(pd->h, &pd->fd) ? pd->fd.cFileName : NULL;
+#else
+  struct dirent *e = readdir(pd->d);
+  return e ? e->d_name : NULL;
+#endif
+}
+
+static void plat_dir_close(PlatDir *pd) {
+#ifdef _WIN32
+  FindClose(pd->h);
+#else
+  closedir(pd->d);
+#endif
+}
+
+/* getline(3) is POSIX-2008 and absent from the Win32 CRT. The MCP server's
+ * whole input loop is built on it, so this is a hard dependency, not a
+ * convenience. Same contract: returns bytes read (excluding the NUL), -1 at EOF,
+ * growing *buf as needed. */
+#ifdef _WIN32
+static plat_ssize plat_getline(char **buf, size_t *cap, FILE *f) {
+  size_t n = 0;
+  int c;
+  if (!*buf || !*cap) {
+    *cap = 256;
+    *buf = (char *)malloc(*cap);
+    if (!*buf)
+      return -1;
+  }
+  for (;;) {
+    c = fgetc(f);
+    if (c == EOF)
+      break;
+    if (n + 2 > *cap) {
+      size_t nc = *cap * 2;
+      char *nb = (char *)realloc(*buf, nc);
+      if (!nb)
+        return -1;
+      *buf = nb;
+      *cap = nc;
+    }
+    (*buf)[n++] = (char)c;
+    if (c == '\n')
+      break;
+  }
+  if (n == 0)
+    return -1;
+  (*buf)[n] = 0;
+  return (plat_ssize)n;
+}
+#else
+#define plat_getline(b, c, f) getline((b), (c), (f))
+#endif
+
+/* A temp file for staging captured stdout. MSVCRT's tmpfile() creates it in the
+ * ROOT OF THE CURRENT DRIVE, which fails for any non-elevated process -- a
+ * long-standing CRT defect, not an edge case. One caller stages `--pretty`
+ * output (which the generated hooks invoke) and the other stages every MCP
+ * tools/call, where a NULL would fall through to writing frame JSON onto the
+ * JSON-RPC channel. Binary mode matters for the same reason it does on the
+ * snapshot: the captured bytes are measured with ftell and re-read by length. */
+static FILE *plat_tmpfile(void) {
+#ifdef _WIN32
+  char dir[MAX_PATH], path[MAX_PATH];
+  if (!GetTempPathA(sizeof dir, dir))
+    return NULL;
+  if (!GetTempFileNameA(dir, "lgd", 0, path))
+    return NULL;
+  return fopen(path, "w+bD"); /* D = delete on close (MSVCRT extension) */
+#else
+  return tmpfile();
+#endif
+}
+
 /* Build identity, stamped into the invocation journal and the init report so
  * a weeks-old store records which binary wrote each line. check.sh passes the
  * git short sha; a plain `cc legend.c embed.c` builds as "dev". */
@@ -8727,7 +8952,7 @@ static void snapshot_write(const Hypergraph *g, const char *store) {
     }
     off += (u32)n;
   }
-  if (fsync(fd) != 0) {
+  if (plat_fsync(fd) != 0) {
     close(fd);
     fail(ERR_NO_STORE, NULL, "cannot fsync snapshot %s: %s", tmp,
          strerror(errno));
@@ -8738,7 +8963,7 @@ static void snapshot_write(const Hypergraph *g, const char *store) {
          strerror(errno));
   fd = open(store, O_RDONLY | O_CLOEXEC);
   if (fd >= 0) {
-    fsync(fd);
+    plat_fsync(fd);
     close(fd);
   } /* best-effort directory durability */
 }
@@ -8746,20 +8971,20 @@ static void snapshot_write(const Hypergraph *g, const char *store) {
 /* Orphan .tmp sweep, run under the lock at load. Skips legend.lock by name
  * (plan §2 iron rule 3 keeps the lock fd unique; this keeps the file safe). */
 static void sweep_orphan_tmps(const char *store) {
-  DIR *d = opendir(store);
-  struct dirent *ent;
-  if (!d)
+  PlatDir d;
+  const char *name;
+  if (!plat_dir_open(&d, store))
     return;
-  while ((ent = readdir(d)) != NULL) {
+  while ((name = plat_dir_next(&d)) != NULL) {
     char p[4500];
-    if (plat_name_eq(ent->d_name, "legend.lock"))
+    if (plat_name_eq(name, "legend.lock"))
       continue;
-    if (!plat_name_eq_n(ent->d_name, "legend.snapshot.tmp", 19))
+    if (!plat_name_eq_n(name, "legend.snapshot.tmp", 19))
       continue;
-    snprintf(p, sizeof p, "%s/%s", store, ent->d_name);
-    unlink(p);
+    snprintf(p, sizeof p, "%s/%s", store, name);
+    plat_unlink(p);
   }
-  closedir(d);
+  plat_dir_close(&d);
 }
 
 /* ---- validating reader (plan §3.11) ----
@@ -9191,7 +9416,7 @@ static u32 payload_from_arg(const char *arg) {
 
 static int dir_exists(const char *path) {
   struct stat st;
-  return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+  return stat(path, &st) == 0 && PLAT_ISDIR(st.st_mode);
 }
 
 /* Store discovery (spec §4): LEGEND_STATE_DIR if set, else walk up from the
@@ -9206,7 +9431,7 @@ static int discover_store(char *out, size_t out_cap) {
     snprintf(out, out_cap, "%s", env);
     return 1;
   }
-  if (!getcwd(cwd, sizeof cwd))
+  if (!plat_getcwd(cwd, sizeof cwd))
     return 0;
   for (;;) {
     char *slash;
@@ -9237,7 +9462,12 @@ static int discover_store(char *out, size_t out_cap) {
   }
 }
 
-static int g_lock_fd = -1;
+static PlatLock g_lock = {-1
+#ifdef _WIN32
+                          ,
+                          INVALID_HANDLE_VALUE
+#endif
+};
 
 static i64 mono_ms(void) {
   struct timespec ts;
@@ -9252,20 +9482,21 @@ static void acquire_lock(const char *store) {
   char path[4300];
   i64 deadline;
   snprintf(path, sizeof path, "%s/legend.lock", store);
-  g_lock_fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
-  if (g_lock_fd < 0)
+  if (plat_lock_open(&g_lock, path) < 0)
     fail(ERR_NO_STORE, NULL, "cannot open %s: %s", path, strerror(errno));
   deadline = mono_ms() + LEGEND_LOCK_TIMEOUT_MS;
-  while (flock(g_lock_fd, LOCK_EX | LOCK_NB) != 0) {
-    struct timespec nap = {0, 20 * 1000 * 1000};
-    if (errno != EWOULDBLOCK && errno != EINTR)
-      fail(ERR_LOCK_TIMEOUT, NULL, "flock on %s failed: %s", path,
+  for (;;) {
+    int st = plat_lock_try(&g_lock);
+    if (st == 0)
+      break;
+    if (st < 0)
+      fail(ERR_LOCK_TIMEOUT, NULL, "lock on %s failed: %s", path,
            strerror(errno));
     if (mono_ms() >= deadline)
       fail(ERR_LOCK_TIMEOUT, NULL,
            "store is locked by another process (waited %d ms)",
            LEGEND_LOCK_TIMEOUT_MS);
-    nanosleep(&nap, NULL);
+    plat_sleep_ms(20);
   }
 }
 
@@ -9273,10 +9504,8 @@ static void acquire_lock(const char *store) {
  * flock), but the long-lived mcp-serve holds the lock only per tools/call so it
  * coexists with other legend processes (e.g. a SessionStart hook). */
 static void release_lock(void) {
-  if (g_lock_fd >= 0) {
-    close(g_lock_fd); /* closing the fd releases the flock */
-    g_lock_fd = -1;
-  }
+  if (g_lock.fd >= 0)
+    plat_lock_close(&g_lock);
 }
 
 static Hypergraph
@@ -9371,7 +9600,7 @@ static void pretty_render(const Json *j) {
 static char *capture_frame_json(const Hypergraph *g, const WriteReport *w,
                                 const char *store, i64 limit, i32 history_depth,
                                 i64 since, u32 *out_len) {
-  FILE *tmp = tmpfile();
+  FILE *tmp = plat_tmpfile();
   int saved;
   long n;
   char *buf;
@@ -9379,13 +9608,13 @@ static char *capture_frame_json(const Hypergraph *g, const WriteReport *w,
     fail(ERR_NO_STORE, NULL, "cannot stage --pretty output: %s",
          strerror(errno));
   fflush(stdout);
-  saved = dup(1);
-  if (saved < 0 || dup2(fileno(tmp), 1) < 0)
+  saved = plat_dup(1);
+  if (saved < 0 || plat_dup2(plat_fileno(tmp), 1) < 0)
     fail(ERR_NO_STORE, NULL, "cannot stage --pretty output: %s",
          strerror(errno));
   print_frame(g, w, store, limit, history_depth, since);
   fflush(stdout);
-  dup2(saved, 1);
+  plat_dup2(saved, 1);
   close(saved);
   n = ftell(tmp);
   if (n < 0)
@@ -9444,11 +9673,8 @@ static void store_project_dir(const char *store, char *out, size_t cap) {
 }
 
 static void self_exe_path(char *exe, size_t cap) {
-  ssize_t n = readlink("/proc/self/exe", exe, cap - 1);
-  if (n <= 0)
+  if (!plat_self_exe(exe, cap))
     snprintf(exe, cap, "legend"); /* fall back to PATH lookup */
-  else
-    exe[n] = 0;
 }
 
 /* Convenience: `legend init` drops a Claude Code `.mcp.json` beside the store
@@ -9466,7 +9692,7 @@ static int write_mcp_config(const char *store, char *out_path, size_t out_cap) {
   if (stat(out_path, &st) == 0)
     return 0; /* already there: never overwrite a user's MCP config */
   self_exe_path(exe, sizeof exe);
-  if (!realpath(store, abs_store))
+  if (!plat_realpath(store, abs_store, sizeof abs_store))
     snprintf(abs_store, sizeof abs_store, "%s", store);
   f = fopen(out_path, "w");
   if (!f) {
@@ -9506,7 +9732,7 @@ static int write_hooks_config(const char *store, char *out_path,
   if (stat(out_path, &st) == 0)
     return 0; /* never overwrite a user's settings */
   snprintf(dir, sizeof dir, "%s/.claude", proj);
-  if (mkdir(dir, 0777) != 0 && errno != EEXIST) {
+  if (plat_mkdir(dir) != 0 && errno != EEXIST) {
     out_path[0] = 0;
     return 0;
   }
@@ -9585,12 +9811,12 @@ static int write_codex_config(const char *store, char *out_path, size_t out_cap)
   if (stat(out_path, &st) == 0)
     return 0; /* never overwrite a user's Codex config */
   snprintf(dir, sizeof dir, "%s/.codex", proj);
-  if (mkdir(dir, 0777) != 0 && errno != EEXIST) {
+  if (plat_mkdir(dir) != 0 && errno != EEXIST) {
     out_path[0] = 0;
     return 0;
   }
   self_exe_path(exe, sizeof exe);
-  if (!realpath(store, abs_store))
+  if (!plat_realpath(store, abs_store, sizeof abs_store))
     snprintf(abs_store, sizeof abs_store, "%s", store);
   f = fopen(out_path, "w");
   if (!f) {
@@ -9651,11 +9877,11 @@ static int cmd_init(int reset) {
     snprintf(store, sizeof store, "%s", env);
   } else {
     char cwd[4096];
-    if (!getcwd(cwd, sizeof cwd))
+    if (!plat_getcwd(cwd, sizeof cwd))
       fail(ERR_NO_STORE, NULL, "cannot resolve cwd: %s", strerror(errno));
     snprintf(store, sizeof store, "%s/.legend", cwd);
   }
-  if (mkdir(store, 0777) != 0 && errno != EEXIST)
+  if (plat_mkdir(store) != 0 && errno != EEXIST)
     fail(ERR_NO_STORE, NULL, "cannot create store %s: %s", store,
          strerror(errno));
   acquire_lock(store);
@@ -9664,7 +9890,7 @@ static int cmd_init(int reset) {
   if (reset) {
     char snap[4300];
     snprintf(snap, sizeof snap, "%s/legend.snapshot", store);
-    unlink(snap); /* ENOENT is fine; reseeding below renumbers ids (spec §8) */
+    plat_unlink(snap); /* ENOENT is fine; reseeding renumbers ids (spec §8) */
   }
   if (!snapshot_load(&g_graph, store)) {
     ontology_seed(&g_graph);
@@ -10924,15 +11150,15 @@ static FILE *mcp_cap_fp = NULL;
 
 static void mcp_cap_begin(void) {
   fflush(stdout);
-  mcp_cap_fd = dup(1);
-  mcp_cap_fp = tmpfile();
+  mcp_cap_fd = plat_dup(1);
+  mcp_cap_fp = plat_tmpfile();
   if (mcp_cap_fp)
-    dup2(fileno(mcp_cap_fp), 1);
+    plat_dup2(plat_fileno(mcp_cap_fp), 1);
 }
 static void mcp_cap_restore(void) {
   fflush(stdout);
   if (mcp_cap_fd >= 0) {
-    dup2(mcp_cap_fd, 1);
+    plat_dup2(mcp_cap_fd, 1);
     close(mcp_cap_fd);
     mcp_cap_fd = -1;
   }
@@ -11056,9 +11282,7 @@ static int snapshot_fingerprint(const char *store, i64 *size, i64 *mtime,
   if (stat(path, &st) != 0)
     return 0;
   *size = (i64)st.st_size;
-  *mtime = (i64)st.st_mtim.tv_sec;
-  *ns = (i64)st.st_mtim.tv_nsec;
-  return 1;
+  return plat_mtime(path, mtime, ns);
 }
 
 /* Record that g_graph matches the on-disk snapshot — after a startup load or
@@ -11305,7 +11529,7 @@ static int mcp_serve(void) {
   embed_warm();             /* load model + sidecar now, off the first call's path */
   /* the lock is taken per tools/call (see mcp_tools_call), not for the whole
    * session, so a SessionStart hook's `legend recall` never blocks on us */
-  while ((n = getline(&line, &cap, stdin)) > 0) {
+  while ((n = plat_getline(&line, &cap, stdin)) > 0) {
     u32 len = (u32)n;
     while (len && (line[len - 1] == '\n' || line[len - 1] == '\r'))
       len--;
@@ -11323,7 +11547,9 @@ LEGEND_UNUSED static int run_cli(int argc, char **argv) {
   int pretty = 0, reset = 0, i;
   /* a truncating consumer (a hook's `head -c`) closing stdout must not kill
    * the process — writes fail with EPIPE instead and the invocation finishes */
-  signal(SIGPIPE, SIG_IGN);
+#ifndef _WIN32
+  signal(SIGPIPE, SIG_IGN); /* no SIGPIPE on Windows */
+#endif
   for (i = 1; i < argc; i++) {
     const char *a = argv[i];
     if (strcmp(a, "--pretty") == 0)

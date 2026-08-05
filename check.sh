@@ -32,23 +32,28 @@ pass "4 binaries built with -Werror"
 #   sudo pacman -S mingw-w64-gcc      # Arch
 #   apt install gcc-mingw-w64         # Debian/Ubuntu
 #
-# Advisory, not a gate, because the port is INCOMPLETE by design right now
-# (dirent/flock/tmpfile/getline/st_mtim are still POSIX-only). Flip the `fail`
-# in once it builds clean, and it becomes the thing that keeps it building.
-echo "== windows cross-build (advisory; skipped if no mingw) =="
+# A GATE where a cross-compiler exists, skipped where one does not, so the port
+# cannot silently rot on a machine that only builds for Linux. -Werror here for
+# the same reason the native build has it: the Win32 bodies are the half nobody
+# runs day to day, so a warning there is the only warning anyone will see.
+#
+# This does NOT prove Windows behavior, only that it compiles and links. The
+# runtime semantics -- MoveFileEx replace, FILE_SHARE_DELETE, LockFileEx
+# contention, CRLF on the MCP stdio channel -- still need a real Windows box.
+echo "== windows cross-build =="
 WCC=""
 for c in x86_64-w64-mingw32-gcc x86_64-w64-mingw32-cc i686-w64-mingw32-gcc; do
   command -v "$c" >/dev/null 2>&1 && { WCC="$c"; break; }
 done
 if [ -z "$WCC" ]; then
-  echo "  --: no mingw-w64 cross-compiler; Win32 seam bodies remain UNVERIFIED"
+  echo "  --: no mingw-w64 cross-compiler on this box; Windows target unchecked"
 else
-  if $WCC -std=c99 -Wall -Wextra $STAMP -O2 legend.c embed.c -o legend.exe -lm \
-       2>wincross.log; then
+  if $WCC -std=c99 -Wall -Wextra -Werror $STAMP -O2 legend.c embed.c \
+       -o legend.exe -lm 2>wincross.log; then
     pass "windows cross-build clean ($WCC)"
   else
-    echo "  --: windows cross-build not clean yet ($(grep -c 'error:' wincross.log) errors); see wincross.log"
-    grep 'error:' wincross.log | head -5 | sed 's/^/      /'
+    sed 's/^/    /' wincross.log | head -20
+    fail "windows cross-build ($WCC)"
   fi
 fi
 
