@@ -163,6 +163,39 @@ else
     fail "empty stdin: exit=$rc out=$out"
 fi
 
+# init brings STALE hooks up to the current contract, but only when the file is
+# provably ours. Refusing forever was a silent version skew: the trial ran a
+# month on hooks written by a binary that no longer existed.
+SU="$TMPROOT/storeupd"
+LEGEND_STATE_DIR="$SU" ./legend init >/dev/null || fail "init storeupd"
+UPD="$TMPROOT/.claude/settings.json"
+printf '%s' '{"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"/old/legend recall | head -c 20000"}]}]}}' > "$UPD"
+o="$(LEGEND_STATE_DIR="$SU" ./legend init)"
+u1=$(printf '%s' "$o" | grep -c '"hooks_updated":true')
+# ours + a user's own hook -> refuse, and the user's hook survives
+printf '%s' '{"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"/x/legend recall"}]}],"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"make lint"}]}]}}' > "$UPD"
+o="$(LEGEND_STATE_DIR="$SU" ./legend init)"
+u2=$(printf '%s' "$o" | grep -c '"hooks_updated":true')
+keep=$(grep -c 'make lint' "$UPD")
+# an unrelated top-level key -> refuse, and it survives
+printf '%s' '{"permissions":{"allow":["Bash(ls:*)"]},"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"/x/legend recall"}]}]}}' > "$UPD"
+o="$(LEGEND_STATE_DIR="$SU" ./legend init)"
+u3=$(printf '%s' "$o" | grep -c '"hooks_updated":true')
+perm=$(grep -c 'permissions' "$UPD")
+# not JSON at all -> init must still succeed
+printf 'not json' > "$UPD"
+LEGEND_STATE_DIR="$SU" ./legend init >/dev/null 2>&1; rcj=$?
+# these share $TMPROOT/.claude/settings.json with the exec-form check below,
+# so hand it back a freshly generated file rather than the garbage above
+rm -f "$UPD"
+LEGEND_STATE_DIR="$SU" ./legend init >/dev/null 2>&1
+if [ "$u1" -eq 1 ] && [ "$u2" -eq 0 ] && [ "$keep" -eq 1 ] \
+   && [ "$u3" -eq 0 ] && [ "$perm" -eq 1 ] && [ $rcj -eq 0 ]; then
+    pass "init updates stale hooks, refuses foreign ones, survives bad JSON"
+else
+    fail "init hook update: stale=$u1 foreign=$u2 keep=$keep extrakey=$u3 perm=$perm badjson_rc=$rcj"
+fi
+
 # Hooks run WITHOUT a shell (exec form), so everything the old bash pipelines did
 # has to work in-process. These are the four behaviors a Windows user depends on.
 SH="$TMPROOT/storehook"

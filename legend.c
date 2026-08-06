@@ -9851,56 +9851,204 @@ static int write_mcp_config(const char *store, char *out_path, size_t out_cap) {
  * v1 also nagged after EVERY file edit (PostToolUse); dropped — the Stop
  * reminder covers it without polluting each edit. Never clobbers an existing
  * settings.json; a failure never fails init. Returns 1 iff written. */
+/* The generated hooks, rendered into a buffer so init can COMPARE before it
+ * writes. Returns the length, or 0 if it would not fit.
+ *
+ * EXEC form: a command plus an argv, never a shell string. The bodies these
+ * replaced were bash -- pipes, sed, tr, head -c, command substitution -- and
+ * Claude Code on native Windows runs hooks under PowerShell unless Git for
+ * Windows is installed, so none of it exists there. A Windows user would hit
+ * that before anything about the store mattered.
+ *
+ * Everything those pipelines did now lives in the binary: `--max-bytes`
+ * replaces `head -c`, and `legend hook prompt|stop` replaces the prompt
+ * extraction, the debounce stamp and the changed-file check. */
+static u32 build_hooks_json(const char *exe, char *out, size_t cap) {
+  /* the exe path is the only variable, and on Windows it is full of
+   * backslashes, every one of which must be escaped to stay valid JSON */
+  char e[8300];
+  u32 n = 0, i;
+  int written;
+  for (i = 0; exe[i] && n + 8 < sizeof e; i++) {
+    unsigned char c = (unsigned char)exe[i];
+    if (c == '"' || c == '\\') {
+      e[n++] = '\\';
+      e[n++] = (char)c;
+    } else if (c < 0x20) {
+      written = snprintf(e + n, sizeof e - n, "\\u%04x", c);
+      n += (u32)(written > 0 ? written : 0);
+    } else {
+      e[n++] = (char)c;
+    }
+  }
+  e[n] = 0;
+  written = snprintf(
+      out, cap,
+      "{\n  \"hooks\": {\n"
+      "    \"SessionStart\": [{\"matcher\": \"*\", \"hooks\": [{\"type\": "
+      "\"command\", \"command\": \"%s\", \"args\": [\"recall\", "
+      "\"{\\\"limit\\\":16}\", \"--pretty\", \"--max-bytes\", \"20000\"]}]}],\n"
+      "    \"UserPromptSubmit\": [{\"matcher\": \"*\", \"hooks\": [{\"type\": "
+      "\"command\", \"command\": \"%s\", \"args\": [\"hook\", \"prompt\"]}]}],\n"
+      "    \"Stop\": [{\"matcher\": \"*\", \"hooks\": [{\"type\": "
+      "\"command\", \"command\": \"%s\", \"args\": [\"hook\", \"stop\"]}]}]\n"
+      "  }\n}\n",
+      e, e, e);
+  if (written <= 0 || (size_t)written >= cap)
+    return 0;
+  return (u32)written;
+}
+
+/* Is this settings.json entirely OURS -- safe to replace outright?
+ *
+ * `init` has always refused to overwrite a user's settings, which is right, but
+ * it also meant a hook CONTRACT CHANGE could never reach a project that had
+ * already been initialised: the alchamancer2 trial ran for a month on hooks
+ * written by a binary that no longer existed. Refusing forever is not caution,
+ * it is a silent version skew.
+ *
+ * Two conditions, and both must hold. `hooks` is the only top-level key, so
+ * nothing a user added elsewhere (permissions, env, statusLine) can be lost.
+ * And every hook command names the legend binary, so a hook a user added
+ * alongside ours is never clobbered. Anything else is reported, not touched. */
+static int hooks_are_ours(const char *path) {
+  static Json hj;
+  static char buf[LEGEND_PAYLOAD_CAP];
+  FILE *f = fopen(path, "rb");
+  size_t n;
+  u32 t, k, ev;
+  Rd rd;
+  int ok = 1;
+  if (!f)
+    return 0;
+  n = fread(buf, 1, sizeof buf - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  if (!n)
+    return 0;
+  /* A settings.json that is not valid JSON must not kill `init` -- the user
+   * still wants a store. Trap the parse failure rather than letting it exit. */
+  {
+    int trapped;
+    g_err_trap = 1;
+    if (setjmp(g_err_jmp) == 0) {
+      json_parse(&hj, buf, (u32)n);
+      trapped = 0;
+    } else {
+      trapped = 1;
+    }
+    g_err_trap = 0;
+    if (trapped)
+      return 0; /* unparseable: never guess */
+  }
+  if (!hj.count || hj.toks[0].type != J_OBJ || hj.toks[0].size != 1)
+    return 0;
+  rd.t = hj.toks;
+  rd.buf = buf;
+  if (!rd_str_eq(&rd, 1, "hooks") || hj.toks[2].type != J_OBJ)
+    return 0;
+  /* walk hooks -> <event> -> [ {hooks: [ {command} ]} ] */
+  t = 3;
+  for (ev = 0; ev < (u32)hj.toks[2].size && ok; ev++) {
+    u32 arr = t + 1, e;
+    if (hj.toks[arr].type != J_ARR) {
+      ok = 0;
+      break;
+    }
+    {
+      u32 entry = arr + 1;
+      for (e = 0; e < (u32)hj.toks[arr].size && ok; e++) {
+        u32 kt;
+        if (hj.toks[entry].type != J_OBJ) {
+          ok = 0;
+          break;
+        }
+        kt = entry + 1;
+        for (k = 0; k < (u32)hj.toks[entry].size && ok; k++) {
+          u32 key = kt, val = kt + 1;
+          if (rd_str_eq(&rd, key, "hooks") && hj.toks[val].type == J_ARR) {
+            u32 h, ht = val + 1;
+            for (h = 0; h < (u32)hj.toks[val].size && ok; h++) {
+              u32 hk, hkt = ht + 1;
+              int saw = 0;
+              if (hj.toks[ht].type != J_OBJ) {
+                ok = 0;
+                break;
+              }
+              for (hk = 0; hk < (u32)hj.toks[ht].size; hk++) {
+                u32 hkey = hkt, hval = hkt + 1;
+                if (rd_str_eq(&rd, hkey, "command") &&
+                    hj.toks[hval].type == J_STR) {
+                  const char *c = buf + hj.toks[hval].start;
+                  u32 cl = hj.toks[hval].end - hj.toks[hval].start, q;
+                  for (q = 0; q + 6 <= cl; q++)
+                    if (memcmp(c + q, "legend", 6) == 0) {
+                      saw = 1;
+                      break;
+                    }
+                }
+                hkt = tok_skip(hj.toks, hval);
+              }
+              if (!saw)
+                ok = 0; /* a hook that is not ours: leave the file alone */
+              ht = tok_skip(hj.toks, ht);
+            }
+          }
+          kt = tok_skip(hj.toks, val);
+        }
+        entry = tok_skip(hj.toks, entry);
+      }
+    }
+    t = tok_skip(hj.toks, arr);
+  }
+  return ok;
+}
+
+/* 0 = unchanged, 1 = created, 2 = updated in place. */
 static int write_hooks_config(const char *store, char *out_path,
                               size_t out_cap) {
   char proj[4096], dir[4300], exe[4096];
+  static char want[16384], have[16384];
   struct stat st;
   FILE *f;
+  u32 wn;
+  int existed;
   out_path[0] = 0;
   store_project_dir(store, proj, sizeof proj);
   snprintf(out_path, out_cap, "%s/.claude/settings.json", proj);
-  if (stat(out_path, &st) == 0)
-    return 0; /* never overwrite a user's settings */
+  existed = stat(out_path, &st) == 0;
   snprintf(dir, sizeof dir, "%s/.claude", proj);
-  if (plat_mkdir(dir) != 0 && errno != EEXIST) {
+  if (!existed && plat_mkdir(dir) != 0 && errno != EEXIST) {
     out_path[0] = 0;
     return 0;
   }
   self_exe_path(exe, sizeof exe);
-  f = fopen(out_path, "w");
+  wn = build_hooks_json(exe, want, sizeof want);
+  if (!wn) {
+    out_path[0] = 0;
+    return 0;
+  }
+  if (existed) {
+    size_t hn = 0;
+    f = fopen(out_path, "rb");
+    if (f) {
+      hn = fread(have, 1, sizeof have - 1, f);
+      fclose(f);
+    }
+    have[hn] = 0;
+    if (hn == wn && memcmp(have, want, wn) == 0)
+      return 0; /* already current: init stays idempotent */
+    if (!hooks_are_ours(out_path))
+      return 0; /* someone else's file, or ours plus theirs: never guess */
+  }
+  f = fopen(out_path, "wb");
   if (!f) {
     out_path[0] = 0;
     return 0;
   }
-  /* EXEC form: a command plus an argv, never a shell string. The bodies these
-   * replaced were bash -- pipes, sed, tr, head -c, command substitution -- and
-   * Claude Code on native Windows runs hooks under PowerShell unless Git for
-   * Windows is installed, so none of it exists there. A Windows user would hit
-   * that before anything about the store mattered.
-   *
-   * Everything those pipelines did now lives in the binary: `--max-bytes`
-   * replaces `head -c`, and `legend hook prompt|stop` replaces the prompt
-   * extraction, the debounce stamp and the changed-file check. The hooks below
-   * are byte-identical on every platform. */
-  fputs("{\n  \"hooks\": {\n"
-        "    \"SessionStart\": [{\"matcher\": \"*\", \"hooks\": "
-        "[{\"type\": \"command\", \"command\": \"",
-        f);
-  json_escape_fputs(exe, f);
-  fputs("\", \"args\": [\"recall\", \"{\\\"limit\\\":16}\", "
-        "\"--pretty\", \"--max-bytes\", \"20000\"]}]}],\n"
-        "    \"UserPromptSubmit\": [{\"matcher\": \"*\", \"hooks\": "
-        "[{\"type\": \"command\", \"command\": \"",
-        f);
-  json_escape_fputs(exe, f);
-  fputs("\", \"args\": [\"hook\", \"prompt\"]}]}],\n"
-        "    \"Stop\": [{\"matcher\": \"*\", \"hooks\": "
-        "[{\"type\": \"command\", \"command\": \"",
-        f);
-  json_escape_fputs(exe, f);
-  fputs("\", \"args\": [\"hook\", \"stop\"]}]}]\n  }\n}\n", f);
+  fwrite(want, 1, wn, f);
   fclose(f);
-  return 1;
+  return existed ? 2 : 1;
 }
 
 /* `legend init` also drops a Codex CLI `.codex/config.toml` so a Codex session in
@@ -10024,7 +10172,12 @@ static int cmd_init(int reset) {
     printf("\",\"mcp_config_created\":%s", made ? "true" : "false");
     fputs(",\"hooks_config\":\"", stdout);
     json_escape_fputs(hooks, stdout);
-    printf("\",\"hooks_created\":%s", hooks_made ? "true" : "false");
+    /* `hooks_created` stays true only for a first write, so existing callers
+     * read the same thing they always did; `hooks_updated` is the new state --
+     * an already-initialised project brought up to the current hook contract. */
+    printf("\",\"hooks_created\":%s", hooks_made == 1 ? "true" : "false");
+    if (hooks_made == 2)
+      fputs(",\"hooks_updated\":true", stdout);
     fputs(",\"codex_config\":\"", stdout);
     json_escape_fputs(codex, stdout);
     printf("\",\"codex_config_created\":%s", codex_made ? "true" : "false");
