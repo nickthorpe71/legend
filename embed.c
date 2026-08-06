@@ -446,6 +446,53 @@ void embed_free(EmbedModel *m) {
     free(m);
 }
 
+/* Identity of the weight blob, used to invalidate the vector sidecar when the
+ * MODEL changes.
+ *
+ * This was `size ^ (mtime << 1)`, and the mtime made it wrong in a way that only
+ * appeared in production. `make install` COPIES the blob, so the new file gets a
+ * new mtime even though the bytes are identical -- meaning a reinstall, an
+ * upgrade, or simply running `make install` twice invalidated every cached
+ * vector in every project.
+ *
+ * On the trial store (1182 elements) the next recall that wanted embeddings
+ * spent FOUR MINUTES re-embedding. Every ambient hook in that window hit the
+ * harness timeout and was killed before it could write even a journal line, so
+ * the whole day recorded zero ambient recalls with no error anywhere. The
+ * visible symptom was "the agent stopped using Legend".
+ *
+ * Content-derived instead: size plus a hash of the head and the tail. Stable
+ * across copies and installs of identical bytes, different for a genuinely
+ * different model. Sampled rather than whole-file because this runs on the
+ * startup path of EVERY invocation and the blob is ~34MB -- hashing all of it
+ * would add ~30ms to every CLI call to defend against a model differing only in
+ * its middle, which is not a way weight blobs differ. */
+static uint64_t ec_blob_sig(const char *path, uint64_t size) {
+    unsigned char buf[65536];
+    uint64_t h = 1469598103934665603ULL; /* FNV-1a offset basis */
+    FILE *f;
+    int pass;
+    h ^= size;
+    h *= 1099511628211ULL;
+    f = fopen(path, "rb");
+    if (!f) return h;
+    for (pass = 0; pass < 2; pass++) {
+        size_t got, i;
+        if (pass == 1) {
+            long back = (long)(size > sizeof buf ? sizeof buf : size);
+            if (fseek(f, -back, SEEK_END) != 0) break;
+        }
+        got = fread(buf, 1, sizeof buf, f);
+        for (i = 0; i < got; i++) {
+            h ^= buf[i];
+            h *= 1099511628211ULL;
+        }
+        if (got < sizeof buf) break; /* pass 0 already covered the whole file */
+    }
+    fclose(f);
+    return h;
+}
+
 /* ===================== element vector cache + semantic rank =====================
  * Sidecar <store>/vectors.bin caches each element's embedding (keyed by id +
  * text hash) so we embed elements once, not once per query. Query embed is the
@@ -509,7 +556,7 @@ static int ec_probe(void) {
     snprintf(EC.vocpath, sizeof EC.vocpath, "%s/vocab.txt", dir);
     struct stat st;
     if (stat(EC.binpath, &st) != 0) return 0; /* no blob: graceful degrade */
-    EC.blob_sig = (uint64_t)st.st_size ^ ((uint64_t)st.st_mtime << 1);
+    EC.blob_sig = ec_blob_sig(EC.binpath, (uint64_t)st.st_size);
     EC.usable = 1;
     return 1;
 }
