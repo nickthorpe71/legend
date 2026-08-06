@@ -1340,11 +1340,68 @@ killed — killing strips Legend from that session for its remaining life. End t
 session before working, or its writes land in round 11 on the old build and
 `foreign_build` fires.
 
+### Two more watches, from a second pass over round 10
+
+Neither was pre-registered and neither is the primary; both came out of looking
+at what had NOT been examined, and both bear on whether this ships.
+
+**W-A. The save rejection rate is climbing, and it is almost entirely one cause.**
+
+| build | saves | rejected | rate | claim-shaped names |
+|---|---|---|---|---|
+| `ddb9f7b` | 64 | 10 | 16% | 7 |
+| `aede89d` | 50 | 13 | 26% | 10 |
+| `970d039` | 28 | 7 | 25% | 6 |
+| `a881751` | 23 | 9 | **39%** | 8 |
+
+~85% of every rejection in the trial is the **>5-word name cap** — the model
+naming an element with a proposition (`what got shared is what nobody owned`,
+`a dodge is not a charge`, `the slot is the order you pick in`).
+
+**Recovery is 100%: 9 of 9, zero lost.** And the retries are good — that same
+save comes back as `the currency audit`, `the parting blow`, `the slot ordering`.
+So this is a teaching loop that works every single time, not data loss, and the
+guard is earning its place. But it costs a wasted round-trip on **two saves in
+five**, and the rate is rising, which says the entity-model instruction is not
+preventing what the guard keeps catching.
+
+Watch: does the rate keep climbing, and does recovery stay at 100%? A recovery
+rate below 100% turns this from friction into loss and would be a ship blocker.
+
+**W-B. Nothing written in the last two rounds has ever been focus-retrieved.**
+
+Direct-hit rate by write cohort (`fsc > 0`):
+
+| cohort | n | ever retrieved |
+|---|---|---|
+| seeded / deep onboarding (`<#684`) | 684 | **7.6%** |
+| round 8 (`#684–933`) | 250 | 1.6% |
+| round 9 (`#934–1052`) | 119 | **0.0%** |
+| round 10 (`#1053+`) | 45 | **0.0%** |
+
+Store-wide that is 5.1%, down from the 6.5% `#91` measured in July. 98% of
+elements HAVE been activated (they surface as neighborhood context), so nothing
+is inert — but as a direct answer to a focused question, one element in twenty.
+
+Newer cohorts have had less time to be hit, so 0% for round 10 is expected. The
+signal is the **shape**: 7.6% for curated onboarding versus 1.6% for a whole
+round of organic saves that has now had two rounds of exposure. If organic saves
+are systematically less findable than onboarded ones, that is the naming and
+bloat story again, and it questions whether the ongoing save loop earns its cost.
+
+Watch: re-measure the SAME cohorts at round 11 close. If round 8's stays ~1.6%
+while the seed cohort holds at 7.6%, the difference is not age.
+
 ## ROUND 10 CLOSED 2026-08-06 — wall holds the tail, nesting is a null
 
-Segment: **75 invocations, 23 saves, 52 recalls, 9 rejections** (all
-`prose_value`, none of them the summary cap). Clock 191 → 209, elements 1053 →
-1152, live relations 4116 → 4535.
+Segment: **75 invocations, 23 saves, 52 recalls, 9 rejections**. Clock 191 →
+209, elements 1053 → 1152, live relations 4116 → 4535.
+
+> **Correction 2026-08-06.** An earlier draft of this close said all 9 rejections
+> were name/kind-cap violations and that "not one save attempted a summary over
+> 600". Both are wrong. **One save attempted 614 chars and the wall rejected it**
+> — the wall fired exactly once. The claim came from eyeballing three rejections
+> rather than classifying all nine.
 
 ### The summary wall: PASS on what it caps, no effect on the median
 
@@ -1368,9 +1425,10 @@ why `[11]` now splits the cohorts (`--since-ref`).
 to whatever line is drawn, so the cap became the target. If the median matters,
 the cap has to move — the instruction alone did not do it in either direction.
 
-Notably the wall itself **never fired**. All 9 rejections were name/kind-cap
-violations; not one save attempted a summary over 600. The instruction naming the
-hard cap changed behavior before the guard had to.
+The wall fired **once** in 23 saves (a 614-char summary). The other 8 rejections
+were the name cap. So the instruction naming the hard cap did most of the work
+and the guard caught the one that got through — which is the shape you want, but
+it is not the "never fired" the first draft claimed.
 
 ### Nested statements: null, and NOT for the reason pre-registered
 
