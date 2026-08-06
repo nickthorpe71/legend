@@ -1286,6 +1286,110 @@ Carried in from round 8, not this bundle's to fix: `status_fact` 17,
 `flat_decision` 18, `near_dup` 2, `stale_open` 23, `bloat` 235, predicates 99 ·
 single-use 46.
 
+## ROUND 11 OPEN — re-pinned to `c2ef584` 2026-08-06
+
+The last round before a ship decision. Under test is the accumulated bundle
+`ff045d8..c2ef584`: the widened status-value guard, the audit rework (rates,
+trend, two new checks, the `flat_decision` precision fix), the platform seam,
+exec-form hooks, and `init` updating stale hooks.
+
+**Primary gauge: does `status_fact` stop growing?** It went 12 → 17 → 25 → 30
+across three rounds, roughly one per two saves, because the guard covered a
+strict subset of what the audit flagged. This is the last metric still visibly
+decaying, and the fix is the one thing here that must be proven before shipping.
+
+**`flat_decision` should collapse on sight**, not over the round: the precision
+fix reads 24 → **1** on a pre-flight copy of the live store, and that lands the
+moment the binary is pinned. If it reads anything but ~1 at close, the fix does
+not do what the pre-flight said.
+
+**Baseline at the boundary 2026-08-06** (clock 209, 1152 elements, 4535 live
+relations):
+
+| gauge | baseline | target |
+|---|---|---|
+| `status_fact` · per 1k | **30 · 26.0** | **stops growing** — the primary |
+| `flat_decision` | 24 → **1** at pin | stays ~1; a real one still gets flagged |
+| `clobbered_kind` · `dup_cache` | **0 · 0** | new checks; must stay 0 |
+| `bloat` per 1k | **292.5** | new-writes cohort holds >600 at 0.0% |
+| prose (whole store) | mean 412, p90 629, max 1114 | new-writes p90 well under 600 |
+| `near_dup` · `stale_open` | 2 · 25 | watch |
+| `phantom_close`·`orphan`·`prose_name`·`correlated_with` | 0 | must not move |
+| ambient surface rate | round 10's 64–72% band | **watch, not a target** (below) |
+
+**Two things changed underfoot; neither is the primary and both are watches.**
+
+The hooks are now exec form, so ambient recall runs through `legend hook prompt`
+instead of the old `sed`/`tr` pipeline. Sanitization and debounce were
+reimplemented, so the ambient surface rate could move for reasons that have
+nothing to do with the store. Read it as a watch.
+
+And `make install` was run for the first time on this machine, which moved the
+model to the binary-relative location the Makefile has always documented
+(`$(BIN)/models/...`). The old hooks carried `LEGEND_EMBED_DIR` inline; exec form
+has nowhere to put an env var, so **without that install the new hooks would have
+run with embeddings silently OFF** — caught by checking, not by reading. Verified
+after: a recall with no `LEGEND_EMBED_DIR` at all writes `vectors.bin`.
+
+**`health.jsonl` starts accumulating this round.** It is the trend series the
+audit cannot give (`docs/cli.md`), and the thing a second project will need,
+since nobody there will be running the harness scripts by hand.
+
+**A stale server is alive** (started before the re-pin, on `a881751`). Not
+killed — killing strips Legend from that session for its remaining life. End the
+session before working, or its writes land in round 11 on the old build and
+`foreign_build` fires.
+
+## ROUND 10 CLOSED 2026-08-06 — wall holds the tail, nesting is a null
+
+Segment: **75 invocations, 23 saves, 52 recalls, 9 rejections** (all
+`prose_value`, none of them the summary cap). Clock 191 → 209, elements 1053 →
+1152, live relations 4116 → 4535.
+
+### The summary wall: PASS on what it caps, no effect on the median
+
+| | backlog (n=605) | **new writes (n=66)** |
+|---|---|---|
+| over the 600 cap | 12.4% | **0.0%** |
+| p90 | 636 | **495** |
+| max | 1114 | **592** |
+| over the 400 aim | 50.2% | 51.5% |
+
+The tail is gone and the median did not move — which is exactly what a **600**
+cap does, not a 400 cap. 400 remains the aspiration in prose; nothing enforces
+it, and models write to whatever is enforced.
+
+**Read the `new writes` row only.** The whole-store gauge moved 289 → 293 across
+the round and would have recorded this as a null: 605 backlog elements drown 66
+new ones, and a wall governs only what is written from here on. That near-miss is
+why `[11]` now splits the cohorts (`--since-ref`).
+
+**Watch for round 11:** max is **592**, four bytes under the cap. Models write up
+to whatever line is drawn, so the cap became the target. If the median matters,
+the cap has to move — the instruction alone did not do it in either direction.
+
+Notably the wall itself **never fired**. All 9 rejections were name/kind-cap
+violations; not one save attempted a summary over 600. The instruction naming the
+hard cap changed behavior before the guard had to.
+
+### Nested statements: null, and NOT for the reason pre-registered
+
+`[9]` 0 and `[10]` 0. The pre-registered reading for both-flat is explicit:
+**models never reached for the shape** — not "the two-save flow blocked them."
+
+So task #8 (the `facts[<n>]` same-payload ref form) is **not** justified by
+evidence. Building it would have been solving a problem nobody demonstrably had.
+What is wrong is the instruction or the shape itself, and that is a design
+question, not an ergonomics one.
+
+### Carried into round 11
+
+`status_fact` **17 → 30**, roughly one per two saves, because the widened guard
+(`7f5c099`) sits unpinned. `flat_decision` 20 → 24 and `stale_open` 23 → 25 also
+climbed, though the flat_decision precision fix is likewise unpinned and should
+collapse that number on sight. `near_dup` 2, `phantom_close`/`orphan`/
+`prose_name`/`correlated_with` all 0. Packet 9007 B.
+
 ## ROUND 10 OPEN — re-pinned to `a881751` 2026-08-04 17:16
 
 First round with a **ship deadline behind it** (target: Legend usable in a
