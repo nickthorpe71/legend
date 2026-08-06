@@ -213,6 +213,29 @@ def main():
     print(f"\n[8] provenance share of live facts  : {prov} "
           f"({100.0 * prov / len(rels) if rels else 0:.1f}%)   must not RISE")
 
+    # 12. WATCH W-B: is what we write ever read back as a direct answer?
+    #     #91 measured 6.5% in July; it is 5.1% now. 98% of elements get
+    #     ACTIVATED (they surface as neighborhood context), so nothing is inert
+    #     -- this is specifically the direct-hit rate, `fsc > 0`.
+    #
+    #     Split by write cohort, because the store-wide number hides the shape:
+    #     curated onboarding sits far above any round of organic saves, and a
+    #     newer cohort has simply had less time to be hit. The signal is whether
+    #     an OLD organic cohort ever catches up to the seeded one. If it does
+    #     not, organic saves are systematically less findable -- the naming and
+    #     bloat story -- and the ongoing save loop is not earning its cost.
+    hit = lambda g: sum(1 for e in g if (e.get("stats") or {}).get("fsc", 0) > 0)
+    print(f"\n[12] direct-hit rate (fsc>0)         : "
+          f"{hit(els)} of {len(els)} ({100.0*hit(els)/max(1,len(els)):.1f}%)"
+          f"   (#91 measured 6.5% 2026-07-16)")
+    print(f"      backlog                       : {hit(backlog)} of {len(backlog)}"
+          f" ({100.0*hit(backlog)/max(1,len(backlog)):.1f}%)")
+    print(f"      new writes                    : {hit(fresh)} of {len(fresh)}"
+          f" ({100.0*hit(fresh)/max(1,len(fresh)):.1f}%)   0% expected while young")
+    print(f"      activated at all (not inert)  : "
+          f"{sum(1 for e in els if (e.get('stats') or {}).get('act', 0) > 0)}"
+          f" of {len(els)}")
+
     # 9. nested statements (docs/nested-statements.md). A statement carried as
     #    the CONTENT of another. `subject: rel` is a meta ABOUT a statement, not
     #    nesting; derived_from/supersedes are versioning plumbing. Everything

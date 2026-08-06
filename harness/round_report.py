@@ -10,6 +10,7 @@ Reads ~/Code/alchamancer2/.legend (journal + store), copies the store to a tempd
 the live one is never touched, and runs the PINNED binary (~/.local/bin/legend) against
 the copy. Determinism is a SEPARATE check: python3 harness/replay_journal.py <store>.
 """
+import re
 import json, os, sys, subprocess, shutil, tempfile
 
 LIVE = os.path.expanduser("~/Code/alchamancer2/.legend")
@@ -116,6 +117,45 @@ def main():
                   f"(short value + summary)")
     elif len(chg_to) == 0:
         print("  -> backstop UNEXERCISED this round (no changes ops)")
+
+    # ---- rejection watch (W-A) ----
+    # ~85% of every rejection in the trial is ONE cause: the model naming an
+    # element with a proposition. The rate has climbed 16% -> 39% across four
+    # builds. RECOVERY is what decides whether that is a teaching loop or data
+    # loss, so it is measured rather than assumed.
+    section("Rejection watch (W-A: friction, or loss?)")
+    def _guard(p):
+        nm = re.findall(r'"name":"((?:[^"\\]|\\.)*)"', p)
+        kd = re.findall(r'"kind":"((?:[^"\\]|\\.)*)"', p)
+        sm = re.findall(r'"summary":"((?:[^"\\]|\\.)*)"', p)
+        to = re.findall(r'"to":"((?:[^"\\]|\\.)*)"', p)
+        if any(len(n.split()) > 5 for n in nm): return "name>5w"
+        if any(len(k.split()) > 2 for k in kd): return "kind>2w"
+        if any(len(x) > 600 for x in sm): return "summary>600"
+        if any(len(t) > 120 for t in to): return "changes.to>120"
+        return "other"
+    _rej = [d for d in saves if not d.get("ok", True)]
+    if saves:
+        _c = {}
+        for d in _rej:
+            g = _guard(d.get("payload", ""))
+            _c[g] = _c.get(g, 0) + 1
+        print(f"  {len(_rej)} of {len(saves)} saves rejected "
+              f"({100.0*len(_rej)/len(saves):.0f}%)   {_c}")
+        _pos = {id(d): i for i, d in enumerate(jr)}
+        _rec = _lost = 0
+        for d in _rej:
+            k = _pos.get(id(d))
+            if k is None:
+                continue
+            if any(x.get("verb") == "save" and x.get("ok", True)
+                   for x in jr[k + 1:k + 5]):
+                _rec += 1
+            else:
+                _lost += 1
+        print(f"  recovered {_rec} / no-retry {_lost}   "
+              f"(below 100% turns friction into LOSS -- a ship blocker)")
+        print("  history: ddb9f7b 16% · aede89d 26% · 970d039 25% · a881751 39%")
 
     # ---- reroute watch ----
     section("Reroute watch (does blocking changes.to just move prose?)")
