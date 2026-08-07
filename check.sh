@@ -196,6 +196,36 @@ else
     fail "init hook update: stale=$u1 foreign=$u2 keep=$keep extrakey=$u3 perm=$perm badjson_rc=$rcj"
 fi
 
+# A COLD sidecar must not stall an interactive path. Embedding is ~200ms per
+# element and both recall and save walk every salient element, so an empty cache
+# on a large store used to mean minutes of synchronous work -- long enough that
+# the harness killed the hook before it could journal anything.
+SB="$TMPROOT/budget"
+mkdir -p "$SB"
+( cd "$SB" && LEGEND_STATE_DIR="$SB/.legend" "$ROOT/legend" init >/dev/null 2>&1
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    LEGEND_EMBED=1 LEGEND_STATE_DIR="$SB/.legend" "$ROOT/legend" save \
+      "{\"source\":\"t\",\"elements\":[{\"name\":\"mech $i\",\"kind\":\"mechanic\",\"summary\":\"a distinct mechanic number $i for cache tests\"}]}" >/dev/null 2>&1
+  done
+  rm -f .legend/vectors.bin )
+# Driven through SAVE, which always walks every salient element. A recall only
+# embeds its tier-2 candidates, so on a store this small it legitimately never
+# reaches the embedding path -- the budget still governs recall on a real store
+# (measured: 1180 deferred on a 1182-element copy), but save is what makes the
+# check deterministic at gate size.
+(cd "$SB" && LEGEND_EMBED=1 LEGEND_EMBED_BUDGET_MS=1 LEGEND_STATE_DIR="$SB/.legend" \
+      "$ROOT/legend" save '{"source":"t","elements":[{"name":"probe a","kind":"mechanic","summary":"probe"}]}' >/dev/null 2>&1)
+defer=$(tail -1 "$SB/.legend/journal.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("embed_deferred",0))' 2>/dev/null)
+# budget 0 disables the cap, so a deliberate warm still does everything
+(cd "$SB" && LEGEND_EMBED=1 LEGEND_EMBED_BUDGET_MS=0 LEGEND_STATE_DIR="$SB/.legend" \
+      "$ROOT/legend" save '{"source":"t","elements":[{"name":"probe b","kind":"mechanic","summary":"probe"}]}' >/dev/null 2>&1)
+after=$(tail -1 "$SB/.legend/journal.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("embed_deferred",0))' 2>/dev/null)
+if [ "${defer:-0}" -gt 0 ] && [ "${after:-1}" -eq 0 ]; then
+    pass "cold sidecar defers under budget (and reports it), full warm when uncapped"
+else
+    fail "embed budget: deferred=$defer after_full_warm=$after"
+fi
+
 # The vector sidecar must live beside the STORE, not beside the CWD. It used to
 # be located from $LEGEND_STATE_DIR falling back to ".", while the store itself
 # is found by walking up from the CWD -- so every caller that could not set that

@@ -23,6 +23,12 @@ int embed_enabled(void);
  * Loads the model on first call; embed_enabled() is the load-free predicate. */
 int embed_available(void);
 
+/* How many NEW vectors the last call skipped because it spent its CPU budget.
+ * Non-zero means the sidecar is still warming and semantic ranking saw only
+ * part of the store -- the lexical tiers covered the rest. Surfaced so a cold
+ * cache is visible instead of silently slow. */
+int embed_deferred(void);
+
 /* Tell the embedder which store directory the sidecar belongs beside. MUST be
  * called once the store is resolved, BEFORE any embedding work.
  *

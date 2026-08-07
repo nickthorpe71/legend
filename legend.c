@@ -9434,6 +9434,11 @@ static void journal_append(i64 ts, int ok, int errcode) {
     fprintf(f, ",\"code\":\"%s\"", ERR_CODE_NAMES[errcode]);
   if (g_journal_bytes_out >= 0)
     fprintf(f, ",\"bytes_out\":%lld", (long long)g_journal_bytes_out);
+  /* A warming sidecar is the one condition that used to be invisible: the work
+   * ran past the harness timeout and the process died before reaching this
+   * line. Now it is bounded, so it reaches here -- and says so. */
+  if (embed_deferred() > 0)
+    fprintf(f, ",\"embed_deferred\":%d", embed_deferred());
   if (g_journal_payload) {
     fputs(",\"payload\":\"", f);
     json_escape_fwrite(g_journal_payload, g_journal_payload_len, f);

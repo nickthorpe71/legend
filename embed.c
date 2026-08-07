@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 #include <stdint.h>
 #include <sys/stat.h>
 
@@ -516,6 +517,8 @@ static struct {
     uint64_t blob_sig;        /* blob size^mtime: invalidates a stale sidecar */
     char binpath[1200], vocpath[1200], sidecar[1400];
     char storedir[1200];      /* set by embed_set_store; beats the env var */
+    clock_t budget_t0;        /* per-call embedding budget (see ec_budget_ms) */
+    int deferred;             /* new vectors skipped this call, surfaced by embed_deferred */
 } EC;
 
 /* LEGEND_EMBED_TRACE!=0 -> one stderr line per embedding event (model load /
@@ -591,6 +594,48 @@ static void ec_load_sidecar(void) {
         else { free(EC.ent); EC.ent = NULL; }
     }
     fclose(f);
+}
+
+/* A COLD SIDECAR MUST NOT STALL AN INTERACTIVE PATH.
+ *
+ * Embedding is ~200ms per element on CPU, and both the recall and the save path
+ * walk every salient element. On a 1182-element store with an empty cache that
+ * is FOUR MINUTES of synchronous work. Measured 2026-08-07: 4m03s cold, 1.05s
+ * warm. Every ambient hook in that window hit the harness timeout and was killed
+ * before it could write even a journal line -- no error, no trace, and the only
+ * detection was a human noticing the agent had stopped using its memory.
+ *
+ * The triggers for a cold cache are fixed (the sidecar follows its store, the
+ * blob signature is content-derived), but a cold cache is still LEGITIMATE: a
+ * real model upgrade, a restored backup, or -- most importantly -- a new user's
+ * first recall after onboarding a large project. That first experience must not
+ * be a four-minute hang.
+ *
+ * So each call gets a CPU-time budget for embedding NEW vectors. Cached vectors
+ * are always used; uncached ones past the budget are skipped and simply do not
+ * participate in semantic ranking this time, which degrades to the lexical tiers
+ * that already exist. The cache warms over several calls instead of blocking
+ * one. Deferred work is COUNTED and surfaced, because the failure this replaces
+ * was invisible.
+ *
+ * clock() rather than a wall clock: this is CPU-bound, and clock() is C89 and
+ * portable to the Windows target. */
+static int ec_budget_ms(void) {
+    const char *e = getenv("LEGEND_EMBED_BUDGET_MS");
+    if (e && *e) { int v = atoi(e); if (v >= 0) return v; }
+    return 1500; /* ~7 elements at 200ms; a hook stays well under a second of overhead */
+}
+
+static void ec_budget_start(void) {
+    EC.budget_t0 = clock();
+    EC.deferred = 0;
+}
+
+/* Has this call spent its embedding budget? 0 = keep going. */
+static int ec_budget_spent(void) {
+    int ms = ec_budget_ms();
+    if (ms <= 0) return 0; /* 0 disables the cap: warm-up and batch paths */
+    return (int)((double)(clock() - EC.budget_t0) * 1000.0 / CLOCKS_PER_SEC) > ms;
 }
 
 static const float *ec_vec_for(uint32_t id, const char *text) {
@@ -674,7 +719,14 @@ void embed_sync_elements(const uint32_t *ids, const char *const *texts, int n) {
     if (!work) return; /* fully cached: no model load, no rewrite */
     ec_load_model();
     if (!EC.model) return;
-    for (i = 0; i < n; i++) ec_vec_for(ids[i], texts[i]);
+    ec_budget_start();
+    for (i = 0; i < n; i++) {
+        if (ec_stale(ids[i], texts[i]) && ec_budget_spent()) {
+            EC.deferred++;
+            continue;
+        }
+        ec_vec_for(ids[i], texts[i]);
+    }
     ec_persist();
     if (ec_traced())
         fprintf(stderr, "[embed] sync: embedded %d new/changed of %d elements\n", work, n);
@@ -704,8 +756,14 @@ int embed_rank_elements(const uint32_t *ids, const char *const *texts, int n,
     RankCand *c = malloc((size_t)n * sizeof *c);
     if (!c) return -1;
     int m = 0;
+    ec_budget_start();
     for (int i = 0; i < n; i++) {
-        const float *v = ec_vec_for(ids[i], texts[i]);
+        const float *v;
+        if (ec_stale(ids[i], texts[i]) && ec_budget_spent()) {
+            EC.deferred++;   /* warms on a later call; lexical tiers still answer */
+            continue;
+        }
+        v = ec_vec_for(ids[i], texts[i]);
         if (!v) continue;
         double d = 0.0;                        /* qv, v both L2-normalized -> dot == cosine */
         for (int k = 0; k < HID; k++) d += (double)qv[k] * v[k];
@@ -800,3 +858,5 @@ int main(int argc, char **argv) {
     return fails ? 1 : 0;
 }
 #endif
+
+int embed_deferred(void) { return EC.deferred; }

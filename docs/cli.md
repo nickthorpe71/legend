@@ -4,7 +4,8 @@ One binary, six verbs. Every verb reads/writes JSON on stdio and exits non-zero
 with a structured error on failure.
 
 ```
-legend save|recall|init|dump|audit|mcp-serve [payload] [--pretty] [--reset]
+legend save|recall|init|dump|audit|hook|mcp-serve [payload]
+       [--pretty] [--reset] [--max-bytes N]
 ```
 
 A payload can be passed as the trailing argument or piped on stdin. `--pretty`
@@ -118,6 +119,57 @@ The bar itself is 0.72, set above the false positives a real store produced
 defects across 815 elements; treat it as advisory. The sharp checks are
 `phantom_close` and `status_fact`. `prose_name` triggers past 120 bytes against
 a measured median name of 29.
+
+### `hook` — the generated hooks, with no shell
+
+`legend init` writes Claude Code hooks in EXEC form (a command plus an argv, no
+shell string), because native Windows runs hooks under PowerShell unless Git for
+Windows is installed, so `sed`, `tr` and `head` are simply absent there. The
+logic those pipelines used to carry lives in the binary:
+
+```
+legend hook prompt     # UserPromptSubmit: reads the hook JSON on stdin,
+                       # debounces 20s, skips system-injected blocks (they
+                       # arrive as prompts and open with '<'), sanitizes the
+                       # text to a focus phrase, then runs an observe-recall
+legend hook stop       # Stop: emits a save nudge iff this session recalled
+                       # and saved nothing (session start = the last
+                       # focus-less recall)
+```
+
+`hook prompt` rewrites itself into an ordinary observe-recall and falls through,
+so it inherits the frame, the lock discipline and the journal line rather than
+being a second implementation of recall.
+
+### `--max-bytes N` — cap stdout in-process
+
+Replaces the `| head -c N` the hooks used to pipe through; a pipeline needs a
+shell. The cap is a safety valve against a pathological store, not a routine
+trimmer — the packet is already bounded by the section caps and `limit`. Pass it
+with `--pretty`: the pretty renderer is line-oriented so a cut is readable, while
+truncating compact JSON leaves it unparseable.
+
+### Embedding a cold store: `LEGEND_EMBED_BUDGET_MS`
+
+Embedding costs ~200ms per element, and both recall and save walk every salient
+element, so an empty vector sidecar on a large store is minutes of synchronous
+work. Each call therefore gets a CPU-time budget (default **1500ms**) for
+embedding NEW vectors; cached ones are always used, and anything past the budget
+is skipped and simply does not join semantic ranking that time — the lexical
+tiers still answer. The cache warms over several calls instead of blocking one.
+
+Deferred work is reported: a journal line carries `"embed_deferred": N` whenever
+a call skipped some. Non-zero means the sidecar is still warming.
+
+Set `LEGEND_EMBED_BUDGET_MS=0` to disable the cap and warm the whole store in
+one call — worth doing deliberately after onboarding a large project:
+
+```
+LEGEND_EMBED_BUDGET_MS=0 legend recall '{"focus":["anything"],"observe":true}'
+```
+
+Measured on a 1182-element store: 4m03s uncapped from cold, ~1.6s per call under
+the default budget, ~125ms once warm.
 
 ### Read `per_1k_elements`, not `counts`
 
