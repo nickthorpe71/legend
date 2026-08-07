@@ -514,7 +514,8 @@ static struct {
     VecEnt *ent; int n, cap;  /* vector cache */
     int dirty, loaded;
     uint64_t blob_sig;        /* blob size^mtime: invalidates a stale sidecar */
-    char binpath[1200], vocpath[1200], sidecar[1200];
+    char binpath[1200], vocpath[1200], sidecar[1400];
+    char storedir[1200];      /* set by embed_set_store; beats the env var */
 } EC;
 
 /* LEGEND_EMBED_TRACE!=0 -> one stderr line per embedding event (model load /
@@ -569,10 +570,15 @@ static void ec_load_model(void) {
     if (EC.model && ec_traced()) fprintf(stderr, "[embed] model loaded\n");
 }
 
+void embed_set_store(const char *dir) {
+    if (!dir || !*dir) return;
+    snprintf(EC.storedir, sizeof EC.storedir, "%s", dir);
+}
+
 static void ec_load_sidecar(void) {
     if (EC.loaded) return;
     EC.loaded = 1;
-    const char *sd = getenv("LEGEND_STATE_DIR");
+    const char *sd = EC.storedir[0] ? EC.storedir : getenv("LEGEND_STATE_DIR");
     snprintf(EC.sidecar, sizeof EC.sidecar, "%s/vectors.bin", (sd && *sd) ? sd : ".");
     FILE *f = fopen(EC.sidecar, "rb");
     if (!f) return;

@@ -23,6 +23,18 @@ int embed_enabled(void);
  * Loads the model on first call; embed_enabled() is the load-free predicate. */
 int embed_available(void);
 
+/* Tell the embedder which store directory the sidecar belongs beside. MUST be
+ * called once the store is resolved, BEFORE any embedding work.
+ *
+ * The sidecar used to be located from $LEGEND_STATE_DIR, falling back to ".".
+ * But the store itself is found by walking up from the CWD when that variable
+ * is unset, so the two disagreed for every caller that did not set it: the MCP
+ * server (which does) kept a correct cache in `.legend/vectors.bin`, while the
+ * hooks (which cannot -- exec form has nowhere to put an env var) silently
+ * built a SECOND cache in whatever directory they happened to run from. Two
+ * caches for one store, and only one of them ever warm. */
+void embed_set_store(const char *dir);
+
 /* Load the model + vector sidecar up front (idempotent, safe no-op when
  * embeddings are off). A long-lived server calls this at startup so the first
  * request doesn't pay the load; one-shot CLI runs skip it and load lazily. */

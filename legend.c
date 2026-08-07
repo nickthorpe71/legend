@@ -9498,6 +9498,7 @@ static int discover_store(char *out, size_t out_cap) {
     if (!dir_exists(env))
       return 0;
     snprintf(out, out_cap, "%s", env);
+    embed_set_store(out);
     return 1;
   }
   if (!plat_getcwd(cwd, sizeof cwd))
@@ -9505,8 +9506,12 @@ static int discover_store(char *out, size_t out_cap) {
   for (;;) {
     char *slash;
     snprintf(out, out_cap, "%s/.legend", cwd);
-    if (dir_exists(out))
+    if (dir_exists(out)) {
+      /* the sidecar belongs beside the store we actually found, never beside
+       * the CWD we happened to start in */
+      embed_set_store(out);
       return 1;
+    }
     slash = plat_sep_rchr(cwd);
     if (!slash)
       return 0;

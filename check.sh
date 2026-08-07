@@ -196,6 +196,24 @@ else
     fail "init hook update: stale=$u1 foreign=$u2 keep=$keep extrakey=$u3 perm=$perm badjson_rc=$rcj"
 fi
 
+# The vector sidecar must live beside the STORE, not beside the CWD. It used to
+# be located from $LEGEND_STATE_DIR falling back to ".", while the store itself
+# is found by walking up from the CWD -- so every caller that could not set that
+# variable (the hooks: exec form has nowhere to put an env var) silently built a
+# SECOND cache wherever it ran from. Two caches for one store, only one warm.
+SV="$TMPROOT/proj"
+mkdir -p "$SV"
+# embeddings are off for the rest of the gate; this check needs them ON, since
+# a sidecar is only written when there is something to cache
+( cd "$SV" && LEGEND_STATE_DIR="$SV/.legend" "$ROOT/legend" init >/dev/null 2>&1
+  rm -f .legend/vectors.bin vectors.bin
+  LEGEND_EMBED=1 "$ROOT/legend" save '{"source":"t","elements":[{"name":"wall jump","kind":"mechanic","summary":"kick off a wall"}]}' >/dev/null 2>&1 )
+if [ -f "$SV/.legend/vectors.bin" ] && [ ! -f "$SV/vectors.bin" ]; then
+    pass "vector sidecar lands beside the store, not the CWD"
+else
+    fail "sidecar placement: .legend/=$([ -f "$SV/.legend/vectors.bin" ] && echo yes || echo no) stray=$([ -f "$SV/vectors.bin" ] && echo YES || echo no)"
+fi
+
 # .mcp.json gets the same update-when-provably-ours rule as the hooks. The skew
 # it prevents is not hypothetical: a stale LEGEND_EMBED_DIR left the MCP server
 # and the hooks resolving two identical-but-distinct copies of the weight blob,
