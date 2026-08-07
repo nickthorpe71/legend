@@ -1286,6 +1286,89 @@ Carried in from round 8, not this bundle's to fix: `status_fact` 17,
 `flat_decision` 18, `near_dup` 2, `stale_open` 23, `bloat` 235, predicates 99 ·
 single-use 46.
 
+## ROUND 11 CLOSED 2026-08-07 — primary PASSES; retrieval unmeasurable, cause known
+
+Segment: **29 invocations, 20 saves, 8 recalls, 5 rejections**. Clock 209 → 231,
+elements 1152 → 1254, live relations 4535 → 5084.
+
+### PRIMARY: `status_fact` stopped growing — PASS
+
+**29 across 20 saves, zero net growth.** Round 10's rate (~1 per 2 saves) would
+have added about ten. And the evidence is positive, not an absence: round 11
+minted **11 elements carrying a status attr** (`frame data` a system, `the five
+bands` a decision, `the wind-up pose` a task, three using `status` rather than
+`standing` — every one of them outside the old guard's reach) and **all 11
+became caches, zero plain facts.**
+
+`flat_decision` **24 → 1** the moment the binary was pinned, exactly as the
+pre-flight predicted. `clobbered_kind` and `dup_cache` both held at 0.
+
+### W-A rejection watch: rate fell, recovery still perfect
+
+**5 of 20 (25%)**, down from round 10's 39%, and no longer name-dominated
+(2 name, 2 summary, 1 other). **Recovery 5/5, zero lost.** The trend now reads
+16% → 26% → 25% → 39% → 25%, so round 10's spike was not the start of a climb.
+
+### The summary wall: tail held, median WORSE
+
+New writes (n=51) against backlog: over-cap **0.0%** vs 11.2%, max **563** vs
+1114 — the wall holds. But over the 400 aim went **51.5% → 64.7%** and mean 398
+→ 431 round over round.
+
+This is the "cap became the target" reading from round 10, now with evidence
+behind it: summaries are growing to fill the space the cap allows. A wall stops
+the tail and silently licenses everything under it. If the median matters, the
+cap has to move — the aspiration in prose is doing nothing.
+
+### NOT MEASURABLE THIS ROUND — ambient recall and W-B
+
+**One ambient recall in the entire round**, against 48 in round 10, and it
+predates the round's own hook change. Nothing was queried, so:
+
+- the ambient surface rate is **not gradeable**
+- W-B (cohort direct-hit rate) reads 5.0% backlog / 2.0% new writes, but those
+  are artifacts of nobody querying, not a retrieval finding
+
+Cause is fully understood and was self-inflicted — see the postmortem below.
+Two rounds now with no readable retrieval data, which is the one thing most
+needed before shipping.
+
+### Still drifting, still unaddressed
+
+`stale_open` 25 → **31** (now the largest audit count after bloat, and `#118`
+says it conflates three states), `bloat` 343 → 370, packet 9153 → 9892 B.
+
+## POSTMORTEM: how a duplicate model file killed ambient recall for two rounds
+
+Worth recording in full because nothing in the system reported it, and the only
+detection mechanism was a human noticing an agent had stopped using its memory.
+
+1. `make install` (run for the first time on this machine, to fix a *different*
+   problem — exec-form hooks have nowhere to put `LEGEND_EMBED_DIR`) placed an
+   identical copy of the 34MB weight blob beside the binary.
+2. alchamancer2's `.mcp.json` still named the OLD path, because `init` refused
+   to update an existing config. So the MCP server read one copy and the hooks
+   self-located the other.
+3. `blob_sig` was `size ^ (mtime << 1)`. Identical bytes, different mtimes →
+   **two different signatures** → the server and the hooks invalidated each
+   other's vector sidecar on every single call.
+4. Every recall paid a full re-embed of 1182 elements. **Measured: 4m03s cold,
+   1.05s warm.**
+5. Every ambient hook hit the harness timeout and was killed **before it could
+   write its journal line**. No error, no rejection, no trace — the journal
+   simply showed recalls not happening.
+
+Three fixes, all committed: `blob_sig` is content-derived (`cfde633`, verified
+that identical bytes with a new mtime hash the same while a byte changed in head
+or tail does not), `init` updates a stale `.mcp.json` and no longer names a
+model dir at all (`ba55c1f`), and the gate now asserts the generated config
+names no model dir.
+
+**The lesson worth keeping is not the bug.** It is that a failure on the hook
+path leaves NO evidence, because the process dies before it can journal. Task
+#15 carries the follow-up: bound the rebuild so it cannot stall an interactive
+path, and journal a sidecar rebuild so this class of stall is visible next time.
+
 ## ROUND 11 OPEN — re-pinned to `c2ef584` 2026-08-06
 
 The last round before a ship decision. Under test is the accumulated bundle
