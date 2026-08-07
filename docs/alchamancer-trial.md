@@ -1286,6 +1286,69 @@ Carried in from round 8, not this bundle's to fix: `status_fact` 17,
 `flat_decision` 18, `near_dup` 2, `stale_open` 23, `bloat` 235, predicates 99 ·
 single-use 46.
 
+## ROUND 12 OPEN — re-pinned to `1204739` 2026-08-07 15:24
+
+**The retrieval round.** Ambient recall has been dead for two rounds and the
+cause is now fully understood and fixed, so this is the first round that can
+actually read the numbers the ship decision depends on.
+
+**Under test:** `bb659e8..1204739` — the sidecar living beside its store, the
+content-derived blob signature, `init` updating a stale `.mcp.json`, and the
+model dir no longer named anywhere.
+
+**PRE-FLIGHT — all three hooks verified against the LIVE store**, from the
+project root with no environment set, exactly as Claude Code invokes them.
+Hooks have silently broken twice; committing a round to unverified
+instrumentation is how both rounds were lost.
+
+| hook | time | output |
+|---|---|---|
+| SessionStart | 9 ms | 9902 B (cap 20000) |
+| UserPromptSubmit | 90 ms | 1500 B (capped) |
+| Stop | 1 ms | 158 B (nudge fired) |
+
+No stray `vectors.bin` reappeared. The sidecar warms once and stays warm.
+
+**Baseline at the boundary** (clock 233, 1254 elements, 5084 live relations):
+
+| gauge | baseline | target |
+|---|---|---|
+| **ambient recalls** | 1 (round 11) / 48 (round 10) | **PRIMARY: returns to the 2/save band** |
+| **`[12]` direct-hit, round-8 cohort** | **1.6%** (n=250) | **PRIMARY: rises, or the difference is not age** |
+| `[12]` store-wide | 4.8% | watch |
+| ambient surface rate | 64–72% (last readable, round 10) | gradeable again |
+| `status_fact` · per 1k | 29 · 23.1 | stays flat — held through round 11 |
+| `flat_decision` | 1 | stays ~1 |
+| `clobbered_kind` · `dup_cache` | 0 · 0 | must stay 0 |
+| `[11]` new writes >600 | 0.0% | stays 0; watch whether the median keeps rising |
+| `stale_open` | **31** | ungraded, but now the largest count after bloat |
+| `phantom_close`·`orphan`·`prose_name`·`correlated_with` | 0 | must not move |
+
+### Why the two primaries are the right ones
+
+`[12]`'s round-8 cohort is the sharpest question in the trial. Curated deep
+onboarding sits at 7.6% direct-hit; a full round of organic saves sits at 1.6%
+after two rounds of exposure. If that gap is age, round 8's number rises now
+that queries are actually running. **If it does not, organic saves are
+systematically less findable than onboarded ones** — which would mean the
+per-session save loop is not earning its cost, and that bears on shipping more
+than any defect count.
+
+Ambient volume is the enabling measurement: with one recall a round, `[12]`
+cannot move for want of queries, and the surface rate is undefined.
+
+### Carried, unresolved
+
+`stale_open` 31 and still conflating three states (`#118`). Task #15 (bound the
+sidecar rebuild so it cannot stall a hook, and journal rebuilds so this class of
+failure is visible) is unbuilt — the trigger is fixed, the hazard is not.
+
+### Note
+
+One `mcp-serve` from `a881751` survives in state `T` (stopped, ppid 1354353,
+last write 08-06 11:39). A stopped process cannot write; `foreign_build` covers
+it if it ever resumes. Not killed — the documented hazard stands.
+
 ## ROUND 11 CLOSED 2026-08-07 — primary PASSES; retrieval unmeasurable, cause known
 
 Segment: **29 invocations, 20 saves, 8 recalls, 5 rejections**. Clock 209 → 231,
