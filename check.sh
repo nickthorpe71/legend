@@ -196,6 +196,31 @@ else
     fail "init hook update: stale=$u1 foreign=$u2 keep=$keep extrakey=$u3 perm=$perm badjson_rc=$rcj"
 fi
 
+# .mcp.json gets the same update-when-provably-ours rule as the hooks. The skew
+# it prevents is not hypothetical: a stale LEGEND_EMBED_DIR left the MCP server
+# and the hooks resolving two identical-but-distinct copies of the weight blob,
+# which the mtime-keyed vector signature treated as two different models.
+SM="$TMPROOT/storemcp"
+LEGEND_STATE_DIR="$SM" ./legend init >/dev/null || fail "init storemcp"
+MJ="$TMPROOT/.mcp.json"
+grep -q LEGEND_EMBED_DIR "$MJ" && fail "generated .mcp.json still names a model dir"
+printf '%s' '{"mcpServers":{"legend":{"command":"/old/legend","args":["mcp-serve"],"env":{"LEGEND_STATE_DIR":"/old","LEGEND_EMBED_DIR":"/stale"}}}}' > "$MJ"
+o="$(LEGEND_STATE_DIR="$SM" ./legend init)"
+m1=$(printf '%s' "$o" | grep -c '"mcp_config_updated":true')
+m1e=$(grep -c LEGEND_EMBED_DIR "$MJ" || true)
+printf '%s' '{"mcpServers":{"legend":{"command":"/x/legend","args":["mcp-serve"]},"other":{"command":"/x/other"}}}' > "$MJ"
+o="$(LEGEND_STATE_DIR="$SM" ./legend init)"
+m2=$(printf '%s' "$o" | grep -c '"mcp_config_updated":true')
+keep=$(grep -c '"other"' "$MJ")
+printf 'not json' > "$MJ"
+LEGEND_STATE_DIR="$SM" ./legend init >/dev/null 2>&1; rcm=$?
+rm -f "$MJ"; LEGEND_STATE_DIR="$SM" ./legend init >/dev/null 2>&1
+if [ "$m1" -eq 1 ] && [ "$m1e" -eq 0 ] && [ "$m2" -eq 0 ] && [ "$keep" -eq 1 ] && [ $rcm -eq 0 ]; then
+    pass "init updates a stale .mcp.json, refuses foreign servers, survives bad JSON"
+else
+    fail "mcp update: stale=$m1 embeddir_left=$m1e foreign=$m2 keep=$keep badjson_rc=$rcm"
+fi
+
 # Hooks run WITHOUT a shell (exec form), so everything the old bash pipelines did
 # has to work in-process. These are the four behaviors a Windows user depends on.
 SH="$TMPROOT/storehook"

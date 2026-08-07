@@ -9812,32 +9812,124 @@ static void self_exe_path(char *exe, size_t cap) {
  * one command sets a project up end to end. Never clobbers an existing file;
  * a failure here never fails init. Fills out_path with the config path;
  * returns 1 iff it wrote the file. */
+/* Is this .mcp.json entirely OURS -- safe to replace? Same rule as
+ * hooks_are_ours, and for the same reason: refusing forever is not caution, it
+ * is a silent version skew.
+ *
+ * Not hypothetical. alchamancer2's .mcp.json carried a LEGEND_EMBED_DIR pointing
+ * at an old install location long after the binary learned to self-locate its
+ * model. When `make install` later placed an identical copy of the blob beside
+ * the binary, the MCP server and the hooks resolved TWO DIFFERENT FILES -- same
+ * bytes, different mtimes -- and the mtime-keyed vector signature made each
+ * invalidate the other's cache on every call. Every recall paid a multi-minute
+ * re-embed and every ambient hook timed out silently. A stale generated config
+ * is not cosmetic.
+ *
+ * `mcpServers` must be the only top-level key and `legend` its only server, so
+ * another MCP server a user added is never lost. */
+static int mcp_config_is_ours(const char *path) {
+  static Json mj;
+  static char buf[LEGEND_PAYLOAD_CAP];
+  FILE *f = fopen(path, "rb");
+  size_t n;
+  Rd rd;
+  if (!f)
+    return 0;
+  n = fread(buf, 1, sizeof buf - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  if (!n)
+    return 0;
+  {
+    int trapped;
+    g_err_trap = 1;
+    if (setjmp(g_err_jmp) == 0) {
+      json_parse(&mj, buf, (u32)n);
+      trapped = 0;
+    } else {
+      trapped = 1;
+    }
+    g_err_trap = 0;
+    if (trapped)
+      return 0; /* unparseable: never guess */
+  }
+  if (!mj.count || mj.toks[0].type != J_OBJ || mj.toks[0].size != 1)
+    return 0;
+  rd.t = mj.toks;
+  rd.buf = buf;
+  if (!rd_str_eq(&rd, 1, "mcpServers") || mj.toks[2].type != J_OBJ ||
+      mj.toks[2].size != 1)
+    return 0;
+  return rd_str_eq(&rd, 3, "legend");
+}
+
+/* 0 = unchanged, 1 = created, 2 = updated in place. */
 static int write_mcp_config(const char *store, char *out_path, size_t out_cap) {
   char proj[4096], exe[4096], abs_store[4200];
+  static char want[8192], have[8192];
   struct stat st;
   FILE *f;
+  int existed, wn;
   out_path[0] = 0;
   store_project_dir(store, proj, sizeof proj);
   snprintf(out_path, out_cap, "%s/.mcp.json", proj);
-  if (stat(out_path, &st) == 0)
-    return 0; /* already there: never overwrite a user's MCP config */
+  existed = stat(out_path, &st) == 0;
   self_exe_path(exe, sizeof exe);
   if (!plat_realpath(store, abs_store, sizeof abs_store))
     snprintf(abs_store, sizeof abs_store, "%s", store);
-  f = fopen(out_path, "w");
+  {
+    /* both variable fields need escaping: on Windows they are full of
+     * backslashes, and unescaped this would not be valid JSON */
+    char ee[4200], es[4300];
+    u32 i, k = 0;
+    for (i = 0; exe[i] && k + 3 < sizeof ee; i++) {
+      if (exe[i] == '"' || exe[i] == '\\')
+        ee[k++] = '\\';
+      ee[k++] = exe[i];
+    }
+    ee[k] = 0;
+    k = 0;
+    for (i = 0; abs_store[i] && k + 3 < sizeof es; i++) {
+      if (abs_store[i] == '"' || abs_store[i] == '\\')
+        es[k++] = '\\';
+      es[k++] = abs_store[i];
+    }
+    es[k] = 0;
+    /* NO LEGEND_EMBED_DIR: the binary self-locates its model, and naming a
+     * second path is exactly what let two copies of one blob disagree. */
+    wn = snprintf(want, sizeof want,
+                  "{\n  \"mcpServers\": {\n    \"legend\": {\n"
+                  "      \"command\": \"%s\",\n"
+                  "      \"args\": [\"mcp-serve\"],\n"
+                  "      \"env\": {\n        \"LEGEND_STATE_DIR\": \"%s\"\n"
+                  "      }\n    }\n  }\n}\n",
+                  ee, es);
+  }
+  if (wn <= 0 || (size_t)wn >= (int)sizeof want) {
+    out_path[0] = 0;
+    return 0;
+  }
+  if (existed) {
+    size_t hn = 0;
+    f = fopen(out_path, "rb");
+    if (f) {
+      hn = fread(have, 1, sizeof have - 1, f);
+      fclose(f);
+    }
+    have[hn] = 0;
+    if (hn == (size_t)wn && memcmp(have, want, (size_t)wn) == 0)
+      return 0; /* current: init stays idempotent */
+    if (!mcp_config_is_ours(out_path))
+      return 0; /* other servers live here too: never guess */
+  }
+  f = fopen(out_path, "wb");
   if (!f) {
     out_path[0] = 0;
     return 0;
   }
-  fputs("{\n  \"mcpServers\": {\n    \"legend\": {\n      \"command\": \"", f);
-  json_escape_fputs(exe, f);
-  fputs("\",\n      \"args\": [\"mcp-serve\"],\n      \"env\": {\n"
-        "        \"LEGEND_STATE_DIR\": \"",
-        f);
-  json_escape_fputs(abs_store, f);
-  fputs("\"\n      }\n    }\n  }\n}\n", f);
+  fwrite(want, 1, (size_t)wn, f);
   fclose(f);
-  return 1;
+  return existed ? 2 : 1;
 }
 
 /* `legend init` also seeds Claude Code hooks (ported from Legend v1's set) so
@@ -10169,7 +10261,9 @@ static int cmd_init(int reset) {
            g_graph.clock);
     fputs(",\"mcp_config\":\"", stdout);
     json_escape_fputs(cfg, stdout);
-    printf("\",\"mcp_config_created\":%s", made ? "true" : "false");
+    printf("\",\"mcp_config_created\":%s", made == 1 ? "true" : "false");
+    if (made == 2)
+      fputs(",\"mcp_config_updated\":true", stdout);
     fputs(",\"hooks_config\":\"", stdout);
     json_escape_fputs(hooks, stdout);
     /* `hooks_created` stays true only for a first write, so existing callers
