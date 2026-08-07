@@ -1,6 +1,6 @@
 # CLI reference
 
-One binary, six verbs. Every verb reads/writes JSON on stdio and exits non-zero
+One binary, seven verbs. Every verb reads/writes JSON on stdio and exits non-zero
 with a structured error on failure.
 
 ```
@@ -77,12 +77,14 @@ verbs: `retract`, `merge`, `changes`, `rename_to`, or resubmitting a summary.
 | reason | what it means |
 |---|---|
 | `phantom_close` | a `resolves` fact whose target has no kind — it closed nothing and left a decoy beside the still-open item |
+| `clobbered_kind` | a claim written into the kind slot (>2 words). Not cosmetic: the element drops out of every kind-keyed check and recall band, so every other count is a floor until this reads 0 |
+| `dup_cache` | two live `current_*` caches on one (subject, property). The `cur` index holds one entry per pair, so the second is invisible there while both sit in the graph and recall can surface either |
 | `status_fact` | a status-flavored property (`status`, `standing`, `phase`, …) written as a plain fact, which accretes and goes stale; `changes` supersedes and keeps history |
 | `near_dup` | two live names similar enough that dedup arguably should have folded them |
 | `prose_name` | a whole sentence passed where a canonical name belongs (fact objects and attr values become element names) |
 | `stale_open` | a question/task with no `resolves` edge, untouched for `50+` ticks |
 | `orphan` | an element no live relation references at all — dangling provenance, or what a retraction left behind |
-| `bloat` | a summary past ~280 chars, which should split into child elements |
+| `bloat` | a summary past 400 chars, which should split into child elements. A hard cap of 600 is rejected at save time |
 
 Output carries the full tally in `counts` even when the printed list is capped
 at five per reason; whatever the cap drops is named in `truncated`, so the list
